@@ -681,7 +681,7 @@ function Dashboard({ data, setData }) {
   const [calShowFilters, setCalShowFilters] = useState(false); // フィルター展開状態
   const [showEventForm, setShowEventForm] = useState(false);
   const [editingEvent, setEditingEvent] = useState(null);
-  const eventEmpty = { title: "", date: today, time: "", location: "", memo: "", assignee: "", reminderMinutes: 0 };
+  const eventEmpty = { title: "", date: today, time: "", location: "", memo: "", assignees: [], reminderMinutes: 0 };
   const [eventForm, setEventForm] = useState(eventEmpty);
 
   const openNewEvent = (dateStr) => {
@@ -697,7 +697,8 @@ function Dashboard({ data, setData }) {
       time: ev.time || "",
       location: ev.location || "",
       memo: ev.memo || "",
-      assignee: ev.assignee || "",
+      // 旧データの assignee (単一) も吸収して assignees (配列) に統一
+      assignees: ev.assignees || (ev.assignee ? [ev.assignee] : []),
       reminderMinutes: ev.reminderMinutes || 0,
     });
     setEditingEvent(ev);
@@ -709,7 +710,13 @@ function Dashboard({ data, setData }) {
     if (!eventForm.date) { alert("日付を入力してください"); return; }
     const item = {
       id: editingEvent?.id || Date.now(),
-      ...eventForm,
+      title: eventForm.title,
+      date: eventForm.date,
+      time: eventForm.time,
+      location: eventForm.location,
+      memo: eventForm.memo,
+      assignees: eventForm.assignees || [],
+      reminderMinutes: eventForm.reminderMinutes || 0,
       createdAt: editingEvent?.createdAt || new Date().toISOString(),
       createdBy: editingEvent?.createdBy || getCurrentUser() || "未設定",
       notified: editingEvent?.notified || false,
@@ -718,7 +725,8 @@ function Dashboard({ data, setData }) {
       const next = { ...d, customEvents: editingEvent
         ? (d.customEvents || []).map(e => e.id === editingEvent.id ? item : e)
         : [...(d.customEvents || []), item] };
-      return appendLog(next, editingEvent ? "update" : "add", "event", `予定「${item.title}」（${item.date}${item.time ? " " + item.time : ""}）`);
+      const assigneeLabel = item.assignees.length > 0 ? `（${item.assignees.join("・")}）` : "";
+      return appendLog(next, editingEvent ? "update" : "add", "event", `予定「${item.title}」${assigneeLabel}（${item.date}${item.time ? " " + item.time : ""}）`);
     });
     setShowEventForm(false);
     setEditingEvent(null);
@@ -800,11 +808,14 @@ function Dashboard({ data, setData }) {
     });
     // カスタム予定
     (data.customEvents || []).forEach(ev => {
+      // 旧データの assignee (単一) も吸収
+      const assignees = ev.assignees || (ev.assignee ? [ev.assignee] : []);
       list.push({
         date: ev.date, type: "custom", icon: "📌", color: "#f97316",
         title: ev.title,
         sub: `${ev.time ? ev.time + "〜" : ""}${ev.location ? " @" + ev.location : ""}${ev.memo ? " | " + ev.memo : ""}`,
-        assignee: ev.assignee || "",
+        assignee: assignees[0] || "", // 後方互換
+        assignees, // 配列で保持
         time: ev.time,
         location: ev.location,
         memo: ev.memo,
@@ -819,7 +830,14 @@ function Dashboard({ data, setData }) {
   // フィルター適用
   const calFilteredEvents = useMemo(() => calEvents.filter(e => {
     if (calFilterType !== "all" && e.type !== calFilterType) return false;
-    if (calFilterMember !== "__ALL__" && e.assignee !== calFilterMember) return false;
+    if (calFilterMember !== "__ALL__") {
+      // assignees配列があればそれを優先、なければ単一assigneeで判定
+      if (e.assignees && e.assignees.length > 0) {
+        if (!e.assignees.includes(calFilterMember)) return false;
+      } else {
+        if (e.assignee !== calFilterMember) return false;
+      }
+    }
     return true;
   }), [calEvents, calFilterType, calFilterMember]);
 
@@ -1198,7 +1216,11 @@ function Dashboard({ data, setData }) {
                     </div>
                     <div style={{ color: C.muted, fontSize: 11 }}>{e.sub}</div>
                   </div>
-                  {e.assignee && <MemberTag name={e.assignee} />}
+                  {e.isCustom && e.assignees && e.assignees.length > 0 ? (
+                    <div style={{ display: "flex", gap: 3, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 130 }}>
+                      {e.assignees.map(a => <MemberTag key={a} name={a} />)}
+                    </div>
+                  ) : (!e.isCustom && e.assignee && <MemberTag name={e.assignee} />)}
                   {e.isCustom && (
                     <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                       <button onClick={() => {
@@ -1235,11 +1257,31 @@ function Dashboard({ data, setData }) {
           <Field label="メモ">
             <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={eventForm.memo} onChange={e => setEventForm(p => ({ ...p, memo: e.target.value }))} placeholder="持ち物・確認事項など" />
           </Field>
-          <Field label="担当者（任意）">
-            <select style={inp} value={eventForm.assignee} onChange={e => setEventForm(p => ({ ...p, assignee: e.target.value }))}>
-              <option value="">— 指定なし —</option>
-              {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
+          <Field label={`👥 担当者（複数選択可・${(eventForm.assignees || []).length}人選択中）`}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {MEMBERS.map(m => {
+                const isSelected = (eventForm.assignees || []).includes(m);
+                return (
+                  <button key={m} onClick={() => {
+                    setEventForm(p => ({
+                      ...p,
+                      assignees: isSelected
+                        ? (p.assignees || []).filter(a => a !== m)
+                        : [...(p.assignees || []), m]
+                    }));
+                  }} style={{
+                    padding: "8px 14px", borderRadius: 20, cursor: "pointer", fontSize: 13,
+                    background: isSelected ? (MEMBER_COLORS[m] || C.accent) : C.bg,
+                    color: isSelected ? "#fff" : C.muted,
+                    border: `1px solid ${isSelected ? (MEMBER_COLORS[m] || C.accent) : "#1a2535"}`,
+                    fontFamily: "inherit", fontWeight: isSelected ? 700 : 400,
+                  }}>{isSelected ? "✓ " : ""}{m}</button>
+                );
+              })}
+            </div>
+            {(eventForm.assignees || []).length === 0 && (
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>※ 担当者を指定しない場合は全員に共通の予定として扱われます</div>
+            )}
           </Field>
           <Field label="🔔 リマインダー">
             <select style={inp} value={eventForm.reminderMinutes} onChange={e => setEventForm(p => ({ ...p, reminderMinutes: Number(e.target.value) }))}>
