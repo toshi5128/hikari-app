@@ -97,11 +97,28 @@ function PieChart({ children }) {
 // ===================== CONSTANTS =====================
 const JIAGE_EXCEL_DATA = {};
 
-const MEMBERS = ["たっくん", "長島", "松村", "脇本", "谷津", "下田", "比嘉"];
+const MEMBERS = ["たっくん", "長島", "松村", "脇本", "谷津", "下田", "比嘉", "比嘉・下田"];
 const MEMBER_COLORS = {
   "たっくん": "#3b82f6", "長島": "#10b981", "松村": "#f59e0b",
-  "脇本": "#ef4444", "谷津": "#8b5cf6", "下田": "#06b6d4", "比嘉": "#ec4899"
+  "脇本": "#ef4444", "谷津": "#8b5cf6", "下田": "#06b6d4", "比嘉": "#ec4899",
+  "比嘉・下田": "#4f46e5",
 };
+
+// 連結担当者を分解（例：「比嘉・下田」→ ["比嘉", "下田"]）
+function expandAssignee(name) {
+  if (!name) return [];
+  return String(name).split(/[・,、]/).map(s => s.trim()).filter(Boolean);
+}
+function expandAssignees(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr.flatMap(a => expandAssignee(a));
+}
+function isAssignedTo(assignees, member) {
+  if (!member) return true;
+  const list = Array.isArray(assignees) ? assignees : [assignees];
+  const expanded = list.flatMap(a => expandAssignee(a));
+  return expanded.includes(member);
+}
 
 // 仕入日からの経過日数を計算
 function daysSinceBuy(buyDateStr) {
@@ -783,10 +800,10 @@ function Dashboard({ data, setData }) {
         evTime.setHours(h || 0, m || 0, 0, 0);
         const remindAt = new Date(evTime.getTime() - ev.reminderMinutes * 60000);
         if (remindAt <= now && now < evTime) {
-          // ▼自分が担当者に含まれているかチェック（PWAでは各メンバーが自分宛だけ通知）
+          // ▼自分が担当者に含まれているかチェック（「比嘉・下田」のような連結も分解判定）
           const me = getCurrentUser();
           const assignees = ev.assignees || (ev.assignee ? [ev.assignee] : []);
-          const isForMe = !me || assignees.length === 0 || assignees.includes(me);
+          const isForMe = !me || assignees.length === 0 || isAssignedTo(assignees, me);
           if (!isForMe) {
             // 自分宛じゃないなら通知済みフラグだけ立てる
             setData(d => ({
@@ -872,10 +889,11 @@ function Dashboard({ data, setData }) {
     if (calFilterType !== "all" && e.type !== calFilterType) return false;
     if (calFilterMember !== "__ALL__") {
       // assignees配列があればそれを優先、なければ単一assigneeで判定
+      // 「比嘉・下田」のような連結担当者も分解して判定する
       if (e.assignees && e.assignees.length > 0) {
-        if (!e.assignees.includes(calFilterMember)) return false;
+        if (!isAssignedTo(e.assignees, calFilterMember)) return false;
       } else {
-        if (e.assignee !== calFilterMember) return false;
+        if (!isAssignedTo([e.assignee], calFilterMember)) return false;
       }
     }
     return true;
@@ -2039,7 +2057,7 @@ function ApproachPage({ data, setData }) {
   // ===== 案件タブ用の集計 =====
   const filterByMember = (items, key = "assignee") => {
     if (casesMember === "__ALL__") return items;
-    return items.filter(it => it[key] === casesMember);
+    return items.filter(it => isAssignedTo([it[key]], casesMember));
   };
 
   const pipeline = useMemo(() => {
