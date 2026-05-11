@@ -153,6 +153,31 @@ const RESULT_INFO = {
   "NG": { icon: "❌", color: "#ef4444" },
 };
 
+// CSV/Excelダウンロード（UTF-8 BOM付き、Excel日本語対応）
+function downloadCSV(rows, filename) {
+  if (!rows || !rows.length) { alert("ダウンロードするデータがありません"); return; }
+  const headers = Object.keys(rows[0]);
+  const escape = v => {
+    const s = (v === null || v === undefined) ? "" : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const lines = [
+    headers.map(escape).join(","),
+    ...rows.map(row => headers.map(h => escape(row[h])).join(","))
+  ];
+  // BOM付きUTF-8でExcelの文字化けを防ぐ
+  const bom = "\uFEFF";
+  const blob = new Blob([bom + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 // 仕入日からの経過日数を計算
 function daysSinceBuy(buyDateStr) {
   if (!buyDateStr) return null;
@@ -3672,7 +3697,82 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>結果</div>
       <FilterChips options={Object.keys(RESULT_INFO)} value={filterResult} onChange={setFilterResult} multi />
 
-      <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
+      {/* Excelダウンロードボタン */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
+        <div style={{ color: C.muted, fontSize: 12 }}>{filtered.length}件表示</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => {
+            if (!filtered.length) { alert("ダウンロードするデータがありません"); return; }
+            // 投資家別サマリー（一人一行・6項目）
+            const investorMap = new Map();
+            filtered.forEach(v => {
+              const name = (v.customer || "").trim();
+              const email = (v.email || "").trim().toLowerCase();
+              const key = name || email || `_${v.key}`;
+              if (!investorMap.has(key)) {
+                investorMap.set(key, {
+                  name: v.customer || "",
+                  emails: new Set(),
+                  stockNames: new Set(),
+                  assignees: new Set(),
+                  investAreas: new Set(),
+                  investYields: new Set(),
+                });
+              }
+              const g = investorMap.get(key);
+              if (v.email) g.emails.add(v.email);
+              if (v.stockName) g.stockNames.add(v.stockName);
+              if (v.stockAssignee) g.assignees.add(v.stockAssignee);
+              if (v.investArea) g.investAreas.add(v.investArea);
+              if (v.investYield) g.investYields.add(v.investYield);
+            });
+            const rows = [...investorMap.values()].map(g => ({
+              "名前": g.name,
+              "メールアドレス": [...g.emails].join("、"),
+              "反響物件": [...g.stockNames].join("、"),
+              "担当者": [...g.assignees].join("、"),
+              "希望エリア": [...g.investAreas].join("、"),
+              "利回り": [...g.investYields].join("、"),
+            }));
+            const ymd = new Date().toISOString().split("T")[0];
+            downloadCSV(rows, `投資家リスト_${ymd}.csv`);
+          }} style={{
+            background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success,
+            borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12,
+            fontFamily: "inherit", fontWeight: 700,
+          }}>📥 投資家別CSV</button>
+          <button onClick={() => {
+            if (!filtered.length) { alert("ダウンロードするデータがありません"); return; }
+            const rows = filtered.map(v => ({
+              "案内日": v.date || "",
+              "曜日": dayOfWeekLabel(v.date)?.label || "",
+              "物件名": v.stockName || "",
+              "担当者": v.stockAssignee || "",
+              "顧客名": v.customer || "",
+              "電話番号": v.contact || "",
+              "メールアドレス": v.email || "",
+              "見込度": v.prospect || "",
+              "結果": v.result || "",
+              "次回アクション": v.nextAction || "",
+              "資金種別": v.funding || "",
+              "希望エリア": v.investArea || "",
+              "希望価格帯": v.investBudget || "",
+              "利回り希望": v.investYield || "",
+              "物件タイプ希望": v.investType || "",
+              "検討予算": v.budget || "",
+              "来場人数": v.people || "",
+              "経由": v.channel || "",
+              "メモ": v.note || "",
+            }));
+            const ymd = new Date().toISOString().split("T")[0];
+            downloadCSV(rows, `投資家リスト_案件別_${ymd}.csv`);
+          }} style={{
+            background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent,
+            borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12,
+            fontFamily: "inherit", fontWeight: 700,
+          }}>📋 案件別CSV</button>
+        </div>
+      </div>
 
       {filtered.length === 0 ? (
         <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 12, padding: 40, textAlign: "center", color: C.muted, fontSize: 13 }}>
