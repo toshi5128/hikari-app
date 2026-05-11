@@ -2,15 +2,2291 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>ひかり不動産</title>
-<style>
-body{background:#04080f;color:#e2e8f0;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:20px;text-align:center}
-</style>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap" rel="stylesheet">
+<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#04080f;color:#e2e8f0;font-family:'Noto Sans JP',sans-serif}input,select,textarea,button{font-family:inherit}</style>
 </head>
 <body>
-<h1 style="color:#0ea5e9;font-size:32px">ひかり不動産</h1>
-<p style="color:#10b981;font-size:20px">✅ 表示テスト成功！</p>
-<p style="color:#475569">統合管理システム</p>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;font-size:18px;color:#0ea5e9">読み込み中...</div></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/recharts@2/umd/Recharts.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script>
+Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
+</script>
+<script type="text/babel" data-presets="react">
+const {useState,useMemo,useEffect}=React;
+const {BarChart,Bar,XAxis,YAxis,Tooltip,ResponsiveContainer,PieChart,Pie,Cell}=Recharts;
+
+// ===================== CONSTANTS =====================
+const JIAGE_EXCEL_DATA = {};
+
+const MEMBERS = ["たっくん", "長島", "松村", "脇本", "谷津", "下田", "比嘉"];
+const MEMBER_COLORS = {
+  "たっくん": "#3b82f6", "長島": "#10b981", "松村": "#f59e0b",
+  "脇本": "#ef4444", "谷津": "#8b5cf6", "下田": "#06b6d4", "比嘉": "#ec4899"
+};
+const STOCK_STATUSES = ["見込", "仕入契約済", "リフォーム中", "リフォーム待ち", "売却契約準備中", "売却契約完了", "契約書作成中", "決済完了"];
+const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "NG", "見込", "居住している"];
+const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
+const APPROACH_ITEMS = ["訪問", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "仕入"];
+const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
+const CASE_STATUSES = ["検討中", "価格交渉中", "見送り", "成約"];
+const PRIORITIES = ["◎", "〇", "△", "✖"];
+const APPROACH_TARGETS = { "訪問": 600, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "仕入": 3 };
+
+// ===================== STORAGE =====================
+// ===================== SUPABASE 設定 =====================
+const SUPABASE_URL = "https://ckcykbvislsjwvkizkqc.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrY3lrYnZpc2xzand2a2l6a3FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0Njk1MzIsImV4cCI6MjA5NDA0NTUzMn0.Yf2EnNHRi6M5mwaaNFwBATNZb8jVBG3LsFxMt6eDfH8";
+const DATA_ID = "hikari_main";
+
+const STORAGE_KEY = "hikari_v4_cache";
+
+const DEFAULT_DATA = {
+  stocks: [
+    { id: 1, assignee: "たっくん", name: "川越市木野目", status: "リフォーム待ち", buyDate: "2026-01-25", sellDate: "", buyCost: 2930000, sellPrice: 4500000, memo: "", year: 2026 },
+    { id: 2, assignee: "長島", name: "日高市武蔵台", status: "売却契約完了", buyDate: "2026-02-05", sellDate: "", buyCost: 1118609, sellPrice: 3310000, memo: "", year: 2026 },
+    { id: 3, assignee: "下田", name: "大宮区天沼", status: "契約書作成中", buyDate: "2026-02-20", sellDate: "", buyCost: 4999000, sellPrice: 7500000, memo: "", year: 2026 },
+    { id: 4, assignee: "松村", name: "富士見市水谷東", status: "売却契約準備中", buyDate: "2026-03-01", sellDate: "", buyCost: 1130000, sellPrice: 3830000, memo: "", year: 2026 },
+    { id: 5, assignee: "たっくん", name: "羽生市北荻島", status: "決済完了", buyDate: "2026-02-06", sellDate: "2026-03-14", buyCost: 50000, sellPrice: 2980000, memo: "", year: 2026 },
+    { id: 6, assignee: "長島", name: "川越市下広谷", status: "決済完了", buyDate: "2026-02-13", sellDate: "2026-04-02", buyCost: 1127162, sellPrice: 2800000, memo: "", year: 2026 },
+    { id: 7, assignee: "下田", name: "八街市東吉田", status: "決済完了", buyDate: "2025-12-01", sellDate: "2026-01-24", buyCost: 1008774, sellPrice: 5500000, memo: "", year: 2026 },
+    { id: 8, assignee: "たっくん", name: "越生町越生", status: "決済完了", buyDate: "2026-03-07", sellDate: "2026-03-21", buyCost: 233024, sellPrice: 2150000, memo: "", year: 2026 },
+  ],
+  approaches: [],
+  jiage: [
+    { id: 1, date: "2026-02-04", address: "埼玉県熊谷市広瀬800-123", owner: "串橋朋子", ownerAddr: "東京都板橋区蓮根二丁目1番7号", dm: "①", visit: "済", status: "見込", assignee: "たっくん", memo: "旦那様より着信。荷物処分後すぐ売却希望。", nextVisit: "2026-05-15" },
+    { id: 2, date: "2026-02-04", address: "埼玉県熊谷市大原1-1780-20", owner: "佐藤靖子", ownerAddr: "群馬県高崎市寺尾町163番地", dm: "①", visit: "済", status: "見込", assignee: "長島", memo: "奥様退院後に再連絡予定。", nextVisit: "2026-05-20" },
+  ],
+  owners: [],
+  cases: [],
+  yakusho: [],
+  sekisan: [],
+  memberGoals: {},
+};
+
+// Supabaseからデータを取得
+async function loadFromSupabase() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=data`, {
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+    });
+    const rows = await res.json();
+    if (rows && rows.length > 0 && rows[0].data) return rows[0].data;
+  } catch (e) { console.error("Supabase load error:", e); }
+  return null;
+}
+
+// Supabaseにデータを保存
+async function saveToSupabase(data) {
+  try {
+    // まず存在確認
+    const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=id`, {
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+    });
+    const exists = await checkRes.json();
+    const method = exists && exists.length > 0 ? "PATCH" : "POST";
+    const url = exists && exists.length > 0
+      ? `${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}`
+      : `${SUPABASE_URL}/rest/v1/app_data`;
+    await fetch(url, {
+      method,
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+      },
+      body: JSON.stringify({ id: DATA_ID, data, updated_at: new Date().toISOString() }),
+    });
+    // ローカルキャッシュも更新
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {}
+  } catch (e) { console.error("Supabase save error:", e); }
+}
+
+// ローカルキャッシュから読み込み
+function loadFromCache() {
+  try { const r = localStorage.getItem(STORAGE_KEY); if (r) return JSON.parse(r); } catch {}
+  return null;
+}
+
+function App() {
+  const [page, setPage] = useState("dashboard");
+  const [data, setDataRaw] = useState(() => loadFromCache() || DEFAULT_DATA);
+  const [savedMsg, setSavedMsg] = useState(false);
+  const [syncing, setSyncing] = useState(true);
+  const [syncError, setSyncError] = useState(false);
+
+  // 起動時にSupabaseから最新データを取得
+  useEffect(() => {
+    loadFromSupabase().then(remote => {
+      if (remote) {
+        setDataRaw(remote);
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(remote)); } catch {}
+      }
+      setSyncing(false);
+    }).catch(() => {
+      setSyncing(false);
+      setSyncError(true);
+    });
+  }, []);
+
+  // ポーリング：30秒ごとに最新データを取得（他のメンバーの更新を反映）
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadFromSupabase().then(remote => {
+        if (remote) {
+          setDataRaw(remote);
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(remote)); } catch {}
+        }
+      });
+    }, 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const setData = updater => {
+    setDataRaw(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      // Supabaseに保存（非同期）
+      saveToSupabase(next).then(() => {
+        setSavedMsg(true);
+        setTimeout(() => setSavedMsg(false), 2000);
+      });
+      // ローカルにも即時保存
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
+  const isMapPage = page === "jiage";
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "'Noto Sans JP', 'Hiragino Sans', sans-serif", paddingBottom: isMapPage ? 60 : 80 }}>
+      <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ background: "#0d1422", borderBottom: `1px solid #1a2535`, padding: "12px 16px", position: "sticky", top: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.text, letterSpacing: "-0.01em" }}>ひかり不動産</div>
+          <div style={{ fontSize: 10, marginTop: 1, color: syncing ? C.warn : savedMsg ? C.success : syncError ? C.danger : C.muted }}>
+            {syncing ? "⟳ 同期中..." : savedMsg ? "✓ 保存・同期完了" : syncError ? "⚠ オフライン（ローカル保存）" : "☁ クラウド同期済み"}
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: C.muted }}>{new Date().toLocaleDateString("ja-JP", { month: "short", day: "numeric", weekday: "short" })}</div>
+      </div>
+
+      {/* 同期中ローディング */}
+      {syncing && (
+        <div style={{ background: C.warn + "22", border: `1px solid ${C.warn}44`, margin: "8px 16px", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: C.warn, textAlign: "center" }}>
+          ⟳ 最新データを取得中...
+        </div>
+      )}
+
+      {/* Content */}
+      <div style={{ padding: isMapPage ? "0" : "16px 16px 20px" }}>
+        {page === "dashboard" && <Dashboard data={data} />}
+        {page === "stock" && <StockPage data={data} setData={setData} />}
+        {page === "approach" && <ApproachPage data={data} setData={setData} />}
+        {page === "jiage" && <JiagePage data={data} setData={setData} />}
+        {page === "more" && <MorePage data={data} setData={setData} />}
+      </div>
+
+      {/* Bottom Navigation */}
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#0d1422", borderTop: `1px solid #1a2535`, display: "flex", zIndex: 200, paddingBottom: "env(safe-area-inset-bottom)" }}>
+        {PAGES.map(p => (
+          <button key={p.key} onClick={() => setPage(p.key)} style={{
+            flex: 1, background: "none", border: "none", padding: "10px 4px 8px",
+            color: page === p.key ? C.accent : C.muted, cursor: "pointer", fontFamily: "inherit",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+            touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
+            borderTop: `2px solid ${page === p.key ? C.accent : "transparent"}`,
+          }}>
+            <span style={{ fontSize: 20 }}>{p.icon}</span>
+            <span style={{ fontSize: 10, fontWeight: page === p.key ? 700 : 400 }}>{p.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+const C = {
+  bg: "#04080f", surface: "#0a0f1a", border: "#0f1929", text: "#e2e8f0",
+  muted: "#475569", accent: "#0ea5e9", accentDim: "#0c4a6e",
+  success: "#10b981", warn: "#f59e0b", danger: "#ef4444", purple: "#8b5cf6",
+};
+
+// Mobile-optimized styles
+const inp = {
+  background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 10, color: C.text,
+  padding: "13px 15px", fontSize: 16, width: "100%", boxSizing: "border-box",
+  fontFamily: "inherit", outline: "none", WebkitAppearance: "none",
+};
+const btnStyle = (variant = "primary") => ({
+  background: variant === "primary" ? C.accent : variant === "danger" ? "#450a0a" : "#0d1422",
+  border: `1px solid ${variant === "primary" ? C.accent : variant === "danger" ? C.danger : "#1a2535"}`,
+  color: variant === "primary" ? "#fff" : variant === "danger" ? C.danger : C.muted,
+  borderRadius: 10, padding: "13px 18px", cursor: "pointer", fontSize: 15,
+  fontWeight: 600, fontFamily: "inherit", touchAction: "manipulation",
+  WebkitTapHighlightColor: "transparent",
+});
+
+// ===================== SHARED COMPONENTS =====================
+// カンマ区切り数字入力（スピナーなし・手入力対応）
+function MoneyInput({ value, onChange, placeholder, style: extraStyle }) {
+  const [focused, setFocused] = useState(false);
+  const num = parseFloat(String(value || "").replace(/,/g, ""));
+  const display = focused || isNaN(num) || value === ""
+    ? String(value || "")
+    : num.toLocaleString("ja-JP");
+
+  const handleChange = e => {
+    const raw = e.target.value.replace(/[^0-9.]/g, "");
+    onChange(raw);
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={display}
+      onChange={handleChange}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      placeholder={placeholder}
+      style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none", ...(extraStyle || {}) }}
+    />
+  );
+}
+
+// NInp用の内部コンポーネント（入力中はraw、blur後はカンマ整形）
+function NInpInner({ value, onChange, onBlur, placeholder, suffix }) {
+  const [focused, setFocused] = useState(false);
+  const num = parseFloat(value);
+  const display = focused || isNaN(num) || value === ""
+    ? value
+    : num.toLocaleString("ja-JP");
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={display}
+        onChange={onChange}
+        onFocus={() => setFocused(true)}
+        onBlur={e => { setFocused(false); onBlur && onBlur(e); }}
+        placeholder={placeholder}
+        style={{ ...inp, paddingRight: suffix ? 36 : 15, MozAppearance: "textfield", WebkitAppearance: "none" }}
+      />
+      {suffix && <span style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", color: C.muted, fontSize: 13 }}>{suffix}</span>}
+    </div>
+  );
+}
+
+// 積算表用の数字入力（formとsetFormを外から受け取る）
+function SekisanNInp({ fkey, placeholder, suffix, form, setForm }) {
+  const raw = String(form[fkey] ?? "");
+  const handleChange = e => {
+    const v = e.target.value.replace(/[^0-9.]/g, "");
+    setForm(p => ({ ...p, [fkey]: v }));
+  };
+  return <NInpInner value={raw} onChange={handleChange} placeholder={placeholder} suffix={suffix} />;
+}
+
+function Tag({ label, color }) {
+  return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
+}
+function StatusTag({ status }) {
+  const map = {
+    "見込": C.success, "仕入契約済": C.accent, "リフォーム中": C.purple, "リフォーム待ち": C.warn,
+    "売却契約準備中": "#06b6d4", "売却契約完了": "#10b981", "契約書作成中": C.warn, "決済完了": "#64748b",
+    "未訪問": C.muted, "訪問済": C.accent, "不在": C.warn, "NG": C.danger, "居住している": "#64748b",
+    "検討中": C.warn, "興味あり": C.success, "断られた": C.danger, "交渉中": C.purple, "仕入れ完了": C.success,
+    "価格交渉中": C.accent, "見送り": C.danger, "成約": C.success,
+  };
+  return <Tag label={status} color={map[status] || C.muted} />;
+}
+function MemberTag({ name }) { return <Tag label={name} color={MEMBER_COLORS[name] || C.muted} />; }
+
+function BottomSheet({ title, onClose, children }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 400, display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={onClose}>
+      <div style={{ background: "#0d1422", borderRadius: "20px 20px 0 0", maxHeight: "92vh", overflowY: "auto", padding: "0 0 40px" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 4px" }}>
+          <div style={{ width: 36, height: 4, background: "#1a2535", borderRadius: 2 }} />
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 20px 16px" }}>
+          <div style={{ fontSize: 17, fontWeight: 700, color: C.text }}>{title}</div>
+          <button onClick={onClose} style={{ background: "#1a2535", border: "none", color: C.muted, borderRadius: 20, width: 32, height: 32, cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
+        </div>
+        <div style={{ padding: "0 20px" }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", marginBottom: 6, fontWeight: 600 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function SearchBar({ value, onChange, placeholder }) {
+  return (
+    <div style={{ position: "relative", marginBottom: 12 }}>
+      <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 16, color: C.muted }}>🔍</span>
+      <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder || "検索..."} style={{ ...inp, paddingLeft: 42, fontSize: 15 }} />
+      {value && <button onClick={() => onChange("")} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 18, padding: 0 }}>×</button>}
+    </div>
+  );
+}
+
+function FilterChips({ options, value, onChange, multi = false }) {
+  const selected = multi ? (Array.isArray(value) ? value : []) : value;
+  const toggle = opt => {
+    if (multi) {
+      const arr = Array.isArray(value) ? value : [];
+      onChange(arr.includes(opt) ? arr.filter(v => v !== opt) : [...arr, opt]);
+    } else {
+      onChange(value === opt ? "すべて" : opt);
+    }
+  };
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+      {options.map(opt => {
+        const isActive = multi ? selected.includes(opt) : selected === opt;
+        return (
+          <button key={opt} onClick={() => toggle(opt)} style={{
+            padding: "7px 13px", borderRadius: 20, cursor: "pointer", fontSize: 13,
+            background: isActive ? C.accent : "#0d1422",
+            color: isActive ? "#fff" : C.muted,
+            border: `1px solid ${isActive ? C.accent : "#1a2535"}`,
+            whiteSpace: "nowrap", fontFamily: "inherit", touchAction: "manipulation",
+          }}>{opt}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ===================== DASHBOARD =====================
+function Dashboard({ data }) {
+  const today = new Date().toISOString().split("T")[0];
+  const currentYear = new Date().getFullYear();
+  const [selectedYear, setSelectedYear] = useState(currentYear);
+
+  const availableYears = useMemo(() => {
+    const years = new Set([currentYear]);
+    data.stocks.forEach(s => {
+      if (s.buyDate) years.add(parseInt(s.buyDate.slice(0, 4)));
+      if (s.sellDate) years.add(parseInt(s.sellDate.slice(0, 4)));
+    });
+    return [...years].sort((a, b) => b - a);
+  }, [data.stocks]);
+
+  const nv = v => parseFloat(String(v || "").replace(/,/g, "")) || 0;
+
+  const yearCompleted = useMemo(() =>
+    data.stocks.filter(s => s.status === "決済完了" && (s.sellDate || "").startsWith(String(selectedYear))),
+    [data.stocks, selectedYear]);
+
+  const yearBought = useMemo(() =>
+    data.stocks.filter(s => (s.buyDate || "").startsWith(String(selectedYear))),
+    [data.stocks, selectedYear]);
+
+  const active = data.stocks.filter(s => s.status !== "決済完了");
+  const jiageToday = (data.jiage || []).filter(j => j.nextVisit === today);
+  const ownerToday = (data.owners || []).filter(o => o.nextFollowDate === today);
+
+  const yearSell = yearCompleted.reduce((a, s) => a + nv(s.sellPrice), 0);
+  const yearProfit = yearCompleted.reduce((a, s) => a + (nv(s.sellPrice) - nv(s.buyCost)), 0);
+  const avgProfit = yearCompleted.length > 0 ? yearProfit / yearCompleted.length : 0;
+  const avgProfitRate = yearCompleted.length > 0
+    ? yearCompleted.reduce((a, s) => {
+        const sp = nv(s.sellPrice); const bc = nv(s.buyCost);
+        return a + (sp > 0 ? (sp - bc) / sp * 100 : 0);
+      }, 0) / yearCompleted.length : 0;
+
+  const monthlyData = useMemo(() => {
+    return Array.from({ length: 12 }, (_, i) => {
+      const m = i + 1;
+      const ym = `${selectedYear}-${String(m).padStart(2, "0")}`;
+      const sold = data.stocks.filter(s => (s.sellDate || "").startsWith(ym));
+      const bought = data.stocks.filter(s => (s.buyDate || "").startsWith(ym));
+      return {
+        month: m + "月",
+        sell: sold.reduce((a, s) => a + nv(s.sellPrice), 0) / 10000,
+        profit: sold.reduce((a, s) => a + (nv(s.sellPrice) - nv(s.buyCost)), 0) / 10000,
+        sellCount: sold.filter(s => s.status === "決済完了").length,
+        buyCount: bought.length,
+      };
+    });
+  }, [data.stocks, selectedYear]);
+
+  const memberData = useMemo(() => {
+    return MEMBERS.slice(0, 6).map(m => {
+      const done = yearCompleted.filter(s => s.assignee === m);
+      const bought = yearBought.filter(s => s.assignee === m);
+      const profit = done.reduce((a, s) => a + (nv(s.sellPrice) - nv(s.buyCost)), 0);
+      const sell = done.reduce((a, s) => a + nv(s.sellPrice), 0);
+      const profitRate = done.length > 0
+        ? done.reduce((a, s) => { const sp = nv(s.sellPrice); const bc = nv(s.buyCost); return a + (sp > 0 ? (sp - bc) / sp * 100 : 0); }, 0) / done.length : 0;
+      return { name: m, 売上万: Math.round(sell / 10000), 利益万: Math.round(profit / 10000), 仕入件数: bought.length, 売却件数: done.length, 利益率: Math.round(profitRate * 10) / 10 };
+    }).filter(m => m.仕入件数 > 0 || m.売却件数 > 0);
+  }, [data.stocks, selectedYear]);
+
+  const statusData = useMemo(() => {
+    const map = {};
+    active.forEach(s => { map[s.status] = (map[s.status] || 0) + 1; });
+    return Object.entries(map).map(([name, value]) => ({ name, value }));
+  }, [active]);
+
+  const PIE_COLORS = [C.accent, C.success, C.warn, C.purple, C.danger, "#06b6d4"];
+
+  const StatCard = ({ label, value, sub, color, icon }) => (
+    <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 12, padding: "13px 14px", flex: 1, minWidth: 90 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
+        <span style={{ fontSize: 13 }}>{icon}</span>
+        <span style={{ color: C.muted, fontSize: 10, letterSpacing: "0.04em" }}>{label}</span>
+      </div>
+      <div style={{ color: color || C.text, fontSize: 22, fontWeight: 800, lineHeight: 1 }}>{value}</div>
+      {sub && <div style={{ color: C.muted, fontSize: 10, marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+
+      {/* ヘッダー＋年度切替 */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>📊 ダッシュボード</div>
+        <div style={{ display: "flex", background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 10, overflow: "hidden" }}>
+          {availableYears.map(y => (
+            <button key={y} onClick={() => setSelectedYear(y)} style={{
+              background: selectedYear === y ? C.accent : "none", border: "none",
+              color: selectedYear === y ? "#fff" : C.muted,
+              padding: "8px 14px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+            }}>{y}年</button>
+          ))}
+        </div>
+      </div>
+
+      {/* 年間KPI */}
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 12 }}>📅 {selectedYear}年 年間実績</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+          <StatCard icon="💰" label="年間売上" value={(yearSell / 10000).toFixed(0) + "万"} color={C.warn} sub={`決済${yearCompleted.length}件`} />
+          <StatCard icon="📈" label="年間利益" value={(yearProfit / 10000).toFixed(0) + "万"} color={C.success} sub="税引前" />
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+          <StatCard icon="🏠" label="仕入件数" value={yearBought.length + "件"} color={C.accent} />
+          <StatCard icon="✅" label="売却件数" value={yearCompleted.length + "件"} color={C.success} />
+          <StatCard icon="📦" label="在庫" value={active.length + "件"} color={C.muted} />
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <StatCard icon="💡" label="平均利益" value={(avgProfit / 10000).toFixed(0) + "万"} color={C.purple} sub="1件あたり" />
+          <StatCard icon="📊" label="平均利益率" value={avgProfitRate.toFixed(1) + "%"} color={avgProfitRate > 20 ? C.success : C.warn} sub="売却完了分" />
+        </div>
+      </div>
+
+      {/* 今日フォロー */}
+      {(jiageToday.length + ownerToday.length) > 0 && (
+        <div style={{ background: "#1a1000", border: `1px solid ${C.warn}44`, borderRadius: 14, padding: 14 }}>
+          <div style={{ color: C.warn, fontSize: 13, fontWeight: 700, marginBottom: 10 }}>⚡ 本日フォロー予定 {jiageToday.length + ownerToday.length}件</div>
+          {[...jiageToday.map(j => ({ label: j.address, type: "地上げ", assignee: j.assignee })),
+            ...ownerToday.map(o => ({ label: o.address, type: "所有者", assignee: o.assignee }))
+          ].map((item, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, fontSize: 13 }}>
+              <Tag label={item.type} color={item.type === "地上げ" ? C.purple : C.accent} />
+              <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+              <MemberTag name={item.assignee} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 月別売上・利益グラフ */}
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 12 }}>📅 月別売上・利益（万円）</div>
+        <ResponsiveContainer width="100%" height={170}>
+          <BarChart data={monthlyData} margin={{ top: 0, right: 0, left: -24, bottom: 0 }}>
+            <XAxis dataKey="month" tick={{ fill: C.muted, fontSize: 9 }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fill: C.muted, fontSize: 9 }} axisLine={false} tickLine={false} />
+            <Tooltip contentStyle={{ background: "#0a0f1a", border: `1px solid #1a2535`, borderRadius: 8, color: C.text, fontSize: 12 }} formatter={(v) => v.toFixed(0) + "万"} />
+            <Bar dataKey="sell" name="売上" fill={C.accent} radius={[3, 3, 0, 0]} opacity={0.7} />
+            <Bar dataKey="profit" name="利益" fill={C.success} radius={[3, 3, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+        <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 6 }}>
+          {[["売上", C.accent, 0.7], ["利益", C.success, 1]].map(([l, c, o]) => (
+            <div key={l} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: C.muted }}>
+              <div style={{ width: 10, height: 10, borderRadius: 2, background: c, opacity: o }} />{l}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 月別仕入・売却件数 */}
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 12 }}>🏠 月別仕入・売却件数</div>
+        <ResponsiveContainer width="100%" height={140}>
+          <BarChart data={monthlyData} margin={{ top: 0, right: 0, left: -24, bottom: 0 }}>
+            <XAxis dataKey="month" tick={{ fill: C.muted, fontSize: 9 }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fill: C.muted, fontSize: 9 }} axisLine={false} tickLine={false} allowDecimals={false} />
+            <Tooltip contentStyle={{ background: "#0a0f1a", border: `1px solid #1a2535`, borderRadius: 8, color: C.text, fontSize: 12 }} formatter={(v) => v + "件"} />
+            <Bar dataKey="buyCount" name="仕入" fill={C.accent} radius={[3, 3, 0, 0]} />
+            <Bar dataKey="sellCount" name="売却" fill={C.success} radius={[3, 3, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+        <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 6 }}>
+          {[["仕入", C.accent], ["売却", C.success]].map(([l, c]) => (
+            <div key={l} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: C.muted }}>
+              <div style={{ width: 10, height: 10, borderRadius: 2, background: c }} />{l}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* メンバー別実績 */}
+      {memberData.length > 0 && (
+        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 12 }}>👥 メンバー別実績（{selectedYear}年）</div>
+          <ResponsiveContainer width="100%" height={Math.max(100, memberData.length * 36)}>
+            <BarChart data={memberData} layout="vertical" margin={{ top: 0, right: 10, left: 8, bottom: 0 }}>
+              <XAxis type="number" tick={{ fill: C.muted, fontSize: 9 }} axisLine={false} tickLine={false} />
+              <YAxis type="category" dataKey="name" tick={{ fill: C.text, fontSize: 11 }} axisLine={false} tickLine={false} width={50} />
+              <Tooltip contentStyle={{ background: "#0a0f1a", border: `1px solid #1a2535`, borderRadius: 8, color: C.text, fontSize: 12 }} formatter={(v) => v + "万"} />
+              <Bar dataKey="利益万" name="利益" radius={[0, 4, 4, 0]}>
+                {memberData.map((m, i) => <Cell key={i} fill={MEMBER_COLORS[m.name] || C.accent} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+            {memberData.map(m => (
+              <div key={m.name} style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 12, padding: "12px 14px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <MemberTag name={m.name} />
+                  <span style={{ color: m.利益率 > 20 ? C.success : C.warn, fontSize: 12, fontWeight: 700 }}>利益率 {m.利益率}%</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6 }}>
+                  {[["売上", m.売上万 + "万", C.warn], ["利益", m.利益万 + "万", C.success], ["仕入", m.仕入件数 + "件", C.accent], ["売却", m.売却件数 + "件", C.success]].map(([l, v, c]) => (
+                    <div key={l} style={{ background: "#0d1422", borderRadius: 8, padding: "6px", textAlign: "center" }}>
+                      <div style={{ color: C.muted, fontSize: 10 }}>{l}</div>
+                      <div style={{ color: c, fontWeight: 700, fontSize: 13 }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 在庫ステータス分布 */}
+      {statusData.length > 0 && (
+        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 12 }}>🏠 在庫ステータス分布</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <ResponsiveContainer width={140} height={140}>
+              <PieChart>
+                <Pie data={statusData} cx="50%" cy="50%" innerRadius={38} outerRadius={62} dataKey="value" paddingAngle={3}>
+                  {statusData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                </Pie>
+                <Tooltip contentStyle={{ background: "#0a0f1a", border: `1px solid #1a2535`, borderRadius: 8, color: C.text, fontSize: 12 }} />
+              </PieChart>
+            </ResponsiveContainer>
+            <div style={{ flex: 1, display: "grid", gap: 5 }}>
+              {statusData.map((s, i) => (
+                <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: 2, background: PIE_COLORS[i % PIE_COLORS.length], flexShrink: 0 }} />
+                  <span style={{ color: C.muted, flex: 1 }}>{s.name}</span>
+                  <span style={{ color: C.text, fontWeight: 700 }}>{s.value}件</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 在庫一覧 */}
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>現在の在庫</div>
+        {active.map(s => (
+          <div key={s.id} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+              <StatusTag status={s.status} /><MemberTag name={s.assignee} />
+            </div>
+            <div style={{ color: C.text, fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{s.name}</div>
+            <div style={{ display: "flex", gap: 14, fontSize: 12, flexWrap: "wrap" }}>
+              <span style={{ color: C.muted }}>仕入 <span style={{ color: C.text }}>{(nv(s.buyCost) / 10000).toFixed(0)}万</span></span>
+              <span style={{ color: C.muted }}>売値 <span style={{ color: C.text }}>{(nv(s.sellPrice) / 10000).toFixed(0)}万</span></span>
+              <span style={{ color: C.muted }}>利益 <span style={{ color: C.success, fontWeight: 700 }}>{((nv(s.sellPrice) - nv(s.buyCost)) / 10000).toFixed(0)}万</span></span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+// ===================== STOCK PAGE =====================
+function StockPage({ data, setData }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [search, setSearch] = useState("");
+  const [filterStatuses, setFilterStatuses] = useState([]);
+  const [filterMembers, setFilterMembers] = useState([]);
+  const empty = { assignee: MEMBERS[0], name: "", status: "仕入契約済", buyDate: "", sellDate: "", buyCost: "", sellPrice: "", memo: "", year: new Date().getFullYear() };
+  const [form, setForm] = useState(empty);
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  const filtered = useMemo(() => data.stocks.filter(s => {
+    if (filterStatuses.length && !filterStatuses.includes(s.status)) return false;
+    if (filterMembers.length && !filterMembers.includes(s.assignee)) return false;
+    if (search && !s.name.includes(search) && !s.assignee.includes(search)) return false;
+    return true;
+  }), [data.stocks, filterStatuses, filterMembers, search]);
+
+  const openEdit = s => { setForm({ ...s, buyCost: String(s.buyCost), sellPrice: String(s.sellPrice) }); setEditItem(s); setShowAdd(true); };
+  const handleSave = () => {
+    const item = { ...form, id: editItem?.id || Date.now(), buyCost: Number(form.buyCost), sellPrice: Number(form.sellPrice) };
+    setData(d => ({ ...d, stocks: editItem ? d.stocks.map(s => s.id === editItem.id ? item : s) : [...d.stocks, item] }));
+    setShowAdd(false); setEditItem(null);
+  };
+  const handleDelete = id => { if (window.confirm("削除しますか？")) setData(d => ({ ...d, stocks: d.stocks.filter(s => s.id !== id) })); };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>🏠 在庫・案件管理</div>
+        <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm(empty); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
+      </div>
+      <SearchBar value={search} onChange={setSearch} placeholder="物件名・担当者で検索..." />
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>担当者</div>
+      <FilterChips options={MEMBERS.slice(0, 6)} value={filterMembers} onChange={setFilterMembers} multi />
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>ステータス</div>
+      <FilterChips options={STOCK_STATUSES} value={filterStatuses} onChange={setFilterStatuses} multi />
+      <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
+      {filtered.map(s => {
+        const profit = s.sellPrice - s.buyCost;
+        return (
+          <div key={s.id} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: "16px", marginBottom: 10 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <StatusTag status={s.status} /><MemberTag name={s.assignee} />
+            </div>
+            <div style={{ color: C.text, fontWeight: 600, fontSize: 16, marginBottom: 10 }}>{s.name}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+              {[["仕入", (s.buyCost / 10000).toFixed(0) + "万", C.text], ["売却", (s.sellPrice / 10000).toFixed(0) + "万", C.text], ["利益", (profit / 10000).toFixed(0) + "万", profit > 0 ? C.success : C.danger]].map(([l, v, c]) => (
+                <div key={l} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                  <div style={{ color: C.muted, fontSize: 10 }}>{l}</div>
+                  <div style={{ color: c, fontWeight: 700, fontSize: 15 }}>{v}</div>
+                </div>
+              ))}
+            </div>
+            {s.buyDate && <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>仕入日: {s.buyDate}{s.sellDate ? ` → 売却: ${s.sellDate}` : ""}</div>}
+            {s.memo && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{s.memo}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(s)}>編集</button>
+              <button style={{ ...btnStyle("danger"), padding: "10px 14px", fontSize: 14 }} onClick={() => handleDelete(s.id)}>削除</button>
+            </div>
+          </div>
+        );
+      })}
+      {showAdd && (
+        <BottomSheet title={editItem ? "物件編集" : "新規物件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}>
+          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+          <Field label="物件名"><input style={inp} value={form.name} onChange={f("name")} placeholder="川越市木野目" /></Field>
+          <Field label="ステータス"><select style={inp} value={form.status} onChange={f("status")}>{STOCK_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
+          <Field label="仕入原価（円）"><MoneyInput value={form.buyCost} onChange={v => setForm(p => ({ ...p, buyCost: v }))} placeholder="3,000,000" /></Field>
+          <Field label="売却額（円）"><MoneyInput value={form.sellPrice} onChange={v => setForm(p => ({ ...p, sellPrice: v }))} placeholder="5,000,000" /></Field>
+          <Field label="仕入日"><input type="date" style={inp} value={form.buyDate} onChange={f("buyDate")} /></Field>
+          <Field label="売却日"><input type="date" style={inp} value={form.sellDate} onChange={f("sellDate")} /></Field>
+          <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={f("memo")} /></Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
+          </div>
+        </BottomSheet>
+      )}
+    </div>
+  );
+}
+
+// ===================== APPROACH PAGE =====================
+function ApproachPage({ data, setData }) {
+  const today = new Date().toISOString().split("T")[0];
+  const currentYM = today.slice(0, 7);
+
+  const [tab, setTab] = useState("input"); // "input" | "monthly" | "goals"
+  const [selectedMember, setSelectedMember] = useState(MEMBERS[0]);
+  const [selectedYM, setSelectedYM] = useState(currentYM);
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [inputValues, setInputValues] = useState({});
+  const [memo, setMemo] = useState("");
+  const [showGoalEdit, setShowGoalEdit] = useState(false);
+  const [goalEditMember, setGoalEditMember] = useState(MEMBERS[0]);
+  const [goalForm, setGoalForm] = useState({});
+
+  // 目標値はdataに保存（memberGoals: { "たっくん": { 訪問: 600, ... } }）
+  const memberGoals = data.memberGoals || {};
+
+  const getGoal = (member, item) =>
+    memberGoals[member]?.[item] ?? APPROACH_TARGETS[item] ?? 0;
+
+  // 日次入力の既存データ
+  const existing = useMemo(() =>
+    data.approaches.find(a => a.member === selectedMember && a.date === selectedDate),
+    [data.approaches, selectedMember, selectedDate]);
+
+  useEffect(() => {
+    if (existing) { setInputValues(existing.values || {}); setMemo(existing.memo || ""); }
+    else { setInputValues({}); setMemo(""); }
+  }, [existing]);
+
+  // 月次集計
+  const monthlyData = useMemo(() => {
+    return MEMBERS.slice(0, 6).map(m => {
+      const entries = data.approaches.filter(a => a.member === m && a.date.startsWith(selectedYM));
+      const totals = {};
+      APPROACH_ITEMS.forEach(item => {
+        totals[item] = entries.reduce((a, e) => a + (Number(e.values?.[item]) || 0), 0);
+      });
+      return { member: m, totals };
+    }).filter(m => Object.values(m.totals).some(v => v > 0));
+  }, [data.approaches, selectedYM]);
+
+  // 月一覧（過去12ヶ月）
+  const monthOptions = useMemo(() => {
+    return Array.from({ length: 12 }, (_, i) => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      const ym = d.toISOString().slice(0, 7);
+      return { ym, label: `${d.getFullYear()}年${d.getMonth() + 1}月` };
+    });
+  }, []);
+
+  const handleSave = () => {
+    const entry = { id: existing?.id || Date.now(), member: selectedMember, date: selectedDate, values: inputValues, memo };
+    setData(d => ({ ...d, approaches: existing ? d.approaches.map(a => a.id === existing.id ? entry : a) : [...d.approaches, entry] }));
+    alert("保存しました！");
+  };
+
+  const openGoalEdit = (member) => {
+    setGoalEditMember(member);
+    const current = {};
+    APPROACH_ITEMS.forEach(item => { current[item] = String(getGoal(member, item)); });
+    setGoalForm(current);
+    setShowGoalEdit(true);
+  };
+
+  const saveGoal = () => {
+    const updated = {};
+    APPROACH_ITEMS.forEach(item => { updated[item] = Number(goalForm[item]) || 0; });
+    setData(d => ({ ...d, memberGoals: { ...(d.memberGoals || {}), [goalEditMember]: updated } }));
+    setShowGoalEdit(false);
+  };
+
+  const TABS = [
+    { key: "input", label: "✏️ 入力" },
+    { key: "monthly", label: "📊 月次" },
+    { key: "goals", label: "🎯 目標" },
+  ];
+
+  return (
+    <div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 14 }}>📞 業者アプローチ管理</div>
+
+      {/* タブ切替 */}
+      <div style={{ display: "flex", background: "#0d1422", borderRadius: 12, padding: 4, marginBottom: 14, border: `1px solid #1a2535` }}>
+        {TABS.map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={{
+            flex: 1, background: tab === t.key ? C.accent : "none", border: "none",
+            color: tab === t.key ? "#fff" : C.muted, borderRadius: 9, padding: "10px 4px",
+            cursor: "pointer", fontSize: 13, fontWeight: tab === t.key ? 700 : 400, fontFamily: "inherit",
+          }}>{t.label}</button>
+        ))}
+      </div>
+
+      {/* ===== 入力タブ ===== */}
+      {tab === "input" && (
+        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
+          <Field label="担当者">
+            <select style={inp} value={selectedMember} onChange={e => setSelectedMember(e.target.value)}>
+              {MEMBERS.slice(0, 6).map(m => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="日付">
+            <input type="date" style={inp} value={selectedDate} onChange={e => setSelectedDate(e.target.value)} />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+            {APPROACH_ITEMS.map(item => {
+              const goal = getGoal(selectedMember, item);
+              const val = Number(inputValues[item]) || 0;
+              const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
+              const color = goal > 0 ? (val >= goal ? C.success : val > goal * 0.5 ? C.warn : C.danger) : C.text;
+              return (
+                <div key={item} style={{ background: C.bg, borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ color: C.muted, fontSize: 12 }}>{item}</span>
+                    {goal > 0 && <span style={{ color, fontSize: 11, fontWeight: 700 }}>{val}/{goal}</span>}
+                  </div>
+                  <input
+                    type="text" inputMode="numeric"
+                    style={{ ...inp, fontSize: 20, fontWeight: 700, textAlign: "center", padding: "8px", MozAppearance: "textfield", WebkitAppearance: "none" }}
+                    value={inputValues[item] || ""}
+                    onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ""); setInputValues(p => ({ ...p, [item]: raw })); }}
+                    placeholder="0"
+                  />
+                  {goal > 0 && (
+                    <div style={{ background: "#1a25
+                    35", borderRadius: 3, height: 4, marginTop: 6 }}>
+                      <div style={{ width: pct + "%", height: "100%", background: color, borderRadius: 3, transition: "width 0.3s" }} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <Field label="エリアメモ">
+            <input style={inp} value={memo} onChange={e => setMemo(e.target.value)} placeholder="茅ヶ崎、平塚、辻堂" />
+          </Field>
+          <button style={{ ...btnStyle(), width: "100%", marginTop: 4 }} onClick={handleSave}>保存する</button>
+        </div>
+      )}
+
+      {/* ===== 月次集計タブ ===== */}
+      {tab === "monthly" && (
+        <div>
+          {/* 月切替 */}
+          <div style={{ marginBottom: 14 }}>
+            <Field label="表示月">
+              <select style={inp} value={selectedYM} onChange={e => setSelectedYM(e.target.value)}>
+                {monthOptions.map(({ ym, label }) => (
+                  <option key={ym} value={ym}>{label}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          {monthlyData.length === 0 && (
+            <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 32, textAlign: "center", color: C.muted }}>
+              {selectedYM} のデータがありません
+            </div>
+          )}
+
+          {monthlyData.map(m => {
+            return (
+              <div key={m.member} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <MemberTag name={m.member} />
+                  <button style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11 }} onClick={() => openGoalEdit(m.member)}>目標編集</button>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {APPROACH_ITEMS.map(item => {
+                    const val = m.totals[item] || 0;
+                    const goal = getGoal(m.member, item);
+                    const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
+                    const color = goal > 0 ? (val >= goal ? C.success : val > goal * 0.5 ? C.warn : C.danger) : C.text;
+                    return (
+                      <div key={item} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                          <span style={{ color: C.muted, fontSize: 11 }}>{item}</span>
+                          <span style={{ color, fontWeight: 700, fontSize: 13 }}>
+                            {val}{goal > 0 ? `/${goal}` : ""}
+                          </span>
+                        </div>
+                        {goal > 0 && (
+                          <div style={{ background: "#1a2535", borderRadius: 3, height: 4 }}>
+                            <div style={{ width: pct + "%", height: "100%", background: color, borderRadius: 3 }} />
+                          </div>
+                        )}
+                        {goal > 0 && (
+                          <div style={{ fontSize: 10, color: C.muted, marginTop: 3, textAlign: "right" }}>
+                            {pct.toFixed(0)}%
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ===== 目標設定タブ ===== */}
+      {tab === "goals" && (
+        <div>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>
+            メンバーごとに月間目標を設定できます。
+          </div>
+          {MEMBERS.slice(0, 6).map(m => (
+            <div key={m} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <MemberTag name={m} />
+                <button style={{ ...btnStyle(), padding: "8px 14px", fontSize: 13 }} onClick={() => openGoalEdit(m)}>目標を編集</button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                {APPROACH_ITEMS.map(item => (
+                  <div key={item} style={{ display: "flex", justifyContent: "space-between", background: C.bg, borderRadius: 8, padding: "6px 10px" }}>
+                    <span style={{ color: C.muted, fontSize: 12 }}>{item}</span>
+                    <span style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>{getGoal(m, item)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 目標編集ボトムシート */}
+      {showGoalEdit && (
+        <BottomSheet title={`${goalEditMember} の月間目標設定`} onClose={() => setShowGoalEdit(false)}>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>各項目の月間目標値を入力してください</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {APPROACH_ITEMS.map(item => (
+              <Field key={item} label={item}>
+                <input
+                  type="text" inputMode="numeric"
+                  style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none" }}
+                  value={goalForm[item] || ""}
+                  onChange={e => setGoalForm(p => ({ ...p, [item]: e.target.value.replace(/[^0-9]/g, "") }))}
+                  placeholder="0"
+                />
+              </Field>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setShowGoalEdit(false)}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={saveGoal}>目標を保存</button>
+          </div>
+        </BottomSheet>
+      )}
+    </div>
+  );
+}
+
+// ===================== 統合地上げ・所有者アタックページ =====================
+
+// Excelから取り込んだ地上げデータ（エリア別）
+const JIAGE_AREAS = ["熊谷", "行田", "深谷", "東松山", "本庄", "秩父", "上里"];
+
+function JiagePage({ data, setData }) {
+  const today = new Date().toISOString().split("T")[0];
+  const [viewMode, setViewMode] = useState("list");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [areaFilter, setAreaFilter] = useState("すべて");
+  const [filterStatuses, setFilterStatuses] = useState([]);
+  const [filterMembers, setFilterMembers] = useState([]);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [addType, setAddType] = useState("jiage");
+  const [editItem, setEditItem] = useState(null);
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [histForm, setHistForm] = useState({ date: today, method: "電話", note: "", member: MEMBERS[0] });
+
+  const navUrl = addr => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving`;
+
+  // Excelデータをインポートする処理
+  const handleImport = async (selectedAreas) => {
+    setImporting(true);
+    try {
+      // 選択エリアのデータをlocalStorageから取得
+      const importData = JSON.parse(localStorage.getItem("hikari_jiage_import") || "{}");
+      const newItems = [];
+      let uid = Date.now();
+      for (const area of selectedAreas) {
+        const items = importData[area] || [];
+        items.forEach(item => {
+          newItems.push({
+            id: uid++,
+            address: item.address,
+            owner: item.owner,
+            ownerAddr: item.ownerAddr,
+            dm: item.dm || "未",
+            visit: item.visit || "未",
+            status: item.status || "未訪問",
+            assignee: item.assignee || "未割当",
+            memo: item.memo || "",
+            date: item.date || today,
+            nextVisit: item.nextVisit || "",
+            area: item.area,
+          });
+        });
+      }
+      setData(d => ({ ...d, jiage: [...d.jiage, ...newItems] }));
+      alert(`✅ ${newItems.length}件をインポートしました！`);
+      setShowImport(false);
+    } catch (e) {
+      alert("インポートに失敗しました");
+    }
+    setImporting(false);
+  };
+
+  // 地上げと所有者を統合
+  const allItems = useMemo(() => {
+    const jiage = (data.jiage || []).map(j => ({
+      type: "jiage", id: `j_${j.id}`, rawId: j.id,
+      address: j.address, ownerName: j.owner, ownerAddress: j.ownerAddr,
+      ownerContact: "", assignee: j.assignee,
+      status: j.status, subStatus: `DM:${j.dm}`,
+      nextDate: j.nextVisit, memo: j.memo, history: [],
+      dm: j.dm, visit: j.visit, area: j.area || "", raw: j,
+    }));
+    const owners = (data.owners || []).map(o => ({
+      type: "owner", id: `o_${o.id}`, rawId: o.id,
+      address: o.address, ownerName: o.ownerName, ownerAddress: o.ownerAddress,
+      ownerContact: o.ownerContact, assignee: o.assignee,
+      status: o.status, subStatus: null,
+      nextDate: o.nextFollowDate, memo: o.memo, history: o.history || [],
+      area: "", raw: o,
+    }));
+    return [...jiage, ...owners];
+  }, [data.jiage, data.owners]);
+
+  const filtered = useMemo(() => allItems.filter(item => {
+    if (typeFilter === "jiage" && item.type !== "jiage") return false;
+    if (typeFilter === "owner" && item.type !== "owner") return false;
+    if (areaFilter !== "すべて" && item.area !== areaFilter) return false;
+    if (filterStatuses.length && !filterStatuses.includes(item.status)) return false;
+    if (filterMembers.length && !filterMembers.includes(item.assignee)) return false;
+    if (search && !item.address.includes(search) && !(item.ownerName || "").includes(search)) return false;
+    return true;
+  }), [allItems, typeFilter, areaFilter, filterStatuses, filterMembers, search]);
+
+  const isOverdue = item => item.nextDate && item.nextDate < today && !["NG", "断られた", "仕入れ完了"].includes(item.status);
+
+  const handleDelete = item => {
+    if (!window.confirm("削除しますか？")) return;
+    if (item.type === "jiage") setData(d => ({ ...d, jiage: d.jiage.filter(j => j.id !== item.rawId) }));
+    else setData(d => ({ ...d, owners: d.owners.filter(o => o.id !== item.rawId) }));
+    setSelected(null);
+  };
+
+  const addHistory = () => {
+    if (!histForm.note.trim() || !selected || selected.item.type !== "owner") return;
+    const updated = { ...selected.item.raw, history: [...(selected.item.raw.history || []), histForm] };
+    setData(d => ({ ...d, owners: d.owners.map(o => o.id === updated.id ? updated : o) }));
+    setSelected(s => ({ ...s, item: { ...s.item, history: updated.history, raw: updated } }));
+    setHistForm({ date: today, method: "電話", note: "", member: MEMBERS[0] });
+  };
+
+  const updateStatus = (item, status) => {
+    if (item.type === "jiage") {
+      const updated = { ...item.raw, status };
+      setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
+      setSelected(s => ({ ...s, item: { ...s.item, status, raw: updated } }));
+    } else {
+      const updated = { ...item.raw, status };
+      setData(d => ({ ...d, owners: d.owners.map(o => o.id === item.rawId ? updated : o) }));
+      setSelected(s => ({ ...s, item: { ...s.item, status, raw: updated } }));
+    }
+  };
+
+  const updateNextDate = (item, date) => {
+    if (item.type === "jiage") {
+      const updated = { ...item.raw, nextVisit: date };
+      setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
+      setSelected(s => ({ ...s, item: { ...s.item, nextDate: date, raw: updated } }));
+    } else {
+      const updated = { ...item.raw, nextFollowDate: date };
+      setData(d => ({ ...d, owners: d.owners.map(o => o.id === item.rawId ? updated : o) }));
+      setSelected(s => ({ ...s, item: { ...s.item, nextDate: date, raw: updated } }));
+    }
+  };
+
+  const emptyJiage = { address: "", owner: "", ownerAddr: "", dm: "未", visit: "未", status: "未訪問", assignee: MEMBERS[0], memo: "", nextVisit: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
+  const emptyOwner = { address: "", ownerName: "", ownerAddress: "", ownerContact: "", status: "未アタック", assignee: MEMBERS[0], nextFollowDate: "", memo: "", history: [], createdAt: today };
+  const [form, setForm] = useState(emptyJiage);
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  const openEdit = item => {
+    setAddType(item.type);
+    setForm({ ...item.raw });
+    setEditItem(item);
+    setShowAdd(true);
+    setSelected(null);
+  };
+
+  const handleSave = () => {
+    if (addType === "jiage") {
+      const item = { ...form, id: editItem?.rawId || Date.now() };
+      setData(d => ({ ...d, jiage: editItem ? d.jiage.map(j => j.id === item.id ? item : j) : [...d.jiage, item] }));
+    } else {
+      const item = { ...form, id: editItem?.rawId || Date.now() };
+      setData(d => ({ ...d, owners: editItem ? d.owners.map(o => o.id === item.id ? item : o) : [...d.owners, item] }));
+    }
+    setShowAdd(false); setEditItem(null);
+  };
+
+  // エリア別件数
+  const areaCounts = useMemo(() => {
+    const counts = {};
+    allItems.filter(i => i.type === "jiage").forEach(i => {
+      counts[i.area || "その他"] = (counts[i.area || "その他"] || 0) + 1;
+    });
+    return counts;
+  }, [allItems]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 130px)", margin: "-16px -16px 0", overflow: "hidden" }}>
+
+      {/* ヘッダー */}
+      <div style={{ background: "#0d1422", borderBottom: `1px solid #1a2535`, padding: "10px 14px", flexShrink: 0, zIndex: 10 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.text, flex: 1 }}>📍 地上げ・所有者</div>
+          <div style={{ display: "flex", background: C.bg, borderRadius: 8, padding: 3, border: `1px solid #1a2535` }}>
+            {[["list", "☰ リスト"], ["map", "🗺 地図"]].map(([key, label]) => (
+              <button key={key} onClick={() => setViewMode(key)} style={{
+                background: viewMode === key ? C.accent : "none", border: "none",
+                color: viewMode === key ? "#fff" : C.muted, borderRadius: 6,
+                padding: "6px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit",
+              }}>{label}</button>
+            ))}
+          </div>
+          <div style={{ position: "relative" }}>
+            <button style={{ ...btnStyle(), padding: "8px 12px", fontSize: 13 }} onClick={() => setShowAddMenu(v => !v)}>＋</button>
+            {showAddMenu && (
+              <div style={{ position: "absolute", right: 0, top: "110%", background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 10, overflow: "hidden", zIndex: 50, minWidth: 180 }}>
+                {[["jiage", "📍 地上げ物件"], ["owner", "👤 所有者アタック"]].map(([type, label]) => (
+                  <button key={type} onClick={() => { setAddType(type); setForm(type === "jiage" ? emptyJiage : emptyOwner); setEditItem(null); setShowAdd(true); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid #1a2535` }}>{label}</button>
+                ))}
+                <button onClick={() => { setShowImport(true); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.success, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>📥 Excelからインポート</button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* タイプフィルター */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 8, overflowX: "auto", paddingBottom: 2 }}>
+          {[["all", `全て ${allItems.length}`], ["jiage", `📍地上げ ${(data.jiage||[]).length}`], ["owner", `👤所有者 ${(data.owners||[]).length}`]].map(([key, label]) => (
+            <button key={key} onClick={() => setTypeFilter(key)} style={{ padding: "5px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, background: typeFilter === key ? C.accent : C.bg, color: typeFilter === key ? "#fff" : C.muted, border: `1px solid ${typeFilter === key ? C.accent : "#1a2535"}`, fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>{label}</button>
+          ))}
+        </div>
+
+        {/* エリアフィルター */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 8, overflowX: "auto", paddingBottom: 2 }}>
+          {["すべて", ...JIAGE_AREAS].map(area => {
+            const count = area === "すべて" ? Object.values(areaCounts).reduce((a, b) => a + b, 0) : (areaCounts[area] || 0);
+            return (
+              <button key={area} onClick={() => setAreaFilter(area)} style={{
+                padding: "5px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12,
+                background: areaFilter === area ? C.purple : C.bg,
+                color: areaFilter === area ? "#fff" : C.muted,
+                border: `1px solid ${areaFilter === area ? C.purple : "#1a2535"}`,
+                fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0,
+              }}>{area} {count > 0 ? count : ""}</button>
+            );
+          })}
+        </div>
+
+        {/* 検索 */}
+        <div style={{ position: "relative" }}>
+          <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: C.muted, fontSize: 14 }}>🔍</span>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="住所・所有者名で検索..." style={{ ...inp, paddingLeft: 36, fontSize: 14, padding: "10px 14px 10px 36px" }} />
+        </div>
+        <div style={{ color: C.muted, fontSize: 11, marginTop: 6 }}>{filtered.length}件表示</div>
+      </div>
+
+      {/* 地図ビュー */}
+      {viewMode === "map" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
+
+          {/* Googleマップで全件表示ボタン */}
+          <a
+            href={`https://www.google.com/maps/search/${encodeURIComponent(filtered.filter(i => i.ownerAddress).map(i => i.ownerAddress).join(" / "))}`}
+            target="_blank" rel="noopener noreferrer"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+              background: "#1a2a1a", border: `1px solid ${C.success}55`,
+              color: C.success, borderRadius: 12, padding: "14px",
+              fontSize: 15, fontWeight: 700, textDecoration: "none", marginBottom: 14,
+            }}
+          >
+            🗺 所有者住所を全件マップ確認（{filtered.filter(i => i.ownerAddress).length}件）
+          </a>
+
+          {/* 物件カード（地図ビュー用・コンパクト） */}
+          {filtered.map(item => {
+            const overdue = isOverdue(item);
+            return (
+              <div key={item.id} style={{
+                background: "#0d1422",
+                border: `1px solid ${overdue ? C.danger + "66" : item.status === "見込" || item.status === "興味あり" ? C.success + "55" : "#1a2535"}`,
+                borderRadius: 16, marginBottom: 10, overflow: "hidden",
+              }}>
+                {/* ステータスバー */}
+                <div style={{ display: "flex", gap: 6, padding: "10px 14px 8px", alignItems: "center", flexWrap: "wrap", borderBottom: `1px solid #1a2535` }}>
+                  <Tag label={item.type === "jiage" ? "📍地上げ" : "👤所有者"} color={item.type === "jiage" ? C.accent : C.purple} />
+                  <StatusTag status={item.status} />
+                  <MemberTag name={item.assignee} />
+                  {overdue && <Tag label="⚠ 期限切れ" color={C.danger} />}
+                  <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11 }}>{item.nextDate ? `次回 ${item.nextDate}` : ""}</span>
+                </div>
+
+                {/* 物件住所 */}
+                <div style={{ padding: "10px 14px 8px", borderBottom: `1px solid #1a2535` }}>
+                  <div style={{ fontSize: 11, color: C.accent, fontWeight: 700, marginBottom: 3 }}>🏠 物件住所</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 8 }}>{item.address}</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <a href={navUrl(item.address)} target="_blank" rel="noopener noreferrer"
+                      style={{ flex: 1, background: C.success + "22", border: `1px solid ${C.success}55`, color: C.success, borderRadius: 8, padding: "8px", fontSize: 13, fontWeight: 700, textDecoration: "none", textAlign: "center" }}>
+                      🚗 物件にナビ
+                    </a>
+                    <a href={item.ownerAddress ? navUrl(item.ownerAddress) : navUrl(item.address)} target="_blank" rel="noopener noreferrer"
+                      style={{ flex: 1, background: C.accent + "22", border: `1px solid ${C.accent}55`, color: C.accent, borderRadius: 8, padding: "8px", fontSize: 13, fontWeight: 700, textDecoration: "none", textAlign: "center" }}>
+                      🚗 所有者にナビ
+                    </a>
+                  </div>
+                </div>
+
+                {/* 所有者情報 */}
+                <div style={{ padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 11, color: C.purple, fontWeight: 700, marginBottom: 3 }}>👤 所有者</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{item.ownerName || <span style={{ color: C.muted, fontSize: 13 }}>不明</span>}</div>
+                    {item.ownerAddress && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>📮 {item.ownerAddress}</div>}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <button style={{ ...btnStyle("ghost"), padding: "8px 12px", fontSize: 12 }} onClick={() => setSelected({ item })}>詳細</button>
+                    {item.ownerAddress && (
+                      <a href={navUrl(item.ownerAddress)} target="_blank" rel="noopener noreferrer"
+                        style={{ background: C.purple + "22", border: `1px solid ${C.purple}55`, color: C.purple, borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 700, textDecoration: "none", textAlign: "center" }}>
+                        🚗 所有者宅
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* リストビュー */}
+      {viewMode === "list" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            <FilterChips options={MEMBERS.slice(0, 6)} value={filterMembers} onChange={setFilterMembers} multi />
+          </div>
+          {filtered.map(item => {
+            const overdue = isOverdue(item);
+            return (
+              <div key={item.id} style={{
+                background: "#0d1422",
+                border: `1px solid ${overdue ? C.danger + "66" : item.status === "見込" || item.status === "興味あり" ? C.success + "55" : "#1a2535"}`,
+                borderRadius: 16, marginBottom: 12, overflow: "hidden",
+              }}>
+                {/* ステータスバー */}
+                <div style={{ display: "flex", gap: 6, padding: "10px 14px 8px", alignItems: "center", flexWrap: "wrap", borderBottom: `1px solid #1a2535` }}>
+                  <Tag label={item.type === "jiage" ? "📍地上げ" : "👤所有者"} color={item.type === "jiage" ? C.accent : C.purple} />
+                  <StatusTag status={item.status} />
+                  {item.subStatus && <Tag label={item.subStatus} color={item.dm === "未" ? C.muted : C.accent} />}
+                  <MemberTag name={item.assignee} />
+                  {item.history.length > 0 && <Tag label={`履歴${item.history.length}件`} color={C.muted} />}
+                  {overdue && <Tag label="⚠ 期限切れ" color={C.danger} />}
+                  <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11 }}>{item.nextDate ? `次回 ${item.nextDate}` : ""}</span>
+                </div>
+
+                {/* 物件住所ブロック */}
+                <div style={{ padding: "12px 14px 10px", borderBottom: `1px solid #1a2535` }}>
+                  <div style={{ fontSize: 11, color: C.accent, fontWeight: 700, marginBottom: 4, letterSpacing: "0.06em" }}>🏠 物件住所</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: C.text, marginBottom: 8 }}>{item.address || "住所未設定"}</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <a href={navUrl(item.address)} target="_blank" rel="noopener noreferrer"
+                      style={{ flex: 1, background: C.success + "22", border: `1px solid ${C.success}55`, color: C.success, borderRadius: 8, padding: "8px", fontSize: 13, fontWeight: 700, textDecoration: "none", textAlign: "center" }}>
+                      🚗 物件にナビ
+                    </a>
+                    <a href={item.ownerAddress ? navUrl(item.ownerAddress) : navUrl(item.address)} target="_blank" rel="noopener noreferrer"
+                      style={{ flex: 1, background: C.accent + "22", border: `1px solid ${C.accent}55`, color: C.accent, borderRadius: 8, padding: "8px", fontSize: 13, fontWeight: 700, textDecoration: "none", textAlign: "center" }}>
+                      🚗 所有者にナビ
+                    </a>
+                  </div>
+                </div>
+
+                {/* 所有者情報ブロック */}
+                <div style={{ padding: "12px 14px 10px", borderBottom: `1px solid #1a2535` }}>
+                  <div style={{ fontSize: 11, color: C.purple, fontWeight: 700, marginBottom: 6, letterSpacing: "0.06em" }}>👤 所有者情報</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 3 }}>
+                        {item.ownerName || <span style={{ color: C.muted, fontSize: 13 }}>所有者不明</span>}
+                      </div>
+                      {item.ownerContact && (
+                        <div style={{ fontSize: 13, color: C.accent, marginBottom: 4 }}>{item.ownerContact}</div>
+                      )}
+                      {item.ownerAddress ? (
+                        <div style={{ fontSize: 12, color: C.muted }}>
+                          📮 {item.ownerAddress}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 12, color: "#334155" }}>所有者住所: 未登録</div>
+                      )}
+                    </div>
+                    {item.ownerAddress && (
+                      <a href={navUrl(item.ownerAddress)} target="_blank" rel="noopener noreferrer"
+                        style={{ background: C.purple + "22", border: `1px solid ${C.purple}55`, color: C.purple, borderRadius: 8, padding: "8px 10px", fontSize: 12, fontWeight: 700, textDecoration: "none", textAlign: "center", flexShrink: 0 }}>
+                        🚗 所有者宅<br />へナビ
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                {/* メモ・操作ボタン */}
+                <div style={{ padding: "10px 14px" }}>
+                  {item.memo && <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>{item.memo.length > 80 ? item.memo.slice(0, 80) + "…" : item.memo}</div>}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button style={{ ...btnStyle("ghost"), flex: 1, padding: "9px", fontSize: 13 }} onClick={() => setSelected({ item })}>詳細・編集</button>
+                    <button style={{ ...btnStyle("danger"), padding: "9px 12px", fontSize: 13 }} onClick={() => handleDelete(item)}>削除</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 詳細ボトムシート */}
+      {selected && (
+        <BottomSheet title={selected.item.address} onClose={() => setSelected(null)}>
+          {/* タイプバッジ */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+            <Tag label={selected.item.type === "jiage" ? "📍地上げ" : "👤所有者アタック"} color={selected.item.type === "jiage" ? C.accent : C.purple} />
+            <StatusTag status={selected.item.status} />
+            <MemberTag name={selected.item.assignee} />
+          </div>
+
+          {/* 所有者情報 */}
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>所有者情報</div>
+            {[
+              ["所有者名", selected.item.ownerName],
+              ["連絡先", selected.item.ownerContact],
+              ["所有者住所", selected.item.ownerAddress],
+            ].filter(([, v]) => v).map(([l, v]) => (
+              <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid #1a2535`, fontSize: 13 }}>
+                <span style={{ color: C.muted }}>{l}</span>
+                <span style={{ color: C.text, textAlign: "right", maxWidth: "65%" }}>{v}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* アクションボタン群 */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+            <a href={navUrl(selected.item.address)} target="_blank" rel="noopener noreferrer"
+              style={{ ...btnStyle(), textDecoration: "none", textAlign: "center", padding: "13px", background: C.success, borderColor: C.success, fontSize: 15 }}>
+              🚗 物件にナビ
+            </a>
+            <a href={mapUrl(selected.item.address)} target="_blank" rel="noopener noreferrer"
+              style={{ ...btnStyle("ghost"), textDecoration: "none", textAlign: "center", padding: "13px", fontSize: 15 }}>
+              🚗 所有者にナビ
+            </a>
+            {selected.item.ownerAddress && (
+              <a href={navUrl(selected.item.ownerAddress)} target="_blank" rel="noopener noreferrer"
+                style={{ ...btnStyle("ghost"), textDecoration: "none", textAlign: "center", padding: "13px", fontSize: 13, gridColumn: "1 / -1", borderColor: C.purple, color: C.purple }}>
+                🚗 所有者住所にナビ
+              </a>
+            )}
+          </div>
+
+          {/* ステータス・次回日変更 */}
+          <Field label="ステータス変更">
+            <select style={inp} value={selected.item.status} onChange={e => updateStatus(selected.item, e.target.value)}>
+              {(selected.item.type === "jiage" ? ATTACK_STATUSES : OWNER_STATUSES).map(s => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="次回訪問日">
+            <input type="date" style={inp} value={selected.item.nextDate || ""} onChange={e => updateNextDate(selected.item, e.target.value)} />
+          </Field>
+
+          {/* 所有者アタックの履歴 */}
+          {selected.item.type === "owner" && (
+            <div style={{ borderTop: `1px solid #1a2535`, paddingTop: 14, marginTop: 4 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 12 }}>
+                アタック履歴 ({selected.item.history.length}件)
+              </div>
+              {selected.item.history.length === 0 && <div style={{ color: C.muted, fontSize: 13, marginBottom: 12 }}>まだ履歴がありません</div>}
+              {[...selected.item.history].reverse().map((h, i) => (
+                <div key={i} style={{ borderLeft: `3px solid ${C.accent}`, paddingLeft: 12, marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>{h.date} · {h.method} · {h.member}</div>
+                  <div style={{ fontSize: 14, color: C.text }}>{h.note}</div>
+                </div>
+              ))}
+              <div style={{ borderTop: `1px solid #1a2535`, paddingTop: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>履歴を追加</div>
+                <Field label="日付"><input type="date" style={inp} value={histForm.date} onChange={e => setHistForm(h => ({ ...h, date: e.target.value }))} /></Field>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <Field label="方法"><select style={inp} value={histForm.method} onChange={e => setHistForm(h => ({ ...h, method: e.target.value }))}>{["手紙", "電話", "訪問", "その他"].map(m => <option key={m}>{m}</option>)}</select></Field>
+                  <Field label="担当"><select style={inp} value={histForm.member} onChange={e => setHistForm(h => ({ ...h, member: e.target.value }))}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+                </div>
+                <Field label="内容・結果"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={histForm.note} onChange={e => setHistForm(h => ({ ...h, note: e.target.value }))} placeholder="電話にて対応。売却検討中とのこと。" /></Field>
+                <button style={{ ...btnStyle(), width: "100%" }} onClick={addHistory}>履歴を追加する</button>
+              </div>
+            </div>
+          )}
+
+          {/* 編集・削除 */}
+          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => openEdit(selected.item)}>編集する</button>
+            <button style={{ ...btnStyle("danger"), flex: 1 }} onClick={() => handleDelete(selected.item)}>削除する</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* 新規登録フォーム */}
+      {showAdd && (
+        <BottomSheet title={`${editItem ? "編集" : "新規"} — ${addType === "jiage" ? "📍地上げ物件" : "👤所有者アタック"}`} onClose={() => { setShowAdd(false); setEditItem(null); }}>
+          <Field label="物件住所"><input style={inp} value={form.address} onChange={f("address")} placeholder="埼玉県熊谷市〇〇" /></Field>
+          <Field label={addType === "jiage" ? "所有者名" : "所有者名"}><input style={inp} value={addType === "jiage" ? form.owner || "" : form.ownerName || ""} onChange={e => setForm(p => ({ ...p, [addType === "jiage" ? "owner" : "ownerName"]: e.target.value }))} /></Field>
+          <Field label="所有者住所"><input style={inp} value={addType === "jiage" ? form.ownerAddr || "" : form.ownerAddress || ""} onChange={e => setForm(p => ({ ...p, [addType === "jiage" ? "ownerAddr" : "ownerAddress"]: e.target.value }))} placeholder="謄本記載の住所" /></Field>
+          {addType === "owner" && <Field label="連絡先"><input style={inp} value={form.ownerContact || ""} onChange={f("ownerContact")} /></Field>}
+          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+          {addType === "jiage" ? (
+            <>
+              <Field label="エリア"><select style={inp} value={form.area || ""} onChange={f("area")}><option value="">選択</option>{JIAGE_AREAS.map(a => <option key={a}>{a}</option>)}</select></Field>
+              <Field label="DM状況"><select style={inp} value={form.dm || "未"} onChange={f("dm")}>{DM_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
+              <Field label="住所確認"><select style={inp} value={form.visit || "未"} onChange={f("visit")}>{["未", "済", "異"].map(s => <option key={s}>{s}</option>)}</select></Field>
+              <Field label="訪問状況"><select style={inp} value={form.status} onChange={f("status")}>{ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
+              <Field label="次回訪問日"><input type="date" style={inp} value={form.nextVisit || ""} onChange={f("nextVisit")} /></Field>
+            </>
+          ) : (
+            <>
+              <Field label="ステータス"><select style={inp} value={form.status} onChange={f("status")}>{OWNER_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
+              <Field label="次回フォロー日"><input type="date" style={inp} value={form.nextFollowDate || ""} onChange={f("nextFollowDate")} /></Field>
+            </>
+          )}
+          <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo || ""} onChange={f("memo")} /></Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* Excelインポートモーダル */}
+      {showImport && <ImportModal onClose={() => setShowImport(false)} onImport={handleImport} importing={importing} currentCount={(data.jiage||[]).length} />}
+    </div>
+  );
+}
+
+// Excelインポートモーダル（エリア選択）
+function ImportModal({ onClose, onImport, importing, currentCount }) {
+  const [selectedAreas, setSelectedAreas] = useState([...JIAGE_AREAS]);
+  const [loaded, setLoaded] = useState(false);
+  const [counts, setCounts] = useState({});
+
+  // インポートデータをlocalStorageに保存（初回のみ）
+  useEffect(() => {
+    const existing = localStorage.getItem("hikari_jiage_import");
+    if (existing) {
+      const d = JSON.parse(existing);
+      const c = {};
+      JIAGE_AREAS.forEach(area => { c[area] = (d[area] || []).length; });
+      setCounts(c);
+      setLoaded(true);
+    } else {
+      // データをlocalStorageに保存
+      const importData = JIAGE_EXCEL_DATA;
+      localStorage.setItem("hikari_jiage_import", JSON.stringify(importData));
+      const c = {};
+      JIAGE_AREAS.forEach(area => { c[area] = (importData[area] || []).length; });
+      setCounts(c);
+      setLoaded(true);
+    }
+  }, []);
+
+  const totalSelected = selectedAreas.reduce((a, area) => a + (counts[area] || 0), 0);
+
+  const toggle = area => setSelectedAreas(s => s.includes(area) ? s.filter(a => a !== area) : [...s, area]);
+
+  return (
+    <BottomSheet title="📥 Excelデータをインポート" onClose={onClose}>
+      <div style={{ background: "#0a1a0a", border: `1px solid ${C.success}44`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.success, marginBottom: 6 }}>取り込みデータについて</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
+          地上げExcelファイルから<span style={{ color: C.text }}> 961件</span>のデータを取り込めます。<br />
+          エリアを選択してインポートしてください。<br />
+          現在の登録数: <span style={{ color: C.accent }}>{currentCount}件</span>
+        </div>
+      </div>
+
+      <Field label="インポートするエリアを選択">
+        <div style={{ display: "grid", gap: 8 }}>
+          <button onClick={() => setSelectedAreas(selectedAreas.length === JIAGE_AREAS.length ? [] : [...JIAGE_AREAS])} style={{ ...btnStyle("ghost"), width: "100%", fontSize: 13 }}>
+            {selectedAreas.length === JIAGE_AREAS.length ? "全解除" : "全選択"}
+          </button>
+          {JIAGE_AREAS.map(area => {
+            const isSelected = selectedAreas.includes(area);
+            const count = counts[area] || 0;
+            return (
+              <button key={area} onClick={() => toggle(area)} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                background: isSelected ? C.purple + "22" : C.bg,
+                border: `2px solid ${isSelected ? C.purple : "#1a2535"}`,
+                borderRadius: 10, padding: "12px 16px", cursor: "pointer", fontFamily: "inherit",
+              }}>
+                <span style={{ color: isSelected ? C.purple : C.text, fontWeight: 700, fontSize: 15 }}>
+                  {isSelected ? "✅" : "⬜"} {area}
+                </span>
+                <span style={{ color: C.muted, fontSize: 13 }}>{count}件</span>
+              </button>
+            );
+          })}
+        </div>
+      </Field>
+
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 10, padding: "10px 14px", marginBottom: 16, display: "flex", justifyContent: "space-between" }}>
+        <span style={{ color: C.muted, fontSize: 13 }}>インポート件数</span>
+        <span style={{ color: C.success, fontWeight: 700, fontSize: 16 }}>{totalSelected}件</span>
+      </div>
+
+      <div style={{ display: "flex", gap: 10 }}>
+        <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={onClose}>キャンセル</button>
+        <button
+          style={{ ...btnStyle(), flex: 2, background: C.success, borderColor: C.success, opacity: importing || selectedAreas.length === 0 ? 0.6 : 1 }}
+          onClick={() => onImport(selectedAreas)}
+          disabled={importing || selectedAreas.length === 0}
+        >
+          {importing ? "インポート中..." : `📥 ${totalSelected}件をインポート`}
+        </button>
+      </div>
+    </BottomSheet>
+  );
+}
+
+// OwnerPageは統合したので空のフォールバック
+function OwnerPage({ data, setData }) {
+  return <JiagePage data={data} setData={setData} />;
+}
+
+// ===================== CASES PAGE =====================
+function CasesPage({ data, setData }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [search, setSearch] = useState("");
+  const [filterStatuses, setFilterStatuses] = useState([]);
+  const [filterMembers, setFilterMembers] = useState([]);
+  const [filterPriorities, setFilterPriorities] = useState([]);
+  const empty = { channel: "訪問", address: "", age: "", land: "", building: "", sellerPrice: "", assessed: "", offer: "", exit: "", status: "検討中", priority: "△", broker: "", brokerPerson: "", assignee: MEMBERS[0], memo: "" };
+  const [form, setForm] = useState(empty);
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  const filtered = useMemo(() => data.cases.filter(c => {
+    if (filterStatuses.length && !filterStatuses.includes(c.status)) return false;
+    if (filterMembers.length && !filterMembers.includes(c.assignee)) return false;
+    if (filterPriorities.length && !filterPriorities.includes(c.priority)) return false;
+    if (search && !c.address.includes(search) && !c.broker.includes(search)) return false;
+    return true;
+  }), [data.cases, filterStatuses, filterMembers, filterPriorities, search]);
+
+  const openEdit = item => { setForm({ ...item }); setEditItem(item); setShowAdd(true); };
+  const handleSave = () => {
+    const item = { ...form, id: editItem?.id || Date.now() };
+    setData(d => ({ ...d, cases: editItem ? d.cases.map(c => c.id === editItem.id ? item : c) : [...d.cases, item] }));
+    setShowAdd(false); setEditItem(null);
+  };
+  const handleDelete = id => { if (window.confirm("削除しますか？")) setData(d => ({ ...d, cases: d.cases.filter(c => c.id !== id) })); };
+  const statusColor = { "検討中": C.warn, "価格交渉中": C.accent, "見送り": C.danger, "成約": C.success };
+  const priorityColor = { "◎": C.danger, "〇": C.warn, "△": C.muted, "✖": "#334155" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>📋 業者案件管理</div>
+        <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm(empty); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
+      </div>
+      <SearchBar value={search} onChange={setSearch} placeholder="住所・業者名で検索..." />
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>担当者</div>
+      <FilterChips options={MEMBERS.slice(0, 6)} value={filterMembers} onChange={setFilterMembers} multi />
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>ステータス</div>
+      <FilterChips options={CASE_STATUSES} value={filterStatuses} onChange={setFilterStatuses} multi />
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>優先度</div>
+      <FilterChips options={PRIORITIES} value={filterPriorities} onChange={setFilterPriorities} multi />
+      <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
+      {filtered.map(c => (
+        <div key={c.id} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+            <Tag label={c.status} color={statusColor[c.status] || C.muted} />
+            <Tag label={c.priority} color={priorityColor[c.priority] || C.muted} />
+            <Tag label={c.channel} color={C.purple} />
+            <MemberTag name={c.assignee} />
+          </div>
+          <div style={{ color: C.text, fontWeight: 600, fontSize: 15, marginBottom: 8 }}>{c.address}</div>
+          {c.broker && <div style={{ fontSize: 13, color: C.muted, marginBottom: 6 }}>業者: <span style={{ color: C.text }}>{c.broker} {c.brokerPerson && `（${c.brokerPerson}）`}</span></div>}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+            {[["査定", c.assessed + "万", C.text], ["提示", c.offer ? c.offer + "万" : "—", C.accent], ["出口", c.exit ? c.exit + "万" : "—", C.success]].map(([l, v, col]) => (
+              <div key={l}
+              style={{ background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ color: C.muted, fontSize: 10 }}>{l}</div>
+                <div style={{ color: col, fontWeight: 700, fontSize: 14 }}>{v}</div>
+              </div>
+            ))}
+          </div>
+          {c.memo && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{c.memo}</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(c)}>編集</button>
+            <button style={{ ...btnStyle("danger"), padding: "10px 14px", fontSize: 14 }} onClick={() => handleDelete(c.id)}>削除</button>
+          </div>
+        </div>
+      ))}
+      {showAdd && (
+        <BottomSheet title={editItem ? "案件編集" : "新規案件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}>
+          <Field label="物件住所"><input style={inp} value={form.address} onChange={f("address")} /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="ステータス"><select style={inp} value={form.status} onChange={f("status")}>{CASE_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
+            <Field label="優先度"><select style={inp} value={form.priority} onChange={f("priority")}>{PRIORITIES.map(s => <option key={s}>{s}</option>)}</select></Field>
+            <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+            <Field label="接触方法"><select style={inp} value={form.channel} onChange={f("channel")}>{["訪問", "架電", "メール"].map(s => <option key={s}>{s}</option>)}</select></Field>
+          </div>
+          <Field label="業者名"><input style={inp} value={form.broker} onChange={f("broker")} /></Field>
+          <Field label="業者担当者"><input style={inp} value={form.brokerPerson} onChange={f("brokerPerson")} /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="査定額（万）"><MoneyInput value={form.assessed} onChange={v => setForm(p => ({ ...p, assessed: v }))} placeholder="500" /></Field>
+            <Field label="提示額（万）"><MoneyInput value={form.offer} onChange={v => setForm(p => ({ ...p, offer: v }))} placeholder="450" /></Field>
+            <Field label="出口想定（万）"><MoneyInput value={form.exit} onChange={v => setForm(p => ({ ...p, exit: v }))} placeholder="800" /></Field>
+            <Field label="売主目線（万）"><MoneyInput value={form.sellerPrice} onChange={v => setForm(p => ({ ...p, sellerPrice: v }))} placeholder="400" /></Field>
+          </div>
+          <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={f("memo")} /></Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
+          </div>
+        </BottomSheet>
+      )}
+    </div>
+  );
+}
+
+// ===================== MORE PAGE (役所・積算) =====================
+function MorePage({ data, setData }) {
+  const [subPage, setSubPage] = useState(null);
+  if (subPage === "yakusho") return <YakushoPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
+  if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
+  return (
+    <div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 20 }}>その他の機能</div>
+      {[
+        { key: "yakusho", icon: "🏛", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
+        { key: "sekisan", icon: "🧮", title: "仕入検討積算表", desc: "仕入コスト・利益・利回りを自動計算", count: data.sekisan.length },
+      ].map(item => (
+        <button key={item.key} onClick={() => setSubPage(item.key)} style={{ width: "100%", background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 20, marginBottom: 12, textAlign: "left", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 16, touchAction: "manipulation" }}>
+          <span style={{ fontSize: 32 }}>{item.icon}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 4 }}>{item.title}</div>
+            <div style={{ color: C.muted, fontSize: 13 }}>{item.desc}</div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ color: C.accent, fontWeight: 700, fontSize: 18 }}>{item.count}</div>
+            <div style={{ color: C.muted, fontSize: 11 }}>件</div>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function YakushoPage({ data, setData, onBack }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [search, setSearch] = useState("");
+  const ZONE_TYPES = ["第1種低層住居専用地域", "第2種低層住居専用地域", "第1種中高層住居専用地域", "第2種中高層住居専用地域", "第1種住居地域", "第2種住居地域", "準住居地域", "近隣商業地域", "商業地域", "準工業地域", "工業地域", "工業専用地域", "市街化調整区域", "非線引き区域"];
+  const emptyForm = { address: "", assignee: MEMBERS[0], surveyDate: new Date().toISOString().split("T")[0], zoneType: "", buildingRatio: "", floorRatio: "", rebuild: "可", fireZone: "なし", road1Dir: "", road1Width: "", road1Type: "", road2Dir: "", road2Width: "", water: "公営水道", gas: "都市ガス", sewer: "公営下水", flood: "無", landslide: "無", memo: "" };
+  const [form, setForm] = useState(emptyForm);
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  const filtered = useMemo(() => data.yakusho.filter(y => !search || (y.address || "").includes(search)), [data.yakusho, search]);
+  const openEdit = item => { setForm({ ...emptyForm, ...item }); setEditItem(item); setShowAdd(true); };
+  const handleSave = () => {
+    const item = { ...form, id: editItem?.id || Date.now() };
+    setData(d => ({ ...d, yakusho: editItem ? d.yakusho.map(y => y.id === editItem.id ? item : y) : [...d.yakusho, item] }));
+    setShowAdd(false); setEditItem(null);
+  };
+  const handleDelete = id => { if (window.confirm("削除しますか？")) setData(d => ({ ...d, yakusho: d.yakusho.filter(y => y.id !== id) })); };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        {onBack && <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>}
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>🏛 役所調査シート</div>
+        <div style={{ flex: 1 }} />
+        <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm(emptyForm); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
+      </div>
+      <SearchBar value={search} onChange={setSearch} placeholder="住所で検索..." />
+      {filtered.length === 0 && <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 32, textAlign: "center", color: C.muted }}>まだ調査シートがありません</div>}
+      {filtered.map(y => (
+        <div key={y.id} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <MemberTag name={y.assignee} />
+            <Tag label={y.rebuild === "可" ? "再建築可" : "再建築不可"} color={y.rebuild === "可" ? C.success : C.danger} />
+          </div>
+          <div style={{ color: C.text, fontWeight: 600, fontSize: 15, marginBottom: 6 }}>{y.address || "住所未設定"}</div>
+          <div style={{ display: "flex", gap: 12, fontSize: 13, color: C.muted, flexWrap: "wrap", marginBottom: 10 }}>
+            {y.zoneType && <span>{y.zoneType}</span>}
+            {y.buildingRatio && <span>建ぺい {y.buildingRatio}%</span>}
+            {y.floorRatio && <span>容積 {y.floorRatio}%</span>}
+            {y.road1Width && <span>前面道路 {y.road1Dir}{y.road1Width}m</span>}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(y)}>編集</button>
+            <button style={{ ...btnStyle("danger"), padding: "10px 14px", fontSize: 14 }} onClick={() => handleDelete(y.id)}>削除</button>
+          </div>
+        </div>
+      ))}
+      {showAdd && (
+        <BottomSheet title="役所調査シート" onClose={() => { setShowAdd(false); setEditItem(null); }}>
+          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+          <Field label="調査日"><input type="date" style={inp} value={form.surveyDate} onChange={f("surveyDate")} /></Field>
+          <Field label="物件住所"><input style={inp} value={form.address} onChange={f("address")} placeholder="埼玉県熊谷市〇〇" /></Field>
+          <Field label="再建築">
+            <div style={{ display: "flex", gap: 10 }}>
+              {["可", "不可"].map(v => (
+                <button key={v} onClick={() => setForm(p => ({ ...p, rebuild: v }))} style={{ ...btnStyle(form.rebuild === v ? "primary" : "ghost"), flex: 1, background: form.rebuild === v ? (v === "可" ? C.success : C.danger) : "#0d1422", borderColor: form.rebuild === v ? (v === "可" ? C.success : C.danger) : "#1a2535" }}>
+                  再建築{v}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="用途地域"><select style={inp} value={form.zoneType} onChange={f("zoneType")}><option value="">選択</option>{ZONE_TYPES.map(z => <option key={z}>{z}</option>)}</select></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="建ぺい率(%)"><select style={inp} value={form.buildingRatio} onChange={f("buildingRatio")}><option value="">選択</option>{["30","40","50","60","70","80"].map(r => <option key={r}>{r}</option>)}</select></Field>
+            <Field label="容積率(%)"><select style={inp} value={form.floorRatio} onChange={f("floorRatio")}><option value="">選択</option>{["50","60","80","100","150","200","300","400"].map(r => <option key={r}>{r}</option>)}</select></Field>
+          </div>
+          <Field label="防火地域"><select style={inp} value={form.fireZone} onChange={f("fireZone")}>{["なし","防火地域","準防火地域","建築基準法第22条区域"].map(z => <option key={z}>{z}</option>)}</select></Field>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 8, marginTop: 4 }}>道路（前面）</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <Field label="方角"><select style={inp} value={form.road1Dir} onChange={f("road1Dir")}><option value="">—</option>{["東","西","南","北"].map(d => <option key={d}>{d}</option>)}</select></Field>
+            <Field label="幅員(m)"><input type="text" inputMode="decimal" style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none" }} value={form.road1Width} onChange={f("road1Width")} placeholder="4.0" /></Field>
+            <Field label="種別"><select style={inp} value={form.road1Type} onChange={f("road1Type")}><option value="">—</option>{["1項1号","1項3号","2項道路"].map(t => <option key={t}>{t}</option>)}</select></Field>
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 8 }}>ライフライン</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <Field label="水道"><select style={inp} value={form.water} onChange={f("water")}>{["公営水道","私設管","井戸","未引込"].map(t => <option key={t}>{t}</option>)}</select></Field>
+            <Field label="ガス"><select style={inp} value={form.gas} onChange={f("gas")}>{["都市ガス","プロパン","未引込"].map(t => <option key={t}>{t}</option>)}</select></Field>
+            <Field label="下水"><select style={inp} value={form.sewer} onChange={f("sewer")}>{["公営下水","浄化槽","汲み取り"].map(t => <option key={t}>{t}</option>)}</select></Field>
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 8 }}>ハザード</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="洪水"><select style={inp} value={form.flood} onChange={f("flood")}>{["無","警戒区域","特別警戒区域"].map(v => <option key={v}>{v}</option>)}</select></Field>
+            <Field label="土砂災害"><select style={inp} value={form.landslide} onChange={f("landslide")}>{["無","警戒区域","特別警戒区域"].map(v => <option key={v}>{v}</option>)}</select></Field>
+          </div>
+          <Field label="メモ・特記事項"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={f("memo")} /></Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
+          </div>
+        </BottomSheet>
+      )}
+    </div>
+  );
+}
+
+// ===================== SEKISAN PAGE (v2 - 利回り計算・根拠・判断タブ付き) =====================
+const SEKISAN_EMPTY = {
+  address: "", assignee: MEMBERS[0], createdAt: new Date().toISOString().split("T")[0],
+  age: "", structure: "", layout: "", landArea: "", buildingArea: "", stationDist: "",
+  buyPrice: "", brokerFeeIn: "", registration: "", acquisitionTax: "", stamp: "",
+  leftover: "", reform: "", demolition: "", brokerFeeOut: "", other: "",
+  sellPrice: "",
+  similarRent: "", similarArea: "", targetBuildingArea: "",
+  yieldRate: "15", investorRegistration: "50", investorReform: "150",
+  targetProfitMin: "100", targetProfitMax: "200",
+  rainzPriceMin: "", rainzPriceMax: "", rainzMemo: "",
+  atHomeMemo: "", competitorCount: "",
+  rentMin: "", rentMax: "", rentMemo: "",
+  yieldBase: "", yieldMemo: "",
+  judgment: "検討中", judgmentMemo: "",
+};
+
+function SekisanForm({ initial, onSave, onClose, onTransfer }) {
+  const [form, setForm] = useState(initial || SEKISAN_EMPTY);
+  const [tab, setTab] = useState("cost");
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const nv = v => parseFloat(v) || 0;
+  const setN = k => v => setForm(p => ({ ...p, [k]: v }));
+
+  const expenses = nv(form.brokerFeeIn) + nv(form.registration) + nv(form.acquisitionTax) +
+    nv(form.stamp) + nv(form.leftover) + nv(form.reform) + nv(form.demolition) +
+    nv(form.brokerFeeOut) + nv(form.other);
+  const totalCost = nv(form.buyPrice) + expenses;
+  const profit = nv(form.sellPrice) - totalCost;
+  const profitRate = nv(form.sellPrice) > 0 ? profit / nv(form.sellPrice) * 100 : 0;
+
+  const yieldCalc = useMemo(() => {
+    const simRent = nv(form.similarRent) * 10000;
+    const simArea = nv(form.similarArea);
+    const tgtArea = nv(form.targetBuildingArea) || nv(form.buildingArea);
+    const yr = nv(form.yieldRate) / 100;
+    const invCost = (nv(form.investorRegistration) + nv(form.investorReform)) * 10000;
+    if (!simRent || !simArea || !tgtArea || !yr) return null;
+    const sqmRent = simRent / simArea;
+    const estRent = sqmRent * tgtArea;
+    const annual = estRent * 12;
+    const invBuy = annual / yr;
+    const ourSell = invBuy - invCost;
+    return {
+      sqmRent: Math.round(sqmRent),
+      estRent: Math.round(estRent / 10000 * 10) / 10,
+      annual: Math.round(annual / 10000),
+      invBuy: Math.round(invBuy / 10000),
+      ourSell: Math.round(ourSell / 10000),
+      buyMax: Math.round(ourSell / 10000 - nv(form.targetProfitMin)),
+      buyMin: Math.round(ourSell / 10000 - nv(form.targetProfitMax)),
+    };
+  }, [form]);
+
+  const rainzMid = (nv(form.rainzPriceMin) + nv(form.rainzPriceMax)) / 2;
+
+  const TABS = [
+    { key: "cost", label: "💴 費用" },
+    { key: "yield", label: "📐 利回り" },
+    { key: "evidence", label: "📋 根拠" },
+    { key: "summary", label: "🔥 判断" },
+  ];
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: C.bg, zIndex: 500, overflowY: "auto", fontFamily: "inherit" }}>
+      {/* ヘッダー */}
+      <div style={{ background: "#0d1422", borderBottom: `1px solid #1a2535`, padding: "13px 16px", position: "sticky", top: 0, zIndex: 10, display: "flex", alignItems: "center", gap: 12 }}>
+        <button onClick={onClose} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: C.text }}>仕入検討積算表</div>
+          <div style={{ fontSize: 11, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{form.address || "物件住所を入力"}</div>
+        </div>
+        <button onClick={() => onSave(form)} style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }}>保存</button>
+      </div>
+
+      <div style={{ padding: "14px 16px 40px" }}>
+        {/* 基本情報 */}
+        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.accent, marginBottom: 12 }}>📍 基本情報</div>
+          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+          <Field label="物件住所"><input style={inp} value={form.address} onChange={f("address")} placeholder="埼玉県熊谷市〇〇" /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="土地面積(㎡)"><SekisanNInp form={form} setForm={setForm} fkey="landArea" placeholder="100" suffix="㎡" /></Field>
+            <Field label="延床面積(㎡)"><SekisanNInp form={form} setForm={setForm} fkey="buildingArea" placeholder="80" suffix="㎡" /></Field>
+            <Field label="築年数"><SekisanNInp form={form} setForm={setForm} fkey="age" placeholder="40" suffix="年" /></Field>
+            <Field label="間取"><input style={inp} value={form.layout} onChange={f("layout")} placeholder="3DK" /></Field>
+          </div>
+        </div>
+
+        {/* タブ切替 */}
+        <div style={{ display: "flex", background: "#0d1422", borderRadius: 12, padding: 4, marginBottom: 14, border: `1px solid #1a2535` }}>
+          {TABS.map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)} style={{
+              flex: 1, background: tab === t.key ? C.accent : "none", border: "none",
+              color: tab === t.key ? "#fff" : C.muted, borderRadius: 9, padding: "10px 2px",
+              cursor: "pointer", fontSize: 11, fontWeight: tab === t.key ? 700 : 400, fontFamily: "inherit",
+            }}>{t.label}</button>
+          ))}
+        </div>
+
+        {/* 費用タブ */}
+        {tab === "cost" && (
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.danger, marginBottom: 12 }}>💴 仕入コスト</div>
+            <Field label="仕入額（円）"><SekisanNInp form={form} setForm={setForm} fkey="buyPrice" placeholder="3000000" /></Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="仲介手数料・仕"><SekisanNInp form={form} setForm={setForm} fkey="brokerFeeIn" placeholder="0" /></Field>
+              <Field label="登記費用"><SekisanNInp form={form} setForm={setForm} fkey="registration" placeholder="0" /></Field>
+              <Field label="不動産取得税"><SekisanNInp form={form} setForm={setForm} fkey="acquisitionTax" placeholder="0" /></Field>
+              <Field label="印紙代"><SekisanNInp form={form} setForm={setForm} fkey="stamp" placeholder="0" /></Field>
+              <Field label="残置物撤去"><SekisanNInp form={form} setForm={setForm} fkey="leftover" placeholder="0" /></Field>
+              <Field label="リフォーム費"><SekisanNInp form={form} setForm={setForm} fkey="reform" placeholder="0" /></Field>
+              <Field label="解体費"><SekisanNInp form={form} setForm={setForm} fkey="demolition" placeholder="0" /></Field>
+              <Field label="仲介手数料・売"><SekisanNInp form={form} setForm={setForm} fkey="brokerFeeOut" placeholder="0" /></Field>
+              <Field label="その他"><SekisanNInp form={form} setForm={setForm} fkey="other" placeholder="0" /></Field>
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.success, margin: "16px 0 12px" }}>💰 売却想定</div>
+            <Field label="売却想定額（円）"><SekisanNInp form={form} setForm={setForm} fkey="sellPrice" placeholder="5000000" /></Field>
+
+            {(nv(form.buyPrice) > 0 || nv(form.sellPrice) > 0) && (
+              <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 12, padding: 14, marginTop: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>📊 計算結果</div>
+                {[
+                  ["諸費用合計", (expenses / 10000).toFixed(0) + "万", C.muted],
+                  ["仕入原価合計", (totalCost / 10000).toFixed(0) + "万", C.danger],
+                  ["想定利益", (profit / 10000).toFixed(0) + "万", profit > 0 ? C.success : C.danger],
+                  ["利益率", profitRate.toFixed(1) + "%", profitRate > 20 ? C.success : C.warn],
+                  ["歩合目安(20%)", (profit * 0.2 / 10000).toFixed(0) + "万", C.purple],
+                ].map(([l, v, c]) => (
+                  <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid #1a2535` }}>
+                    <span style={{ color: C.muted, fontSize: 13 }}>{l}</span>
+                    <span style={{ color: c, fontWeight: 700, fontSize: 15 }}>{v}</span>
+                  </div>
+                ))}
+                {nv(form.sellPrice) > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ background: "#1a2535", borderRadius: 6, height: 10, overflow: "hidden" }}>
+                      <div style={{ width: Math.min(profitRate, 100) + "%", height: "100%", background: profitRate > 30 ? C.success : profitRate > 15 ? C.warn : C.danger, borderRadius: 6, transition: "width 0.4s" }} />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#334155", marginTop: 3 }}>
+                      <span>0%</span><span style={{ color: C.warn }}>15%</span><span style={{ color: C.success }}>30%+</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 利回りタブ */}
+        {tab === "yield" && (
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.accent, marginBottom: 12 }}>📐 利回りから仕入目線を出す</div>
+            <div style={{ background: "#0a1520", border: `1px solid ${C.accent}33`, borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 12, color: C.muted, lineHeight: 1.8 }}>
+              ① 類似物件の㎡賃料を算出 → ② 推定賃料 → ③ 年間収入 ÷ 利回り = 投資家買値<br />
+              ④ 投資家買値 − 投資家コスト = うちの売値 → ⑤ 売値 − 目標利益 = <span style={{ color: C.danger, fontWeight: 700 }}>仕入上限</span>
+            </div>
+
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.muted, marginBottom: 10 }}>🏠 類似物件データ（レインズで確認）</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="類似物件の月額賃料（万円）"><SekisanNInp form={form} setForm={setForm} fkey="similarRent" placeholder="7" suffix="万" /></Field>
+              <Field label="類似物件の延床面積（㎡）"><SekisanNInp form={form} setForm={setForm} fkey="similarArea" placeholder="65" suffix="㎡" /></Field>
+            </div>
+            <Field label="対象物件の延床面積（㎡）">
+              <input type="text" inputMode="numeric" style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none" }}
+                value={form.targetBuildingArea || form.buildingArea}
+                onChange={e => setForm(p => ({ ...p, targetBuildingArea: e.target.value.replace(/[^0-9.]/g, "") }))}
+                placeholder={form.buildingArea || "80"} />
+            </Field>
+
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.muted, margin: "14px 0 10px" }}>💹 投資家目線（楽待で確認）</div>
+            <Field label="投資家想定利回り（%）"><SekisanNInp form={form} setForm={setForm} fkey="yieldRate" placeholder="15" suffix="%" /></Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="投資家 登記費用（万）"><SekisanNInp form={form} setForm={setForm} fkey="investorRegistration" placeholder="50" suffix="万" /></Field>
+              <Field label="投資家 リフォーム費（万）"><SekisanNInp form={form} setForm={setForm} fkey="investorReform" placeholder="150" suffix="万" /></Field>
+            </div>
+
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.muted, margin: "14px 0 10px" }}>🎯 うちの目標利益</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="目標利益 下限（万）"><SekisanNInp form={form} setForm={setForm} fkey="targetProfitMin" placeholder="100" suffix="万" /></Field>
+              <Field label="目標利益 上限（万）"><SekisanNInp form={form} setForm={setForm} fkey="targetProfitMax" placeholder="200" suffix="万" /></Field>
+            </div>
+
+            {yieldCalc ? (
+              <div style={{ background: C.bg, border: `1px solid ${C.success}44`, borderRadius: 12, padding: 14, marginTop: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.success, marginBottom: 10 }}>✅ 自動計算結果</div>
+                {[
+                  ["㎡賃料", yieldCalc.sqmRent.toLocaleString() + "円/㎡", C.muted],
+                  ["推定月額賃料", yieldCalc.estRent + "万円", C.text],
+                  ["年間収入", yieldCalc.annual + "万円", C.text],
+                  [`投資家買値（利回り${form.yieldRate}%）`, yieldCalc.invBuy + "万円", C.accent],
+                  ["うちの売値", yieldCalc.ourSell + "万円", C.accent],
+                ].map(([l, v, c]) => (
+                  <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid #1a2535` }}>
+                    <span style={{ color: C.muted, fontSize: 12 }}>{l}</span>
+                    <span style={{ color: c, fontWeight: 700, fontSize: 14 }}>{v}</span>
+                  </div>
+                ))}
+                <div style={{ background: "#1a0000", border: `1px solid ${C.danger}44`, borderRadius: 10, padding: 14, marginTop: 12 }}>
+                  <div style={{ fontSize: 12, color: C.danger, fontWeight: 700, marginBottom: 8 }}>🔴 仕入目線（逆算）</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ color: C.muted, fontSize: 13 }}>利益{form.targetProfitMin}万想定</span>
+                    <span style={{ color: C.danger, fontSize: 22, fontWeight: 800 }}>{yieldCalc.buyMax}万円</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ color: C.muted, fontSize: 13 }}>利益{form.targetProfitMax}万想定</span>
+                    <span style={{ color: C.warn, fontSize: 18, fontWeight: 700 }}>{yieldCalc.buyMin}万円</span>
+                  </div>
+                  <div style={{ marginTop: 10, background: "#2a0000", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: C.danger }}>
+                    👆 この価格以下で仕入れれば目標利益が出る
+                  </div>
+                </div>
+                {nv(form.sellPrice) > 0 && (
+                  <div style={{ background: "#0a1a0a", border: `1px solid ${C.success}33`, borderRadius: 10, padding: 12, marginTop: 10, fontSize: 12 }}>
+                    <div style={{ color: C.success, fontWeight: 700, marginBottom: 6 }}>費用タブとの比較</div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: C.muted }}>費用タブ売値</span><span style={{ color: C.text }}>{(nv(form.sellPrice) / 10000).toFixed(0)}万</span></div>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}><span style={{ color: C.muted }}>利回り計算売値</span><span style={{ color: C.accent }}>{yieldCalc.ourSell}万</span></div>
+                    <div style={{ marginTop: 8, color: C.muted }}>
+                      {Math.abs((nv(form.sellPrice) / 10000) - yieldCalc.ourSell) < 50 ? "✅ 両方の根拠が近い → 信頼度高い" : "⚠️ 数字に乖離あり → 根拠タブで再確認"}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 12, padding: 20, marginTop: 12, textAlign: "center", color: C.muted, fontSize: 13 }}>
+                類似物件の賃料・面積・対象物件の延床を入力すると<br />仕入目線が自動計算されます
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 根拠タブ */}
+        {tab === "evidence" && (
+          <div style={{ display: "grid", gap: 12 }}>
+            {[
+              { icon: "🔴", title: "レインズ成約比較", content: (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+                    <Field label="成約価格 下限（万）"><SekisanNInp form={form} setForm={setForm} fkey="rainzPriceMin" placeholder="400" suffix="万" /></Field>
+                    <Field label="成約価格 上限（万）"><SekisanNInp form={form} setForm={setForm} fkey="rainzPriceMax" placeholder="500" suffix="万" /></Field>
+                  </div>
+                  {rainzMid > 0 && (
+                    <div style={{ background: "#0d1422", borderRadius: 8, padding: "8px 12px", marginBottom: 10, display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: C.muted, fontSize: 13 }}>成約価格幅の中間値</span>
+                      <span style={{ color: C.accent, fontWeight: 700, fontSize: 16 }}>{rainzMid}万円</span>
+                    </div>
+                  )}
+                  <Field label="成約事例メモ">
+                    <textarea style={{ ...inp, height: 80, resize: "vertical", fontSize: 14 }} value={form.rainzMemo} onChange={f("rainzMemo")} placeholder="例）昭和53年築・延床65㎡・3DKが450万で成約。リフォーム済み。" />
+                  </Field>
+                </>
+              )},
+              { icon: "🔴", title: "在庫比較（アットホーム・レインズ）", content: (
+                <>
+                  <Field label="競合物件数"><SekisanNInp form={form} setForm={setForm} fkey="competitorCount" placeholder="3" suffix="件" /></Field>
+                  <Field label="競合状況メモ">
+                    <textarea style={{ ...inp, height: 80, resize: "vertical", fontSize: 14 }} value={form.atHomeMemo} onChange={f("atHomeMemo")} placeholder="例）競合3件。400〜500万で掲載中。リフォーム済み多い。" />
+                  </Field>
+                </>
+              )},
+              { icon: "🔴", title: "賃料相場（スーモ・アットホーム）", content: (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+                    <Field label="賃料相場 下限（万）"><SekisanNInp form={form} setForm={setForm} fkey="rentMin" placeholder="6" suffix="万" /></Field>
+                    <Field label="賃料相場 上限（万）"><SekisanNInp form={form} setForm={setForm} fkey="rentMax" placeholder="8" suffix="万" /></Field>
+                  </div>
+                  <Field label="調査メモ">
+                    <textarea style={{ ...inp, height: 80, resize: "vertical", fontSize: 14 }} value={form.rentMemo} onChange={f("rentMemo")} placeholder="例）スーモで熊谷市の戸建賃貸確認。3DK〜3LDKで6〜8万が相場。" />
+                  </Field>
+                </>
+              )},
+              { icon: "🔴", title: "利回り根拠（楽待・レインズ）", content: (
+                <>
+                  <Field label="エリアの利回り相場（%）"><SekisanNInp form={form} setForm={setForm} fkey="yieldBase" placeholder="15" suffix="%" /></Field>
+                  <Field label="利回りメモ">
+                    <textarea style={{ ...inp, height: 70, resize: "vertical", fontSize: 14 }} value={form.yieldMemo} onChange={f("yieldMemo")} placeholder="例）楽待で熊谷エリア確認。表面利回り12〜18%が多い。15%で計算。" />
+                  </Field>
+                </>
+              )},
+            ].map(({ icon, title, content }) => (
+              <div key={title} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                  <span style={{ fontSize: 16 }}>{icon}</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{title}</span>
+                </div>
+                {content}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 判断タブ */}
+        {tab === "summary" && (
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.danger, marginBottom: 14 }}>🔥 総合判断</div>
+            <Field label="この物件の判断">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {JUDGMENTS.map(j => (
+                  <button key={j.value} onClick={() => setForm(p => ({ ...p, judgment: j.value }))} style={{
+                    background: form.judgment === j.value ? j.color + "33" : C.bg,
+                    border: `2px solid ${form.judgment === j.value ? j.color : "#1a2535"}`,
+                    borderRadius: 10, padding: "14px", cursor: "pointer", fontFamily: "inherit",
+                    color: form.judgment === j.value ? j.color : C.muted,
+                    fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  }}>{j.emoji} {j.value}</button>
+                ))}
+              </div>
+            </Field>
+
+            {/* 数字サマリー */}
+            <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>数字サマリー</div>
+              {[
+                ["レインズ成約価格幅", form.rainzPriceMin && form.rainzPriceMax ? `${form.rainzPriceMin}〜${form.rainzPriceMax}万` : "未入力"],
+                ["賃料相場", form.rentMin && form.rentMax ? `${form.rentMin}〜${form.rentMax}万` : "未入力"],
+                ["費用タブ 売却想定", nv(form.sellPrice) > 0 ? (nv(form.sellPrice) / 10000).toFixed(0) + "万" : "未入力", C.accent],
+                ["利回り計算 売値", yieldCalc ? yieldCalc.ourSell + "万" : "未計算", C.accent],
+                ["仕入目線（利回り逆算）", yieldCalc ? `${yieldCalc.buyMin}〜${yieldCalc.buyMax}万` : "未計算", C.danger],
+                ["費用タブ 想定利益", nv(form.sellPrice) > 0 && nv(form.buyPrice) > 0 ? (profit / 10000).toFixed(0) + "万" : "未入力", profit > 0 ? C.success : C.muted],
+              ].map(([l, v, c]) => (
+                <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid #1a2535` }}>
+                  <span style={{ color: C.muted, fontSize: 12 }}>{l}</span>
+                  <span style={{ color: c || C.text, fontWeight: 700, fontSize: 13 }}>{v}</span>
+                </div>
+              ))}
+            </div>
+
+            <Field label="根拠・判断コメント（熱い案件は詳しく）">
+              <textarea style={{ ...inp, height: 160, resize: "vertical", fontSize: 14, lineHeight: 1.7 }}
+                value={form.judgmentMemo} onChange={f("judgmentMemo")}
+                placeholder={`例）\nレインズ成約：400〜500万（中間450万）\n競合：3件あり、450万中心\n賃料相場：7〜8万 → 利回り計算で仕入上限330万\n→ 仕入300万以内なら利益150万以上確保\n→ 熱い案件と判断`} />
+            </Field>
+            <button onClick={() => onSave(form)} style={{ ...btnStyle(), width: "100%", padding: "15px", fontSize: 16, marginTop: 8 }}>💾 保存する</button>
+
+            {/* 仕入れ確定ボタン */}
+            {nv(form.buyPrice) > 0 && (
+              <div style={{ marginTop: 12, background: "#0a1a0a", border: `1px solid ${C.success}55`, borderRadius: 14, padding: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.success, marginBottom: 8 }}>🏠 仕入れ確定したら</div>
+                <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>
+                  以下の内容で在庫管理に自動転記されます：<br />
+                  <span style={{ color: C.text }}>物件名：{form.address || "未入力"}</span><br />
+                  <span style={{ color: C.text }}>仕入原価：{nv(form.buyPrice) > 0 ? (nv(form.buyPrice)).toLocaleString() + "円" : "未入力"}</span><br />
+                  <span style={{ color: C.text }}>売却想定：{nv(form.sellPrice) > 0 ? (nv(form.sellPrice)).toLocaleString() + "円" : "未入力"}</span><br />
+                  <span style={{ color: C.text }}>担当者：{form.assignee}</span>
+                </div>
+                <button
+                  onClick={() => {
+                    if (!form.address) { alert("物件住所を入力してください"); return; }
+                    if (window.confirm(`「${form.address}」を在庫管理に転記しますか？`)) {
+                      onSave(form);
+                      onTransfer(form);
+                    }
+                  }}
+                  style={{
+                    width: "100%", background: C.success, border: "none", color: "#fff",
+                    borderRadius: 12, padding: "15px", cursor: "pointer", fontSize: 16,
+                    fontWeight: 800, fontFamily: "inherit", letterSpacing: "0.02em",
+                  }}
+                >
+                  ✅ 仕入れ確定 → 在庫管理に転記
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SekisanPage({ data, setData, onBack }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [search, setSearch] = useState("");
+  const [filterMember, setFilterMember] = useState("すべて");
+  const [filterJudgment, setFilterJudgment] = useState("すべて");
+
+  const JCOLOR = { "熱い": C.danger, "検討中": C.warn, "普通": C.muted, "見送り": "#334155" };
+  const JEMOJI = { "熱い": "🔥", "検討中": "🟡", "普通": "⚪", "見送り": "❌" };
+
+  const filtered = useMemo(() => data.sekisan.filter(s => {
+    if (filterMember !== "すべて" && s.assignee !== filterMember) return false;
+    if (filterJudgment !== "すべて" && s.judgment !== filterJudgment) return false;
+    if (search && !(s.address || "").includes(search)) return false;
+    return true;
+  }), [data.sekisan, filterMember, filterJudgment, search]);
+
+  const handleSave = form => {
+    const item = { ...form, id: editItem?.id || Date.now() };
+    setData(d => ({ ...d, sekisan: editItem ? d.sekisan.map(s => s.id === editItem.id ? item : s) : [...d.sekisan, item] }));
+    setShowForm(false); setEditItem(null);
+  };
+
+  const handleTransfer = form => {
+    // 積算表から在庫管理に転記
+    const nv = v => parseFloat(String(v).replace(/,/g, "")) || 0;
+    const newStock = {
+      id: Date.now(),
+      assignee: form.assignee,
+      name: form.address,
+      status: "仕入契約済",
+      buyDate: new Date().toISOString().split("T")[0],
+      sellDate: "",
+      buyCost: nv(form.buyPrice),
+      sellPrice: nv(form.sellPrice),
+      memo: `積算表より転記。${form.judgmentMemo ? "\n" + form.judgmentMemo.slice(0, 100) : ""}`,
+      year: new Date().getFullYear(),
+      fromSekisanId: form.id || Date.now(),
+    };
+    setData(d => ({ ...d, stocks: [...d.stocks, newStock] }));
+    setShowForm(false); setEditItem(null);
+    alert(`✅「${form.address}」を在庫管理に転記しました！\nステータス：仕入契約済`);
+  };
+
+  const handleDelete = id => { if (window.confirm("削除しますか？")) setData(d => ({ ...d, sekisan: d.sekisan.filter(s => s.id !== id) })); };
+  const nv = v => parseFloat(v) || 0;
+
+  if (showForm) return <SekisanForm initial={editItem} onSave={handleSave} onClose={() => { setShowForm(false); setEditItem(null); }} onTransfer={handleTransfer} />;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        {onBack && <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>}
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>🧮 仕入検討積算表</div>
+        <div style={{ flex: 1 }} />
+        <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setEditItem(null); setShowForm(true); }}>＋ 追加</button>
+      </div>
+      <SearchBar value={search} onChange={setSearch} placeholder="住所で検索..." />
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {["すべて", ...MEMBERS.slice(0, 6)].map(m => (
+          <button key={m} onClick={() => setFilterMember(m)} style={{ padding: "6px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, background: filterMember === m ? C.accent : "#0d1422", color: filterMember === m ? "#fff" : C.muted, border: `1px solid ${filterMember === m ? C.accent : "#1a2535"}`, fontFamily: "inherit" }}>{m}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        {["すべて", "熱い", "検討中", "普通", "見送り"].map(j => (
+          <button key={j} onClick={() => setFilterJudgment(j)} style={{ padding: "6px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, background: filterJudgment === j ? (JCOLOR[j] || C.accent) : "#0d1422", color: filterJudgment === j ? "#fff" : C.muted, border: `1px solid ${filterJudgment === j ? (JCOLOR[j] || C.accent) : "#1a2535"}`, fontFamily: "inherit" }}>
+            {JEMOJI[j] || ""} {j}
+          </button>
+        ))}
+      </div>
+      <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
+
+      {filtered.length === 0 && (
+        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 32, textAlign: "center", color: C.muted }}>まだ積算表がありません</div>
+      )}
+
+      {filtered.map(s => {
+        const exp = ["brokerFeeIn","registration","acquisitionTax","stamp","leftover","reform","demolition","brokerFeeOut","other"].reduce((a, k) => a + nv(s[k]), 0);
+        const profit = nv(s.sellPrice) - nv(s.buyPrice) - exp;
+        const jColor = JCOLOR[s.judgment] || C.muted;
+        const jEmoji = JEMOJI[s.judgment] || "";
+        // この積算表から在庫管理に転記済みか確認
+        const isTransferred = s.id && data.stocks.some(st => st.fromSekisanId === s.id);
+        return (
+          <div key={s.id} style={{ background: "#0d1422", border: `1px solid ${s.judgment === "熱い" ? C.danger + "55" : isTransferred ? C.success + "55" : "#1a2535"}`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <MemberTag name={s.assignee} />
+              {s.judgment && <Tag label={`${jEmoji} ${s.judgment}`} color={jColor} />}
+              {isTransferred && <Tag label="✅ 在庫転記済" color={C.success} />}
+              <span style={{ color: C.muted, fontSize: 12, marginLeft: "auto" }}>{s.createdAt}</span>
+            </div>
+            <div style={{ color: C.text, fontWeight: 700, fontSize: 15, marginBottom: 10 }}>{s.address || "住所未設定"}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+              {[
+                ["仕入額", nv(s.buyPrice) > 0 ? (nv(s.buyPrice) / 10000).toFixed(0) + "万" : "—", C.text],
+                ["売却想定", nv(s.sellPrice) > 0 ? (nv(s.sellPrice) / 10000).toFixed(0) + "万" : "—", C.accent],
+                ["想定利益", nv(s.buyPrice) > 0 && nv(s.sellPrice) > 0 ? (profit / 10000).toFixed(0) + "万" : "—", profit > 0 ? C.success : C.danger],
+              ].map(([l, v, c]) => (
+                <div key={l} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                  <div style={{ color: C.muted, fontSize: 10 }}>{l}</div>
+                  <div style={{ color: c, fontWeight: 700, fontSize: 15 }}>{v}</div>
+                </div>
+              ))}
+            </div>
+            {(s.rainzPriceMin || s.rainzPriceMax) && (
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>レインズ成約: <span style={{ color: C.text }}>{s.rainzPriceMin}〜{s.rainzPriceMax}万</span></div>
+            )}
+            {s.judgmentMemo && (
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>
+                {s.judgmentMemo.length > 80 ? s.judgmentMemo.slice(0, 80) + "…" : s.judgmentMemo}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...btnStyle("ghost"), flex: 1, padding: "11px", fontSize: 14 }} onClick={() => { setEditItem(s); setShowForm(true); }}>編集・詳細</button>
+              <button style={{ ...btnStyle("danger"), padding: "11px 14px", fontSize: 14 }} onClick={() => handleDelete(s.id)}>削除</button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ===================== APP =====================
+
+const root=ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+</script>
 </body>
 </html>
