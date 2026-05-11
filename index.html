@@ -144,7 +144,32 @@ const DEFAULT_DATA = {
   sekisan: [],
   memberGoals: {},
   annualGoals: { sell: 30000, profit: 6000, buyCount: 30 }, // 売上3億万、利益6000万、仕入30件
+  activityLog: [], // 操作履歴（最新200件保持）
 };
+
+// ============== 現在のユーザー識別 ==============
+const CURRENT_USER_KEY = "hikari_current_user";
+function getCurrentUser() {
+  try { return localStorage.getItem(CURRENT_USER_KEY) || ""; } catch { return ""; }
+}
+function setCurrentUser(name) {
+  try { localStorage.setItem(CURRENT_USER_KEY, name); } catch {}
+}
+
+// ============== 操作履歴 ==============
+// data に対してログエントリを追加する純粋関数
+function appendLog(d, action, target, description) {
+  const entry = {
+    id: Date.now() + Math.random(),
+    timestamp: new Date().toISOString(),
+    user: getCurrentUser() || "未設定",
+    action, // "add" | "update" | "delete" | "promote"
+    target, // "stock" | "jiage" | "owner" | "sekisan" | "yakusho"
+    description,
+  };
+  const log = [entry, ...(d.activityLog || [])].slice(0, 200);
+  return { ...d, activityLog: log };
+}
 
 // Supabaseからデータを取得
 async function loadFromSupabase() {
@@ -679,6 +704,14 @@ function Dashboard({ data, setData }) {
     return d != null && d >= 180;
   });
 
+  // 役所調査リマインダー：仕入契約済/リフォーム関連の物件で、役所調査シートがない物件を抽出
+  const needYakushoStatuses = ["仕入契約済", "リフォーム待ち", "リフォーム中"];
+  const needYakusho = active.filter(s => {
+    if (!needYakushoStatuses.includes(s.status)) return false;
+    // 役所調査シートの住所と一致するものがあれば除外
+    return !(data.yakusho || []).some(y => y.address && s.name && y.address.includes(s.name));
+  });
+
   const yearSell = yearCompleted.reduce((a, s) => a + nv(s.sellPrice), 0);
   const yearProfit = yearCompleted.reduce((a, s) => a + (nv(s.sellPrice) - nv(s.buyCost)), 0);
   const avgProfit = yearCompleted.length > 0 ? yearProfit / yearCompleted.length : 0;
@@ -816,8 +849,23 @@ function Dashboard({ data, setData }) {
           </div>
         )}
 
+        {/* 役所調査リマインダー */}
+        {needYakusho.length > 0 && (
+          <div style={{ marginTop: (stagnant90.length + stagnant180.length) > 0 ? 8 : 0, background: "#0a1520", border: `1px solid ${C.accent}55`, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12, color: C.accent, fontWeight: 700, marginBottom: 6 }}>🏛 役所調査未実施 {needYakusho.length}件 — シート作成しよう</div>
+            {needYakusho.slice(0, 3).map(s => (
+              <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, fontSize: 12 }}>
+                <StatusTag status={s.status} />
+                <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                <MemberTag name={s.assignee} />
+              </div>
+            ))}
+            {needYakusho.length > 3 && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>他 {needYakusho.length - 3}件</div>}
+          </div>
+        )}
+
         {/* 全部問題なし */}
-        {jiageToday.length === 0 && ownerToday.length === 0 && stagnant90.length === 0 && stagnant180.length === 0 && (
+        {jiageToday.length === 0 && ownerToday.length === 0 && stagnant90.length === 0 && stagnant180.length === 0 && needYakusho.length === 0 && (
           <div style={{ fontSize: 12, color: C.success, marginTop: 4 }}>✅ 滞留在庫なし。在庫回転は良好。</div>
         )}
       </div>
@@ -1083,10 +1131,19 @@ function StockPage({ data, setData }) {
   const openEdit = s => { setForm({ ...s, buyCost: String(s.buyCost), sellPrice: String(s.sellPrice), photos: s.photos || [] }); setEditItem(s); setShowAdd(true); };
   const handleSave = () => {
     const item = { ...form, id: editItem?.id || Date.now(), buyCost: Number(form.buyCost), sellPrice: Number(form.sellPrice), photos: form.photos || [] };
-    setData(d => ({ ...d, stocks: editItem ? d.stocks.map(s => s.id === editItem.id ? item : s) : [...d.stocks, item] }));
+    setData(d => {
+      const next = { ...d, stocks: editItem ? d.stocks.map(s => s.id === editItem.id ? item : s) : [...d.stocks, item] };
+      return appendLog(next, editItem ? "update" : "add", "stock", `${item.name || "(無題)"}（${item.status}）`);
+    });
     setShowAdd(false); setEditItem(null);
   };
-  const handleDelete = id => { if (window.confirm("削除しますか？")) setData(d => ({ ...d, stocks: d.stocks.filter(s => s.id !== id) })); };
+  const handleDelete = id => {
+    const target = data.stocks.find(s => s.id === id);
+    if (window.confirm("削除しますか？")) setData(d => {
+      const next = { ...d, stocks: d.stocks.filter(s => s.id !== id) };
+      return appendLog(next, "delete", "stock", `${target?.name || "(無題)"}を削除`);
+    });
+  };
 
   return (
     <div>
@@ -1764,8 +1821,14 @@ function JiagePage({ data, setData }) {
 
   const handleDelete = item => {
     if (!window.confirm("削除しますか？")) return;
-    if (item.type === "jiage") setData(d => ({ ...d, jiage: d.jiage.filter(j => j.id !== item.rawId) }));
-    else setData(d => ({ ...d, owners: d.owners.filter(o => o.id !== item.rawId) }));
+    if (item.type === "jiage") setData(d => {
+      const next = { ...d, jiage: d.jiage.filter(j => j.id !== item.rawId) };
+      return appendLog(next, "delete", "jiage", `${item.address || "(無住所)"}を削除`);
+    });
+    else setData(d => {
+      const next = { ...d, owners: d.owners.filter(o => o.id !== item.rawId) };
+      return appendLog(next, "delete", "owner", `${item.address || "(無住所)"}を削除`);
+    });
     setSelected(null);
   };
 
@@ -1822,7 +1885,10 @@ function JiagePage({ data, setData }) {
       createdAt: today,
       fromJiageId: j.id,
     };
-    setData(d => ({ ...d, owners: [...d.owners, newOwner] }));
+    setData(d => {
+      const next = { ...d, owners: [...d.owners, newOwner] };
+      return appendLog(next, "promote", "owner", `${j.address}を地上げ→所有者に昇格`);
+    });
     alert(`✅「${j.address}」を所有者アタックに昇格しました！\n「👤所有者」タブで確認できます。`);
     setSelected(null);
   };
@@ -1852,7 +1918,10 @@ function JiagePage({ data, setData }) {
       judgment: "検討中", judgmentMemo: o.memo || "",
       fromOwnerId: o.id,
     };
-    setData(d => ({ ...d, sekisan: [...(d.sekisan || []), newSekisan] }));
+    setData(d => {
+      const next = { ...d, sekisan: [...(d.sekisan || []), newSekisan] };
+      return appendLog(next, "promote", "sekisan", `${o.address}を所有者→積算に昇格`);
+    });
     alert(`✅「${o.address}」の積算表を作成しました！\n「その他」→「仕入検討積算表」から編集できます。`);
     setSelected(null);
   };
@@ -1873,10 +1942,16 @@ function JiagePage({ data, setData }) {
   const handleSave = () => {
     if (addType === "jiage") {
       const item = { ...form, id: editItem?.rawId || Date.now() };
-      setData(d => ({ ...d, jiage: editItem ? d.jiage.map(j => j.id === item.id ? item : j) : [...d.jiage, item] }));
+      setData(d => {
+        const next = { ...d, jiage: editItem ? d.jiage.map(j => j.id === item.id ? item : j) : [...d.jiage, item] };
+        return appendLog(next, editItem ? "update" : "add", "jiage", `${item.address || "(無住所)"}（${item.status}）`);
+      });
     } else {
       const item = { ...form, id: editItem?.rawId || Date.now() };
-      setData(d => ({ ...d, owners: editItem ? d.owners.map(o => o.id === item.id ? item : o) : [...d.owners, item] }));
+      setData(d => {
+        const next = { ...d, owners: editItem ? d.owners.map(o => o.id === item.id ? item : o) : [...d.owners, item] };
+        return appendLog(next, editItem ? "update" : "add", "owner", `${item.address || "(無住所)"}（${item.status}）`);
+      });
     }
     setShowAdd(false); setEditItem(null);
   };
@@ -2373,9 +2448,14 @@ function ImportModal({ onClose, onImport, importing, currentCount }) {
 // ===================== MORE PAGE (役所・積算) =====================
 function MorePage({ data, setData, onLock }) {
   const [subPage, setSubPage] = useState(null);
+  const [currentUser, setCurrentUserState] = useState(getCurrentUser());
+  const [showActivityAll, setShowActivityAll] = useState(false);
+
   if (subPage === "yakusho") return <YakushoPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   const hasPin = !!getPin();
+  const activityLog = data.activityLog || [];
+
   return (
     <div>
       <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 20 }}>その他の機能</div>
@@ -2395,6 +2475,18 @@ function MorePage({ data, setData, onLock }) {
           </div>
         </button>
       ))}
+
+      {/* 👤 現在のユーザー設定（操作履歴用） */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>👤 現在のユーザー</div>
+      <div style={{ background: "#0d1422", border: `1px solid ${!currentUser ? C.warn + "55" : "#1a2535"}`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.6 }}>
+          {!currentUser ? "⚠️ 未設定です。操作履歴に記録されません。" : "✅ 全ての操作がこの名前で履歴に記録されます。"}
+        </div>
+        <select style={inp} value={currentUser} onChange={e => { const v = e.target.value; setCurrentUserState(v); setCurrentUser(v); }}>
+          <option value="">— 選択してください —</option>
+          {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      </div>
 
       {/* セキュリティ設定 */}
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🔐 セキュリティ</div>
@@ -2431,6 +2523,49 @@ function MorePage({ data, setData, onLock }) {
             }} style={{ ...btnStyle(), width: "100%", padding: "12px", fontSize: 14 }}>PINロックを設定</button>
           )}
         </div>
+      </div>
+
+      {/* 📋 操作履歴 */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>📋 操作履歴</div>
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>
+          全 {activityLog.length} 件 / 最新200件を保持
+        </div>
+        {activityLog.length === 0 ? (
+          <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: 20 }}>まだ履歴がありません</div>
+        ) : (
+          <>
+            <div style={{ maxHeight: showActivityAll ? "none" : 400, overflowY: "auto" }}>
+              {(showActivityAll ? activityLog : activityLog.slice(0, 30)).map(log => {
+                const ACTION_COLOR = { add: C.success, update: C.accent, delete: C.danger, promote: C.purple };
+                const ACTION_LABEL = { add: "追加", update: "編集", delete: "削除", promote: "昇格" };
+                const TARGET_LABEL = { stock: "在庫", jiage: "地上げ", owner: "所有者", sekisan: "積算", yakusho: "役所", goal: "目標" };
+                const d = new Date(log.timestamp);
+                const dateStr = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+                return (
+                  <div key={log.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 0", borderBottom: `1px solid #1a2535`, fontSize: 12 }}>
+                    <span style={{ color: C.muted, fontSize: 11, width: 70, flexShrink: 0 }}>{dateStr}</span>
+                    <Tag label={log.user} color={MEMBER_COLORS[log.user] || C.muted} />
+                    <Tag label={`${TARGET_LABEL[log.target] || log.target}・${ACTION_LABEL[log.action] || log.action}`} color={ACTION_COLOR[log.action] || C.muted} />
+                    <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{log.description}</span>
+                  </div>
+                );
+              })}
+            </div>
+            {activityLog.length > 30 && (
+              <button onClick={() => setShowActivityAll(v => !v)} style={{ ...btnStyle("ghost"), width: "100%", marginTop: 10, padding: "8px", fontSize: 12 }}>
+                {showActivityAll ? "▲ 最新30件のみ表示" : `▼ 全${activityLog.length}件を表示`}
+              </button>
+            )}
+          </>
+        )}
+        {activityLog.length > 0 && (
+          <button onClick={() => {
+            if (window.confirm(`操作履歴（${activityLog.length}件）を全て削除しますか？\nこの操作は取り消せません。`)) {
+              setData(d => ({ ...d, activityLog: [] }));
+            }
+          }} style={{ ...btnStyle("danger"), width: "100%", marginTop: 10, padding: "8px", fontSize: 12 }}>履歴を全削除</button>
+        )}
       </div>
     </div>
   );
@@ -2825,6 +2960,7 @@ function SekisanForm({ initial, onSave, onClose, onTransfer }) {
         {tab === "summary" && (
           <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.danger, marginBottom: 14 }}>🔥 総合判断</div>
+
             <Field label="この物件の判断">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 {JUDGMENTS.map(j => (
@@ -2919,7 +3055,10 @@ function SekisanPage({ data, setData, onBack }) {
 
   const handleSave = form => {
     const item = { ...form, id: editItem?.id || Date.now() };
-    setData(d => ({ ...d, sekisan: editItem ? d.sekisan.map(s => s.id === editItem.id ? item : s) : [...d.sekisan, item] }));
+    setData(d => {
+      const next = { ...d, sekisan: editItem ? d.sekisan.map(s => s.id === editItem.id ? item : s) : [...d.sekisan, item] };
+      return appendLog(next, editItem ? "update" : "add", "sekisan", `${item.address || "(無住所)"}（判定: ${item.judgment}）`);
+    });
     setShowForm(false); setEditItem(null);
   };
 
@@ -2938,13 +3077,23 @@ function SekisanPage({ data, setData, onBack }) {
       memo: `積算表より転記。${form.judgmentMemo ? "\n" + form.judgmentMemo.slice(0, 100) : ""}`,
       year: new Date().getFullYear(),
       fromSekisanId: form.id || Date.now(),
+      photos: [],
     };
-    setData(d => ({ ...d, stocks: [...d.stocks, newStock] }));
+    setData(d => {
+      const next = { ...d, stocks: [...d.stocks, newStock] };
+      return appendLog(next, "promote", "stock", `${form.address}を積算→在庫に転記（仕入${Math.round(nv(form.buyPrice)/10000)}万）`);
+    });
     setShowForm(false); setEditItem(null);
     alert(`✅「${form.address}」を在庫管理に転記しました！\nステータス：仕入契約済`);
   };
 
-  const handleDelete = id => { if (window.confirm("削除しますか？")) setData(d => ({ ...d, sekisan: d.sekisan.filter(s => s.id !== id) })); };
+  const handleDelete = id => {
+    const target = data.sekisan.find(s => s.id === id);
+    if (window.confirm("削除しますか？")) setData(d => {
+      const next = { ...d, sekisan: d.sekisan.filter(s => s.id !== id) };
+      return appendLog(next, "delete", "sekisan", `${target?.address || "(無住所)"}を削除`);
+    });
+  };
   const nv = v => parseFloat(v) || 0;
 
   if (showForm) return <SekisanForm initial={editItem} onSave={handleSave} onClose={() => { setShowForm(false); setEditItem(null); }} onTransfer={handleTransfer} />;
