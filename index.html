@@ -16,7 +16,7 @@
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const {useState,useMemo,useEffect}=React;
+const {useState,useMemo,useEffect,useRef}=React;
 
 // RechartsがCDN環境で読み込めない端末でもアプリ全体が止まらないように、
 // 軽量の代替グラフを内蔵しています。
@@ -80,16 +80,42 @@ const MEMBER_COLORS = {
   "たっくん": "#3b82f6", "長島": "#10b981", "松村": "#f59e0b",
   "脇本": "#ef4444", "谷津": "#8b5cf6", "下田": "#06b6d4", "比嘉": "#ec4899"
 };
+
+// 仕入日からの経過日数を計算
+function daysSinceBuy(buyDateStr) {
+  if (!buyDateStr) return null;
+  const buy = new Date(buyDateStr);
+  const today = new Date();
+  if (isNaN(buy.getTime())) return null;
+  return Math.floor((today - buy) / 86400000);
+}
+
+// 滞留日数の色分け情報を返す
+function stagnantInfo(buyDateStr) {
+  const d = daysSinceBuy(buyDateStr);
+  if (d == null) return null;
+  let color, level;
+  if (d >= 180) { color = "#ef4444"; level = "🔴"; }
+  else if (d >= 90) { color = "#f59e0b"; level = "🟡"; }
+  else if (d >= 30) { color = "#94a3b8"; level = "⚪"; }
+  else { color = "#10b981"; level = "🟢"; }
+  return { days: d, color, level };
+}
 const STOCK_STATUSES = ["見込", "仕入契約済", "リフォーム中", "リフォーム待ち", "売却契約準備中", "売却契約完了", "契約書作成中", "決済完了"];
 const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "NG", "見込", "居住している"];
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
 const APPROACH_ITEMS = ["訪問", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "仕入"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
-const CASE_STATUSES = ["検討中", "価格交渉中", "見送り", "成約"];
-const PRIORITIES = ["◎", "〇", "△", "✖"];
 const APPROACH_TARGETS = { "訪問": 600, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "仕入": 3 };
 
-// ===================== STORAGE =====================
+// 仕入検討積算表の判断ステータス（判断タブで使用）
+const JUDGMENTS = [
+  { value: "熱い",   emoji: "🔥", color: "#ef4444" },
+  { value: "検討中", emoji: "🟡", color: "#f59e0b" },
+  { value: "普通",   emoji: "⚪", color: "#475569" },
+  { value: "見送り", emoji: "❌", color: "#334155" },
+];
+
 // ===================== SUPABASE 設定 =====================
 const SUPABASE_URL = "https://ckcykbvislsjwvkizkqc.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrY3lrYnZpc2xzand2a2l6a3FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0Njk1MzIsImV4cCI6MjA5NDA0NTUzMn0.Yf2EnNHRi6M5mwaaNFwBATNZb8jVBG3LsFxMt6eDfH8";
@@ -114,7 +140,6 @@ const DEFAULT_DATA = {
     { id: 2, date: "2026-02-04", address: "埼玉県熊谷市大原1-1780-20", owner: "佐藤靖子", ownerAddr: "群馬県高崎市寺尾町163番地", dm: "①", visit: "済", status: "見込", assignee: "長島", memo: "奥様退院後に再連絡予定。", nextVisit: "2026-05-20" },
   ],
   owners: [],
-  cases: [],
   yakusho: [],
   sekisan: [],
   memberGoals: {},
@@ -159,10 +184,29 @@ async function saveToSupabase(data) {
   } catch (e) { console.error("Supabase save error:", e); }
 }
 
-// ローカルキャッシュから読み込み
+// ローカルキャッシュから読み込み（DEFAULT_DATAとマージして互換性を保つ）
 function loadFromCache() {
-  try { const r = localStorage.getItem(STORAGE_KEY); if (r) return JSON.parse(r); } catch {}
+  try {
+    const r = localStorage.getItem(STORAGE_KEY);
+    if (r) {
+      const parsed = JSON.parse(r);
+      // 古いキャッシュに新キーが無くてもクラッシュしないよう、DEFAULT_DATAをベースにマージ
+      return { ...DEFAULT_DATA, ...parsed };
+    }
+  } catch {}
   return null;
+}
+
+// リモートデータをマージ（同様に互換性確保）
+function mergeWithDefault(remote) {
+  if (!remote) return null;
+  return { ...DEFAULT_DATA, ...remote };
+}
+
+// フォーム入力中かどうか判定（input/textarea/selectにフォーカスがあれば編集中とみなす）
+function isUserEditing() {
+  const tag = document.activeElement?.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
 function App() {
@@ -172,12 +216,16 @@ function App() {
   const [syncing, setSyncing] = useState(true);
   const [syncError, setSyncError] = useState(false);
 
+  // 直近の自分の保存時刻（ポーリングで自分の更新を上書きしないため）
+  const lastLocalSaveRef = useRef(0);
+
   // 起動時にSupabaseから最新データを取得
   useEffect(() => {
     loadFromSupabase().then(remote => {
-      if (remote) {
-        setDataRaw(remote);
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(remote)); } catch {}
+      const merged = mergeWithDefault(remote);
+      if (merged) {
+        setDataRaw(merged);
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
       }
       setSyncing(false);
     }).catch(() => {
@@ -187,12 +235,16 @@ function App() {
   }, []);
 
   // ポーリング：30秒ごとに最新データを取得（他のメンバーの更新を反映）
+  // ただし「自分が60秒以内に保存した」or「ユーザーが入力中」の時はスキップして、編集中のデータが消えないようにする
   useEffect(() => {
     const timer = setInterval(() => {
+      if (Date.now() - lastLocalSaveRef.current < 60000) return; // 直近の自分の保存はスキップ
+      if (isUserEditing()) return; // 入力中はスキップ
       loadFromSupabase().then(remote => {
-        if (remote) {
-          setDataRaw(remote);
-          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(remote)); } catch {}
+        const merged = mergeWithDefault(remote);
+        if (merged) {
+          setDataRaw(merged);
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
         }
       });
     }, 30000);
@@ -202,6 +254,8 @@ function App() {
   const setData = updater => {
     setDataRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
+      // 自分の保存時刻を記録（ポーリング上書き防止用）
+      lastLocalSaveRef.current = Date.now();
       // Supabaseに保存（非同期）
       saveToSupabase(next).then(() => {
         setSavedMsg(true);
@@ -463,6 +517,16 @@ function Dashboard({ data }) {
   const jiageToday = (data.jiage || []).filter(j => j.nextVisit === today);
   const ownerToday = (data.owners || []).filter(o => o.nextFollowDate === today);
 
+  // 滞留警告：90日超・180日超の在庫を抽出（決済完了除外）
+  const stagnant90 = active.filter(s => {
+    const d = daysSinceBuy(s.buyDate);
+    return d != null && d >= 90 && d < 180;
+  });
+  const stagnant180 = active.filter(s => {
+    const d = daysSinceBuy(s.buyDate);
+    return d != null && d >= 180;
+  });
+
   const yearSell = yearCompleted.reduce((a, s) => a + nv(s.sellPrice), 0);
   const yearProfit = yearCompleted.reduce((a, s) => a + (nv(s.sellPrice) - nv(s.buyCost)), 0);
   const avgProfit = yearCompleted.length > 0 ? yearProfit / yearCompleted.length : 0;
@@ -536,6 +600,76 @@ function Dashboard({ data }) {
         </div>
       </div>
 
+      {/* 今日のアクション（最上段：毎朝開いたら最初に見るやつ） */}
+      <div style={{
+        background: "#0d1422",
+        border: `1px solid ${(jiageToday.length + ownerToday.length > 0 || stagnant90.length > 0 || stagnant180.length > 0) ? C.warn + "55" : "#1a2535"}`,
+        borderRadius: 14, padding: 14,
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 12 }}>⚡ 今日のアクション</div>
+
+        {/* 本日フォロー予定 */}
+        {(jiageToday.length + ownerToday.length) > 0 ? (
+          <div style={{ marginBottom: stagnant180.length + stagnant90.length > 0 ? 12 : 0 }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, fontWeight: 700 }}>📞 本日フォロー予定 {jiageToday.length + ownerToday.length}件</div>
+            {[...jiageToday.map(j => ({ label: j.address, type: "地上げ", assignee: j.assignee })),
+              ...ownerToday.map(o => ({ label: o.address, type: "所有者", assignee: o.assignee }))
+            ].map((item, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, fontSize: 13 }}>
+                <Tag label={item.type} color={item.type === "地上げ" ? C.purple : C.accent} />
+                <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+                <MemberTag name={item.assignee} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: stagnant180.length + stagnant90.length > 0 ? 12 : 0 }}>
+            📞 本日のフォロー予定なし
+          </div>
+        )}
+
+        {/* 滞留警告：180日超（危険） */}
+        {stagnant180.length > 0 && (
+          <div style={{ marginBottom: stagnant90.length > 0 ? 8 : 0, background: "#1a0000", border: `1px solid ${C.danger}55`, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12, color: C.danger, fontWeight: 700, marginBottom: 6 }}>🔴 180日超滞留 {stagnant180.length}件 — 価格見直しなど対応急務</div>
+            {stagnant180.slice(0, 3).map(s => {
+              const days = daysSinceBuy(s.buyDate);
+              return (
+                <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, fontSize: 12 }}>
+                  <span style={{ color: C.danger, fontWeight: 700, minWidth: 60 }}>{days}日</span>
+                  <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                  <MemberTag name={s.assignee} />
+                </div>
+              );
+            })}
+            {stagnant180.length > 3 && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>他 {stagnant180.length - 3}件</div>}
+          </div>
+        )}
+
+        {/* 滞留警告：90〜180日（注意） */}
+        {stagnant90.length > 0 && (
+          <div style={{ background: "#1a1000", border: `1px solid ${C.warn}55`, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12, color: C.warn, fontWeight: 700, marginBottom: 6 }}>🟡 90〜180日滞留 {stagnant90.length}件 — 販売促進を検討</div>
+            {stagnant90.slice(0, 3).map(s => {
+              const days = daysSinceBuy(s.buyDate);
+              return (
+                <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, fontSize: 12 }}>
+                  <span style={{ color: C.warn, fontWeight: 700, minWidth: 60 }}>{days}日</span>
+                  <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                  <MemberTag name={s.assignee} />
+                </div>
+              );
+            })}
+            {stagnant90.length > 3 && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>他 {stagnant90.length - 3}件</div>}
+          </div>
+        )}
+
+        {/* 全部問題なし */}
+        {jiageToday.length === 0 && ownerToday.length === 0 && stagnant90.length === 0 && stagnant180.length === 0 && (
+          <div style={{ fontSize: 12, color: C.success, marginTop: 4 }}>✅ 滞留在庫なし。在庫回転は良好。</div>
+        )}
+      </div>
+
       {/* 年間KPI */}
       <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 12 }}>📅 {selectedYear}年 年間実績</div>
@@ -554,21 +688,7 @@ function Dashboard({ data }) {
         </div>
       </div>
 
-      {/* 今日フォロー */}
-      {(jiageToday.length + ownerToday.length) > 0 && (
-        <div style={{ background: "#1a1000", border: `1px solid ${C.warn}44`, borderRadius: 14, padding: 14 }}>
-          <div style={{ color: C.warn, fontSize: 13, fontWeight: 700, marginBottom: 10 }}>⚡ 本日フォロー予定 {jiageToday.length + ownerToday.length}件</div>
-          {[...jiageToday.map(j => ({ label: j.address, type: "地上げ", assignee: j.assignee })),
-            ...ownerToday.map(o => ({ label: o.address, type: "所有者", assignee: o.assignee }))
-          ].map((item, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, fontSize: 13 }}>
-              <Tag label={item.type} color={item.type === "地上げ" ? C.purple : C.accent} />
-              <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
-              <MemberTag name={item.assignee} />
-            </div>
-          ))}
-        </div>
-      )}
+      {/* 今日フォロー予定は最上段の「今日のアクション」に統合 */}
 
       {/* 月別売上・利益グラフ */}
       <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14 }}>
@@ -676,19 +796,23 @@ function Dashboard({ data }) {
       {/* 在庫一覧 */}
       <div>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>現在の在庫</div>
-        {active.map(s => (
-          <div key={s.id} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
-              <StatusTag status={s.status} /><MemberTag name={s.assignee} />
+        {active.map(s => {
+          const sinfo = stagnantInfo(s.buyDate);
+          return (
+            <div key={s.id} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+                <StatusTag status={s.status} /><MemberTag name={s.assignee} />
+                {sinfo && <Tag label={`${sinfo.level} ${sinfo.days}日`} color={sinfo.color} />}
+              </div>
+              <div style={{ color: C.text, fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{s.name}</div>
+              <div style={{ display: "flex", gap: 14, fontSize: 12, flexWrap: "wrap" }}>
+                <span style={{ color: C.muted }}>仕入 <span style={{ color: C.text }}>{(nv(s.buyCost) / 10000).toFixed(0)}万</span></span>
+                <span style={{ color: C.muted }}>売値 <span style={{ color: C.text }}>{(nv(s.sellPrice) / 10000).toFixed(0)}万</span></span>
+                <span style={{ color: C.muted }}>利益 <span style={{ color: C.success, fontWeight: 700 }}>{((nv(s.sellPrice) - nv(s.buyCost)) / 10000).toFixed(0)}万</span></span>
+              </div>
             </div>
-            <div style={{ color: C.text, fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{s.name}</div>
-            <div style={{ display: "flex", gap: 14, fontSize: 12, flexWrap: "wrap" }}>
-              <span style={{ color: C.muted }}>仕入 <span style={{ color: C.text }}>{(nv(s.buyCost) / 10000).toFixed(0)}万</span></span>
-              <span style={{ color: C.muted }}>売値 <span style={{ color: C.text }}>{(nv(s.sellPrice) / 10000).toFixed(0)}万</span></span>
-              <span style={{ color: C.muted }}>利益 <span style={{ color: C.success, fontWeight: 700 }}>{((nv(s.sellPrice) - nv(s.buyCost)) / 10000).toFixed(0)}万</span></span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -735,10 +859,12 @@ function StockPage({ data, setData }) {
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
       {filtered.map(s => {
         const profit = s.sellPrice - s.buyCost;
+        const sinfo = s.status !== "決済完了" ? stagnantInfo(s.buyDate) : null;
         return (
           <div key={s.id} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: "16px", marginBottom: 10 }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
               <StatusTag status={s.status} /><MemberTag name={s.assignee} />
+              {sinfo && <Tag label={`${sinfo.level} 仕入${sinfo.days}日`} color={sinfo.color} />}
             </div>
             <div style={{ color: C.text, fontWeight: 600, fontSize: 16, marginBottom: 10 }}>{s.name}</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
@@ -1446,7 +1572,7 @@ function JiagePage({ data, setData }) {
               style={{ ...btnStyle(), textDecoration: "none", textAlign: "center", padding: "13px", background: C.success, borderColor: C.success, fontSize: 15 }}>
               🚗 物件にナビ
             </a>
-            <a href={mapUrl(selected.item.address)} target="_blank" rel="noopener noreferrer"
+            <a href={selected.item.ownerAddress ? navUrl(selected.item.ownerAddress) : navUrl(selected.item.address)} target="_blank" rel="noopener noreferrer"
               style={{ ...btnStyle("ghost"), textDecoration: "none", textAlign: "center", padding: "13px", fontSize: 15 }}>
               🚗 所有者にナビ
             </a>
@@ -1565,17 +1691,30 @@ function ImportModal({ onClose, onImport, importing, currentCount }) {
   }, []);
 
   const totalSelected = selectedAreas.reduce((a, area) => a + (counts[area] || 0), 0);
+  const hasData = Object.values(counts).some(c => c > 0);
 
   const toggle = area => setSelectedAreas(s => s.includes(area) ? s.filter(a => a !== area) : [...s, area]);
 
   return (
     <BottomSheet title="📥 Excelデータをインポート" onClose={onClose}>
-      <div style={{ background: "#0a1a0a", border: `1px solid ${C.success}44`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: C.success, marginBottom: 6 }}>取り込みデータについて</div>
+      <div style={{ background: hasData ? "#0a1a0a" : "#1a1000", border: `1px solid ${hasData ? C.success : C.warn}44`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: hasData ? C.success : C.warn, marginBottom: 6 }}>
+          {hasData ? "取り込みデータについて" : "⚠ インポート用データが未設定です"}
+        </div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
-          地上げExcelファイルから<span style={{ color: C.text }}> 961件</span>のデータを取り込めます。<br />
-          エリアを選択してインポートしてください。<br />
-          現在の登録数: <span style={{ color: C.accent }}>{currentCount}件</span>
+          {hasData ? (
+            <>
+              地上げExcelファイルから<span style={{ color: C.text }}> {Object.values(counts).reduce((a,b)=>a+b,0)}件</span>のデータを取り込めます。<br />
+              エリアを選択してインポートしてください。<br />
+              現在の登録数: <span style={{ color: C.accent }}>{currentCount}件</span>
+            </>
+          ) : (
+            <>
+              インポート用のExcelデータがコードに登録されていません。<br />
+              Excelデータの登録方法を相談したい場合はクロードに聞いてください。<br />
+              現在の登録数: <span style={{ color: C.accent }}>{currentCount}件</span>
+            </>
+          )}
         </div>
       </div>
 
@@ -1612,117 +1751,14 @@ function ImportModal({ onClose, onImport, importing, currentCount }) {
       <div style={{ display: "flex", gap: 10 }}>
         <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={onClose}>キャンセル</button>
         <button
-          style={{ ...btnStyle(), flex: 2, background: C.success, borderColor: C.success, opacity: importing || selectedAreas.length === 0 ? 0.6 : 1 }}
+          style={{ ...btnStyle(), flex: 2, background: C.success, borderColor: C.success, opacity: importing || selectedAreas.length === 0 || totalSelected === 0 ? 0.6 : 1 }}
           onClick={() => onImport(selectedAreas)}
-          disabled={importing || selectedAreas.length === 0}
+          disabled={importing || selectedAreas.length === 0 || totalSelected === 0}
         >
           {importing ? "インポート中..." : `📥 ${totalSelected}件をインポート`}
         </button>
       </div>
     </BottomSheet>
-  );
-}
-
-// OwnerPageは統合したので空のフォールバック
-function OwnerPage({ data, setData }) {
-  return <JiagePage data={data} setData={setData} />;
-}
-
-// ===================== CASES PAGE =====================
-function CasesPage({ data, setData }) {
-  const [showAdd, setShowAdd] = useState(false);
-  const [editItem, setEditItem] = useState(null);
-  const [search, setSearch] = useState("");
-  const [filterStatuses, setFilterStatuses] = useState([]);
-  const [filterMembers, setFilterMembers] = useState([]);
-  const [filterPriorities, setFilterPriorities] = useState([]);
-  const empty = { channel: "訪問", address: "", age: "", land: "", building: "", sellerPrice: "", assessed: "", offer: "", exit: "", status: "検討中", priority: "△", broker: "", brokerPerson: "", assignee: MEMBERS[0], memo: "" };
-  const [form, setForm] = useState(empty);
-  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-
-  const filtered = useMemo(() => data.cases.filter(c => {
-    if (filterStatuses.length && !filterStatuses.includes(c.status)) return false;
-    if (filterMembers.length && !filterMembers.includes(c.assignee)) return false;
-    if (filterPriorities.length && !filterPriorities.includes(c.priority)) return false;
-    if (search && !c.address.includes(search) && !c.broker.includes(search)) return false;
-    return true;
-  }), [data.cases, filterStatuses, filterMembers, filterPriorities, search]);
-
-  const openEdit = item => { setForm({ ...item }); setEditItem(item); setShowAdd(true); };
-  const handleSave = () => {
-    const item = { ...form, id: editItem?.id || Date.now() };
-    setData(d => ({ ...d, cases: editItem ? d.cases.map(c => c.id === editItem.id ? item : c) : [...d.cases, item] }));
-    setShowAdd(false); setEditItem(null);
-  };
-  const handleDelete = id => { if (window.confirm("削除しますか？")) setData(d => ({ ...d, cases: d.cases.filter(c => c.id !== id) })); };
-  const statusColor = { "検討中": C.warn, "価格交渉中": C.accent, "見送り": C.danger, "成約": C.success };
-  const priorityColor = { "◎": C.danger, "〇": C.warn, "△": C.muted, "✖": "#334155" };
-
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>📋 業者案件管理</div>
-        <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm(empty); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
-      </div>
-      <SearchBar value={search} onChange={setSearch} placeholder="住所・業者名で検索..." />
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>担当者</div>
-      <FilterChips options={MEMBERS.slice(0, 6)} value={filterMembers} onChange={setFilterMembers} multi />
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>ステータス</div>
-      <FilterChips options={CASE_STATUSES} value={filterStatuses} onChange={setFilterStatuses} multi />
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>優先度</div>
-      <FilterChips options={PRIORITIES} value={filterPriorities} onChange={setFilterPriorities} multi />
-      <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
-      {filtered.map(c => (
-        <div key={c.id} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-            <Tag label={c.status} color={statusColor[c.status] || C.muted} />
-            <Tag label={c.priority} color={priorityColor[c.priority] || C.muted} />
-            <Tag label={c.channel} color={C.purple} />
-            <MemberTag name={c.assignee} />
-          </div>
-          <div style={{ color: C.text, fontWeight: 600, fontSize: 15, marginBottom: 8 }}>{c.address}</div>
-          {c.broker && <div style={{ fontSize: 13, color: C.muted, marginBottom: 6 }}>業者: <span style={{ color: C.text }}>{c.broker} {c.brokerPerson && `（${c.brokerPerson}）`}</span></div>}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
-            {[["査定", c.assessed + "万", C.text], ["提示", c.offer ? c.offer + "万" : "—", C.accent], ["出口", c.exit ? c.exit + "万" : "—", C.success]].map(([l, v, col]) => (
-              <div key={l}
-              style={{ background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
-                <div style={{ color: C.muted, fontSize: 10 }}>{l}</div>
-                <div style={{ color: col, fontWeight: 700, fontSize: 14 }}>{v}</div>
-              </div>
-            ))}
-          </div>
-          {c.memo && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{c.memo}</div>}
-          <div style={{ display: "flex", gap: 8 }}>
-            <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(c)}>編集</button>
-            <button style={{ ...btnStyle("danger"), padding: "10px 14px", fontSize: 14 }} onClick={() => handleDelete(c.id)}>削除</button>
-          </div>
-        </div>
-      ))}
-      {showAdd && (
-        <BottomSheet title={editItem ? "案件編集" : "新規案件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}>
-          <Field label="物件住所"><input style={inp} value={form.address} onChange={f("address")} /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Field label="ステータス"><select style={inp} value={form.status} onChange={f("status")}>{CASE_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
-            <Field label="優先度"><select style={inp} value={form.priority} onChange={f("priority")}>{PRIORITIES.map(s => <option key={s}>{s}</option>)}</select></Field>
-            <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
-            <Field label="接触方法"><select style={inp} value={form.channel} onChange={f("channel")}>{["訪問", "架電", "メール"].map(s => <option key={s}>{s}</option>)}</select></Field>
-          </div>
-          <Field label="業者名"><input style={inp} value={form.broker} onChange={f("broker")} /></Field>
-          <Field label="業者担当者"><input style={inp} value={form.brokerPerson} onChange={f("brokerPerson")} /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Field label="査定額（万）"><MoneyInput value={form.assessed} onChange={v => setForm(p => ({ ...p, assessed: v }))} placeholder="500" /></Field>
-            <Field label="提示額（万）"><MoneyInput value={form.offer} onChange={v => setForm(p => ({ ...p, offer: v }))} placeholder="450" /></Field>
-            <Field label="出口想定（万）"><MoneyInput value={form.exit} onChange={v => setForm(p => ({ ...p, exit: v }))} placeholder="800" /></Field>
-            <Field label="売主目線（万）"><MoneyInput value={form.sellerPrice} onChange={v => setForm(p => ({ ...p, sellerPrice: v }))} placeholder="400" /></Field>
-          </div>
-          <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={f("memo")} /></Field>
-          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
-            <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
-          </div>
-        </BottomSheet>
-      )}
-    </div>
   );
 }
 
@@ -1871,7 +1907,6 @@ function SekisanForm({ initial, onSave, onClose, onTransfer }) {
   const [tab, setTab] = useState("cost");
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
   const nv = v => parseFloat(v) || 0;
-  const setN = k => v => setForm(p => ({ ...p, [k]: v }));
 
   const expenses = nv(form.brokerFeeIn) + nv(form.registration) + nv(form.acquisitionTax) +
     nv(form.stamp) + nv(form.leftover) + nv(form.reform) + nv(form.demolition) +
