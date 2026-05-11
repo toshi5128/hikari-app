@@ -145,6 +145,7 @@ const DEFAULT_DATA = {
   memberGoals: {},
   annualGoals: { sell: 30000, profit: 6000, buyCount: 30 }, // 売上3億万、利益6000万、仕入30件
   activityLog: [], // 操作履歴（最新200件保持）
+  customEvents: [], // カスタム予定（自由入力）
 };
 
 // ============== 現在のユーザー識別 ==============
@@ -678,6 +679,98 @@ function Dashboard({ data, setData }) {
   const [calFilterType, setCalFilterType] = useState("all");
   const [calFilterMember, setCalFilterMember] = useState("__ALL__");
   const [calShowFilters, setCalShowFilters] = useState(false); // フィルター展開状態
+  const [showEventForm, setShowEventForm] = useState(false);
+  const [editingEvent, setEditingEvent] = useState(null);
+  const eventEmpty = { title: "", date: today, time: "", location: "", memo: "", assignee: "", reminderMinutes: 0 };
+  const [eventForm, setEventForm] = useState(eventEmpty);
+
+  const openNewEvent = (dateStr) => {
+    setEventForm({ ...eventEmpty, date: dateStr || calSelectedDate });
+    setEditingEvent(null);
+    setShowEventForm(true);
+  };
+
+  const openEditEvent = (ev) => {
+    setEventForm({
+      title: ev.title || "",
+      date: ev.date || today,
+      time: ev.time || "",
+      location: ev.location || "",
+      memo: ev.memo || "",
+      assignee: ev.assignee || "",
+      reminderMinutes: ev.reminderMinutes || 0,
+    });
+    setEditingEvent(ev);
+    setShowEventForm(true);
+  };
+
+  const handleSaveEvent = () => {
+    if (!eventForm.title.trim()) { alert("タイトルを入力してください"); return; }
+    if (!eventForm.date) { alert("日付を入力してください"); return; }
+    const item = {
+      id: editingEvent?.id || Date.now(),
+      ...eventForm,
+      createdAt: editingEvent?.createdAt || new Date().toISOString(),
+      createdBy: editingEvent?.createdBy || getCurrentUser() || "未設定",
+      notified: editingEvent?.notified || false,
+    };
+    setData(d => {
+      const next = { ...d, customEvents: editingEvent
+        ? (d.customEvents || []).map(e => e.id === editingEvent.id ? item : e)
+        : [...(d.customEvents || []), item] };
+      return appendLog(next, editingEvent ? "update" : "add", "event", `予定「${item.title}」（${item.date}${item.time ? " " + item.time : ""}）`);
+    });
+    setShowEventForm(false);
+    setEditingEvent(null);
+
+    // リマインダーが設定されてたら通知許可をリクエスト
+    if (item.reminderMinutes > 0 && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  };
+
+  const handleDeleteEvent = (id) => {
+    const target = (data.customEvents || []).find(e => e.id === id);
+    if (!target) return;
+    if (!window.confirm(`予定「${target.title}」を削除しますか？`)) return;
+    setData(d => {
+      const next = { ...d, customEvents: (d.customEvents || []).filter(e => e.id !== id) };
+      return appendLog(next, "delete", "event", `予定「${target.title}」を削除`);
+    });
+  };
+
+  // ===== リマインダー：1分ごとに通知すべきイベントをチェック =====
+  useEffect(() => {
+    if (!("Notification" in window)) return;
+    const check = () => {
+      if (Notification.permission !== "granted") return;
+      const now = new Date();
+      (data.customEvents || []).forEach(ev => {
+        if (ev.notified) return;
+        if (!ev.time || !ev.reminderMinutes) return;
+        const [h, m] = (ev.time || "00:00").split(":").map(Number);
+        const evTime = new Date(ev.date);
+        evTime.setHours(h || 0, m || 0, 0, 0);
+        const remindAt = new Date(evTime.getTime() - ev.reminderMinutes * 60000);
+        if (remindAt <= now && now < evTime) {
+          try {
+            new Notification(`📅 ${ev.title}`, {
+              body: `${ev.time}〜${ev.location ? " @" + ev.location : ""}${ev.memo ? "\n" + ev.memo : ""}`,
+              tag: `hikari-event-${ev.id}`,
+            });
+            // 通知済みフラグを立てる
+            setData(d => ({
+              ...d,
+              customEvents: (d.customEvents || []).map(e => e.id === ev.id ? { ...e, notified: true } : e)
+            }));
+          } catch (err) { /* ignore */ }
+        }
+      });
+    };
+    check();
+    const timer = setInterval(check, 60000);
+    return () => clearInterval(timer);
+  }, [data.customEvents]);
 
   // 既存データから全カレンダーイベントを集計
   const calEvents = useMemo(() => {
@@ -705,8 +798,23 @@ function Dashboard({ data, setData }) {
         });
       });
     });
+    // カスタム予定
+    (data.customEvents || []).forEach(ev => {
+      list.push({
+        date: ev.date, type: "custom", icon: "📌", color: "#f97316",
+        title: ev.title,
+        sub: `${ev.time ? ev.time + "〜" : ""}${ev.location ? " @" + ev.location : ""}${ev.memo ? " | " + ev.memo : ""}`,
+        assignee: ev.assignee || "",
+        time: ev.time,
+        location: ev.location,
+        memo: ev.memo,
+        reminderMinutes: ev.reminderMinutes,
+        rawId: ev.id,
+        isCustom: true,
+      });
+    });
     return list;
-  }, [data.jiage, data.owners, data.stocks, data.sekisan]);
+  }, [data.jiage, data.owners, data.stocks, data.sekisan, data.customEvents]);
 
   // フィルター適用
   const calFilteredEvents = useMemo(() => calEvents.filter(e => {
@@ -904,6 +1012,7 @@ function Dashboard({ data, setData }) {
                   { key: "viewing", label: "👀案内", color: "#06b6d4" },
                   { key: "sellContract", label: "📋売却契約", color: C.accent },
                   { key: "sell", label: "✅売却決済", color: C.warn },
+                  { key: "custom", label: "📌メモ", color: "#f97316" },
                 ].map(t => {
                   const active = calFilterType === t.key;
                   return (
@@ -962,7 +1071,10 @@ function Dashboard({ data, setData }) {
               const dow = d.getDay();
               const isOverdue = dateStr < today && events.some(e => e.type === "jiage" || e.type === "owner");
               return (
-                <button key={i} onClick={() => setCalSelectedDate(dateStr)} style={{
+                <button key={i} onClick={() => {
+                  if (calSelectedDate === dateStr) openNewEvent(dateStr);
+                  else setCalSelectedDate(dateStr);
+                }} style={{
                   minHeight: 78, background: isSelected ? C.accent + "22" : "#0a0f1a",
                   border: "none",
                   borderRight: i % 7 !== 6 ? `1px solid #1a2535` : "none",
@@ -1012,7 +1124,10 @@ function Dashboard({ data, setData }) {
               const events = calEventsByDate[dateStr] || [];
               const dow = d.getDay();
               return (
-                <button key={i} onClick={() => setCalSelectedDate(dateStr)} style={{
+                <button key={i} onClick={() => {
+                  if (calSelectedDate === dateStr) openNewEvent(dateStr);
+                  else setCalSelectedDate(dateStr);
+                }} style={{
                   minHeight: 240,
                   background: isSelected ? C.accent + "22" : "#0a0f1a",
                   border: "none",
@@ -1056,9 +1171,16 @@ function Dashboard({ data, setData }) {
             {calSelectedDate < today && <Tag label="過去" color={C.muted} />}
             {calSelectedDate > today && <Tag label="予定" color={C.success} />}
             <span style={{ color: C.muted, fontSize: 12, marginLeft: "auto" }}>{selectedEvents.length}件</span>
+            <button onClick={() => openNewEvent(calSelectedDate)} style={{
+              background: "#f9731622", border: `1px solid #f9731666`, color: "#f97316",
+              borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700,
+            }}>＋ 予定を追加</button>
           </div>
           {selectedEvents.length === 0 ? (
-            <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "16px 0" }}>この日の予定はありません</div>
+            <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "16px 0" }}>
+              この日の予定はありません<br />
+              <span style={{ fontSize: 11 }}>上の「＋ 予定を追加」からメモを追加できます</span>
+            </div>
           ) : (
             <div style={{ display: "grid", gap: 6 }}>
               {selectedEvents.map((e, i) => (
@@ -1069,16 +1191,81 @@ function Dashboard({ data, setData }) {
                 }}>
                   <span style={{ fontSize: 20, flexShrink: 0 }}>{e.icon}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: C.text, fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</div>
-                    <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>{e.sub}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                      <span style={{ color: C.text, fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</span>
+                      {e.isCustom && e.time && <span style={{ color: "#f97316", fontSize: 11, fontWeight: 700 }}>🕐 {e.time}</span>}
+                      {e.isCustom && e.reminderMinutes > 0 && <span style={{ color: C.muted, fontSize: 10 }}>🔔{e.reminderMinutes < 60 ? `${e.reminderMinutes}分前` : `${Math.round(e.reminderMinutes/60)}時間前`}</span>}
+                    </div>
+                    <div style={{ color: C.muted, fontSize: 11 }}>{e.sub}</div>
                   </div>
-                  <MemberTag name={e.assignee} />
+                  {e.assignee && <MemberTag name={e.assignee} />}
+                  {e.isCustom && (
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      <button onClick={() => {
+                        const customEv = (data.customEvents || []).find(ev => ev.id === e.rawId);
+                        if (customEv) openEditEvent(customEv);
+                      }} style={{ background: "#1a2535", border: "none", color: C.muted, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>✏️</button>
+                      <button onClick={() => handleDeleteEvent(e.rawId)} style={{ background: C.danger + "22", border: `1px solid ${C.danger}66`, color: C.danger, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>🗑</button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {/* 📌 カスタム予定の追加・編集 BottomSheet */}
+      {showEventForm && (
+        <BottomSheet title={editingEvent ? "📌 予定を編集" : "📌 新しい予定を追加"} onClose={() => { setShowEventForm(false); setEditingEvent(null); }}>
+          <Field label="タイトル *">
+            <input style={inp} value={eventForm.title} onChange={e => setEventForm(p => ({ ...p, title: e.target.value }))} placeholder="比嘉さんとMTG" autoFocus />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="日付 *">
+              <input type="date" style={inp} value={eventForm.date} onChange={e => setEventForm(p => ({ ...p, date: e.target.value }))} />
+            </Field>
+            <Field label="時間">
+              <input type="time" style={inp} value={eventForm.time} onChange={e => setEventForm(p => ({ ...p, time: e.target.value }))} />
+            </Field>
+          </div>
+          <Field label="場所">
+            <input style={inp} value={eventForm.location} onChange={e => setEventForm(p => ({ ...p, location: e.target.value }))} placeholder="現地 / 事務所 / Zoom" />
+          </Field>
+          <Field label="メモ">
+            <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={eventForm.memo} onChange={e => setEventForm(p => ({ ...p, memo: e.target.value }))} placeholder="持ち物・確認事項など" />
+          </Field>
+          <Field label="担当者（任意）">
+            <select style={inp} value={eventForm.assignee} onChange={e => setEventForm(p => ({ ...p, assignee: e.target.value }))}>
+              <option value="">— 指定なし —</option>
+              {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="🔔 リマインダー">
+            <select style={inp} value={eventForm.reminderMinutes} onChange={e => setEventForm(p => ({ ...p, reminderMinutes: Number(e.target.value) }))}>
+              <option value={0}>通知なし</option>
+              <option value={5}>5分前</option>
+              <option value={15}>15分前</option>
+              <option value={30}>30分前</option>
+              <option value={60}>1時間前</option>
+              <option value={180}>3時間前</option>
+              <option value={1440}>1日前</option>
+            </select>
+            {eventForm.reminderMinutes > 0 && !eventForm.time && (
+              <div style={{ fontSize: 11, color: C.warn, marginTop: 4 }}>⚠️ リマインダーには「時間」の入力が必要です</div>
+            )}
+            {eventForm.reminderMinutes > 0 && (
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+                ※ 通知はアプリを開いている時のみ届きます。<br />初回設定時にブラウザの通知許可が求められます。
+              </div>
+            )}
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowEventForm(false); setEditingEvent(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2, background: "#f97316", borderColor: "#f97316" }} onClick={handleSaveEvent}>{editingEvent ? "更新する" : "予定を保存"}</button>
+          </div>
+        </BottomSheet>
+      )}
 
       {/* ヘッダー＋年度切替 */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
