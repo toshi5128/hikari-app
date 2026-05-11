@@ -2066,6 +2066,32 @@ function StockPage({ data, setData }) {
                         </Field>
                       </div>
 
+                      {/* 投資家専用の追加項目 */}
+                      {v.purpose === "投資家" && (
+                        <div style={{ background: "#7c3aed11", border: `1.5px solid #7c3aed66`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "#a855f7", marginBottom: 10 }}>
+                            💎 投資家情報（次の案件提案にも活用）
+                          </div>
+                          <Field label="🗺️ 購入希望エリア">
+                            <input style={inp} value={v.investArea || ""} onChange={e => updateV("investArea", e.target.value)} placeholder="川越市・狭山市・所沢市 など" />
+                          </Field>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                            <Field label="💴 希望価格帯">
+                              <input style={inp} value={v.investBudget || ""} onChange={e => updateV("investBudget", e.target.value)} placeholder="1500〜3000万" />
+                            </Field>
+                            <Field label="📈 利回り希望">
+                              <input style={inp} value={v.investYield || ""} onChange={e => updateV("investYield", e.target.value)} placeholder="8%以上" />
+                            </Field>
+                          </div>
+                          <Field label="🏢 物件タイプ希望">
+                            <input style={inp} value={v.investType || ""} onChange={e => updateV("investType", e.target.value)} placeholder="戸建 / 区分 / 一棟 / 土地" />
+                          </Field>
+                          <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+                            ※ ここに入力した情報は「その他 → 💎 投資家リスト」に自動で集約されます
+                          </div>
+                        </div>
+                      )}
+
                       {/* 予算＋人数 */}
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                         <Field label="💵 検討予算">
@@ -3388,6 +3414,7 @@ function MorePage({ data, setData, onLock }) {
 
   if (subPage === "yakusho") return <YakushoPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
+  if (subPage === "investors") return <InvestorListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   const hasPin = !!getPin();
   const activityLog = data.activityLog || [];
   const notifPermission = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
@@ -3399,6 +3426,7 @@ function MorePage({ data, setData, onLock }) {
       {[
         { key: "yakusho", icon: "🏛", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
         { key: "sekisan", icon: "🧮", title: "仕入検討積算表", desc: "仕入コスト・利益・利回りを自動計算", count: data.sekisan.length },
+        { key: "investors", icon: "💎", title: "投資家リスト", desc: "案内予定で「投資家」を選択した顧客を自動集約", count: (data.stocks || []).reduce((a, s) => a + (s.viewings || []).filter(v => v.purpose === "投資家").length, 0) },
       ].map(item => (
         <button key={item.key} onClick={() => setSubPage(item.key)} style={{ width: "100%", background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 20, marginBottom: 12, textAlign: "left", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 16, touchAction: "manipulation" }}>
           <span style={{ fontSize: 32 }}>{item.icon}</span>
@@ -3563,6 +3591,165 @@ function MorePage({ data, setData, onLock }) {
           }} style={{ ...btnStyle("danger"), width: "100%", marginTop: 10, padding: "8px", fontSize: 12 }}>履歴を全削除</button>
         )}
       </div>
+    </div>
+  );
+}
+
+function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
+  const [search, setSearch] = useState("");
+  const [filterProspect, setFilterProspect] = useState([]);
+  const [filterResult, setFilterResult] = useState([]);
+  const [expandedRows, setExpandedRows] = useState({}); // {key: bool}
+
+  // 全在庫の案内予定から「投資家」のみ抽出
+  const investors = useMemo(() => {
+    const list = [];
+    (data.stocks || []).forEach(s => {
+      (s.viewings || []).forEach((v, vi) => {
+        if (v.purpose !== "投資家") return;
+        list.push({
+          key: `${s.id}_${vi}`,
+          stockId: s.id,
+          stockName: s.name || "(無題)",
+          stockAssignee: s.assignee,
+          ...v,
+        });
+      });
+    });
+    // 新しい案内が上
+    list.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    return list;
+  }, [data.stocks]);
+
+  // フィルター適用
+  const filtered = useMemo(() => investors.filter(v => {
+    if (search) {
+      const q = search.toLowerCase();
+      const text = [v.customer, v.investArea, v.investBudget, v.investType, v.stockName, v.note, v.contact, v.email].join(" ").toLowerCase();
+      if (!text.includes(q)) return false;
+    }
+    if (filterProspect.length && !filterProspect.includes(v.prospect || "")) return false;
+    if (filterResult.length && !filterResult.includes(v.result || "")) return false;
+    return true;
+  }), [investors, search, filterProspect, filterResult]);
+
+  // KPI
+  const kpi = useMemo(() => {
+    const total = investors.length;
+    const hot = investors.filter(v => v.prospect === "熱い").length;
+    const active = investors.filter(v => !["NG", "ご縁なし"].includes(v.nextAction)).length;
+    const closed = investors.filter(v => v.nextAction === "成約").length;
+    return { total, hot, active, closed };
+  }, [investors]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>💎 投資家リスト</div>
+      </div>
+
+      {/* KPI */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+        {[
+          { label: "総投資家数", count: kpi.total, color: "#a855f7", icon: "💎" },
+          { label: "🔥熱い", count: kpi.hot, color: C.danger, icon: "🔥" },
+          { label: "アクティブ", count: kpi.active, color: C.success, icon: "✅" },
+          { label: "成約済", count: kpi.closed, color: C.accent, icon: "🎉" },
+        ].map(k => (
+          <div key={k.label} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}>
+            <div style={{ fontSize: 16 }}>{k.icon}</div>
+            <div style={{ color: k.color, fontWeight: 800, fontSize: 18, lineHeight: 1 }}>{k.count}</div>
+            <div style={{ color: C.muted, fontSize: 9, marginTop: 4 }}>{k.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <SearchBar value={search} onChange={setSearch} placeholder="名前・エリア・予算・物件で検索..." />
+
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>見込度</div>
+      <FilterChips options={Object.keys(PROSPECT_INFO)} value={filterProspect} onChange={setFilterProspect} multi />
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>結果</div>
+      <FilterChips options={Object.keys(RESULT_INFO)} value={filterResult} onChange={setFilterResult} multi />
+
+      <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
+
+      {filtered.length === 0 ? (
+        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 12, padding: 40, textAlign: "center", color: C.muted, fontSize: 13 }}>
+          投資家データがまだありません<br />
+          <span style={{ fontSize: 11, marginTop: 8, display: "inline-block" }}>
+            在庫タブから物件編集 → 案内予定 → 購入目的「投資家」を選ぶと、ここに自動集約されます
+          </span>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {filtered.map(v => {
+            const isExpanded = !!expandedRows[v.key];
+            const prospect = PROSPECT_INFO[v.prospect];
+            const result = RESULT_INFO[v.result];
+            const dow = dayOfWeekLabel(v.date);
+            return (
+              <div key={v.key} style={{ background: "#0d1422", border: `1.5px solid #a855f733`, borderRadius: 12, padding: 14 }}>
+                {/* サマリー */}
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 15, fontWeight: 800, color: C.text }}>{v.customer || "(名前未入力)"}</span>
+                      {prospect && (
+                        <span style={{ background: prospect.color + "33", color: prospect.color, padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700 }}>
+                          {prospect.icon}{v.prospect}
+                        </span>
+                      )}
+                      {v.nextAction && (
+                        <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 600 }}>
+                          🔁{v.nextAction}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
+                      📅 {v.date || "(日付未定)"}{dow && <span style={{ color: dow.color, marginLeft: 4 }}>({dow.label})</span>}　
+                      🏠 <span onClick={() => onJumpToStock && onJumpToStock(v.stockId)} style={{ color: C.accent, textDecoration: "underline", cursor: "pointer" }}>{v.stockName}</span>
+                    </div>
+                    {(v.investArea || v.investBudget || v.investYield || v.investType) && (
+                      <div style={{ background: "#7c3aed11", borderLeft: `3px solid #a855f7`, padding: "8px 10px", borderRadius: 4, fontSize: 12, lineHeight: 1.7 }}>
+                        {v.investArea && <div>🗺️ <strong style={{ color: "#a855f7" }}>希望エリア：</strong>{v.investArea}</div>}
+                        {v.investBudget && <div>💴 <strong style={{ color: "#a855f7" }}>希望価格：</strong>{v.investBudget}</div>}
+                        {v.investYield && <div>📈 <strong style={{ color: "#a855f7" }}>利回り希望：</strong>{v.investYield}</div>}
+                        {v.investType && <div>🏢 <strong style={{ color: "#a855f7" }}>物件タイプ：</strong>{v.investType}</div>}
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={() => setExpandedRows(p => ({ ...p, [v.key]: !isExpanded }))}
+                    style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
+                    {isExpanded ? "▲" : "▼"}
+                  </button>
+                </div>
+
+                {/* 詳細 */}
+                {isExpanded && (
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid #1a2535`, fontSize: 12, lineHeight: 1.7 }}>
+                    {(v.contact || v.email) && (
+                      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                        {v.contact && <a href={`tel:${v.contact}`} style={{ flex: 1, textDecoration: "none", background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 8, padding: "8px 10px", textAlign: "center", fontSize: 12, fontWeight: 700 }}>📞 {v.contact}</a>}
+                        {v.email && <a href={`mailto:${v.email}`} style={{ flex: 1, textDecoration: "none", background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "8px 10px", textAlign: "center", fontSize: 12, fontWeight: 700 }}>📧 {v.email}</a>}
+                      </div>
+                    )}
+                    {v.funding && <div>💰 資金種別：{v.funding}</div>}
+                    {v.budget && <div>💵 検討予算：{v.budget}</div>}
+                    {v.people && <div>👨‍👩‍👧 来場人数：{v.people}</div>}
+                    {v.channel && <div>🤝 経由：{v.channel}</div>}
+                    {result && <div>{result.icon} 結果：<span style={{ color: result.color, fontWeight: 700 }}>{v.result}</span></div>}
+                    {v.note && <div style={{ marginTop: 8, padding: 8, background: C.bg, borderRadius: 6 }}>📝 {v.note}</div>}
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid #1a2535`, fontSize: 11, color: C.muted }}>
+                      担当者：{v.stockAssignee || "(未設定)"}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
