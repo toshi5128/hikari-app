@@ -921,16 +921,20 @@ function Dashboard({ data, setData }) {
       if (s.sellContractDate) list.push({ date: s.sellContractDate, type: "sellContract", icon: "📋", color: C.accent, title: s.name || "(無題)", sub: "売却契約", assignee: s.assignee });
       if (s.sellDate) list.push({ date: s.sellDate, type: "sell", icon: "✅", color: C.warn, title: s.name || "(無題)", sub: "売却決済", assignee: s.assignee });
       (s.viewings || []).forEach(v => {
-        if (v.date) {
+        // 案内日があれば案内日でカレンダー表示、なければ反響日（任意）でなくスキップ
+        const eventDate = v.visitDate || "";
+        if (eventDate) {
           const tags = [];
           if (v.prospect) tags.push(`${(PROSPECT_INFO[v.prospect]||{}).icon||""}${v.prospect}`);
           if (v.purpose) tags.push(`🎯${v.purpose}`);
           if (v.funding) tags.push(`💰${v.funding}`);
+          const timePrefix = v.visitTime ? `${v.visitTime} ` : "";
           list.push({
-            date: v.date, type: "viewing", icon: "👀", color: "#06b6d4",
-            title: s.name || "(無題)",
-            sub: `反響・${v.customer || "顧客未設定"}${tags.length ? "（" + tags.join(" ") + "）" : ""}${v.note ? " | " + v.note : ""}`,
+            date: eventDate, type: "viewing", icon: "👀", color: "#06b6d4",
+            title: `${timePrefix}${s.name || "(無題)"}`,
+            sub: `案内・${v.customer || "顧客未設定"}${tags.length ? "（" + tags.join(" ") + "）" : ""}${v.note ? " | " + v.note : ""}`,
             assignee: s.assignee,
+            time: v.visitTime || "",
           });
         }
       });
@@ -1921,11 +1925,15 @@ function StockPage({ data, setData }) {
                 {s.sellDate && <span>✅ 売却決済 {s.sellDate}</span>}
               </div>
             )}
-            {(s.viewings || []).length > 0 && (
-              <div style={{ fontSize: 11, color: "#06b6d4", marginBottom: 6 }}>
-                👀 反響 {(s.viewings || []).filter(v => v.date).length}件
-              </div>
-            )}
+            {(s.viewings || []).length > 0 && (() => {
+              const all = s.viewings.length;
+              const withVisit = s.viewings.filter(v => v.visitDate).length;
+              return (
+                <div style={{ fontSize: 11, color: "#06b6d4", marginBottom: 6 }}>
+                  👀 反響 {all}件{withVisit > 0 && <span style={{ marginLeft: 6 }}>📅 案内予定 {withVisit}件</span>}
+                </div>
+              );
+            })()}
             {s.memo && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{s.memo}</div>}
             <div style={{ display: "flex", gap: 8 }}>
               <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(s)}>編集</button>
@@ -1978,7 +1986,8 @@ function StockPage({ data, setData }) {
               <button onClick={() => {
                 const newIdx = (form.viewings || []).length;
                 setForm(p => ({ ...p, viewings: [...(p.viewings || []), {
-                  date: "", customer: "", contact: "", email: "",
+                  date: "", visitDate: "", visitTime: "",
+                  customer: "", contact: "", email: "",
                   funding: "", purpose: "", budget: "", people: "", channel: "",
                   prospect: "", result: "未実施", nextAction: "", note: ""
                 }] }));
@@ -2003,12 +2012,22 @@ function StockPage({ data, setData }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>
-                          {v.date || "(日付未定)"}{dow && <span style={{ color: dow.color, marginLeft: 4 }}>({dow.label})</span>}
-                        </span>
                         <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 3, fontSize: 11 }}>
+                        <span style={{ color: C.muted }}>
+                          反響:{v.date || "—"}{dow && <span style={{ color: dow.color, marginLeft: 2 }}>({dow.label})</span>}
+                        </span>
+                        {v.visitDate && (() => {
+                          const visitDow = dayOfWeekLabel(v.visitDate);
+                          return (
+                            <span style={{ color: "#06b6d4", fontWeight: 700 }}>
+                              → 案内:{v.visitDate}{visitDow && <span style={{ color: visitDow.color, marginLeft: 2 }}>({visitDow.label})</span>}{v.visitTime ? " " + v.visitTime : ""}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", marginTop: 5 }}>
                         {prospect && (
                           <span style={{ background: prospect.color + "33", color: prospect.color, padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
                             {prospect.icon}{v.prospect}
@@ -2045,15 +2064,30 @@ function StockPage({ data, setData }) {
                   {/* ===== 詳細フォーム（展開時のみ） ===== */}
                   {isExpanded && (
                     <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid #1a2535` }}>
-                      {/* 日付＋顧客名 */}
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                        <Field label={<>📅 日付{dow && <span style={{ color: dow.color, marginLeft: 6, fontWeight: 800 }}>({dow.label})</span>}</>}>
-                          <input type="date" style={inp} value={v.date} onChange={e => updateV("date", e.target.value)} />
-                        </Field>
-                        <Field label="顧客名">
-                          <input style={inp} value={v.customer} onChange={e => updateV("customer", e.target.value)} placeholder="山田様" />
-                        </Field>
-                      </div>
+                      {/* 反響日 + 案内日 + 時間 */}
+                      {(() => { const dowResp = dayOfWeekLabel(v.date); const dowVisit = dayOfWeekLabel(v.visitDate); return (
+                        <>
+                          <Field label={<>📅 反響日{dowResp && <span style={{ color: dowResp.color, marginLeft: 6, fontWeight: 800 }}>({dowResp.label})</span>}</>}>
+                            <input type="date" style={inp} value={v.date} onChange={e => updateV("date", e.target.value)} />
+                          </Field>
+                          <div style={{ background: "#06b6d411", border: `1.5px solid #06b6d466`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+                            <div style={{ fontSize: 11, color: "#06b6d4", fontWeight: 700, marginBottom: 8 }}>📅 案内日時（入力するとカレンダーに自動表示）</div>
+                            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8 }}>
+                              <Field label={<>案内日{dowVisit && <span style={{ color: dowVisit.color, marginLeft: 6, fontWeight: 800 }}>({dowVisit.label})</span>}</>}>
+                                <input type="date" style={inp} value={v.visitDate || ""} onChange={e => updateV("visitDate", e.target.value)} />
+                              </Field>
+                              <Field label="🕐 時間">
+                                <input type="time" style={inp} value={v.visitTime || ""} onChange={e => updateV("visitTime", e.target.value)} />
+                              </Field>
+                            </div>
+                          </div>
+                        </>
+                      ); })()}
+
+                      {/* 顧客名 */}
+                      <Field label="顧客名">
+                        <input style={inp} value={v.customer} onChange={e => updateV("customer", e.target.value)} placeholder="山田様" />
+                      </Field>
 
                       {/* 連絡先：電話＋メール */}
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -3744,8 +3778,11 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
           <button onClick={() => {
             if (!filtered.length) { alert("ダウンロードするデータがありません"); return; }
             const rows = filtered.map(v => ({
-              "案内日": v.date || "",
-              "曜日": dayOfWeekLabel(v.date)?.label || "",
+              "反響日": v.date || "",
+              "反響曜日": dayOfWeekLabel(v.date)?.label || "",
+              "案内日": v.visitDate || "",
+              "案内曜日": dayOfWeekLabel(v.visitDate)?.label || "",
+              "案内時間": v.visitTime || "",
               "物件名": v.stockName || "",
               "担当者": v.stockAssignee || "",
               "顧客名": v.customer || "",
@@ -3806,9 +3843,14 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
                         </span>
                       )}
                     </div>
-                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                      📅 {v.date || "(日付未定)"}{dow && <span style={{ color: dow.color, marginLeft: 4 }}>({dow.label})</span>}　
-                      🏠 <span onClick={() => onJumpToStock && onJumpToStock(v.stockId)} style={{ color: C.accent, textDecoration: "underline", cursor: "pointer" }}>{v.stockName}</span>
+                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, lineHeight: 1.6 }}>
+                      📅 反響:{v.date || "—"}{dow && <span style={{ color: dow.color, marginLeft: 2 }}>({dow.label})</span>}
+                      {v.visitDate && (() => { const vdow = dayOfWeekLabel(v.visitDate); return (
+                        <span style={{ color: "#06b6d4", marginLeft: 8, fontWeight: 700 }}>
+                          → 案内:{v.visitDate}{vdow && <span style={{ color: vdow.color, marginLeft: 2 }}>({vdow.label})</span>}{v.visitTime ? " " + v.visitTime : ""}
+                        </span>
+                      ); })()}
+                      <br />🏠 <span onClick={() => onJumpToStock && onJumpToStock(v.stockId)} style={{ color: C.accent, textDecoration: "underline", cursor: "pointer" }}>{v.stockName}</span>
                     </div>
                     {(v.investArea || v.investBudget || v.investYield || v.investType) && (
                       <div style={{ background: "#7c3aed11", borderLeft: `3px solid #a855f7`, padding: "8px 10px", borderRadius: 4, fontSize: 12, lineHeight: 1.7 }}>
