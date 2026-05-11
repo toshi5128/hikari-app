@@ -104,9 +104,9 @@ function stagnantInfo(buyDateStr) {
 const STOCK_STATUSES = ["見込", "仕入契約済", "リフォーム中", "リフォーム待ち", "売却契約準備中", "売却契約完了", "契約書作成中", "決済完了"];
 const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "NG", "見込", "居住している"];
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
-const APPROACH_ITEMS = ["訪問", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "仕入"];
+const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "仕入"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
-const APPROACH_TARGETS = { "訪問": 600, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "仕入": 3 };
+const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "仕入": 3 };
 
 // 仕入検討積算表の判断ステータス（判断タブで使用）
 const JUDGMENTS = [
@@ -1631,6 +1631,7 @@ function StockPage({ data, setData }) {
   const [search, setSearch] = useState("");
   const [filterStatuses, setFilterStatuses] = useState([]);
   const [filterMembers, setFilterMembers] = useState([]);
+  const [viewMode, setViewMode] = useState("active"); // "active" | "completed" | "all"
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const empty = {
@@ -1666,12 +1667,22 @@ function StockPage({ data, setData }) {
     setForm(p => ({ ...p, photos: (p.photos || []).filter((_, i) => i !== idx) }));
   };
 
+  // viewMode別の件数
+  const counts = useMemo(() => ({
+    active: data.stocks.filter(s => s.status !== "決済完了").length,
+    completed: data.stocks.filter(s => s.status === "決済完了").length,
+    all: data.stocks.length,
+  }), [data.stocks]);
+
   const filtered = useMemo(() => data.stocks.filter(s => {
+    // viewMode（現在の在庫 / 決済完了 / 全て）
+    if (viewMode === "active" && s.status === "決済完了") return false;
+    if (viewMode === "completed" && s.status !== "決済完了") return false;
     if (filterStatuses.length && !filterStatuses.includes(s.status)) return false;
     if (filterMembers.length && !filterMembers.includes(s.assignee)) return false;
     if (search && !s.name.includes(search) && !s.assignee.includes(search)) return false;
     return true;
-  }), [data.stocks, filterStatuses, filterMembers, search]);
+  }), [data.stocks, filterStatuses, filterMembers, search, viewMode]);
 
   const openEdit = s => {
     setForm({
@@ -1715,11 +1726,34 @@ function StockPage({ data, setData }) {
         <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>🏠 在庫・案件管理</div>
         <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm(empty); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
       </div>
+
+      {/* ====== 表示モード切替（現在の在庫 / 決済完了 / すべて） ====== */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 12, padding: 4 }}>
+        {[
+          { key: "active", label: "📦 現在の在庫", count: counts.active, color: C.accent },
+          { key: "completed", label: "✅ 決済完了", count: counts.completed, color: C.success },
+          { key: "all", label: "すべて", count: counts.all, color: C.muted },
+        ].map(m => {
+          const active = viewMode === m.key;
+          return (
+            <button key={m.key} onClick={() => setViewMode(m.key)} style={{
+              flex: 1, background: active ? m.color : "none", border: "none",
+              color: active ? "#fff" : C.muted, borderRadius: 9,
+              padding: "10px 4px", cursor: "pointer", fontSize: 12, fontWeight: active ? 700 : 500, fontFamily: "inherit",
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+            }}>
+              <span>{m.label}</span>
+              <span style={{ fontSize: 16, fontWeight: 800 }}>{m.count}</span>
+            </button>
+          );
+        })}
+      </div>
+
       <SearchBar value={search} onChange={setSearch} placeholder="物件名・担当者で検索..." />
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>担当者</div>
       <FilterChips options={MEMBERS.slice(0, 6)} value={filterMembers} onChange={setFilterMembers} multi />
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>ステータス</div>
-      <FilterChips options={STOCK_STATUSES} value={filterStatuses} onChange={setFilterStatuses} multi />
+      <FilterChips options={viewMode === "active" ? STOCK_STATUSES.filter(s => s !== "決済完了") : viewMode === "completed" ? ["決済完了"] : STOCK_STATUSES} value={filterStatuses} onChange={setFilterStatuses} multi />
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
       {filtered.map(s => {
         const profit = s.sellPrice - s.buyCost;
