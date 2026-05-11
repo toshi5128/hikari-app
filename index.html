@@ -671,6 +671,79 @@ function Dashboard({ data, setData }) {
     buyCount: String((data.annualGoals?.buyCount) ?? 30),
   });
 
+  // ===== カレンダー用 state =====
+  const [calMode, setCalMode] = useState("month"); // "month" | "week"
+  const [calCursor, setCalCursor] = useState(() => new Date());
+  const [calSelectedDate, setCalSelectedDate] = useState(today);
+  const [calFilterType, setCalFilterType] = useState("all");
+  const [calFilterMember, setCalFilterMember] = useState("__ALL__");
+
+  // 既存データから全カレンダーイベントを集計
+  const calEvents = useMemo(() => {
+    const list = [];
+    (data.jiage || []).forEach(j => {
+      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `訪問予定・${j.status}`, assignee: j.assignee });
+    });
+    (data.owners || []).forEach(o => {
+      if (o.nextFollowDate) list.push({ date: o.nextFollowDate, type: "owner", icon: "👤", color: C.accent, title: o.address || "(無住所)", sub: `所有者フォロー・${o.status}`, assignee: o.assignee });
+    });
+    (data.sekisan || []).forEach(s => {
+      if (s.createdAt) list.push({ date: s.createdAt, type: "sekisan", icon: "🧮", color: C.danger, title: s.address || "(無住所)", sub: `仕入検討・${s.judgment}`, assignee: s.assignee });
+    });
+    (data.stocks || []).forEach(s => {
+      if (s.buyContractDate) list.push({ date: s.buyContractDate, type: "buyContract", icon: "📝", color: "#a855f7", title: s.name || "(無題)", sub: "仕入契約", assignee: s.assignee });
+      if (s.buyDate) list.push({ date: s.buyDate, type: "buy", icon: "🏠", color: C.success, title: s.name || "(無題)", sub: "仕入決済", assignee: s.assignee });
+      if (s.sellContractDate) list.push({ date: s.sellContractDate, type: "sellContract", icon: "📋", color: C.accent, title: s.name || "(無題)", sub: "売却契約", assignee: s.assignee });
+      if (s.sellDate) list.push({ date: s.sellDate, type: "sell", icon: "✅", color: C.warn, title: s.name || "(無題)", sub: "売却決済", assignee: s.assignee });
+      (s.viewings || []).forEach(v => {
+        if (v.date) list.push({
+          date: v.date, type: "viewing", icon: "👀", color: "#06b6d4",
+          title: s.name || "(無題)",
+          sub: `案内・${v.customer || "顧客未設定"}${v.note ? "（" + v.note + "）" : ""}`,
+          assignee: s.assignee,
+        });
+      });
+    });
+    return list;
+  }, [data.jiage, data.owners, data.stocks, data.sekisan]);
+
+  // フィルター適用
+  const calFilteredEvents = useMemo(() => calEvents.filter(e => {
+    if (calFilterType !== "all" && e.type !== calFilterType) return false;
+    if (calFilterMember !== "__ALL__" && e.assignee !== calFilterMember) return false;
+    return true;
+  }), [calEvents, calFilterType, calFilterMember]);
+
+  // 日付ごとにマッピング
+  const calEventsByDate = useMemo(() => {
+    const m = {};
+    calFilteredEvents.forEach(e => { (m[e.date] ||= []).push(e); });
+    return m;
+  }, [calFilteredEvents]);
+
+  // 月の42日（6週分）を生成
+  const calMonthDays = useMemo(() => {
+    const y = calCursor.getFullYear(), mo = calCursor.getMonth();
+    const firstDay = new Date(y, mo, 1).getDay(); // 0=日
+    const lastDate = new Date(y, mo + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < firstDay; i++) cells.push(null);
+    for (let d = 1; d <= lastDate; d++) cells.push(new Date(y, mo, d));
+    while (cells.length < 42) cells.push(null);
+    return cells;
+  }, [calCursor]);
+
+  // 週の7日を生成（calCursorを含む週）
+  const calWeekDays = useMemo(() => {
+    const d = new Date(calCursor);
+    const sunday = new Date(d);
+    sunday.setDate(d.getDate() - d.getDay());
+    return [0,1,2,3,4,5,6].map(i => { const dd = new Date(sunday); dd.setDate(sunday.getDate() + i); return dd; });
+  }, [calCursor]);
+
+  const fmtDate = d => d ? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}` : null;
+  const selectedEvents = calEventsByDate[calSelectedDate] || [];
+
   const availableYears = useMemo(() => {
     const years = new Set([currentYear]);
     data.stocks.forEach(s => {
@@ -770,6 +843,191 @@ function Dashboard({ data, setData }) {
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
+
+      {/* ============== 📅 カレンダー（最上段） ============== */}
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14 }}>
+        {/* ヘッダー：月/週ナビ＋モード切替 */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button onClick={() => {
+              const d = new Date(calCursor);
+              if (calMode === "month") d.setMonth(d.getMonth() - 1);
+              else d.setDate(d.getDate() - 7);
+              setCalCursor(d);
+            }} style={{ background: "#1a2535", border: "none", color: C.text, borderRadius: 8, width: 32, height: 32, cursor: "pointer", fontSize: 16, fontFamily: "inherit" }}>‹</button>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.text, minWidth: 120, textAlign: "center" }}>
+              {calMode === "month"
+                ? `${calCursor.getFullYear()}年${calCursor.getMonth()+1}月`
+                : `${calWeekDays[0].getMonth()+1}/${calWeekDays[0].getDate()}〜${calWeekDays[6].getMonth()+1}/${calWeekDays[6].getDate()}`}
+            </div>
+            <button onClick={() => {
+              const d = new Date(calCursor);
+              if (calMode === "month") d.setMonth(d.getMonth() + 1);
+              else d.setDate(d.getDate() + 7);
+              setCalCursor(d);
+            }} style={{ background: "#1a2535", border: "none", color: C.text, borderRadius: 8, width: 32, height: 32, cursor: "pointer", fontSize: 16, fontFamily: "inherit" }}>›</button>
+            <button onClick={() => { setCalCursor(new Date()); setCalSelectedDate(today); }} style={{ background: "#1a2535", border: "none", color: C.accent, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", marginLeft: 4 }}>今日</button>
+          </div>
+          <div style={{ display: "flex", background: C.bg, borderRadius: 8, padding: 2, border: `1px solid #1a2535` }}>
+            {[["month", "月"], ["week", "週"]].map(([key, label]) => (
+              <button key={key} onClick={() => setCalMode(key)} style={{
+                background: calMode === key ? C.accent : "none", border: "none",
+                color: calMode === key ? "#fff" : C.muted, borderRadius: 6,
+                padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+              }}>{label}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* 種類フィルター */}
+        <div style={{ display: "flex", gap: 4, marginBottom: 8, overflowX: "auto", paddingBottom: 2 }}>
+          {[
+            { key: "all", label: `全て(${calFilteredEvents.length})`, color: C.muted },
+            { key: "sekisan", label: "🧮仕入検討", color: C.danger },
+            { key: "jiage", label: "🗺️地上げ", color: C.purple },
+            { key: "owner", label: "👤所有者", color: C.accent },
+            { key: "buyContract", label: "📝仕入契約", color: "#a855f7" },
+            { key: "buy", label: "🏠仕入決済", color: C.success },
+            { key: "viewing", label: "👀案内", color: "#06b6d4" },
+            { key: "sellContract", label: "📋売却契約", color: C.accent },
+            { key: "sell", label: "✅売却決済", color: C.warn },
+          ].map(t => {
+            const active = calFilterType === t.key;
+            return (
+              <button key={t.key} onClick={() => setCalFilterType(t.key)} style={{
+                padding: "4px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+                background: active ? t.color : C.bg, color: active ? "#fff" : C.muted,
+                border: `1px solid ${active ? t.color : "#1a2535"}`, fontFamily: "inherit",
+                whiteSpace: "nowrap", flexShrink: 0,
+              }}>{t.label}</button>
+            );
+          })}
+        </div>
+
+        {/* 担当者フィルター */}
+        <div style={{ display: "flex", gap: 4, marginBottom: 12, overflowX: "auto", paddingBottom: 2 }}>
+          <button onClick={() => setCalFilterMember("__ALL__")} style={{
+            padding: "4px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+            background: calFilterMember === "__ALL__" ? "#1a2535" : C.bg,
+            color: calFilterMember === "__ALL__" ? C.text : C.muted,
+            border: `1px solid ${calFilterMember === "__ALL__" ? C.muted : "#1a2535"}`,
+            fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0,
+          }}>全員</button>
+          {MEMBERS.slice(0, 6).map(m => (
+            <button key={m} onClick={() => setCalFilterMember(m)} style={{
+              padding: "4px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+              background: calFilterMember === m ? MEMBER_COLORS[m] : C.bg,
+              color: calFilterMember === m ? "#fff" : C.muted,
+              border: `1px solid ${calFilterMember === m ? MEMBER_COLORS[m] : "#1a2535"}`,
+              fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0,
+            }}>{m}</button>
+          ))}
+        </div>
+
+        {/* 曜日ヘッダー */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 4 }}>
+          {["日", "月", "火", "水", "木", "金", "土"].map((d, i) => (
+            <div key={d} style={{ textAlign: "center", fontSize: 10, color: i === 0 ? C.danger : i === 6 ? C.accent : C.muted, fontWeight: 700, padding: "4px 0" }}>{d}</div>
+          ))}
+        </div>
+
+        {/* 月表示 */}
+        {calMode === "month" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 }}>
+            {calMonthDays.map((d, i) => {
+              if (!d) return <div key={i} style={{ aspectRatio: "1", background: "#080d18", borderRadius: 6 }} />;
+              const dateStr = fmtDate(d);
+              const isToday = dateStr === today;
+              const isSelected = dateStr === calSelectedDate;
+              const events = calEventsByDate[dateStr] || [];
+              const isOverdue = dateStr < today && events.some(e => e.type === "jiage" || e.type === "owner");
+              const dow = d.getDay();
+              return (
+                <button key={i} onClick={() => setCalSelectedDate(dateStr)} style={{
+                  aspectRatio: "1", background: isSelected ? C.accent + "33" : "#080d18",
+                  border: `1px solid ${isToday ? C.accent : isSelected ? C.accent : "#1a2535"}`,
+                  borderRadius: 6, padding: "3px 4px", cursor: "pointer", fontFamily: "inherit",
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", gap: 2,
+                  position: "relative",
+                }}>
+                  <span style={{ fontSize: 11, fontWeight: isToday ? 800 : 500, color: isOverdue ? C.danger : dow === 0 ? C.danger : dow === 6 ? C.accent : C.text }}>{d.getDate()}</span>
+                  {events.length > 0 && (
+                    <div style={{ display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "center" }}>
+                      {events.slice(0, 4).map((e, j) => (
+                        <div key={j} style={{ width: 4, height: 4, borderRadius: "50%", background: e.color }} />
+                      ))}
+                      {events.length > 4 && <span style={{ fontSize: 8, color: C.muted }}>+{events.length - 4}</span>}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* 週表示 */}
+        {calMode === "week" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+            {calWeekDays.map((d, i) => {
+              const dateStr = fmtDate(d);
+              const isToday = dateStr === today;
+              const isSelected = dateStr === calSelectedDate;
+              const events = calEventsByDate[dateStr] || [];
+              const dow = d.getDay();
+              return (
+                <button key={i} onClick={() => setCalSelectedDate(dateStr)} style={{
+                  background: isSelected ? C.accent + "33" : "#080d18",
+                  border: `1px solid ${isToday ? C.accent : isSelected ? C.accent : "#1a2535"}`,
+                  borderRadius: 8, padding: "8px 4px", cursor: "pointer", fontFamily: "inherit",
+                  display: "flex", flexDirection: "column", alignItems: "stretch", gap: 4,
+                  minHeight: 120,
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: isToday ? 800 : 600, color: dow === 0 ? C.danger : dow === 6 ? C.accent : C.text, textAlign: "center" }}>
+                    {d.getDate()}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, overflow: "hidden" }}>
+                    {events.slice(0, 4).map((e, j) => (
+                      <div key={j} style={{
+                        background: e.color + "33", border: `1px solid ${e.color}66`,
+                        borderRadius: 4, padding: "2px 4px", fontSize: 9, color: e.color,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        textAlign: "left",
+                      }}>{e.icon}{e.title.slice(0, 6)}</div>
+                    ))}
+                    {events.length > 4 && <div style={{ fontSize: 9, color: C.muted, textAlign: "center" }}>+{events.length - 4}</div>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* 選択日のイベント一覧 */}
+        <div style={{ borderTop: `1px solid #1a2535`, marginTop: 12, paddingTop: 12 }}>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>
+            📅 <span style={{ color: C.text, fontWeight: 700 }}>{calSelectedDate}</span>
+            {calSelectedDate === today && <span style={{ color: C.accent, marginLeft: 6 }}>（今日）</span>}
+            {calSelectedDate < today && <span style={{ color: C.danger, marginLeft: 6 }}>（過去）</span>}
+            <span style={{ marginLeft: 8 }}>{selectedEvents.length}件</span>
+          </div>
+          {selectedEvents.length === 0 ? (
+            <div style={{ color: C.muted, fontSize: 12, textAlign: "center", padding: "12px 0" }}>この日の予定なし</div>
+          ) : (
+            <div style={{ display: "grid", gap: 6 }}>
+              {selectedEvents.map((e, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, background: C.bg, borderLeft: `3px solid ${e.color}`, borderRadius: 6, padding: "8px 10px" }}>
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>{e.icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ color: C.text, fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</div>
+                    <div style={{ color: C.muted, fontSize: 11, marginTop: 1 }}>{e.sub}</div>
+                  </div>
+                  <MemberTag name={e.assignee} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* ヘッダー＋年度切替 */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -1095,7 +1353,14 @@ function StockPage({ data, setData }) {
   const [filterMembers, setFilterMembers] = useState([]);
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
-  const empty = { assignee: MEMBERS[0], name: "", status: "仕入契約済", buyDate: "", sellDate: "", buyCost: "", sellPrice: "", memo: "", year: new Date().getFullYear(), photos: [] };
+  const empty = {
+    assignee: MEMBERS[0], name: "", status: "仕入契約済",
+    buyContractDate: "", buyDate: "", sellContractDate: "", sellDate: "",
+    buyCost: "", sellPrice: "", memo: "",
+    year: new Date().getFullYear(),
+    photos: [],
+    viewings: [], // [{date, customer, note}]
+  };
   const [form, setForm] = useState(empty);
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
 
@@ -1128,9 +1393,28 @@ function StockPage({ data, setData }) {
     return true;
   }), [data.stocks, filterStatuses, filterMembers, search]);
 
-  const openEdit = s => { setForm({ ...s, buyCost: String(s.buyCost), sellPrice: String(s.sellPrice), photos: s.photos || [] }); setEditItem(s); setShowAdd(true); };
+  const openEdit = s => {
+    setForm({
+      ...s,
+      buyCost: String(s.buyCost),
+      sellPrice: String(s.sellPrice),
+      photos: s.photos || [],
+      viewings: s.viewings || [],
+      buyContractDate: s.buyContractDate || "",
+      sellContractDate: s.sellContractDate || "",
+    });
+    setEditItem(s);
+    setShowAdd(true);
+  };
   const handleSave = () => {
-    const item = { ...form, id: editItem?.id || Date.now(), buyCost: Number(form.buyCost), sellPrice: Number(form.sellPrice), photos: form.photos || [] };
+    const item = {
+      ...form,
+      id: editItem?.id || Date.now(),
+      buyCost: Number(form.buyCost),
+      sellPrice: Number(form.sellPrice),
+      photos: form.photos || [],
+      viewings: form.viewings || [],
+    };
     setData(d => {
       const next = { ...d, stocks: editItem ? d.stocks.map(s => s.id === editItem.id ? item : s) : [...d.stocks, item] };
       return appendLog(next, editItem ? "update" : "add", "stock", `${item.name || "(無題)"}（${item.status}）`);
@@ -1184,7 +1468,19 @@ function StockPage({ data, setData }) {
                 </div>
               ))}
             </div>
-            {s.buyDate && <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>仕入日: {s.buyDate}{s.sellDate ? ` → 売却: ${s.sellDate}` : ""}</div>}
+            {(s.buyContractDate || s.buyDate || s.sellContractDate || s.sellDate) && (
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, lineHeight: 1.6 }}>
+                {s.buyContractDate && <span>📝 仕入契約 {s.buyContractDate}　</span>}
+                {s.buyDate && <span>🏠 仕入決済 {s.buyDate}　</span>}
+                {s.sellContractDate && <span>📋 売却契約 {s.sellContractDate}　</span>}
+                {s.sellDate && <span>✅ 売却決済 {s.sellDate}</span>}
+              </div>
+            )}
+            {(s.viewings || []).length > 0 && (
+              <div style={{ fontSize: 11, color: "#06b6d4", marginBottom: 6 }}>
+                👀 案内予定 {(s.viewings || []).filter(v => v.date).length}件
+              </div>
+            )}
             {s.memo && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{s.memo}</div>}
             <div style={{ display: "flex", gap: 8 }}>
               <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(s)}>編集</button>
@@ -1199,8 +1495,46 @@ function StockPage({ data, setData }) {
           <Field label="ステータス"><select style={inp} value={form.status} onChange={f("status")}>{STOCK_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
           <Field label="仕入原価（円）"><MoneyInput value={form.buyCost} onChange={v => setForm(p => ({ ...p, buyCost: v }))} placeholder="3,000,000" /></Field>
           <Field label="売却額（円）"><MoneyInput value={form.sellPrice} onChange={v => setForm(p => ({ ...p, sellPrice: v }))} placeholder="5,000,000" /></Field>
-          <Field label="仕入日"><input type="date" style={inp} value={form.buyDate} onChange={f("buyDate")} /></Field>
-          <Field label="売却日"><input type="date" style={inp} value={form.sellDate} onChange={f("sellDate")} /></Field>
+
+          {/* 仕入関連日付 */}
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.success, marginBottom: 10 }}>🏠 仕入関連</div>
+            <Field label="📝 仕入契約日"><input type="date" style={inp} value={form.buyContractDate || ""} onChange={f("buyContractDate")} /></Field>
+            <Field label="🏠 仕入決済日"><input type="date" style={inp} value={form.buyDate || ""} onChange={f("buyDate")} /></Field>
+          </div>
+
+          {/* 売却関連日付 */}
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.warn, marginBottom: 10 }}>💰 売却関連</div>
+            <Field label="📋 売却契約日"><input type="date" style={inp} value={form.sellContractDate || ""} onChange={f("sellContractDate")} /></Field>
+            <Field label="✅ 売却決済日"><input type="date" style={inp} value={form.sellDate || ""} onChange={f("sellDate")} /></Field>
+          </div>
+
+          {/* 👀 案内予定（複数登録可） */}
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#06b6d4" }}>👀 案内予定（{(form.viewings || []).length}件）</div>
+              <button onClick={() => setForm(p => ({ ...p, viewings: [...(p.viewings || []), { date: "", customer: "", note: "" }] }))}
+                style={{ background: "#06b6d422", border: `1px solid #06b6d466`, color: "#06b6d4", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700 }}>
+                ＋ 案内を追加
+              </button>
+            </div>
+            {(form.viewings || []).length === 0 && (
+              <div style={{ color: C.muted, fontSize: 11, textAlign: "center", padding: "8px 0" }}>案内予定なし</div>
+            )}
+            {(form.viewings || []).map((v, i) => (
+              <div key={i} style={{ background: "#0d1422", borderRadius: 8, padding: 10, marginBottom: 8, position: "relative" }}>
+                <button onClick={() => setForm(p => ({ ...p, viewings: (p.viewings || []).filter((_, j) => j !== i) }))}
+                  style={{ position: "absolute", top: 6, right: 6, background: C.danger + "33", border: `1px solid ${C.danger}66`, color: C.danger, borderRadius: "50%", width: 22, height: 22, cursor: "pointer", fontSize: 11, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>✕</button>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8, paddingRight: 28 }}>
+                  <Field label="日付"><input type="date" style={inp} value={v.date} onChange={e => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, date: e.target.value } : vv) }))} /></Field>
+                  <Field label="顧客名"><input style={inp} value={v.customer} onChange={e => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, customer: e.target.value } : vv) }))} placeholder="山田様" /></Field>
+                </div>
+                <Field label="メモ"><input style={inp} value={v.note} onChange={e => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, note: e.target.value } : vv) }))} placeholder="10:00 単独内見・ご家族3名" /></Field>
+              </div>
+            ))}
+          </div>
+
           <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={f("memo")} /></Field>
 
           {/* 写真添付 */}
