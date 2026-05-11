@@ -143,6 +143,7 @@ const DEFAULT_DATA = {
   yakusho: [],
   sekisan: [],
   memberGoals: {},
+  annualGoals: { sell: 30000, profit: 6000, buyCount: 30 }, // 売上3億万、利益6000万、仕入30件
 };
 
 // Supabaseからデータを取得
@@ -209,7 +210,152 @@ function isUserEditing() {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
+// ============== PINロック関連 ==============
+const PIN_KEY = "hikari_pin";
+const PIN_UNLOCK_KEY = "hikari_pin_unlocked_at";
+const PIN_LOCK_DURATION = 24 * 60 * 60 * 1000; // 24時間
+
+function getPin() {
+  try { return localStorage.getItem(PIN_KEY); } catch { return null; }
+}
+function setPin(pin) {
+  try { localStorage.setItem(PIN_KEY, pin); } catch {}
+}
+function clearPin() {
+  try { localStorage.removeItem(PIN_KEY); localStorage.removeItem(PIN_UNLOCK_KEY); } catch {}
+}
+function isUnlocked() {
+  const pin = getPin();
+  if (!pin) return true; // PIN未設定なら認証スキップ
+  try {
+    const at = Number(localStorage.getItem(PIN_UNLOCK_KEY));
+    if (!at) return false;
+    return Date.now() - at < PIN_LOCK_DURATION;
+  } catch { return false; }
+}
+function markUnlocked() {
+  try { localStorage.setItem(PIN_UNLOCK_KEY, String(Date.now())); } catch {}
+}
+
+// ============== 画像圧縮関数（写真添付用）==============
+// 画像ファイルを受け取って、リサイズ＆圧縮してbase64で返す
+async function compressImage(file, maxSize = 800, quality = 0.6) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let { width, height } = img;
+        if (width > height && width > maxSize) {
+          height = Math.round((height * maxSize) / width);
+          width = maxSize;
+        } else if (height > maxSize) {
+          width = Math.round((width * maxSize) / height);
+          height = maxSize;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 function App() {
+  const [unlocked, setUnlocked] = useState(() => isUnlocked());
+
+  if (!unlocked) {
+    return <PinScreen onUnlock={() => setUnlocked(true)} />;
+  }
+  return <MainApp onLock={() => setUnlocked(false)} />;
+}
+
+// ===================== PIN画面 =====================
+function PinScreen({ onUnlock }) {
+  const hasPin = !!getPin();
+  const [mode, setMode] = useState(hasPin ? "verify" : "setup"); // verify | setup | confirm
+  const [pin, setPinInput] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [error, setError] = useState("");
+
+  const handleVerify = () => {
+    if (pin === getPin()) {
+      markUnlocked();
+      onUnlock();
+    } else {
+      setError("PINが違います");
+      setPinInput("");
+    }
+  };
+
+  const handleSetup = () => {
+    if (pin.length !== 4) { setError("4桁で入力してください"); return; }
+    setMode("confirm");
+    setError("");
+  };
+
+  const handleConfirm = () => {
+    if (pinConfirm === pin) {
+      setPin(pin);
+      markUnlocked();
+      onUnlock();
+    } else {
+      setError("PINが一致しません");
+      setPinConfirm("");
+    }
+  };
+
+  const title = mode === "verify" ? "🔒 PINを入力" : mode === "setup" ? "🔐 PIN設定（初回）" : "🔐 もう一度入力";
+  const desc = mode === "verify" ? "アプリ起動用の4桁PINを入力してください" : mode === "setup" ? "4桁のPINを設定してください。次回起動時から必要になります。" : "確認のためもう一度同じPINを入力してください";
+
+  const currentValue = mode === "confirm" ? pinConfirm : pin;
+  const setCurrentValue = mode === "confirm" ? setPinConfirm : setPinInput;
+  const handleSubmit = mode === "verify" ? handleVerify : mode === "setup" ? handleSetup : handleConfirm;
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Noto Sans JP', sans-serif" }}>
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 18, padding: "30px 24px", maxWidth: 360, width: "100%" }}>
+        <div style={{ fontSize: 18, fontWeight: 800, color: C.text, marginBottom: 8, textAlign: "center" }}>{title}</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 24, textAlign: "center", lineHeight: 1.6 }}>{desc}</div>
+        <input
+          type="password"
+          inputMode="numeric"
+          maxLength={4}
+          value={currentValue}
+          onChange={e => { setCurrentValue(e.target.value.replace(/[^0-9]/g, "")); setError(""); }}
+          onKeyDown={e => { if (e.key === "Enter") handleSubmit(); }}
+          placeholder="••••"
+          autoFocus
+          style={{ ...inp, fontSize: 32, textAlign: "center", letterSpacing: "0.5em", padding: "16px", marginBottom: 12 }}
+        />
+        {error && <div style={{ color: C.danger, fontSize: 13, textAlign: "center", marginBottom: 12 }}>{error}</div>}
+        <button onClick={handleSubmit} style={{ ...btnStyle(), width: "100%", padding: "14px", fontSize: 15 }}>
+          {mode === "verify" ? "ロック解除" : mode === "setup" ? "次へ" : "設定完了"}
+        </button>
+        {mode === "verify" && (
+          <button
+            onClick={() => { if (window.confirm("PINをリセットしますか？\nリセットすると再設定が必要になります。")) { clearPin(); setMode("setup"); setPinInput(""); setError(""); } }}
+            style={{ background: "none", border: "none", color: C.muted, fontSize: 12, marginTop: 16, width: "100%", cursor: "pointer", fontFamily: "inherit" }}
+          >
+            PINを忘れた場合（リセット）
+          </button>
+        )}
+      </div>
+      <div style={{ marginTop: 14, fontSize: 10, color: C.muted }}>ひかり不動産</div>
+    </div>
+  );
+}
+
+function MainApp({ onLock }) {
   const [page, setPage] = useState("dashboard");
   const [data, setDataRaw] = useState(() => loadFromCache() || DEFAULT_DATA);
   const [savedMsg, setSavedMsg] = useState(false);
@@ -293,11 +439,11 @@ function App() {
 
       {/* Content */}
       <div style={{ padding: isMapPage ? "0" : "16px 16px 20px" }}>
-        {page === "dashboard" && <Dashboard data={data} />}
+        {page === "dashboard" && <Dashboard data={data} setData={setData} />}
         {page === "stock" && <StockPage data={data} setData={setData} />}
         {page === "approach" && <ApproachPage data={data} setData={setData} />}
         {page === "jiage" && <JiagePage data={data} setData={setData} />}
-        {page === "more" && <MorePage data={data} setData={setData} />}
+        {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} />}
       </div>
 
       {/* Bottom Navigation */}
@@ -489,10 +635,16 @@ function FilterChips({ options, value, onChange, multi = false }) {
 }
 
 // ===================== DASHBOARD =====================
-function Dashboard({ data }) {
+function Dashboard({ data, setData }) {
   const today = new Date().toISOString().split("T")[0];
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState(currentYear);
+  const [showGoalEdit, setShowGoalEdit] = useState(false);
+  const [goalForm, setGoalForm] = useState({
+    sell: String((data.annualGoals?.sell) ?? 30000),
+    profit: String((data.annualGoals?.profit) ?? 6000),
+    buyCount: String((data.annualGoals?.buyCount) ?? 30),
+  });
 
   const availableYears = useMemo(() => {
     const years = new Set([currentYear]);
@@ -688,6 +840,73 @@ function Dashboard({ data }) {
         </div>
       </div>
 
+      {/* 年間目標達成率ゲージ */}
+      {selectedYear === currentYear && (() => {
+        const goals = data.annualGoals || { sell: 30000, profit: 6000, buyCount: 30 };
+        const monthsPassed = new Date().getMonth() + 1; // 1-12
+        const items = [
+          { label: "売上", current: Math.round(yearSell / 10000), goal: goals.sell, unit: "万", color: C.warn, icon: "💰" },
+          { label: "利益", current: Math.round(yearProfit / 10000), goal: goals.profit, unit: "万", color: C.success, icon: "📈" },
+          { label: "仕入件数", current: yearBought.length, goal: goals.buyCount, unit: "件", color: C.accent, icon: "🏠" },
+        ];
+        return (
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>🎯 年間目標達成率（{currentYear}年）</div>
+              <button onClick={() => { setGoalForm({ sell: String(goals.sell), profit: String(goals.profit), buyCount: String(goals.buyCount) }); setShowGoalEdit(true); }} style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11 }}>目標編集</button>
+            </div>
+            <div style={{ display: "grid", gap: 12 }}>
+              {items.map(g => {
+                const pct = g.goal > 0 ? (g.current / g.goal * 100) : 0;
+                const forecast = monthsPassed > 0 ? Math.round(g.current / monthsPassed * 12) : 0;
+                const forecastPct = g.goal > 0 ? (forecast / g.goal * 100) : 0;
+                return (
+                  <div key={g.label} style={{ background: C.bg, borderRadius: 10, padding: "12px 14px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+                      <span style={{ fontSize: 13, color: C.muted }}>{g.icon} {g.label}</span>
+                      <span style={{ fontSize: 11, color: pct >= 100 ? C.success : pct >= 50 ? C.warn : C.muted, fontWeight: 700 }}>{pct.toFixed(0)}%</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                      <span style={{ fontSize: 18, fontWeight: 800, color: g.color }}>{g.current.toLocaleString()}{g.unit}</span>
+                      <span style={{ fontSize: 12, color: C.muted }}>/ {g.goal.toLocaleString()}{g.unit}</span>
+                    </div>
+                    <div style={{ background: "#1a2535", borderRadius: 4, height: 6, overflow: "hidden", marginBottom: 6 }}>
+                      <div style={{ width: Math.min(pct, 100) + "%", height: "100%", background: pct >= 100 ? C.success : pct >= 50 ? C.warn : C.danger, borderRadius: 4, transition: "width 0.5s" }} />
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between" }}>
+                      <span>このペースで月末予測: <span style={{ color: forecastPct >= 100 ? C.success : C.warn, fontWeight: 700 }}>{forecast.toLocaleString()}{g.unit}（{forecastPct.toFixed(0)}%）</span></span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 年間目標編集ボトムシート */}
+      {showGoalEdit && (
+        <BottomSheet title="🎯 年間目標を編集" onClose={() => setShowGoalEdit(false)}>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>今年の年間目標を入力してください。</div>
+          <Field label="年間売上目標（万円）">
+            <input type="text" inputMode="numeric" style={inp} value={goalForm.sell} onChange={e => setGoalForm(p => ({ ...p, sell: e.target.value.replace(/[^0-9]/g, "") }))} placeholder="30000" />
+          </Field>
+          <Field label="年間利益目標（万円）">
+            <input type="text" inputMode="numeric" style={inp} value={goalForm.profit} onChange={e => setGoalForm(p => ({ ...p, profit: e.target.value.replace(/[^0-9]/g, "") }))} placeholder="6000" />
+          </Field>
+          <Field label="年間仕入件数目標（件）">
+            <input type="text" inputMode="numeric" style={inp} value={goalForm.buyCount} onChange={e => setGoalForm(p => ({ ...p, buyCount: e.target.value.replace(/[^0-9]/g, "") }))} placeholder="30" />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setShowGoalEdit(false)}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={() => {
+              setData(d => ({ ...d, annualGoals: { sell: Number(goalForm.sell) || 0, profit: Number(goalForm.profit) || 0, buyCount: Number(goalForm.buyCount) || 0 } }));
+              setShowGoalEdit(false);
+            }}>保存する</button>
+          </div>
+        </BottomSheet>
+      )}
+
       {/* 今日フォロー予定は最上段の「今日のアクション」に統合 */}
 
       {/* 月別売上・利益グラフ */}
@@ -826,9 +1045,33 @@ function StockPage({ data, setData }) {
   const [search, setSearch] = useState("");
   const [filterStatuses, setFilterStatuses] = useState([]);
   const [filterMembers, setFilterMembers] = useState([]);
-  const empty = { assignee: MEMBERS[0], name: "", status: "仕入契約済", buyDate: "", sellDate: "", buyCost: "", sellPrice: "", memo: "", year: new Date().getFullYear() };
+  const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const empty = { assignee: MEMBERS[0], name: "", status: "仕入契約済", buyDate: "", sellDate: "", buyCost: "", sellPrice: "", memo: "", year: new Date().getFullYear(), photos: [] };
   const [form, setForm] = useState(empty);
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  // 写真追加処理
+  const handlePhotoAdd = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { alert("画像ファイルを選択してください"); return; }
+    if ((form.photos || []).length >= 3) { alert("写真は最大3枚までです"); return; }
+    setUploadingPhoto(true);
+    try {
+      const compressed = await compressImage(file, 800, 0.6);
+      setForm(p => ({ ...p, photos: [...(p.photos || []), compressed] }));
+    } catch (err) {
+      alert("画像の処理に失敗しました");
+    }
+    setUploadingPhoto(false);
+    e.target.value = ""; // 同じファイルを再選択できるように
+  };
+
+  const handlePhotoRemove = (idx) => {
+    if (!window.confirm("この写真を削除しますか？")) return;
+    setForm(p => ({ ...p, photos: (p.photos || []).filter((_, i) => i !== idx) }));
+  };
 
   const filtered = useMemo(() => data.stocks.filter(s => {
     if (filterStatuses.length && !filterStatuses.includes(s.status)) return false;
@@ -837,9 +1080,9 @@ function StockPage({ data, setData }) {
     return true;
   }), [data.stocks, filterStatuses, filterMembers, search]);
 
-  const openEdit = s => { setForm({ ...s, buyCost: String(s.buyCost), sellPrice: String(s.sellPrice) }); setEditItem(s); setShowAdd(true); };
+  const openEdit = s => { setForm({ ...s, buyCost: String(s.buyCost), sellPrice: String(s.sellPrice), photos: s.photos || [] }); setEditItem(s); setShowAdd(true); };
   const handleSave = () => {
-    const item = { ...form, id: editItem?.id || Date.now(), buyCost: Number(form.buyCost), sellPrice: Number(form.sellPrice) };
+    const item = { ...form, id: editItem?.id || Date.now(), buyCost: Number(form.buyCost), sellPrice: Number(form.sellPrice), photos: form.photos || [] };
     setData(d => ({ ...d, stocks: editItem ? d.stocks.map(s => s.id === editItem.id ? item : s) : [...d.stocks, item] }));
     setShowAdd(false); setEditItem(null);
   };
@@ -867,6 +1110,15 @@ function StockPage({ data, setData }) {
               {sinfo && <Tag label={`${sinfo.level} 仕入${sinfo.days}日`} color={sinfo.color} />}
             </div>
             <div style={{ color: C.text, fontWeight: 600, fontSize: 16, marginBottom: 10 }}>{s.name}</div>
+            {/* 写真サムネイル */}
+            {s.photos && s.photos.length > 0 && (
+              <div style={{ display: "flex", gap: 6, marginBottom: 10, overflowX: "auto", paddingBottom: 2 }}>
+                {s.photos.map((p, i) => (
+                  <img key={i} src={p} alt="" onClick={() => setPhotoViewer({ photos: s.photos, index: i, name: s.name })}
+                    style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, cursor: "pointer", border: `1px solid #1a2535`, flexShrink: 0 }} />
+                ))}
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
               {[["仕入", (s.buyCost / 10000).toFixed(0) + "万", C.text], ["売却", (s.sellPrice / 10000).toFixed(0) + "万", C.text], ["利益", (profit / 10000).toFixed(0) + "万", profit > 0 ? C.success : C.danger]].map(([l, v, c]) => (
                 <div key={l} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
@@ -885,8 +1137,7 @@ function StockPage({ data, setData }) {
         );
       })}
       {showAdd && (
-        <BottomSheet title={editItem ? "物件編集" : "新規物件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}>
-          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+        <BottomSheet title={editItem ? "物件編集" : "新規物件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}>          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
           <Field label="物件名"><input style={inp} value={form.name} onChange={f("name")} placeholder="川越市木野目" /></Field>
           <Field label="ステータス"><select style={inp} value={form.status} onChange={f("status")}>{STOCK_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
           <Field label="仕入原価（円）"><MoneyInput value={form.buyCost} onChange={v => setForm(p => ({ ...p, buyCost: v }))} placeholder="3,000,000" /></Field>
@@ -894,11 +1145,62 @@ function StockPage({ data, setData }) {
           <Field label="仕入日"><input type="date" style={inp} value={form.buyDate} onChange={f("buyDate")} /></Field>
           <Field label="売却日"><input type="date" style={inp} value={form.sellDate} onChange={f("sellDate")} /></Field>
           <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={f("memo")} /></Field>
+
+          {/* 写真添付 */}
+          <Field label={`物件写真（${(form.photos || []).length}/3枚）`}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+              {(form.photos || []).map((p, i) => (
+                <div key={i} style={{ position: "relative", width: 80, height: 80 }}>
+                  <img src={p} alt="" onClick={() => setPhotoViewer({ photos: form.photos, index: i, name: form.name })}
+                    style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, cursor: "pointer", border: `1px solid #1a2535` }} />
+                  <button onClick={() => handlePhotoRemove(i)} style={{
+                    position: "absolute", top: -6, right: -6, width: 22, height: 22, borderRadius: "50%",
+                    background: C.danger, border: "none", color: "#fff", cursor: "pointer", fontSize: 12, fontFamily: "inherit",
+                    display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+                  }}>✕</button>
+                </div>
+              ))}
+            </div>
+            {(form.photos || []).length < 3 && (
+              <label style={{
+                display: "block", padding: "12px", background: C.bg, border: `1px dashed ${C.muted}`,
+                borderRadius: 10, cursor: "pointer", textAlign: "center", color: C.muted, fontSize: 13,
+              }}>
+                {uploadingPhoto ? "📷 圧縮中..." : "📷 写真を追加（タップしてカメラ起動 or ファイル選択）"}
+                <input type="file" accept="image/*" capture="environment" onChange={handlePhotoAdd}
+                  style={{ display: "none" }} disabled={uploadingPhoto} />
+              </label>
+            )}
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+              ※ 自動で800px・JPEG圧縮されて保存されます（1枚あたり約50KB）
+            </div>
+          </Field>
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
           </div>
         </BottomSheet>
+      )}
+
+      {/* 写真拡大ビューア */}
+      {photoViewer && (
+        <div onClick={() => setPhotoViewer(null)} style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.95)", zIndex: 600,
+          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20,
+        }}>
+          <div style={{ color: "#fff", fontSize: 14, marginBottom: 12, fontWeight: 700 }}>{photoViewer.name}（{photoViewer.index + 1}/{photoViewer.photos.length}）</div>
+          <img src={photoViewer.photos[photoViewer.index]} alt="" style={{ maxWidth: "100%", maxHeight: "75vh", borderRadius: 8 }} />
+          <div style={{ display: "flex", gap: 12, marginTop: 16, alignItems: "center" }}>
+            <button onClick={(e) => { e.stopPropagation(); setPhotoViewer(p => ({ ...p, index: (p.index - 1 + p.photos.length) % p.photos.length })); }}
+              disabled={photoViewer.photos.length <= 1}
+              style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: 8, padding: "10px 16px", cursor: "pointer", fontFamily: "inherit", fontSize: 14, opacity: photoViewer.photos.length <= 1 ? 0.3 : 1 }}>← 前</button>
+            <button onClick={() => setPhotoViewer(null)}
+              style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: 8, padding: "10px 16px", cursor: "pointer", fontFamily: "inherit", fontSize: 14 }}>閉じる ✕</button>
+            <button onClick={(e) => { e.stopPropagation(); setPhotoViewer(p => ({ ...p, index: (p.index + 1) % p.photos.length })); }}
+              disabled={photoViewer.photos.length <= 1}
+              style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: 8, padding: "10px 16px", cursor: "pointer", fontFamily: "inherit", fontSize: 14, opacity: photoViewer.photos.length <= 1 ? 0.3 : 1 }}>次 →</button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1178,6 +1480,7 @@ function JiagePage({ data, setData }) {
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [quickFilter, setQuickFilter] = useState(null); // "overdue" | "dm_un" | "hot" | null
   const [histForm, setHistForm] = useState({ date: today, method: "電話", note: "", member: MEMBERS[0] });
 
   const navUrl = addr => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving`;
@@ -1246,8 +1549,18 @@ function JiagePage({ data, setData }) {
     if (filterStatuses.length && !filterStatuses.includes(item.status)) return false;
     if (filterMembers.length && !filterMembers.includes(item.assignee)) return false;
     if (search && !item.address.includes(search) && !(item.ownerName || "").includes(search)) return false;
+    // クイックフィルター
+    if (quickFilter === "overdue") {
+      if (!(item.nextDate && item.nextDate < today && !["NG", "断られた", "仕入れ完了"].includes(item.status))) return false;
+    }
+    if (quickFilter === "dm_un") {
+      if (item.type !== "jiage" || item.dm !== "未") return false;
+    }
+    if (quickFilter === "hot") {
+      if (!(item.status === "見込" || item.status === "興味あり")) return false;
+    }
     return true;
-  }), [allItems, typeFilter, areaFilter, filterStatuses, filterMembers, search]);
+  }), [allItems, typeFilter, areaFilter, filterStatuses, filterMembers, search, quickFilter, today]);
 
   const isOverdue = item => item.nextDate && item.nextDate < today && !["NG", "断られた", "仕入れ完了"].includes(item.status);
 
@@ -1288,6 +1601,62 @@ function JiagePage({ data, setData }) {
       setData(d => ({ ...d, owners: d.owners.map(o => o.id === item.rawId ? updated : o) }));
       setSelected(s => ({ ...s, item: { ...s.item, nextDate: date, raw: updated } }));
     }
+  };
+
+  // 地上げ → 所有者アタックに昇格
+  const promoteToOwner = (item) => {
+    const j = item.raw;
+    // 重複チェック
+    const alreadyExists = (data.owners || []).some(o => o.address === j.address && o.fromJiageId === j.id);
+    if (alreadyExists) { alert("この物件は既に所有者アタックに登録されています"); return; }
+    if (!window.confirm(`「${j.address}」を所有者アタックに昇格しますか？\n\n所有者情報・担当者・メモを引き継ぎます。`)) return;
+    const newOwner = {
+      id: Date.now(),
+      address: j.address,
+      ownerName: j.owner || "",
+      ownerAddress: j.ownerAddr || "",
+      ownerContact: "",
+      status: "未アタック",
+      assignee: j.assignee,
+      nextFollowDate: "",
+      memo: j.memo || "",
+      history: [],
+      createdAt: today,
+      fromJiageId: j.id,
+    };
+    setData(d => ({ ...d, owners: [...d.owners, newOwner] }));
+    alert(`✅「${j.address}」を所有者アタックに昇格しました！\n「👤所有者」タブで確認できます。`);
+    setSelected(null);
+  };
+
+  // 所有者 → 積算表を作成
+  const promoteToSekisan = (item) => {
+    const o = item.raw;
+    const alreadyExists = (data.sekisan || []).some(s => s.address === o.address && s.fromOwnerId === o.id);
+    if (alreadyExists) { alert("この物件の積算表は既に作成されています"); return; }
+    if (!window.confirm(`「${o.address}」の仕入検討積算表を作成しますか？\n\n住所・担当者を自動入力します。「その他」タブから確認できます。`)) return;
+    const newSekisan = {
+      id: Date.now(),
+      address: o.address,
+      assignee: o.assignee,
+      createdAt: today,
+      age: "", structure: "", layout: "", landArea: "", buildingArea: "", stationDist: "",
+      buyPrice: "", brokerFeeIn: "", registration: "", acquisitionTax: "", stamp: "",
+      leftover: "", reform: "", demolition: "", brokerFeeOut: "", other: "",
+      sellPrice: "",
+      similarRent: "", similarArea: "", targetBuildingArea: "",
+      yieldRate: "15", investorRegistration: "50", investorReform: "150",
+      targetProfitMin: "100", targetProfitMax: "200",
+      rainzPriceMin: "", rainzPriceMax: "", rainzMemo: "",
+      atHomeMemo: "", competitorCount: "",
+      rentMin: "", rentMax: "", rentMemo: "",
+      yieldBase: "", yieldMemo: "",
+      judgment: "検討中", judgmentMemo: o.memo || "",
+      fromOwnerId: o.id,
+    };
+    setData(d => ({ ...d, sekisan: [...(d.sekisan || []), newSekisan] }));
+    alert(`✅「${o.address}」の積算表を作成しました！\n「その他」→「仕入検討積算表」から編集できます。`);
+    setSelected(null);
   };
 
   const emptyJiage = { address: "", owner: "", ownerAddr: "", dm: "未", visit: "未", status: "未訪問", assignee: MEMBERS[0], memo: "", nextVisit: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
@@ -1371,6 +1740,26 @@ function JiagePage({ data, setData }) {
                 border: `1px solid ${areaFilter === area ? C.purple : "#1a2535"}`,
                 fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0,
               }}>{area} {count > 0 ? count : ""}</button>
+            );
+          })}
+        </div>
+
+        {/* クイックフィルター */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 8, overflowX: "auto", paddingBottom: 2 }}>
+          {[
+            { key: "overdue", label: "⚠️ 期限切れ", activeColor: C.danger },
+            { key: "dm_un",   label: "📩 DM未送付", activeColor: C.warn },
+            { key: "hot",     label: "🔥 熱い案件", activeColor: C.success },
+          ].map(qf => {
+            const isActive = quickFilter === qf.key;
+            return (
+              <button key={qf.key} onClick={() => setQuickFilter(isActive ? null : qf.key)} style={{
+                padding: "5px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12,
+                background: isActive ? qf.activeColor : C.bg,
+                color: isActive ? "#fff" : C.muted,
+                border: `1px solid ${isActive ? qf.activeColor : "#1a2535"}`,
+                fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0, fontWeight: isActive ? 700 : 400,
+              }}>{qf.label}</button>
             );
           })}
         </div>
@@ -1620,6 +2009,27 @@ function JiagePage({ data, setData }) {
             </div>
           )}
 
+          {/* ワークフロー昇格ボタン */}
+          <div style={{ borderTop: `1px solid #1a2535`, paddingTop: 14, marginTop: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, marginBottom: 8, letterSpacing: "0.05em" }}>🔄 ワークフロー</div>
+            {selected.item.type === "jiage" ? (
+              <button onClick={() => promoteToOwner(selected.item)} style={{
+                width: "100%", padding: "13px", background: C.purple + "22", border: `1px solid ${C.purple}66`,
+                color: C.purple, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+              }}>👤 所有者アタックに昇格する</button>
+            ) : (
+              <button onClick={() => promoteToSekisan(selected.item)} style={{
+                width: "100%", padding: "13px", background: C.warn + "22", border: `1px solid ${C.warn}66`,
+                color: C.warn, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+              }}>🧮 仕入検討積算表を作成する</button>
+            )}
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+              {selected.item.type === "jiage"
+                ? "住所・所有者情報を引き継いで「所有者アタック」に追加します"
+                : "住所・担当者を引き継いで「仕入検討積算表」を新規作成します"}
+            </div>
+          </div>
+
           {/* 編集・削除 */}
           <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => openEdit(selected.item)}>編集する</button>
@@ -1763,10 +2173,11 @@ function ImportModal({ onClose, onImport, importing, currentCount }) {
 }
 
 // ===================== MORE PAGE (役所・積算) =====================
-function MorePage({ data, setData }) {
+function MorePage({ data, setData, onLock }) {
   const [subPage, setSubPage] = useState(null);
   if (subPage === "yakusho") return <YakushoPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
+  const hasPin = !!getPin();
   return (
     <div>
       <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 20 }}>その他の機能</div>
@@ -1786,6 +2197,43 @@ function MorePage({ data, setData }) {
           </div>
         </button>
       ))}
+
+      {/* セキュリティ設定 */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🔐 セキュリティ</div>
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <div style={{ color: C.text, fontWeight: 700, fontSize: 15 }}>PINロック</div>
+            <div style={{ color: C.muted, fontSize: 12, marginTop: 4 }}>
+              {hasPin ? "✅ 設定済み（24時間ごとに再認証）" : "⚠️ 未設定（誰でもアクセス可能）"}
+            </div>
+          </div>
+          <Tag label={hasPin ? "ON" : "OFF"} color={hasPin ? C.success : C.muted} />
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {hasPin ? (
+            <>
+              <button onClick={() => {
+                if (window.confirm("PINロックを解除しますか？")) {
+                  clearPin();
+                  alert("PINロックを解除しました");
+                }
+              }} style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 13 }}>PINを解除</button>
+              <button onClick={() => {
+                if (window.confirm("ロック画面に戻ります。再認証が必要になりますがよろしいですか？")) {
+                  onLock();
+                }
+              }} style={{ ...btnStyle(), flex: 1, padding: "10px", fontSize: 13 }}>今すぐロック</button>
+            </>
+          ) : (
+            <button onClick={() => {
+              if (window.confirm("PINロックを有効にしますか？\n一度ロック画面に戻り、新しい4桁PINを設定します。")) {
+                onLock();
+              }
+            }} style={{ ...btnStyle(), width: "100%", padding: "12px", fontSize: 14 }}>PINロックを設定</button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
