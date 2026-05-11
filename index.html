@@ -134,6 +134,25 @@ function dayOfWeekLabel(dateStr) {
   return { label: days[day], color: colors[day] };
 }
 
+// 案内予定（viewing）用の選択肢
+const FUNDING_OPTIONS = ["", "現金", "住宅ローン", "事業ローン", "現金+ローン", "不明"];
+const PURPOSE_OPTIONS = ["", "実需", "投資家", "セカンドハウス", "法人", "不明"];
+const PEOPLE_OPTIONS = ["", "1人", "夫婦", "家族", "親同伴", "その他"];
+const CHANNEL_OPTIONS = ["", "直接", "仲介業者経由", "ポータル経由", "紹介"];
+const NEXTACTION_OPTIONS = ["", "申込予定", "再内見希望", "返事待ち", "連絡途絶", "成約", "ご縁なし"];
+const PROSPECT_INFO = {
+  "熱い": { icon: "🔥", color: "#ef4444" },
+  "検討中": { icon: "🟡", color: "#f59e0b" },
+  "普通": { icon: "⚪", color: "#94a3b8" },
+  "冷たい": { icon: "❄️", color: "#06b6d4" },
+};
+const RESULT_INFO = {
+  "未実施": { icon: "⏳", color: "#94a3b8" },
+  "好印象": { icon: "😊", color: "#10b981" },
+  "普通": { icon: "😐", color: "#f59e0b" },
+  "NG": { icon: "❌", color: "#ef4444" },
+};
+
 // 仕入日からの経過日数を計算
 function daysSinceBuy(buyDateStr) {
   if (!buyDateStr) return null;
@@ -877,12 +896,18 @@ function Dashboard({ data, setData }) {
       if (s.sellContractDate) list.push({ date: s.sellContractDate, type: "sellContract", icon: "📋", color: C.accent, title: s.name || "(無題)", sub: "売却契約", assignee: s.assignee });
       if (s.sellDate) list.push({ date: s.sellDate, type: "sell", icon: "✅", color: C.warn, title: s.name || "(無題)", sub: "売却決済", assignee: s.assignee });
       (s.viewings || []).forEach(v => {
-        if (v.date) list.push({
-          date: v.date, type: "viewing", icon: "👀", color: "#06b6d4",
-          title: s.name || "(無題)",
-          sub: `案内・${v.customer || "顧客未設定"}${v.note ? "（" + v.note + "）" : ""}`,
-          assignee: s.assignee,
-        });
+        if (v.date) {
+          const tags = [];
+          if (v.prospect) tags.push(`${(PROSPECT_INFO[v.prospect]||{}).icon||""}${v.prospect}`);
+          if (v.purpose) tags.push(`🎯${v.purpose}`);
+          if (v.funding) tags.push(`💰${v.funding}`);
+          list.push({
+            date: v.date, type: "viewing", icon: "👀", color: "#06b6d4",
+            title: s.name || "(無題)",
+            sub: `案内・${v.customer || "顧客未設定"}${tags.length ? "（" + tags.join(" ") + "）" : ""}${v.note ? " | " + v.note : ""}`,
+            assignee: s.assignee,
+          });
+        }
       });
     });
     // カスタム予定
@@ -1714,6 +1739,7 @@ function StockPage({ data, setData }) {
   const [viewMode, setViewMode] = useState("active"); // "active" | "completed" | "all"
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [expandedViewings, setExpandedViewings] = useState({}); // {index: true/false}
   const empty = {
     assignee: MEMBERS[0], name: "", status: "仕入契約済",
     buyContractDate: "", buyDate: "", sellContractDate: "", sellDate: "",
@@ -1920,29 +1946,195 @@ function StockPage({ data, setData }) {
             ); })()}
           </div>
 
-          {/* 👀 案内予定（複数登録可） */}
+          {/* 👀 案内予定（複数登録可・サマリー1行＋詳細展開式） */}
           <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#06b6d4" }}>👀 案内予定（{(form.viewings || []).length}件）</div>
-              <button onClick={() => setForm(p => ({ ...p, viewings: [...(p.viewings || []), { date: "", customer: "", note: "" }] }))}
-                style={{ background: "#06b6d422", border: `1px solid #06b6d466`, color: "#06b6d4", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700 }}>
+              <button onClick={() => {
+                const newIdx = (form.viewings || []).length;
+                setForm(p => ({ ...p, viewings: [...(p.viewings || []), {
+                  date: "", customer: "", contact: "", email: "",
+                  funding: "", purpose: "", budget: "", people: "", channel: "",
+                  prospect: "", result: "未実施", nextAction: "", note: ""
+                }] }));
+                setExpandedViewings(p => ({ ...p, [newIdx]: true })); // 追加直後は展開
+              }}
+                style={{ background: "#06b6d422", border: `1.5px solid #06b6d4`, color: "#06b6d4", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>
                 ＋ 案内を追加
               </button>
             </div>
             {(form.viewings || []).length === 0 && (
               <div style={{ color: C.muted, fontSize: 11, textAlign: "center", padding: "8px 0" }}>案内予定なし</div>
             )}
-            {(form.viewings || []).map((v, i) => (
-              <div key={i} style={{ background: "#0d1422", borderRadius: 8, padding: 10, marginBottom: 8, position: "relative" }}>
-                <button onClick={() => setForm(p => ({ ...p, viewings: (p.viewings || []).filter((_, j) => j !== i) }))}
-                  style={{ position: "absolute", top: 6, right: 6, background: C.danger + "33", border: `1px solid ${C.danger}66`, color: C.danger, borderRadius: "50%", width: 22, height: 22, cursor: "pointer", fontSize: 11, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>✕</button>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8, paddingRight: 28 }}>
-                  <Field label="日付"><input type="date" style={inp} value={v.date} onChange={e => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, date: e.target.value } : vv) }))} /></Field>
-                  <Field label="顧客名"><input style={inp} value={v.customer} onChange={e => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, customer: e.target.value } : vv) }))} placeholder="山田様" /></Field>
+            {(form.viewings || []).map((v, i) => {
+              const isExpanded = !!expandedViewings[i];
+              const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val } : vv) }));
+              const prospect = PROSPECT_INFO[v.prospect];
+              const result = RESULT_INFO[v.result];
+              const dow = dayOfWeekLabel(v.date);
+              return (
+                <div key={i} style={{ background: "#0d1422", borderRadius: 8, padding: 10, marginBottom: 8, border: `1px solid #1a2535` }}>
+                  {/* ===== サマリー行（常時表示） ===== */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>
+                          {v.date || "(日付未定)"}{dow && <span style={{ color: dow.color, marginLeft: 4 }}>({dow.label})</span>}
+                        </span>
+                        <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+                        {prospect && (
+                          <span style={{ background: prospect.color + "33", color: prospect.color, padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                            {prospect.icon}{v.prospect}
+                          </span>
+                        )}
+                        {v.purpose && (
+                          <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 600 }}>
+                            🎯{v.purpose}
+                          </span>
+                        )}
+                        {v.funding && (
+                          <span style={{ background: "#a855f733", color: "#a855f7", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 600 }}>
+                            💰{v.funding}
+                          </span>
+                        )}
+                        {result && v.result !== "未実施" && (
+                          <span style={{ background: result.color + "33", color: result.color, padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 600 }}>
+                            {result.icon}{v.result}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <button onClick={() => setExpandedViewings(p => ({ ...p, [i]: !isExpanded }))}
+                      style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
+                      {isExpanded ? "▲ 閉じる" : "▼ 詳細"}
+                    </button>
+                    <button onClick={() => {
+                      setForm(p => ({ ...p, viewings: (p.viewings || []).filter((_, j) => j !== i) }));
+                      setExpandedViewings(p => { const n = { ...p }; delete n[i]; return n; });
+                    }}
+                      style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: "50%", width: 28, height: 28, cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: 0, flexShrink: 0 }}>✕</button>
+                  </div>
+
+                  {/* ===== 詳細フォーム（展開時のみ） ===== */}
+                  {isExpanded && (
+                    <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid #1a2535` }}>
+                      {/* 日付＋顧客名 */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        <Field label={<>📅 日付{dow && <span style={{ color: dow.color, marginLeft: 6, fontWeight: 800 }}>({dow.label})</span>}</>}>
+                          <input type="date" style={inp} value={v.date} onChange={e => updateV("date", e.target.value)} />
+                        </Field>
+                        <Field label="顧客名">
+                          <input style={inp} value={v.customer} onChange={e => updateV("customer", e.target.value)} placeholder="山田様" />
+                        </Field>
+                      </div>
+
+                      {/* 連絡先：電話＋メール */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        <Field label="📞 電話番号">
+                          <input type="tel" style={inp} value={v.contact || ""} onChange={e => updateV("contact", e.target.value)} placeholder="090-1234-5678" />
+                        </Field>
+                        <Field label="📧 メール">
+                          <input type="email" style={inp} value={v.email || ""} onChange={e => updateV("email", e.target.value)} placeholder="example@mail.com" />
+                        </Field>
+                      </div>
+
+                      {/* 電話・メール発信ボタン */}
+                      {(v.contact || v.email) && (
+                        <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                          {v.contact && (
+                            <a href={`tel:${v.contact}`} style={{ flex: 1, textDecoration: "none", background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 8, padding: "8px 12px", textAlign: "center", fontSize: 12, fontWeight: 700 }}>📞 電話発信</a>
+                          )}
+                          {v.email && (
+                            <a href={`mailto:${v.email}`} style={{ flex: 1, textDecoration: "none", background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "8px 12px", textAlign: "center", fontSize: 12, fontWeight: 700 }}>📧 メール作成</a>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 資金種別＋購入目的 */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        <Field label="💰 資金種別">
+                          <select style={inp} value={v.funding || ""} onChange={e => updateV("funding", e.target.value)}>
+                            {FUNDING_OPTIONS.map(o => <option key={o} value={o}>{o || "— 未選択 —"}</option>)}
+                          </select>
+                        </Field>
+                        <Field label="🎯 購入目的">
+                          <select style={inp} value={v.purpose || ""} onChange={e => updateV("purpose", e.target.value)}>
+                            {PURPOSE_OPTIONS.map(o => <option key={o} value={o}>{o || "— 未選択 —"}</option>)}
+                          </select>
+                        </Field>
+                      </div>
+
+                      {/* 予算＋人数 */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        <Field label="💵 検討予算">
+                          <input style={inp} value={v.budget || ""} onChange={e => updateV("budget", e.target.value)} placeholder="3000万円" />
+                        </Field>
+                        <Field label="👨‍👩‍👧 来場人数">
+                          <select style={inp} value={v.people || ""} onChange={e => updateV("people", e.target.value)}>
+                            {PEOPLE_OPTIONS.map(o => <option key={o} value={o}>{o || "— 未選択 —"}</option>)}
+                          </select>
+                        </Field>
+                      </div>
+
+                      {/* 経由 */}
+                      <Field label="🤝 経由">
+                        <select style={inp} value={v.channel || ""} onChange={e => updateV("channel", e.target.value)}>
+                          {CHANNEL_OPTIONS.map(o => <option key={o} value={o}>{o || "— 未選択 —"}</option>)}
+                        </select>
+                      </Field>
+
+                      {/* 見込度（チップ式） */}
+                      <Field label="🔥 見込度">
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {Object.entries(PROSPECT_INFO).map(([key, info]) => {
+                            const active = v.prospect === key;
+                            return (
+                              <button key={key} onClick={() => updateV("prospect", active ? "" : key)}
+                                style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                                  background: active ? info.color : C.bg, color: active ? "#fff" : info.color,
+                                  border: `1.5px solid ${info.color}` }}>
+                                {info.icon} {key}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </Field>
+
+                      {/* 結果（チップ式） */}
+                      <Field label="✅ 結果">
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {Object.entries(RESULT_INFO).map(([key, info]) => {
+                            const active = (v.result || "未実施") === key;
+                            return (
+                              <button key={key} onClick={() => updateV("result", key)}
+                                style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                                  background: active ? info.color : C.bg, color: active ? "#fff" : info.color,
+                                  border: `1.5px solid ${info.color}` }}>
+                                {info.icon} {key}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </Field>
+
+                      {/* 次回アクション */}
+                      <Field label="🔁 次回アクション">
+                        <select style={inp} value={v.nextAction || ""} onChange={e => updateV("nextAction", e.target.value)}>
+                          {NEXTACTION_OPTIONS.map(o => <option key={o} value={o}>{o || "— 未選択 —"}</option>)}
+                        </select>
+                      </Field>
+
+                      {/* メモ */}
+                      <Field label="📝 メモ">
+                        <textarea style={{ ...inp, height: 70, resize: "vertical" }} value={v.note || ""} onChange={e => updateV("note", e.target.value)} placeholder="10:00 単独内見・駅から徒歩同行など" />
+                      </Field>
+                    </div>
+                  )}
                 </div>
-                <Field label="メモ"><input style={inp} value={v.note} onChange={e => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, note: e.target.value } : vv) }))} placeholder="10:00 単独内見・ご家族3名" /></Field>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={f("memo")} /></Field>
