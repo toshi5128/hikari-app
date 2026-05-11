@@ -4,11 +4,33 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>ひかり不動産</title>
+
+<!-- PWA設定 -->
+<meta name="theme-color" content="#0ea5e9">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ひかり不動産">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20192%20192%22%3E%3Crect%20width%3D%22192%22%20height%3D%22192%22%20fill%3D%22%230ea5e9%22%2F%3E%3Ctext%20x%3D%2296%22%20y%3D%22135%22%20font-size%3D%22120%22%20text-anchor%3D%22middle%22%3E%F0%9F%8F%A0%3C%2Ftext%3E%3C%2Fsvg%3E">
+
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap" rel="stylesheet">
 <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#04080f;color:#e2e8f0;font-family:'Noto Sans JP',sans-serif}input,select,textarea,button{font-family:inherit}</style>
 </head>
 <body>
 <div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;font-size:18px;color:#0ea5e9">読み込み中...</div></div>
+<script>
+// PWA: Service Worker 登録
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').then(reg => {
+      console.log('[PWA] Service Worker 登録成功:', reg.scope);
+    }).catch(err => {
+      console.warn('[PWA] Service Worker 登録失敗:', err);
+    });
+  });
+}
+</script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -761,17 +783,35 @@ function Dashboard({ data, setData }) {
         evTime.setHours(h || 0, m || 0, 0, 0);
         const remindAt = new Date(evTime.getTime() - ev.reminderMinutes * 60000);
         if (remindAt <= now && now < evTime) {
-          try {
-            new Notification(`📅 ${ev.title}`, {
-              body: `${ev.time}〜${ev.location ? " @" + ev.location : ""}${ev.memo ? "\n" + ev.memo : ""}`,
-              tag: `hikari-event-${ev.id}`,
-            });
-            // 通知済みフラグを立てる
+          // ▼自分が担当者に含まれているかチェック（PWAでは各メンバーが自分宛だけ通知）
+          const me = getCurrentUser();
+          const assignees = ev.assignees || (ev.assignee ? [ev.assignee] : []);
+          const isForMe = !me || assignees.length === 0 || assignees.includes(me);
+          if (!isForMe) {
+            // 自分宛じゃないなら通知済みフラグだけ立てる
             setData(d => ({
               ...d,
               customEvents: (d.customEvents || []).map(e => e.id === ev.id ? { ...e, notified: true } : e)
             }));
-          } catch (err) { /* ignore */ }
+            return;
+          }
+          const title = `📅 ${ev.title}`;
+          const body = `${ev.time}〜${ev.location ? " @" + ev.location : ""}${ev.memo ? "\n" + ev.memo : ""}`;
+          const tag = `hikari-event-${ev.id}`;
+          // Service Worker 経由で通知（バックグラウンドでも動作）
+          if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage({
+              type: 'SHOW_NOTIFICATION', title, body, tag,
+            });
+          } else {
+            // SW未登録ならフォールバックでNotification API
+            try { new Notification(title, { body, tag }); } catch (err) {}
+          }
+          // 通知済みフラグを立てる
+          setData(d => ({
+            ...d,
+            customEvents: (d.customEvents || []).map(e => e.id === ev.id ? { ...e, notified: true } : e)
+          }));
         }
       });
     };
@@ -3103,6 +3143,8 @@ function MorePage({ data, setData, onLock }) {
   if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   const hasPin = !!getPin();
   const activityLog = data.activityLog || [];
+  const notifPermission = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
+  const isStandalone = typeof window !== "undefined" && (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true);
 
   return (
     <div>
@@ -3171,6 +3213,65 @@ function MorePage({ data, setData, onLock }) {
             }} style={{ ...btnStyle(), width: "100%", padding: "12px", fontSize: 14 }}>PINロックを設定</button>
           )}
         </div>
+      </div>
+
+      {/* 🔔 プッシュ通知設定（PWA） */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🔔 プッシュ通知</div>
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>
+          {notifPermission === "granted" ? "✅ 通知許可済み。リマインダー時刻に通知が届きます。" : notifPermission === "denied" ? "❌ 通知ブロック中。ブラウザ設定から許可してください。" : "⚠️ 通知が未許可です。下のボタンで許可を取ってください。"}
+          <br />
+          <span style={{ fontSize: 11 }}>
+            {isStandalone ? "📱 PWAモード起動中（ホーム画面から起動）" : "🌐 ブラウザモード起動中"}
+          </span>
+        </div>
+        {notifPermission !== "granted" && notifPermission !== "denied" && notifPermission !== "unsupported" && (
+          <button onClick={async () => {
+            try {
+              const result = await Notification.requestPermission();
+              if (result === "granted") {
+                alert("✅ 通知を許可しました！\nリマインダー付き予定の時刻にお知らせします。");
+                // テスト通知
+                if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                  navigator.serviceWorker.controller.postMessage({
+                    type: 'SHOW_NOTIFICATION',
+                    title: '🎉 通知テスト',
+                    body: '通知の動作確認です。ひかり不動産から届きました！',
+                    tag: 'test',
+                  });
+                } else {
+                  try { new Notification("🎉 通知テスト", { body: "通知が動作しています" }); } catch (e) {}
+                }
+              } else {
+                alert("通知が許可されませんでした。ブラウザの設定から後でも変更できます。");
+              }
+            } catch (err) { alert("通知許可エラー: " + err.message); }
+          }} style={{ ...btnStyle(), width: "100%", padding: "12px", fontSize: 14 }}>🔔 通知を許可する</button>
+        )}
+        {notifPermission === "granted" && (
+          <button onClick={() => {
+            if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+              navigator.serviceWorker.controller.postMessage({
+                type: 'SHOW_NOTIFICATION',
+                title: '🎉 通知テスト',
+                body: '通知の動作確認です。ひかり不動産から届きました！',
+                tag: 'test',
+              });
+            } else {
+              try { new Notification("🎉 通知テスト", { body: "通知が動作しています" }); } catch (e) { alert("通知エラー: " + e.message); }
+            }
+          }} style={{ ...btnStyle("ghost"), width: "100%", padding: "10px", fontSize: 13 }}>🧪 テスト通知を出す</button>
+        )}
+        {!isStandalone && (
+          <div style={{ marginTop: 12, padding: 12, background: C.accent + "11", border: `1px solid ${C.accent}33`, borderRadius: 8, fontSize: 11, color: C.muted, lineHeight: 1.7 }}>
+            <div style={{ color: C.accent, fontWeight: 700, marginBottom: 4 }}>💡 ホーム画面に追加しよう</div>
+            <strong style={{ color: C.text }}>iPhone（Safari）：</strong><br />
+            ① 共有ボタン（□↑）→ ② 「ホーム画面に追加」→ ③ 「追加」<br />
+            <strong style={{ color: C.text }}>Android（Chrome）：</strong><br />
+            ① メニュー（⋮）→ ② 「ホーム画面に追加」→ ③ 「インストール」<br /><br />
+            ホーム画面のアイコンから起動すれば、ブラウザ閉じてても通知が届きやすくなります。
+          </div>
+        )}
       </div>
 
       {/* 📋 操作履歴 */}
