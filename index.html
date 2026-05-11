@@ -1211,7 +1211,7 @@ function ApproachPage({ data, setData }) {
   const today = new Date().toISOString().split("T")[0];
   const currentYM = today.slice(0, 7);
 
-  const [tab, setTab] = useState("input"); // "input" | "monthly" | "goals"
+  const [tab, setTab] = useState("cases"); // "cases" | "input" | "monthly" | "goals"
   const [selectedMember, setSelectedMember] = useState(MEMBERS[0]);
   const [selectedYM, setSelectedYM] = useState(currentYM);
   const [selectedDate, setSelectedDate] = useState(today);
@@ -1220,6 +1220,10 @@ function ApproachPage({ data, setData }) {
   const [showGoalEdit, setShowGoalEdit] = useState(false);
   const [goalEditMember, setGoalEditMember] = useState(MEMBERS[0]);
   const [goalForm, setGoalForm] = useState({});
+
+  // ===== 案件タブ用 =====
+  const [casesMember, setCasesMember] = useState("__ALL__"); // "__ALL__" or member name
+  const [casesExpanded, setCasesExpanded] = useState(null); // 展開中のセクションkey
 
   // 目標値はdataに保存（memberGoals: { "たっくん": { 訪問: 600, ... } }）
   const memberGoals = data.memberGoals || {};
@@ -1281,10 +1285,68 @@ function ApproachPage({ data, setData }) {
   };
 
   const TABS = [
+    { key: "cases", label: "📋 案件" },
     { key: "input", label: "✏️ 入力" },
     { key: "monthly", label: "📊 月次" },
     { key: "goals", label: "🎯 目標" },
   ];
+
+  // ===== 案件タブ用の集計 =====
+  const filterByMember = (items, key = "assignee") => {
+    if (casesMember === "__ALL__") return items;
+    return items.filter(it => it[key] === casesMember);
+  };
+
+  const pipeline = useMemo(() => {
+    const jiageActive = filterByMember((data.jiage || []).filter(j => !["NG", "仕入れ完了"].includes(j.status)));
+    const ownersActive = filterByMember((data.owners || []).filter(o => !["断られた", "仕入れ完了", "NG"].includes(o.status)));
+    const sekisanActive = filterByMember((data.sekisan || []).filter(s => s.judgment !== "見送り"));
+    const sekisanHot = sekisanActive.filter(s => s.judgment === "熱い");
+    const sekisanCheck = sekisanActive.filter(s => s.judgment === "検討中");
+    const stocksActive = filterByMember((data.stocks || []).filter(s => s.status !== "決済完了"));
+    const stocksCompleted = filterByMember((data.stocks || []).filter(s =>
+      s.status === "決済完了" && (s.sellDate || "").startsWith(String(new Date().getFullYear()))
+    ));
+    return { jiageActive, ownersActive, sekisanActive, sekisanHot, sekisanCheck, stocksActive, stocksCompleted };
+  }, [data.jiage, data.owners, data.sekisan, data.stocks, casesMember]);
+
+  const alerts = useMemo(() => {
+    const overdueJiage = filterByMember((data.jiage || []).filter(j =>
+      j.nextVisit && j.nextVisit < today && !["NG", "断られた", "仕入れ完了"].includes(j.status)
+    ));
+    const overdueOwner = filterByMember((data.owners || []).filter(o =>
+      o.nextFollowDate && o.nextFollowDate < today && !["NG", "断られた", "仕入れ完了"].includes(o.status)
+    ));
+    const stagnant90 = filterByMember((data.stocks || []).filter(s => {
+      if (s.status === "決済完了") return false;
+      const d = daysSinceBuy(s.buyDate);
+      return d != null && d >= 90 && d < 180;
+    }));
+    const stagnant180 = filterByMember((data.stocks || []).filter(s => {
+      if (s.status === "決済完了") return false;
+      const d = daysSinceBuy(s.buyDate);
+      return d != null && d >= 180;
+    }));
+    const dmUn = filterByMember((data.jiage || []).filter(j => j.dm === "未"));
+    const hotNotPurchased = filterByMember((data.sekisan || []).filter(s => {
+      if (s.judgment !== "熱い") return false;
+      return !(data.stocks || []).some(st => st.fromSekisanId === s.id);
+    }));
+    return { overdueJiage, overdueOwner, stagnant90, stagnant180, dmUn, hotNotPurchased };
+  }, [data.jiage, data.owners, data.stocks, data.sekisan, casesMember, today]);
+
+  const weekActivity = useMemo(() => {
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    const weekAgoStr = weekAgo.toISOString().split("T")[0];
+    const newSekisan = filterByMember((data.sekisan || []).filter(s => (s.createdAt || "") >= weekAgoStr));
+    const newPurchase = filterByMember((data.stocks || []).filter(s => (s.buyDate || "") >= weekAgoStr));
+    const newCompleted = filterByMember((data.stocks || []).filter(s =>
+      s.status === "決済完了" && (s.sellDate || "") >= weekAgoStr
+    ));
+    const currentHot = filterByMember((data.sekisan || []).filter(s => s.judgment === "熱い"));
+    return { newSekisan, newPurchase, newCompleted, currentHot };
+  }, [data.sekisan, data.stocks, casesMember]);
 
   return (
     <div>
@@ -1300,6 +1362,142 @@ function ApproachPage({ data, setData }) {
           }}>{t.label}</button>
         ))}
       </div>
+
+      {/* ===== 案件タブ ===== */}
+      {tab === "cases" && (
+        <div>
+          {/* 担当者選択 */}
+          <Field label={`👤 表示する担当者 ${casesMember === "__ALL__" ? "（管理者ビュー）" : ""}`}>
+            <select style={inp} value={casesMember} onChange={e => { setCasesMember(e.target.value); setCasesExpanded(null); }}>
+              <option value="__ALL__">全メンバー（管理者ビュー）</option>
+              {MEMBERS.slice(0, 6).map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </Field>
+
+          {/* ========== 段1：パイプライン ========== */}
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 12 }}>
+              📊 {casesMember === "__ALL__" ? "全員" : casesMember} の案件パイプライン
+            </div>
+            {[
+              { key: "jiage", icon: "🗺️", label: "地上げ", count: pipeline.jiageActive.length, color: C.purple, sub: "訪問中・見込みなど", items: pipeline.jiageActive,
+                renderItem: (j) => ({ title: j.address, sub: `${j.status} · ${j.owner || "所有者不明"}`, badge: j.assignee }) },
+              { key: "owners", icon: "👤", label: "所有者交渉", count: pipeline.ownersActive.length, color: C.accent, sub: "アタック中", items: pipeline.ownersActive,
+                renderItem: (o) => ({ title: o.address, sub: `${o.status} · ${o.ownerName || "所有者不明"}`, badge: o.assignee }) },
+              { key: "sekisan", icon: "🧮", label: "積算検討", count: pipeline.sekisanActive.length, color: C.warn,
+                sub: `🔥熱い${pipeline.sekisanHot.length} / 🟡検討中${pipeline.sekisanCheck.length}`,
+                items: pipeline.sekisanActive,
+                renderItem: (s) => ({ title: s.address || "住所未設定", sub: `${s.judgment} · 仕入想定${s.buyPrice ? Math.round(Number(s.buyPrice)/10000)+"万" : "未"}`, badge: s.assignee }) },
+              { key: "stocks", icon: "🏠", label: "在庫", count: pipeline.stocksActive.length, color: C.success,
+                sub: "リフォーム中・売却準備など", items: pipeline.stocksActive,
+                renderItem: (s) => { const si = stagnantInfo(s.buyDate); return { title: s.name, sub: `${s.status}${si ? ` · ${si.level}${si.days}日` : ""}`, badge: s.assignee }; } },
+              { key: "completed", icon: "✅", label: "決済完了", count: pipeline.stocksCompleted.length, color: C.muted,
+                sub: `${new Date().getFullYear()}年実績`, items: pipeline.stocksCompleted,
+                renderItem: (s) => ({ title: s.name, sub: `利益${Math.round(((s.sellPrice||0)-(s.buyCost||0))/10000)}万 · ${s.sellDate}`, badge: s.assignee }) },
+            ].map(stage => {
+              const isExpanded = casesExpanded === stage.key;
+              return (
+                <div key={stage.key} style={{ marginBottom: 8 }}>
+                  <button onClick={() => setCasesExpanded(isExpanded ? null : stage.key)}
+                    disabled={stage.count === 0}
+                    style={{
+                      width: "100%", background: isExpanded ? stage.color + "22" : C.bg,
+                      border: `1px solid ${isExpanded ? stage.color + "66" : "#1a2535"}`,
+                      borderRadius: 10, padding: "12px 14px", cursor: stage.count === 0 ? "default" : "pointer",
+                      fontFamily: "inherit", display: "flex", alignItems: "center", gap: 12, textAlign: "left",
+                      opacity: stage.count === 0 ? 0.5 : 1,
+                    }}>
+                    <span style={{ fontSize: 24, flexShrink: 0 }}>{stage.icon}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{stage.label}</div>
+                      <div style={{ color: C.muted, fontSize: 11, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stage.sub}</div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ color: stage.color, fontWeight: 800, fontSize: 22, lineHeight: 1 }}>{stage.count}</div>
+                      <div style={{ color: C.muted, fontSize: 10, marginTop: 2 }}>件{stage.count > 0 ? (isExpanded ? " ▲" : " ▼") : ""}</div>
+                    </div>
+                  </button>
+                  {isExpanded && stage.items.length > 0 && (
+                    <div style={{ background: "#080d18", border: `1px solid ${stage.color}33`, borderTop: "none", borderRadius: "0 0 10px 10px", padding: "4px 8px 8px", marginTop: -1 }}>
+                      {stage.items.slice(0, 20).map((item, i) => {
+                        const r = stage.renderItem(item);
+                        return (
+                          <div key={i} style={{ padding: "10px 8px", borderBottom: i < Math.min(stage.items.length - 1, 19) ? `1px solid #1a2535` : "none" }}>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+                              <span style={{ color: C.text, fontSize: 13, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
+                              <MemberTag name={r.badge} />
+                            </div>
+                            <div style={{ color: C.muted, fontSize: 11 }}>{r.sub}</div>
+                          </div>
+                        );
+                      })}
+                      {stage.items.length > 20 && (
+                        <div style={{ padding: "8px", textAlign: "center", color: C.muted, fontSize: 11 }}>他 {stage.items.length - 20}件（各タブで確認）</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ========== 段2：要対応アラート ========== */}
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.danger, marginBottom: 12 }}>⚡ 要対応アラート</div>
+            {(() => {
+              const alertList = [
+                { label: "期限切れフォロー", count: alerts.overdueJiage.length + alerts.overdueOwner.length, color: C.danger, icon: "⚠️", desc: "次回訪問日を過ぎてる地上げ・所有者" },
+                { label: "180日超滞留在庫", count: alerts.stagnant180.length, color: C.danger, icon: "🔴", desc: "価格見直しなど対応急務" },
+                { label: "90〜180日滞留在庫", count: alerts.stagnant90.length, color: C.warn, icon: "🟡", desc: "販売促進を検討" },
+                { label: "DM未送付の地上げ", count: alerts.dmUn.length, color: C.warn, icon: "📩", desc: "1次アタックがまだの案件" },
+                { label: "「熱い」判定で仕入未確定", count: alerts.hotNotPurchased.length, color: C.danger, icon: "🔥", desc: "積算は終わってるが在庫転記してない" },
+              ];
+              const total = alertList.reduce((a, b) => a + b.count, 0);
+              if (total === 0) {
+                return <div style={{ background: C.bg, borderRadius: 10, padding: 16, textAlign: "center", color: C.success, fontSize: 13 }}>✅ 要対応アラートなし。クリーンな状態です。</div>;
+              }
+              return (
+                <div style={{ display: "grid", gap: 8 }}>
+                  {alertList.filter(a => a.count > 0).map(a => (
+                    <div key={a.label} style={{ background: C.bg, border: `1px solid ${a.color}33`, borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", gap: 12 }}>
+                      <span style={{ fontSize: 18, flexShrink: 0 }}>{a.icon}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ color: C.text, fontSize: 13, fontWeight: 700 }}>{a.label}</div>
+                        <div style={{ color: C.muted, fontSize: 11, marginTop: 1 }}>{a.desc}</div>
+                      </div>
+                      <div style={{ color: a.color, fontWeight: 800, fontSize: 20, flexShrink: 0 }}>{a.count}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* ========== 段3：今週の活動 ========== */}
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.success, marginBottom: 12 }}>📅 今週の活動（過去7日間）</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {[
+                { label: "新規積算", count: weekActivity.newSekisan.length, color: C.warn, icon: "🧮" },
+                { label: "仕入確定", count: weekActivity.newPurchase.length, color: C.accent, icon: "🏠" },
+                { label: "決済完了", count: weekActivity.newCompleted.length, color: C.success, icon: "✅" },
+                { label: "現在「熱い」", count: weekActivity.currentHot.length, color: C.danger, icon: "🔥" },
+              ].map(a => (
+                <div key={a.label} style={{ background: C.bg, borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+                  <div style={{ fontSize: 20, marginBottom: 4 }}>{a.icon}</div>
+                  <div style={{ color: a.color, fontWeight: 800, fontSize: 24, lineHeight: 1 }}>{a.count}</div>
+                  <div style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>{a.label}</div>
+                </div>
+              ))}
+            </div>
+            {casesMember === "__ALL__" && (
+              <div style={{ marginTop: 10, fontSize: 11, color: C.muted, textAlign: "center" }}>
+                ※ 全メンバー合算。担当者を選ぶと個別の動きが見えます。
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ===== 入力タブ ===== */}
       {tab === "input" && (
