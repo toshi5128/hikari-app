@@ -11,14 +11,66 @@
 <div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;font-size:18px;color:#0ea5e9">読み込み中...</div></div>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/recharts@2/umd/Recharts.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script>
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
 const {useState,useMemo,useEffect}=React;
-const {BarChart,Bar,XAxis,YAxis,Tooltip,ResponsiveContainer,PieChart,Pie,Cell}=Recharts;
+
+// RechartsがCDN環境で読み込めない端末でもアプリ全体が止まらないように、
+// 軽量の代替グラフを内蔵しています。
+function ResponsiveContainer({ width, height, children }) {
+  return <div style={{ width: width || "100%", height: height || 160 }}>{children}</div>;
+}
+function Bar({ dataKey, name, fill, opacity }) { return null; }
+function XAxis() { return null; }
+function YAxis() { return null; }
+function Tooltip() { return null; }
+function Cell() { return null; }
+function BarChart({ data = [], children, layout }) {
+  const bars = React.Children.toArray(children).filter(ch => ch && ch.type === Bar).map(ch => ch.props);
+  const keys = bars.map(b => b.dataKey);
+  const vals = data.flatMap(d => keys.map(k => Number(d[k]) || 0));
+  const max = Math.max(1, ...vals);
+  if (layout === "vertical") {
+    return <div style={{ width: "100%", height: "100%", display: "grid", gap: 8, padding: "4px 0" }}>
+      {data.map((d, i) => {
+        const b = bars[0] || {};
+        const v = Number(d[b.dataKey]) || 0;
+        return <div key={i} style={{ display: "grid", gridTemplateColumns: "54px 1fr 48px", alignItems: "center", gap: 8 }}>
+          <div style={{ color: C.text, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name || d.member || ""}</div>
+          <div style={{ height: 16, background: "#1a2535", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ width: `${Math.max(2, v / max * 100)}%`, height: "100%", background: b.fill || MEMBER_COLORS[d.name] || C.accent, opacity: b.opacity || 1 }} />
+          </div>
+          <div style={{ color: C.muted, fontSize: 11, textAlign: "right" }}>{Math.round(v)}</div>
+        </div>;
+      })}
+    </div>;
+  }
+  return <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "end", gap: 6, padding: "8px 2px 18px", position: "relative" }}>
+    {data.map((d, i) => <div key={i} style={{ flex: 1, height: "100%", display: "flex", alignItems: "end", gap: 2, position: "relative" }}>
+      {bars.map((b, j) => {
+        const v = Number(d[b.dataKey]) || 0;
+        return <div key={j} title={`${b.name || b.dataKey}: ${v}`} style={{ flex: 1, height: `${Math.max(3, v / max * 100)}%`, background: b.fill || C.accent, opacity: b.opacity || 1, borderRadius: "4px 4px 0 0" }} />;
+      })}
+      <div style={{ position: "absolute", left: 0, right: 0, bottom: -16, textAlign: "center", color: C.muted, fontSize: 9 }}>{d.month || ""}</div>
+    </div>)}
+  </div>;
+}
+function Pie({ data = [], dataKey = "value" }) { return null; }
+function PieChart({ children }) {
+  const pie = React.Children.toArray(children).find(ch => ch && ch.type === Pie);
+  const data = pie?.props?.data || [];
+  const total = data.reduce((a, d) => a + (Number(d.value) || 0), 0) || 1;
+  let acc = 0;
+  const colors = [C.accent, C.success, C.warn, C.purple, C.danger, "#06b6d4"];
+  return <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+    <div style={{ width: 110, height: 110, borderRadius: "50%", background: `conic-gradient(${data.map((d, i) => { const start = acc; acc += (Number(d.value) || 0) / total * 100; return `${colors[i % colors.length]} ${start}% ${acc}%`; }).join(", ")})`, position: "relative" }}>
+      <div style={{ position: "absolute", inset: 30, background: "#0d1422", borderRadius: "50%" }} />
+    </div>
+  </div>;
+}
 
 // ===================== CONSTANTS =====================
 const JIAGE_EXCEL_DATA = {};
@@ -217,6 +269,14 @@ const C = {
   muted: "#475569", accent: "#0ea5e9", accentDim: "#0c4a6e",
   success: "#10b981", warn: "#f59e0b", danger: "#ef4444", purple: "#8b5cf6",
 };
+
+const PAGES = [
+  { key: "dashboard", label: "ホーム", icon: "📊" },
+  { key: "stock", label: "在庫", icon: "🏠" },
+  { key: "approach", label: "営業", icon: "📞" },
+  { key: "jiage", label: "地上げ", icon: "🗺️" },
+  { key: "more", label: "その他", icon: "⋯" },
+];
 
 // Mobile-optimized styles
 const inp = {
@@ -844,8 +904,7 @@ function ApproachPage({ data, setData }) {
                     placeholder="0"
                   />
                   {goal > 0 && (
-                    <div style={{ background: "#1a25
-                    35", borderRadius: 3, height: 4, marginTop: 6 }}>
+                    <div style={{ background: "#1a2535", borderRadius: 3, height: 4, marginTop: 6 }}>
                       <div style={{ width: pct + "%", height: "100%", background: color, borderRadius: 3, transition: "width 0.3s" }} />
                     </div>
                   )}
