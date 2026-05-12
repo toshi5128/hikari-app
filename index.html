@@ -4063,8 +4063,15 @@ function ApproachPage({ data, setData }) {
             return (
               <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
                 {/* タイトル */}
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 10 }}>
-                  📊 月別進捗 — <span style={{ color: MEMBER_COLORS[dailyChartMember] || C.text }}>{dailyChartMember}</span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>
+                    📊 月別進捗 — <span style={{ color: MEMBER_COLORS[dailyChartMember] || C.text }}>{dailyChartMember}</span>
+                  </div>
+                  {(isAdmin || dailyChartMember === currentUser) && (
+                    <button onClick={() => openGoalEdit(dailyChartMember)} style={{
+                      ...btnStyle("ghost"), padding: "5px 10px", fontSize: 11,
+                    }}>🎯 目標編集</button>
+                  )}
                 </div>
 
                 {/* メンバー選択 */}
@@ -4158,6 +4165,73 @@ function ApproachPage({ data, setData }) {
                   </table>
                 </div>
 
+                {/* 📊 達成度プログレスバー（カラー） */}
+                {(() => {
+                  // メール配信日数を集計
+                  const mailDays = rows.filter(r => r.hasData && (data.approaches.find(a => a.member === dailyChartMember && a.date === r.date)?.mailDelivery)).length;
+                  return (
+                    <>
+                      {/* 活動日数とメール配信日数 */}
+                      <div style={{ display: "flex", gap: 8, margin: "12px 0" }}>
+                        <div style={{ flex: 1, background: C.bg, borderRadius: 10, padding: "10px 12px", textAlign: "center", border: `1px solid ${C.accent}33` }}>
+                          <div style={{ color: C.muted, fontSize: 10, marginBottom: 2 }}>📅 活動日数</div>
+                          <div style={{ color: C.accent, fontSize: 22, fontWeight: 800, lineHeight: 1 }}>{activeDays}<span style={{ fontSize: 11, color: C.muted, marginLeft: 2 }}>日</span></div>
+                        </div>
+                        <div style={{ flex: 1, background: C.bg, borderRadius: 10, padding: "10px 12px", textAlign: "center", border: `1px solid ${C.success}33` }}>
+                          <div style={{ color: C.muted, fontSize: 10, marginBottom: 2 }}>📨 メール配信</div>
+                          <div style={{ color: C.success, fontSize: 22, fontWeight: 800, lineHeight: 1 }}>{mailDays}<span style={{ fontSize: 11, color: C.muted, marginLeft: 2 }}>日</span></div>
+                        </div>
+                      </div>
+
+                      {/* 🎯 達成度バー */}
+                      <div style={{ background: "#0a0f1a", border: `1px solid #1a2535`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                        <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, fontWeight: 700 }}>🎯 達成度（月間目標との対比）</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                          {APPROACH_ITEMS.map(item => {
+                            const val = totals[item];
+                            const goal = goals[item];
+                            const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
+                            const realPct = goal > 0 ? val / goal * 100 : 0;
+                            const noGoal = goal === 0;
+                            // 色：未達状況で決定
+                            let color, label, emoji;
+                            if (noGoal) { color = C.muted; label = "目標未設定"; emoji = ""; }
+                            else if (val >= goal) { color = C.success; label = "達成"; emoji = "🎉"; }
+                            else if (realPct >= 70) { color = C.warn; label = "もうすぐ"; emoji = "🟡"; }
+                            else if (realPct >= 40) { color = "#fb923c"; label = "半ば"; emoji = "🟠"; }
+                            else { color = C.danger; label = "要追い込み"; emoji = "🔴"; }
+
+                            return (
+                              <div key={item} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px" }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                                  <span style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{item}</span>
+                                  <span style={{ color, fontWeight: 800, fontSize: 13 }}>
+                                    {val}{goal > 0 ? <span style={{ color: C.muted, fontWeight: 400 }}>/{goal}</span> : ""}
+                                  </span>
+                                </div>
+                                {goal > 0 && (
+                                  <>
+                                    <div style={{ background: "#1a2535", borderRadius: 3, height: 6, overflow: "hidden", marginBottom: 3 }}>
+                                      <div style={{ width: pct + "%", height: "100%", background: color, borderRadius: 3, transition: "width 0.3s" }} />
+                                    </div>
+                                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10 }}>
+                                      <span style={{ color: color }}>{emoji}{label}</span>
+                                      <span style={{ color: color, fontWeight: 700 }}>{realPct.toFixed(0)}%</span>
+                                    </div>
+                                  </>
+                                )}
+                                {noGoal && (
+                                  <div style={{ fontSize: 10, color: C.muted, textAlign: "center", padding: "3px 0" }}>—</div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
+
                 {/* ===== 日別詳細テーブル（折りたたみ） ===== */}
                 <details>
                   <summary style={{
@@ -4227,55 +4301,6 @@ function ApproachPage({ data, setData }) {
             </div>
           )}
 
-          {monthlyData.map(m => {
-            return (
-              <div key={m.member} style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                  <MemberTag name={m.member} />
-                  <button style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11 }} onClick={() => openGoalEdit(m.member)}>目標編集</button>
-                </div>
-                {/* 活動日数とメール配信日数 */}
-                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  <div style={{ flex: 1, background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
-                    <div style={{ color: C.muted, fontSize: 10 }}>📅 活動日数</div>
-                    <div style={{ color: C.accent, fontSize: 18, fontWeight: 800 }}>{m.workDays || 0}日</div>
-                  </div>
-                  <div style={{ flex: 1, background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
-                    <div style={{ color: C.muted, fontSize: 10 }}>📨 メール配信</div>
-                    <div style={{ color: C.success, fontSize: 18, fontWeight: 800 }}>{m.mailDays || 0}日</div>
-                  </div>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  {APPROACH_ITEMS.map(item => {
-                    const val = m.totals[item] || 0;
-                    const goal = getGoal(m.member, item);
-                    const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
-                    const color = goal > 0 ? (val >= goal ? C.success : val > goal * 0.5 ? C.warn : C.danger) : C.text;
-                    return (
-                      <div key={item} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                          <span style={{ color: C.muted, fontSize: 11 }}>{item}</span>
-                          <span style={{ color, fontWeight: 700, fontSize: 13 }}>
-                            {val}{goal > 0 ? `/${goal}` : ""}
-                          </span>
-                        </div>
-                        {goal > 0 && (
-                          <div style={{ background: "#1a2535", borderRadius: 3, height: 4 }}>
-                            <div style={{ width: pct + "%", height: "100%", background: color, borderRadius: 3 }} />
-                          </div>
-                        )}
-                        {goal > 0 && (
-                          <div style={{ fontSize: 10, color: C.muted, marginTop: 3, textAlign: "right" }}>
-                            {pct.toFixed(0)}%
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
         </div>
       )}
 
