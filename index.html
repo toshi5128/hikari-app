@@ -348,30 +348,46 @@ async function loadFromSupabase() {
 }
 
 // Supabaseにデータを保存
-async function saveToSupabase(data) {
-  try {
-    // まず存在確認
-    const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=id`, {
-      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
-    });
-    const exists = await checkRes.json();
-    const method = exists && exists.length > 0 ? "PATCH" : "POST";
-    const url = exists && exists.length > 0
-      ? `${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}`
-      : `${SUPABASE_URL}/rest/v1/app_data`;
-    await fetch(url, {
-      method,
-      headers: {
-        "apikey": SUPABASE_KEY,
-        "Authorization": `Bearer ${SUPABASE_KEY}`,
-        "Content-Type": "application/json",
-        "Prefer": "return=minimal",
-      },
-      body: JSON.stringify({ id: DATA_ID, data, updated_at: new Date().toISOString() }),
-    });
-    // ローカルキャッシュも更新
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {}
-  } catch (e) { console.error("Supabase save error:", e); }
+async function saveToSupabase(data, retries = 3) {
+  // ローカルキャッシュは先に保存（Supabase失敗してもローカルには確実に残す）
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) { console.warn("localStorage save failed:", e); }
+
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      // まず存在確認
+      const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=id`, {
+        headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+      });
+      if (!checkRes.ok) throw new Error(`Check failed: ${checkRes.status}`);
+      const exists = await checkRes.json();
+      const method = exists && exists.length > 0 ? "PATCH" : "POST";
+      const url = exists && exists.length > 0
+        ? `${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}`
+        : `${SUPABASE_URL}/rest/v1/app_data`;
+      const res = await fetch(url, {
+        method,
+        headers: {
+          "apikey": SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "application/json",
+          "Prefer": "return=minimal",
+        },
+        body: JSON.stringify({ id: DATA_ID, data, updated_at: new Date().toISOString() }),
+      });
+      if (!res.ok) throw new Error(`Save failed: ${res.status} ${await res.text()}`);
+      // 保存成功！カレンダー予定数も含めてログ出力（デバッグ用）
+      console.log(`[Supabase] 保存成功 (試行${attempt+1}/${retries}) customEvents=${(data.customEvents||[]).length}件 stocks=${(data.stocks||[]).length}件`);
+      return true;
+    } catch (e) {
+      console.error(`[Supabase] 保存失敗 (試行${attempt+1}/${retries}):`, e);
+      if (attempt < retries - 1) {
+        // 1秒、2秒待ってからリトライ
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+  }
+  console.error("[Supabase] 3回試して保存失敗。ローカルキャッシュには保存済み。");
+  return false;
 }
 
 // ローカルキャッシュから読み込み（DEFAULT_DATAとマージして互換性を保つ）
@@ -554,10 +570,35 @@ function MainApp({ onLock }) {
   // 直近の自分の保存時刻（ポーリングで自分の更新を上書きしないため）
   const lastLocalSaveRef = useRef(0);
 
+  // ローカル(キャッシュ)とリモートを賢くマージする関数
+  // リモートに該当キーが空配列で、ローカルには中身がある場合、ローカルを優先（データ消失防止）
+  const mergeRemoteSafely = (remote) => {
+    if (!remote) return null;
+    const local = loadFromCache();
+    const merged = mergeWithDefault(remote);
+    if (!local) return merged;
+
+    // 配列フィールドで「リモートが空 or 少ない」「ローカルが多い」場合、ローカルを優先
+    // これによりSupabase保存失敗時のデータ消失を防ぐ
+    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "activityLog"];
+    arrayKeys.forEach(k => {
+      const localArr = Array.isArray(local[k]) ? local[k] : [];
+      const remoteArr = Array.isArray(merged[k]) ? merged[k] : [];
+      // ローカルにあってリモートにないIDのアイテムを保護
+      const remoteIds = new Set(remoteArr.map(item => item?.id).filter(id => id != null));
+      const protectedItems = localArr.filter(item => item?.id != null && !remoteIds.has(item.id));
+      if (protectedItems.length > 0) {
+        console.log(`[Sync] ${k}: ローカル限定の${protectedItems.length}件を保護してマージ`);
+        merged[k] = [...remoteArr, ...protectedItems];
+      }
+    });
+    return merged;
+  };
+
   // 起動時にSupabaseから最新データを取得
   useEffect(() => {
     loadFromSupabase().then(remote => {
-      const merged = mergeWithDefault(remote);
+      const merged = mergeRemoteSafely(remote);
       if (merged) {
         setDataRaw(merged);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
@@ -576,7 +617,7 @@ function MainApp({ onLock }) {
       if (Date.now() - lastLocalSaveRef.current < 60000) return; // 直近の自分の保存はスキップ
       if (isUserEditing()) return; // 入力中はスキップ
       loadFromSupabase().then(remote => {
-        const merged = mergeWithDefault(remote);
+        const merged = mergeRemoteSafely(remote);
         if (merged) {
           setDataRaw(merged);
           try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
@@ -592,9 +633,16 @@ function MainApp({ onLock }) {
       // 自分の保存時刻を記録（ポーリング上書き防止用）
       lastLocalSaveRef.current = Date.now();
       // Supabaseに保存（非同期）
-      saveToSupabase(next).then(() => {
-        setSavedMsg(true);
-        setTimeout(() => setSavedMsg(false), 2000);
+      saveToSupabase(next).then(ok => {
+        if (ok) {
+          setSavedMsg(true);
+          setSyncError(false);
+          setTimeout(() => setSavedMsg(false), 2000);
+        } else {
+          // 3回試して失敗 → ユーザーに警告表示
+          setSyncError(true);
+          setSavedMsg(false);
+        }
       });
       // ローカルにも即時保存
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
