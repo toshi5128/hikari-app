@@ -19,6 +19,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap" rel="stylesheet">
 <!-- SheetJS for Excel import -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- Leaflet for in-app map -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#04080f;color:#e2e8f0;font-family:'Noto Sans JP',sans-serif}input,select,textarea,button{font-family:inherit}
 input[type="date"],input[type="time"]{color-scheme:dark}
 input[type="date"]::-webkit-calendar-picker-indicator,input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(0.7) sepia(1) saturate(5) hue-rotate(175deg) brightness(1.2);cursor:pointer;opacity:1;padding:4px;border-radius:4px}
@@ -1030,6 +1033,94 @@ function SekisanNInp({ fkey, placeholder, suffix, form, setForm }) {
 function Tag({ label, color }) {
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
 }
+// 🗺️ Leafletマップコンポーネント
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480 }) {
+  const mapRef = React.useRef(null);
+  const mapInstanceRef = React.useRef(null);
+  const markersRef = React.useRef([]);
+
+  // マップ初期化（一度だけ）
+  React.useEffect(() => {
+    if (!mapRef.current || mapInstanceRef.current) return;
+    if (typeof L === "undefined") {
+      console.warn("Leaflet not loaded");
+      return;
+    }
+    // 埼玉県中心
+    const map = L.map(mapRef.current).setView([36.05, 139.4], 9);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap",
+      maxZoom: 19,
+    }).addTo(map);
+    mapInstanceRef.current = map;
+    return () => {
+      try { map.remove(); } catch (e) {}
+      mapInstanceRef.current = null;
+    };
+  }, []);
+
+  // マーカー更新
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    // 既存マーカー削除
+    markersRef.current.forEach(m => map.removeLayer(m));
+    markersRef.current = [];
+    // 表示対象（座標あり）
+    const validItems = items.filter(it => {
+      const lat = pinTarget === "ownerAddr" ? it.ownerLat : it.lat;
+      const lng = pinTarget === "ownerAddr" ? it.ownerLng : it.lng;
+      return typeof lat === "number" && typeof lng === "number" && !isNaN(lat) && !isNaN(lng);
+    });
+    // 色判定
+    const colorByStatus = (status) => {
+      if (status === "NG" || status === "断られた") return "#ef4444";
+      if (status === "見込" || status === "興味あり" || status === "検討中" || status === "交渉中") return "#10b981";
+      if (status === "不在") return "#f59e0b";
+      if (status === "訪問済") return "#3b82f6";
+      if (status === "居住している") return "#64748b";
+      if (status === "仕入れ完了") return "#06b6d4";
+      return "#94a3b8";
+    };
+    validItems.forEach(it => {
+      const lat = pinTarget === "ownerAddr" ? it.ownerLat : it.lat;
+      const lng = pinTarget === "ownerAddr" ? it.ownerLng : it.lng;
+      const color = colorByStatus(it.status);
+      const icon = L.divIcon({
+        className: "hikari-pin",
+        html: `<div style="background:${color};width:22px;height:22px;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.5);"></div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      });
+      const marker = L.marker([lat, lng], { icon }).addTo(map);
+      marker.bindPopup(`
+        <div style="font-family:'Noto Sans JP',sans-serif;min-width:160px;">
+          <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${(it.address || "").slice(0, 40)}</div>
+          ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">👤 ${it.ownerName}</div>` : ""}
+          <div style="margin-top:5px;"><span style="background:${color};color:#fff;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${it.status}</span></div>
+          <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
+        </div>
+      `);
+      marker.on("popupopen", () => {
+        setTimeout(() => {
+          const btn = document.getElementById("pin-detail-btn");
+          if (btn) btn.onclick = () => onPinClick && onPinClick(it);
+        }, 10);
+      });
+      markersRef.current.push(marker);
+    });
+    // 中心調整
+    if (markersRef.current.length > 0) {
+      try {
+        const group = L.featureGroup(markersRef.current);
+        map.fitBounds(group.getBounds().pad(0.15), { maxZoom: 14 });
+      } catch (e) {}
+    }
+  }, [items, pinTarget]);
+
+  return <div ref={mapRef} style={{ height, width: "100%", borderRadius: 12, border: "1px solid #1a2535" }} />;
+}
+
 function StatusTag({ status }) {
   const map = {
     "見込": C.success, "仕入契約済": C.accent, "リフォーム中": C.purple, "リフォーム待ち": C.warn,
@@ -4683,6 +4774,32 @@ function ApproachPage({ data, setData }) {
 // Excelから取り込んだ地上げデータ（エリア別）
 const JIAGE_AREAS = ["熊谷", "行田", "深谷", "東松山", "本庄", "秩父", "上里"];
 
+// 🗺️ ジオコーディング：住所→緯度経度（Nominatim API）
+async function geocodeAddress(address) {
+  if (!address) return null;
+  // 末尾の全角空白を除去、正規化
+  const q = address.replace(/[\u3000\s]+$/g, "").trim();
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1&countrycodes=jp`;
+    const res = await fetch(url, {
+      headers: { "Accept-Language": "ja" },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && data.length > 0) {
+      const lat = parseFloat(data[0].lat);
+      const lng = parseFloat(data[0].lon);
+      if (!isNaN(lat) && !isNaN(lng)) return { lat, lng };
+    }
+  } catch (e) {
+    console.warn("Geocode error:", q, e);
+  }
+  return null;
+}
+
+// レート制限用 sleep
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 // 訪問結果の定義
 const VISIT_RESULTS = [
   { key: "home",      label: "😊 在宅",   short: "在宅",   color: "#10b981", autoStatus: "訪問済" },
@@ -4775,6 +4892,8 @@ function JiagePage({ data, setData }) {
   const [search, setSearch] = useState("");
   const [searchTarget, setSearchTarget] = useState("address"); // "address" | "ownerAddr" | "ownerName" | "all"
   const [mapPinTarget, setMapPinTarget] = useState("address"); // "address" | "ownerAddr"
+  // ジオコーディング進捗
+  const [geocodeProgress, setGeocodeProgress] = useState(null); // { current, total, cancel: boolean }
   const [selected, setSelected] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [addType, setAddType] = useState("jiage");
@@ -5013,6 +5132,7 @@ function JiagePage({ data, setData }) {
       status: j.status, subStatus: `DM:${j.dm}`,
       nextDate: j.nextVisit, memo: j.memo, history: [],
       dm: j.dm, visit: j.visit, area: j.area || "", raw: j,
+      lat: j.lat, lng: j.lng, ownerLat: j.ownerLat, ownerLng: j.ownerLng,
     }));
   }, [data.jiage]);
 
@@ -5217,6 +5337,58 @@ function JiagePage({ data, setData }) {
   };
 
   // 地上げ → 積算表を作成（誰でも実行可）
+  // 🗺️ ジオコーディング一括実行
+  const cancelGeocodeRef = React.useRef(false);
+  const runGeocoding = async (target) => {
+    // target: "address" | "ownerAddr"
+    const isOwner = target === "ownerAddr";
+    const targetJiage = (data.jiage || []).filter(j => {
+      const addr = isOwner ? j.ownerAddr : j.address;
+      const lat = isOwner ? j.ownerLat : j.lat;
+      return addr && (typeof lat !== "number");
+    });
+    if (targetJiage.length === 0) {
+      alert(`✅ ${isOwner ? "所有者住所" : "物件住所"}の緯度経度はすべて取得済みです`);
+      return;
+    }
+    if (!confirm(`${targetJiage.length}件の${isOwner ? "所有者住所" : "物件住所"}を緯度経度に変換します。\n\n約${Math.ceil(targetJiage.length * 1.2 / 60)}分かかります（1秒1件のレート制限のため）。\n\n実行しますか？`)) return;
+    
+    cancelGeocodeRef.current = false;
+    setGeocodeProgress({ current: 0, total: targetJiage.length });
+    
+    let success = 0, failed = 0;
+    for (let i = 0; i < targetJiage.length; i++) {
+      if (cancelGeocodeRef.current) break;
+      const j = targetJiage[i];
+      const addr = isOwner ? j.ownerAddr : j.address;
+      const result = await geocodeAddress(addr);
+      if (result) {
+        success++;
+        // 個別に保存（中断しても結果残る）
+        setData(d => ({
+          ...d,
+          jiage: (d.jiage || []).map(item => {
+            if (item.id !== j.id) return item;
+            return isOwner 
+              ? { ...item, ownerLat: result.lat, ownerLng: result.lng }
+              : { ...item, lat: result.lat, lng: result.lng };
+          })
+        }));
+      } else {
+        failed++;
+      }
+      setGeocodeProgress({ current: i + 1, total: targetJiage.length });
+      // レート制限：1.2秒待機
+      if (i < targetJiage.length - 1) await sleep(1200);
+    }
+    setGeocodeProgress(null);
+    if (cancelGeocodeRef.current) {
+      alert(`⏸️ 中断しました\n成功: ${success}件 / 失敗: ${failed}件\n（処理した分は保存されています）`);
+    } else {
+      alert(`✅ 完了！\n成功: ${success}件 / 失敗: ${failed}件`);
+    }
+  };
+
   const promoteToSekisan = (item) => {
     const j = item.raw;
     const alreadyExists = (data.sekisan || []).some(s => s.address === j.address && s.fromJiageId === j.id);
@@ -5574,25 +5746,97 @@ function JiagePage({ data, setData }) {
             </div>
           </div>
 
-          {/* Googleマップで全件表示ボタン */}
+          {/* 🗺️ Leaflet地図表示 */}
           {(() => {
-            const targetItems = filtered.filter(i => mapPinTarget === "address" ? !!i.address : !!i.ownerAddress);
-            const addresses = targetItems.map(i => mapPinTarget === "address" ? i.address : i.ownerAddress);
-            const targetLabel = mapPinTarget === "address" ? "物件住所" : "所有者住所";
-            const iconLabel = mapPinTarget === "address" ? "🏠" : "📮";
+            const itemsWithCoord = filtered.filter(i => {
+              const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
+              const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
+              return typeof lat === "number" && typeof lng === "number";
+            });
+            const itemsNoCoord = filtered.filter(i => {
+              const addr = mapPinTarget === "ownerAddr" ? i.ownerAddress : i.address;
+              const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
+              return !!addr && (typeof lat !== "number");
+            });
+            
             return (
-              <a
-                href={`https://www.google.com/maps/search/${encodeURIComponent(addresses.join(" / "))}`}
-                target="_blank" rel="noopener noreferrer"
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                  background: "#1a2a1a", border: `1px solid ${C.success}55`,
-                  color: C.success, borderRadius: 12, padding: "14px",
-                  fontSize: 15, fontWeight: 700, textDecoration: "none", marginBottom: 14,
-                }}
-              >
-                🗺 {iconLabel} {targetLabel}を全件マップ確認（{targetItems.length}件）
-              </a>
+              <div style={{ marginBottom: 14 }}>
+                {/* ジオコーディング進捗・実行 */}
+                {geocodeProgress ? (
+                  <div style={{ background: "#1a2540", border: `1px solid ${C.accent}66`, borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 6 }}>
+                      🛰️ ジオコーディング中... {geocodeProgress.current} / {geocodeProgress.total}件
+                    </div>
+                    <div style={{ height: 8, background: "#0a0f1a", borderRadius: 4, overflow: "hidden", marginBottom: 8 }}>
+                      <div style={{
+                        height: "100%", width: `${(geocodeProgress.current / geocodeProgress.total * 100).toFixed(1)}%`,
+                        background: C.accent, transition: "width 0.3s",
+                      }} />
+                    </div>
+                    <button onClick={() => { cancelGeocodeRef.current = true; }} style={{
+                      background: "transparent", border: `1px solid ${C.danger}`, color: C.danger,
+                      borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                    }}>⏸️ 中断</button>
+                  </div>
+                ) : itemsNoCoord.length > 0 ? (
+                  <button onClick={() => runGeocoding(mapPinTarget)} style={{
+                    width: "100%", padding: "12px", marginBottom: 10,
+                    background: C.warn, color: "#000",
+                    border: "none", borderRadius: 10, cursor: "pointer",
+                    fontSize: 13, fontWeight: 800, fontFamily: "inherit",
+                  }}>
+                    🛰️ ジオコーディング実行（未取得 {itemsNoCoord.length}件・約{Math.ceil(itemsNoCoord.length * 1.2 / 60)}分）
+                  </button>
+                ) : null}
+
+                {/* 地図 */}
+                {itemsWithCoord.length > 0 ? (
+                  <>
+                    <LeafletMap 
+                      items={itemsWithCoord}
+                      onPinClick={(it) => setSelected({ item: it })}
+                      pinTarget={mapPinTarget}
+                      height={420}
+                    />
+                    <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                      <span>📍 {itemsWithCoord.length}件のピンを表示中</span>
+                      <span style={{ fontSize: 10 }}>
+                        {itemsNoCoord.length > 0 && `未取得${itemsNoCoord.length}件`}
+                      </span>
+                    </div>
+
+                    {/* ピン色凡例 */}
+                    <div style={{ marginTop: 8, background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 8, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 5, fontWeight: 700 }}>🎨 ピン色凡例</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 10 }}>
+                        {[
+                          { c: "#94a3b8", l: "未訪問" },
+                          { c: "#3b82f6", l: "訪問済" },
+                          { c: "#f59e0b", l: "不在" },
+                          { c: "#10b981", l: "見込・興味あり" },
+                          { c: "#06b6d4", l: "仕入れ完了" },
+                          { c: "#64748b", l: "居住" },
+                          { c: "#ef4444", l: "NG" },
+                        ].map(it => (
+                          <span key={it.l} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                            <span style={{ width: 10, height: 10, borderRadius: "50%", background: it.c, border: "1.5px solid white" }} />
+                            <span style={{ color: C.muted }}>{it.l}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ background: "#1a1410", border: `1px solid ${C.warn}55`, borderRadius: 10, padding: "20px 16px", textAlign: "center", marginBottom: 10 }}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>🗺️</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 6 }}>まだピンを立てる準備ができていません</div>
+                    <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+                      上のボタンで「ジオコーディング」を実行すると、<br />
+                      住所を緯度経度に変換してピンを立てられます
+                    </div>
+                  </div>
+                )}
+              </div>
             );
           })()}
 
