@@ -55,7 +55,7 @@ window.forceHikariReset = async function() {
   setTimeout(function() { window.location.reload(true); }, 500);
 };
 
-// 20秒経ってもReactが起動しなかったらエラー画面を表示
+// 30秒経ってもReactが起動しなかったらエラー画面を表示
 setTimeout(function() {
   var root = document.getElementById('root');
   if (root && (root.textContent.indexOf('読み込み中') >= 0 || root.children.length <= 1)) {
@@ -69,7 +69,7 @@ setTimeout(function() {
       '<p style="margin-top:16px;font-size:11px;color:#94a3b8;line-height:1.6">それでも改善しない場合は、ブラウザの設定からキャッシュを削除して再度アクセスしてください。</p>' +
       '</div>';
   }
-}, 20000);
+}, 30000);
 
 // PWA: Service Worker 登録
 if ('serviceWorker' in navigator) {
@@ -2371,43 +2371,50 @@ function ApproachPage({ data, setData }) {
     data.approaches.find(a => a.member === selectedMember && a.date === selectedDate),
     [data.approaches, selectedMember, selectedDate]);
 
-  // 既存データ読み込み（担当者・日付が変わったらリセット→読み込み）
+  // 既存データ読み込み（担当者・日付が変わった時のみ実行）
+  // ※ existingやdata.approachesを依存に入れると、自動保存→data更新→再読込→自動保存…の無限ループになるので外す
   useEffect(() => {
-    setIsLoaded(false); // 切替時は自動保存を一旦止める
-    if (existing) {
-      setInputValues(existing.values || {});
-      setMemo(existing.memo || "");
-      setMailDelivery(existing.mailDelivery || false);
-      setArea(existing.area || "");
+    setIsLoaded(false);
+    // 直接data.approachesから検索（existingを使わない）
+    const rec = data.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
+    if (rec) {
+      setInputValues(rec.values || {});
+      setMemo(rec.memo || "");
+      setMailDelivery(rec.mailDelivery || false);
+      setArea(rec.area || "");
     } else {
       setInputValues({}); setMemo(""); setMailDelivery(false); setArea("");
     }
-    // 読み込み完了をマーク（次のレンダリングサイクル後）
-    setTimeout(() => setIsLoaded(true), 50);
-  }, [existing, selectedMember, selectedDate]);
+    const t = setTimeout(() => setIsLoaded(true), 100);
+    return () => clearTimeout(t);
+  }, [selectedMember, selectedDate]);
 
-  // ===== 自動保存：カウンター・トグル・テキストが変わるたびに保存 =====
+  // ===== 自動保存：カウンター・トグル・テキストが変わるたびに保存（debounce 800ms） =====
   useEffect(() => {
     if (!isLoaded) return; // 初回読み込み時はスキップ
     setAutoSaveStatus("saving");
-    setData(d => {
-      const existingRec = d.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
-      const entry = {
-        id: existingRec?.id || Date.now(),
-        member: selectedMember, date: selectedDate,
-        values: inputValues, memo, mailDelivery, area,
-      };
-      return {
-        ...d,
-        approaches: existingRec
-          ? d.approaches.map(a => a.id === existingRec.id ? entry : a)
-          : [...d.approaches, entry],
-      };
-    });
-    // 800ms後に「保存完了」表示
-    const timer = setTimeout(() => setAutoSaveStatus("saved"), 300);
-    const fadeTimer = setTimeout(() => setAutoSaveStatus("idle"), 2500);
-    return () => { clearTimeout(timer); clearTimeout(fadeTimer); };
+
+    // 800msのdebounceで連打時の保存頻度を抑制（Supabaseのレート制限対策）
+    const saveTimer = setTimeout(() => {
+      setData(d => {
+        const existingRec = d.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
+        const entry = {
+          id: existingRec?.id || Date.now(),
+          member: selectedMember, date: selectedDate,
+          values: inputValues, memo, mailDelivery, area,
+        };
+        return {
+          ...d,
+          approaches: existingRec
+            ? d.approaches.map(a => a.id === existingRec.id ? entry : a)
+            : [...d.approaches, entry],
+        };
+      });
+      setAutoSaveStatus("saved");
+    }, 800);
+
+    const fadeTimer = setTimeout(() => setAutoSaveStatus("idle"), 3500);
+    return () => { clearTimeout(saveTimer); clearTimeout(fadeTimer); };
   }, [inputValues, memo, mailDelivery, area, isLoaded, selectedMember, selectedDate]);
 
   // 月次集計
