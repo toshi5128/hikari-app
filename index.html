@@ -2300,6 +2300,8 @@ function ApproachPage({ data, setData }) {
   const [selectedDate, setSelectedDate] = useState(today);
   const [inputValues, setInputValues] = useState({});
   const [memo, setMemo] = useState("");
+  const [mailDelivery, setMailDelivery] = useState(false);
+  const [area, setArea] = useState("");
   const [showGoalEdit, setShowGoalEdit] = useState(false);
   const [goalEditMember, setGoalEditMember] = useState(MEMBERS[0]);
   const [goalForm, setGoalForm] = useState({});
@@ -2320,8 +2322,14 @@ function ApproachPage({ data, setData }) {
     [data.approaches, selectedMember, selectedDate]);
 
   useEffect(() => {
-    if (existing) { setInputValues(existing.values || {}); setMemo(existing.memo || ""); }
-    else { setInputValues({}); setMemo(""); }
+    if (existing) {
+      setInputValues(existing.values || {});
+      setMemo(existing.memo || "");
+      setMailDelivery(existing.mailDelivery || false);
+      setArea(existing.area || "");
+    } else {
+      setInputValues({}); setMemo(""); setMailDelivery(false); setArea("");
+    }
   }, [existing]);
 
   // 月次集計
@@ -2332,8 +2340,10 @@ function ApproachPage({ data, setData }) {
       APPROACH_ITEMS.forEach(item => {
         totals[item] = entries.reduce((a, e) => a + (Number(e.values?.[item]) || 0), 0);
       });
-      return { member: m, totals };
-    }).filter(m => Object.values(m.totals).some(v => v > 0));
+      const mailDays = entries.filter(e => e.mailDelivery).length;
+      const workDays = entries.length;
+      return { member: m, totals, mailDays, workDays };
+    }).filter(m => Object.values(m.totals).some(v => v > 0) || m.workDays > 0);
   }, [data.approaches, selectedYM]);
 
   // 月一覧（過去12ヶ月）
@@ -2347,7 +2357,12 @@ function ApproachPage({ data, setData }) {
   }, []);
 
   const handleSave = () => {
-    const entry = { id: existing?.id || Date.now(), member: selectedMember, date: selectedDate, values: inputValues, memo };
+    const entry = {
+      id: existing?.id || Date.now(),
+      member: selectedMember, date: selectedDate,
+      values: inputValues, memo,
+      mailDelivery, area,
+    };
     setData(d => ({ ...d, approaches: existing ? d.approaches.map(a => a.id === existing.id ? entry : a) : [...d.approaches, entry] }));
     alert("保存しました！");
   };
@@ -2369,7 +2384,7 @@ function ApproachPage({ data, setData }) {
 
   const TABS = [
     { key: "cases", label: "📋 案件" },
-    { key: "input", label: "✏️ 入力" },
+    { key: "input", label: "📈 行動管理" },
     { key: "monthly", label: "📊 月次" },
     { key: "goals", label: "🎯 目標" },
   ];
@@ -2584,35 +2599,44 @@ function ApproachPage({ data, setData }) {
       {/* ===== 入力タブ ===== */}
       {tab === "input" && (
         <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
-          <Field label="担当者">
-            <select style={inp} value={selectedMember} onChange={e => setSelectedMember(e.target.value)}>
-              {MEMBERS.map(m => <option key={m}>{m}</option>)}
-            </select>
-          </Field>
-          <Field label="日付">
-            <input type="date" style={inp} value={selectedDate} onChange={e => setSelectedDate(e.target.value)} />
-          </Field>
+          {/* ヘッダー：担当者＋日付 */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+            <Field label="👤 担当者">
+              <select style={inp} value={selectedMember} onChange={e => setSelectedMember(e.target.value)}>
+                {MEMBERS.map(m => <option key={m}>{m}</option>)}
+              </select>
+            </Field>
+            <Field label={<>📅 日付{(() => { const d = dayOfWeekLabel(selectedDate); return d ? <span style={{ color: d.color, marginLeft: 6, fontWeight: 800 }}>({d.label})</span> : null; })()}</>}>
+              <input type="date" style={inp} value={selectedDate} onChange={e => setSelectedDate(e.target.value)} />
+            </Field>
+          </div>
+
+          {/* カウンター項目 */}
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 700 }}>📊 業者訪問カウンター（タップで＋1）</div>
+          <div style={{ display: "grid", gap: 8, marginBottom: 14 }}>
             {APPROACH_ITEMS.map(item => {
               const goal = getGoal(selectedMember, item);
               const val = Number(inputValues[item]) || 0;
               const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
               const color = goal > 0 ? (val >= goal ? C.success : val > goal * 0.5 ? C.warn : C.danger) : C.text;
+              const setVal = newVal => setInputValues(p => ({ ...p, [item]: Math.max(0, newVal) }));
               return (
-                <div key={item} style={{ background: C.bg, borderRadius: 10, padding: "10px 12px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                    <span style={{ color: C.muted, fontSize: 12 }}>{item}</span>
-                    {goal > 0 && <span style={{ color, fontSize: 11, fontWeight: 700 }}>{val}/{goal}</span>}
+                <div key={item} style={{ background: C.bg, borderRadius: 10, padding: "10px 12px", border: `1px solid #1a2535` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>{item}</span>
+                    {goal > 0 && <span style={{ color, fontSize: 11, fontWeight: 700 }}>{val}/{goal}（{pct.toFixed(0)}%）</span>}
                   </div>
-                  <input
-                    type="text" inputMode="numeric"
-                    style={{ ...inp, fontSize: 20, fontWeight: 700, textAlign: "center", padding: "8px", MozAppearance: "textfield", WebkitAppearance: "none" }}
-                    value={inputValues[item] || ""}
-                    onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ""); setInputValues(p => ({ ...p, [item]: raw })); }}
-                    placeholder="0"
-                  />
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button onClick={() => setVal(val - 1)}
+                      style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 8, width: 38, height: 38, cursor: "pointer", fontSize: 18, fontWeight: 800, fontFamily: "inherit" }}>−</button>
+                    <div style={{ flex: 1, textAlign: "center", fontSize: 22, fontWeight: 800, color: C.text }}>{val}</div>
+                    <button onClick={() => setVal(val + 1)}
+                      style={{ background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 8, width: 38, height: 38, cursor: "pointer", fontSize: 18, fontWeight: 800, fontFamily: "inherit" }}>＋</button>
+                    <button onClick={() => setVal(val + 5)}
+                      style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}>＋5</button>
+                  </div>
                   {goal > 0 && (
-                    <div style={{ background: "#1a2535", borderRadius: 3, height: 4, marginTop: 6 }}>
+                    <div style={{ background: "#1a2535", borderRadius: 3, height: 4, marginTop: 8 }}>
                       <div style={{ width: pct + "%", height: "100%", background: color, borderRadius: 3, transition: "width 0.3s" }} />
                     </div>
                   )}
@@ -2620,10 +2644,31 @@ function ApproachPage({ data, setData }) {
               );
             })}
           </div>
-          <Field label="エリアメモ">
-            <input style={inp} value={memo} onChange={e => setMemo(e.target.value)} placeholder="茅ヶ崎、平塚、辻堂" />
+
+          {/* メール配信トグル */}
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>📨 メール配信</span>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setMailDelivery(true)}
+                  style={{ background: mailDelivery ? C.success : C.bg, border: `1.5px solid ${C.success}`, color: mailDelivery ? "#fff" : C.success, borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>○ した</button>
+                <button onClick={() => setMailDelivery(false)}
+                  style={{ background: !mailDelivery ? C.muted : C.bg, border: `1.5px solid ${C.muted}`, color: !mailDelivery ? "#fff" : C.muted, borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>× してない</button>
+              </div>
+            </div>
+          </div>
+
+          {/* 訪問エリア */}
+          <Field label="📍 訪問エリア">
+            <input style={inp} value={area} onChange={e => setArea(e.target.value)} placeholder="川越市・狭山市・所沢市 など" />
           </Field>
-          <button style={{ ...btnStyle(), width: "100%", marginTop: 4 }} onClick={handleSave}>保存する</button>
+
+          {/* メモ */}
+          <Field label="📝 メモ">
+            <textarea style={{ ...inp, height: 70, resize: "vertical" }} value={memo} onChange={e => setMemo(e.target.value)} placeholder="駅前は業者多め、A社が反応良かったなど" />
+          </Field>
+
+          <button style={{ ...btnStyle(), width: "100%", marginTop: 4, padding: "14px", fontSize: 15 }} onClick={handleSave}>💾 保存する</button>
         </div>
       )}
 
@@ -2653,6 +2698,17 @@ function ApproachPage({ data, setData }) {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <MemberTag name={m.member} />
                   <button style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11 }} onClick={() => openGoalEdit(m.member)}>目標編集</button>
+                </div>
+                {/* 活動日数とメール配信日数 */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                  <div style={{ flex: 1, background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                    <div style={{ color: C.muted, fontSize: 10 }}>📅 活動日数</div>
+                    <div style={{ color: C.accent, fontSize: 18, fontWeight: 800 }}>{m.workDays || 0}日</div>
+                  </div>
+                  <div style={{ flex: 1, background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                    <div style={{ color: C.muted, fontSize: 10 }}>📨 メール配信</div>
+                    <div style={{ color: C.success, fontSize: 18, fontWeight: 800 }}>{m.mailDays || 0}日</div>
+                  </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   {APPROACH_ITEMS.map(item => {
