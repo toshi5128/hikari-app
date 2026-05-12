@@ -2363,6 +2363,9 @@ function ApproachPage({ data, setData }) {
   const [memo, setMemo] = useState("");
   const [mailDelivery, setMailDelivery] = useState(false);
   const [area, setArea] = useState("");
+  const [dailyGoals, setDailyGoals] = useState({}); // その日の目標値
+  const [showDailyGoalEdit, setShowDailyGoalEdit] = useState(false);
+  const [dailyGoalForm, setDailyGoalForm] = useState({});
   const [isLoaded, setIsLoaded] = useState(false); // 初回読み込み完了フラグ
   const [autoSaveStatus, setAutoSaveStatus] = useState("idle"); // "idle" | "saving" | "saved"
   const [showGoalEdit, setShowGoalEdit] = useState(false);
@@ -2395,8 +2398,9 @@ function ApproachPage({ data, setData }) {
       setMemo(rec.memo || "");
       setMailDelivery(rec.mailDelivery || false);
       setArea(rec.area || "");
+      setDailyGoals(rec.dailyGoals || {});
     } else {
-      setInputValues({}); setMemo(""); setMailDelivery(false); setArea("");
+      setInputValues({}); setMemo(""); setMailDelivery(false); setArea(""); setDailyGoals({});
     }
     const t = setTimeout(() => setIsLoaded(true), 100);
     return () => clearTimeout(t);
@@ -2410,13 +2414,14 @@ function ApproachPage({ data, setData }) {
     const rec = data.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
     if (rec) {
       const sameValues = JSON.stringify(rec.values || {}) === JSON.stringify(inputValues);
-      if (sameValues && (rec.memo || "") === memo && !!rec.mailDelivery === !!mailDelivery && (rec.area || "") === area) {
+      const sameGoals = JSON.stringify(rec.dailyGoals || {}) === JSON.stringify(dailyGoals);
+      if (sameValues && sameGoals && (rec.memo || "") === memo && !!rec.mailDelivery === !!mailDelivery && (rec.area || "") === area) {
         setAutoSaveStatus("idle");
         return; // 完全に同じ → 保存しない
       }
     } else {
       // 新規だが全項目が空 → 空レコードを保存しない
-      const allEmpty = Object.keys(inputValues).every(k => !inputValues[k]) && !memo && !mailDelivery && !area;
+      const allEmpty = Object.keys(inputValues).every(k => !inputValues[k]) && !memo && !mailDelivery && !area && Object.keys(dailyGoals).every(k => !dailyGoals[k]);
       if (allEmpty) { setAutoSaveStatus("idle"); return; }
     }
 
@@ -2428,7 +2433,7 @@ function ApproachPage({ data, setData }) {
         const entry = {
           id: existingRec?.id || Date.now(),
           member: selectedMember, date: selectedDate,
-          values: inputValues, memo, mailDelivery, area,
+          values: inputValues, memo, mailDelivery, area, dailyGoals,
         };
         return {
           ...d,
@@ -2442,7 +2447,7 @@ function ApproachPage({ data, setData }) {
 
     const fadeTimer = setTimeout(() => setAutoSaveStatus("idle"), 3500);
     return () => { clearTimeout(saveTimer); clearTimeout(fadeTimer); };
-  }, [inputValues, memo, mailDelivery, area, isLoaded, selectedMember, selectedDate]);
+  }, [inputValues, memo, mailDelivery, area, dailyGoals, isLoaded, selectedMember, selectedDate]);
 
   // 月次集計
   const monthlyData = useMemo(() => {
@@ -2473,7 +2478,7 @@ function ApproachPage({ data, setData }) {
       id: existing?.id || Date.now(),
       member: selectedMember, date: selectedDate,
       values: inputValues, memo,
-      mailDelivery, area,
+      mailDelivery, area, dailyGoals,
     };
     setData(d => ({ ...d, approaches: existing ? d.approaches.map(a => a.id === existing.id ? entry : a) : [...d.approaches, entry] }));
     alert("保存しました！");
@@ -2723,39 +2728,188 @@ function ApproachPage({ data, setData }) {
             </Field>
           </div>
 
+          {/* 今日の目標サマリー */}
+          {(() => {
+            const totalGoal = APPROACH_ITEMS.reduce((a, item) => a + (Number(dailyGoals[item]) || 0), 0);
+            const totalDone = APPROACH_ITEMS.reduce((a, item) => a + (Number(inputValues[item]) || 0), 0);
+            const totalPct = totalGoal > 0 ? Math.min(totalDone / totalGoal * 100, 100) : 0;
+            const isGoalSet = totalGoal > 0;
+            return (
+              <div style={{
+                background: isGoalSet ? C.accent + "11" : C.bg,
+                border: `1.5px solid ${isGoalSet ? C.accent + "55" : "#1a2535"}`,
+                borderRadius: 12, padding: "12px 14px", marginBottom: 14,
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: isGoalSet ? 10 : 0 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: C.muted, fontWeight: 700 }}>🎯 今日の目標</div>
+                    {isGoalSet && (
+                      <div style={{ fontSize: 14, fontWeight: 800, color: C.text, marginTop: 2 }}>
+                        合計 {totalDone}/{totalGoal} 件
+                        <span style={{ color: totalPct >= 100 ? C.success : C.accent, marginLeft: 8, fontSize: 13 }}>
+                          ({totalPct.toFixed(0)}%)
+                        </span>
+                      </div>
+                    )}
+                    {!isGoalSet && (
+                      <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>未設定</div>
+                    )}
+                  </div>
+                  <button onClick={() => {
+                    const f = {};
+                    APPROACH_ITEMS.forEach(item => { f[item] = String(dailyGoals[item] || ""); });
+                    setDailyGoalForm(f);
+                    setShowDailyGoalEdit(true);
+                  }} style={{
+                    background: isGoalSet ? C.accent + "22" : C.accent,
+                    border: `1.5px solid ${C.accent}`,
+                    color: isGoalSet ? C.accent : "#fff",
+                    borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+                  }}>{isGoalSet ? "🎯 編集" : "🎯 目標を設定"}</button>
+                </div>
+                {isGoalSet && (
+                  <div style={{ background: "#1a2535", borderRadius: 6, height: 8, overflow: "hidden", position: "relative" }}>
+                    <div style={{ width: totalPct + "%", height: "100%", background: totalPct >= 100 ? C.success : C.accent, transition: "width 0.4s" }} />
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {/* カウンター項目 */}
           <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 700 }}>📊 業者訪問カウンター（タップで＋1）</div>
-          <div style={{ display: "grid", gap: 8, marginBottom: 14 }}>
+          <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
             {APPROACH_ITEMS.map(item => {
-              const goal = getGoal(selectedMember, item);
+              const goal = Number(dailyGoals[item]) || 0;
               const val = Number(inputValues[item]) || 0;
               const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
-              const color = goal > 0 ? (val >= goal ? C.success : val > goal * 0.5 ? C.warn : C.danger) : C.text;
+              const remaining = Math.max(0, goal - val);
+              const overAchieved = goal > 0 && val >= goal;
+              // 達成度別の色
+              const color = !goal ? C.text :
+                pct >= 100 ? C.success :
+                pct >= 70 ? C.accent :
+                pct >= 30 ? C.warn : C.danger;
               const setVal = newVal => setInputValues(p => ({ ...p, [item]: Math.max(0, newVal) }));
+
+              // セグメント区切り線（目標を10等分、ただし目標10未満ならその数）
+              const segments = goal > 0 ? Math.min(goal, 10) : 0;
+
               return (
-                <div key={item} style={{ background: C.bg, borderRadius: 10, padding: "10px 12px", border: `1px solid #1a2535` }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>{item}</span>
-                    {goal > 0 && <span style={{ color, fontSize: 11, fontWeight: 700 }}>{val}/{goal}（{pct.toFixed(0)}%）</span>}
+                <div key={item} style={{
+                  background: overAchieved ? C.success + "11" : C.bg,
+                  borderRadius: 12, padding: "12px",
+                  border: `1px solid ${overAchieved ? C.success + "55" : "#1a2535"}`,
+                }}>
+                  {/* ヘッダー：項目名＋目標値 */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <span style={{ color: C.text, fontSize: 14, fontWeight: 700 }}>{item}</span>
+                    {goal > 0 ? (
+                      <span style={{ color, fontSize: 12, fontWeight: 700 }}>
+                        🎯 {val} / {goal}件 <span style={{ opacity: 0.7 }}>({pct.toFixed(0)}%)</span>
+                      </span>
+                    ) : (
+                      <span style={{ color: C.muted, fontSize: 11 }}>目標未設定</span>
+                    )}
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+
+                  {/* カウンター操作 */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: goal > 0 ? 10 : 0 }}>
                     <button onClick={() => setVal(val - 1)}
-                      style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 8, width: 38, height: 38, cursor: "pointer", fontSize: 18, fontWeight: 800, fontFamily: "inherit" }}>−</button>
-                    <div style={{ flex: 1, textAlign: "center", fontSize: 22, fontWeight: 800, color: C.text }}>{val}</div>
-                    <button onClick={() => setVal(val + 1)}
-                      style={{ background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 8, width: 38, height: 38, cursor: "pointer", fontSize: 18, fontWeight: 800, fontFamily: "inherit" }}>＋</button>
-                    <button onClick={() => setVal(val + 5)}
-                      style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}>＋5</button>
-                  </div>
-                  {goal > 0 && (
-                    <div style={{ background: "#1a2535", borderRadius: 3, height: 4, marginTop: 8 }}>
-                      <div style={{ width: pct + "%", height: "100%", background: color, borderRadius: 3, transition: "width 0.3s" }} />
+                      style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 8, width: 42, height: 42, cursor: "pointer", fontSize: 20, fontWeight: 800, fontFamily: "inherit" }}>−</button>
+                    <div style={{ flex: 1, textAlign: "center", fontSize: 26, fontWeight: 800, color: overAchieved ? C.success : C.text }}>
+                      {val}{overAchieved && <span style={{ fontSize: 16, marginLeft: 4 }}>🎉</span>}
                     </div>
+                    <button onClick={() => setVal(val + 1)}
+                      style={{ background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 8, width: 42, height: 42, cursor: "pointer", fontSize: 20, fontWeight: 800, fontFamily: "inherit" }}>＋</button>
+                    <button onClick={() => setVal(val + 5)}
+                      style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>＋5</button>
+                  </div>
+
+                  {/* 大きなプログレスバー＋セグメント線 */}
+                  {goal > 0 && (
+                    <>
+                      <div style={{
+                        background: "#0a0f1a", borderRadius: 8, height: 18,
+                        overflow: "hidden", position: "relative", border: `1px solid #1a2535`,
+                      }}>
+                        {/* 達成バー */}
+                        <div style={{
+                          width: pct + "%", height: "100%",
+                          background: `linear-gradient(90deg, ${color}, ${color}dd)`,
+                          borderRadius: 7, transition: "width 0.4s",
+                        }} />
+                        {/* セグメント区切り線 */}
+                        {Array.from({ length: segments - 1 }).map((_, i) => (
+                          <div key={i} style={{
+                            position: "absolute",
+                            left: ((i + 1) / segments * 100) + "%",
+                            top: 0, bottom: 0, width: 1,
+                            background: "rgba(255,255,255,0.15)",
+                          }} />
+                        ))}
+                      </div>
+                      {/* あと◯件 / 達成メッセージ */}
+                      <div style={{
+                        marginTop: 8, fontSize: 12, fontWeight: 700, textAlign: "center",
+                        color: overAchieved ? C.success : color,
+                      }}>
+                        {overAchieved
+                          ? `🎉 目標達成！ +${val - goal}件オーバー達成中`
+                          : remaining === 0
+                            ? "🎯 目標達成！"
+                            : <>あと <span style={{ fontSize: 18, fontWeight: 800 }}>{remaining}</span> 件で達成</>}
+                      </div>
+                    </>
                   )}
                 </div>
               );
             })}
           </div>
+
+          {/* 🎯 今日の目標設定 BottomSheet */}
+          {showDailyGoalEdit && (
+            <BottomSheet title={`🎯 ${selectedDate} の目標設定`} onClose={() => setShowDailyGoalEdit(false)}>
+              <div style={{ color: C.muted, fontSize: 13, marginBottom: 14, lineHeight: 1.6 }}>
+                この日の各項目の目標値を入力してください。<br />
+                空欄または0なら未設定扱いになります。
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {APPROACH_ITEMS.map(item => (
+                  <Field key={item} label={`🎯 ${item}`}>
+                    <input
+                      type="text" inputMode="numeric"
+                      style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none", fontSize: 16, padding: "12px 14px" }}
+                      value={dailyGoalForm[item] || ""}
+                      onChange={e => setDailyGoalForm(p => ({ ...p, [item]: e.target.value.replace(/[^0-9]/g, "") }))}
+                      placeholder="0"
+                    />
+                  </Field>
+                ))}
+              </div>
+              {/* 月間目標から自動セット */}
+              <button onClick={() => {
+                const f = {};
+                APPROACH_ITEMS.forEach(item => {
+                  const monthly = getGoal(selectedMember, item);
+                  // 月の営業日を約22日として日割り
+                  f[item] = String(Math.round(monthly / 22));
+                });
+                setDailyGoalForm(f);
+              }} style={{
+                ...btnStyle("ghost"), width: "100%", marginTop: 8, fontSize: 12, padding: "10px",
+              }}>📊 月間目標から日割りで自動セット（÷22日）</button>
+              <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setShowDailyGoalEdit(false)}>キャンセル</button>
+                <button style={{ ...btnStyle(), flex: 2 }} onClick={() => {
+                  const updated = {};
+                  APPROACH_ITEMS.forEach(item => { updated[item] = Number(dailyGoalForm[item]) || 0; });
+                  setDailyGoals(updated);
+                  setShowDailyGoalEdit(false);
+                }}>🎯 目標を保存</button>
+              </div>
+            </BottomSheet>
+          )}
 
           {/* メール配信トグル */}
           <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
