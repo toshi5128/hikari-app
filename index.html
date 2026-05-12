@@ -397,6 +397,8 @@ const DEFAULT_DATA = {
   annualGoals: { sell: 30000, profit: 6000, buyCount: 30 }, // 売上3億万、利益6000万、仕入30件
   activityLog: [], // 操作履歴（最新200件保持）
   customEvents: [], // カスタム予定（自由入力）
+  adminMember: "下田", // 管理者メンバー（全員のパスワード変更可能）
+  memberPasswords: {}, // { "下田": "1234", "比嘉": "5678", ... }
 };
 
 // ============== 現在のユーザー識別 ==============
@@ -3193,21 +3195,134 @@ function ApproachPage({ data, setData }) {
 
           {/* ========== 段3：今月の活動 ========== */}
           <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.success, marginBottom: 12 }}>📅 今月の活動（{today.slice(0, 7)}）</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.success, marginBottom: 12 }}>📅 今月の活動（{today.slice(0, 7)}）— カードをタップで詳細</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               {[
-                { label: "新規積算", count: weekActivity.newSekisan.length, color: C.warn, icon: "🧮" },
-                { label: "仕入確定", count: weekActivity.newPurchase.length, color: C.accent, icon: "🏠" },
-                { label: "決済完了", count: weekActivity.newCompleted.length, color: C.success, icon: "✅" },
-                { label: "現在「熱い」", count: weekActivity.currentHot.length, color: C.danger, icon: "🔥" },
-              ].map(a => (
-                <div key={a.label} style={{ background: C.bg, borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
-                  <div style={{ fontSize: 20, marginBottom: 4 }}>{a.icon}</div>
-                  <div style={{ color: a.color, fontWeight: 800, fontSize: 24, lineHeight: 1 }}>{a.count}</div>
-                  <div style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>{a.label}</div>
-                </div>
-              ))}
+                { key: "sekisan", label: "新規積算", count: weekActivity.newSekisan.length, color: C.warn, icon: "🧮" },
+                { key: "purchase", label: "仕入確定", count: weekActivity.newPurchase.length, color: C.accent, icon: "🏠" },
+                { key: "completed", label: "決済完了", count: weekActivity.newCompleted.length, color: C.success, icon: "✅" },
+                { key: "hot", label: "現在「熱い」", count: weekActivity.currentHot.length, color: C.danger, icon: "🔥" },
+              ].map(a => {
+                const isExpanded = casesExpanded === `month_${a.key}`;
+                const isClickable = a.count > 0;
+                return (
+                  <button key={a.key}
+                    onClick={() => isClickable && setCasesExpanded(isExpanded ? null : `month_${a.key}`)}
+                    disabled={!isClickable}
+                    style={{
+                      background: isExpanded ? a.color + "22" : C.bg,
+                      borderRadius: 10, padding: "12px 14px", textAlign: "center",
+                      border: `1.5px solid ${isExpanded ? a.color + "88" : "transparent"}`,
+                      cursor: isClickable ? "pointer" : "default",
+                      fontFamily: "inherit", position: "relative",
+                      opacity: isClickable ? 1 : 0.5,
+                      transition: "all 0.2s",
+                    }}>
+                    <div style={{ fontSize: 20, marginBottom: 4 }}>{a.icon}</div>
+                    <div style={{ color: a.color, fontWeight: 800, fontSize: 24, lineHeight: 1 }}>{a.count}</div>
+                    <div style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>{a.label}{isClickable ? (isExpanded ? " ▲" : " ▼") : ""}</div>
+                  </button>
+                );
+              })}
             </div>
+
+            {/* 詳細展開エリア */}
+            {(() => {
+              if (!casesExpanded || !casesExpanded.startsWith("month_")) return null;
+              const key = casesExpanded.slice(6); // "month_xxx" -> "xxx"
+              const config = {
+                sekisan: { items: weekActivity.newSekisan, color: C.warn, icon: "🧮", title: "新規積算",
+                  render: (s) => ({
+                    title: s.address || "(住所未設定)",
+                    sub: `${s.judgment || "判断未"}${s.buyPrice ? " · 仕入想定" + Math.round(Number(s.buyPrice)/10000) + "万" : ""}${s.sellPrice ? " · 売却想定" + Math.round(Number(s.sellPrice)/10000) + "万" : ""}`,
+                    date: s.createdAt,
+                    badge: s.assignee,
+                    judgment: s.judgment,
+                  })},
+                purchase: { items: weekActivity.newPurchase, color: C.accent, icon: "🏠", title: "仕入確定",
+                  render: (s) => ({
+                    title: s.name || "(無題)",
+                    sub: `${s.status} · 仕入${Math.round((s.buyCost||0)/10000)}万 · 想定売却${Math.round((s.sellPrice||0)/10000)}万`,
+                    date: s.buyDate,
+                    badge: s.assignee,
+                  })},
+                completed: { items: weekActivity.newCompleted, color: C.success, icon: "✅", title: "決済完了",
+                  render: (s) => {
+                    const profit = (s.sellPrice || 0) - (s.buyCost || 0);
+                    return {
+                      title: s.name || "(無題)",
+                      sub: `売却${Math.round((s.sellPrice||0)/10000)}万 · 利益${Math.round(profit/10000)}万`,
+                      date: s.sellDate,
+                      badge: s.assignee,
+                      highlight: profit > 0 ? `+${Math.round(profit/10000)}万` : null,
+                    };
+                  }},
+                hot: { items: weekActivity.currentHot, color: C.danger, icon: "🔥", title: "現在「熱い」",
+                  render: (s) => ({
+                    title: s.address || "(住所未設定)",
+                    sub: `仕入想定${s.buyPrice ? Math.round(Number(s.buyPrice)/10000) + "万" : "未"} · 売却想定${s.sellPrice ? Math.round(Number(s.sellPrice)/10000) + "万" : "未"}`,
+                    date: s.createdAt,
+                    badge: s.assignee,
+                  })},
+              };
+              const cfg = config[key];
+              if (!cfg) return null;
+              const items = filterByMember(cfg.items, cfg.title === "新規積算" || cfg.title === "現在「熱い」" ? "assignee" : "assignee");
+              // 日付の新しい順にソート
+              const sortedItems = [...items].sort((a, b) => {
+                const da = cfg.render(a).date || "";
+                const db = cfg.render(b).date || "";
+                return db.localeCompare(da);
+              });
+
+              // 集計
+              const totalProfit = key === "completed" ? items.reduce((a, s) => a + ((s.sellPrice||0) - (s.buyCost||0)), 0) : null;
+              const totalSell = key === "completed" ? items.reduce((a, s) => a + (s.sellPrice||0), 0) : null;
+              const totalBuy = key === "purchase" ? items.reduce((a, s) => a + (s.buyCost||0), 0) : null;
+
+              return (
+                <div style={{ marginTop: 12, background: "#080d18", border: `1px solid ${cfg.color}33`, borderRadius: 10, padding: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, paddingBottom: 8, borderBottom: `1px solid ${cfg.color}22` }}>
+                    <span style={{ fontSize: 16 }}>{cfg.icon}</span>
+                    <span style={{ color: cfg.color, fontSize: 12, fontWeight: 700 }}>{cfg.title} 詳細（{sortedItems.length}件）</span>
+                    {totalProfit !== null && (
+                      <span style={{ marginLeft: "auto", fontSize: 11, color: C.muted }}>
+                        合計売上 <span style={{ color: C.warn, fontWeight: 700 }}>{Math.round(totalSell/10000)}万</span> / 利益 <span style={{ color: C.success, fontWeight: 700 }}>{Math.round(totalProfit/10000)}万</span>
+                      </span>
+                    )}
+                    {totalBuy !== null && (
+                      <span style={{ marginLeft: "auto", fontSize: 11, color: C.muted }}>
+                        合計仕入 <span style={{ color: C.accent, fontWeight: 700 }}>{Math.round(totalBuy/10000)}万</span>
+                      </span>
+                    )}
+                  </div>
+                  {sortedItems.length === 0 ? (
+                    <div style={{ padding: "16px", textAlign: "center", color: C.muted, fontSize: 12 }}>該当する案件がありません</div>
+                  ) : (
+                    sortedItems.map((item, i) => {
+                      const r = cfg.render(item);
+                      const JCOLOR = { "熱い": C.danger, "検討中": C.warn, "普通": C.muted, "見送り": "#334155" };
+                      const JEMOJI = { "熱い": "🔥", "検討中": "🟡", "普通": "⚪", "見送り": "❌" };
+                      return (
+                        <div key={i} style={{ padding: "9px 6px", borderBottom: i < sortedItems.length - 1 ? `1px solid #1a2535` : "none" }}>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+                            <span style={{ color: C.text, fontSize: 13, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
+                            {r.judgment && <span style={{ background: (JCOLOR[r.judgment] || C.muted) + "33", color: JCOLOR[r.judgment] || C.muted, padding: "2px 6px", borderRadius: 8, fontSize: 10, fontWeight: 700 }}>{JEMOJI[r.judgment] || ""}{r.judgment}</span>}
+                            <MemberTag name={r.badge} />
+                            {r.highlight && <Tag label={r.highlight} color={C.success} />}
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                            <span style={{ color: C.muted, fontSize: 11, flex: 1 }}>{r.sub}</span>
+                            {r.date && <span style={{ color: C.muted, fontSize: 11, flexShrink: 0 }}>{r.date}</span>}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              );
+            })()}
+
             {casesMember === "__ALL__" && (
               <div style={{ marginTop: 10, fontSize: 11, color: C.muted, textAlign: "center" }}>
                 ※ 全メンバー合算。担当者を選ぶと個別の動きが見えます。
@@ -4571,6 +4686,13 @@ function MorePage({ data, setData, onLock }) {
   const [currentUser, setCurrentUserState] = useState(getCurrentUser());
   const [showActivityAll, setShowActivityAll] = useState(false);
 
+  // パスワード認証ダイアログの状態
+  const [pwdAuth, setPwdAuth] = useState(null); // { member, action: "switch"|"setOwn"|"setOther", onSuccess: fn }
+  const [pwdInput, setPwdInput] = useState("");
+  const [pwdInput2, setPwdInput2] = useState("");
+  const [pwdOldInput, setPwdOldInput] = useState("");
+  const [pwdError, setPwdError] = useState("");
+
   if (subPage === "yakusho") return <YakushoPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "investors") return <InvestorListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
@@ -4578,6 +4700,110 @@ function MorePage({ data, setData, onLock }) {
   const activityLog = data.activityLog || [];
   const notifPermission = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
   const isStandalone = typeof window !== "undefined" && (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true);
+
+  // 管理者判定
+  const adminMember = data.adminMember || "下田";
+  const isAdmin = currentUser === adminMember;
+  const memberPasswords = data.memberPasswords || {};
+
+  // ユーザー切替試行（パスワード必要なら認証ダイアログを開く）
+  const tryChangeUser = (newUser) => {
+    if (!newUser) {
+      if (window.confirm("「現在のユーザー」を未設定に戻しますか？")) {
+        setCurrentUserState("");
+        setCurrentUser("");
+      }
+      return;
+    }
+    if (newUser === currentUser) return;
+
+    const targetPwd = memberPasswords[newUser];
+    // 管理者で切替先がパスワード未設定 → そのまま切替
+    // 一般ユーザーで切替先がパスワード未設定 → そのまま切替
+    if (!targetPwd) {
+      setCurrentUserState(newUser);
+      setCurrentUser(newUser);
+      return;
+    }
+    // 管理者が自分以外に切替 → 切替先のパスワードを入力
+    // 一般ユーザーが切替 → 切替先のパスワードを入力
+    setPwdInput(""); setPwdError("");
+    setPwdAuth({ member: newUser, action: "switch" });
+  };
+
+  // 切替認証
+  const confirmSwitch = () => {
+    const target = pwdAuth.member;
+    if (pwdInput === memberPasswords[target]) {
+      setCurrentUserState(target);
+      setCurrentUser(target);
+      setPwdAuth(null);
+      setPwdInput("");
+      setPwdError("");
+    } else {
+      setPwdError("パスワードが違います");
+      setPwdInput("");
+    }
+  };
+
+  // パスワード設定試行
+  const tryOpenPwdSetting = (member) => {
+    // 管理者は誰でも設定可能（旧パスワード不要）
+    if (isAdmin) {
+      setPwdInput(""); setPwdInput2(""); setPwdOldInput(""); setPwdError("");
+      setPwdAuth({ member, action: "setOther" });
+      return;
+    }
+    // 一般ユーザーは自分のだけ設定可能
+    if (member !== currentUser) {
+      alert("⚠️ 他のメンバーのパスワードは管理者だけが変更できます");
+      return;
+    }
+    setPwdInput(""); setPwdInput2(""); setPwdOldInput(""); setPwdError("");
+    setPwdAuth({ member, action: "setOwn" });
+  };
+
+  // パスワード保存（新規 or 変更）
+  const savePwd = () => {
+    const member = pwdAuth.member;
+    const existingPwd = memberPasswords[member];
+
+    // 一般ユーザーが自分のパスワードを変更：旧パスワード確認必要（既に設定済みの場合）
+    if (pwdAuth.action === "setOwn" && existingPwd && pwdOldInput !== existingPwd) {
+      setPwdError("旧パスワードが違います");
+      setPwdOldInput("");
+      return;
+    }
+    // 新パスワード4桁チェック
+    if (pwdInput.length !== 4) {
+      setPwdError("4桁の数字で入力してください");
+      return;
+    }
+    // 確認入力との一致チェック
+    if (pwdInput !== pwdInput2) {
+      setPwdError("確認用パスワードが一致しません");
+      setPwdInput2("");
+      return;
+    }
+    setData(d => ({
+      ...d,
+      memberPasswords: { ...(d.memberPasswords || {}), [member]: pwdInput }
+    }));
+    alert(`✅ ${member} のパスワードを設定しました`);
+    setPwdAuth(null);
+    setPwdInput(""); setPwdInput2(""); setPwdOldInput(""); setPwdError("");
+  };
+
+  // パスワード削除
+  const deletePwd = (member) => {
+    if (!window.confirm(`${member} のパスワードを削除しますか？\n削除後はパスワードなしで切替可能になります。`)) return;
+    setData(d => {
+      const updated = { ...(d.memberPasswords || {}) };
+      delete updated[member];
+      return { ...d, memberPasswords: updated };
+    });
+    alert(`${member} のパスワードを削除しました`);
+  };
 
   return (
     <div>
@@ -4600,17 +4826,158 @@ function MorePage({ data, setData, onLock }) {
         </button>
       ))}
 
-      {/* 👤 現在のユーザー設定（操作履歴用） */}
+      {/* 👤 現在のユーザー設定 */}
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>👤 現在のユーザー</div>
       <div style={{ background: "#0d1422", border: `1px solid ${!currentUser ? C.warn + "55" : "#1a2535"}`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.6 }}>
-          {!currentUser ? "⚠️ 未設定です。操作履歴に記録されません。" : "✅ 全ての操作がこの名前で履歴に記録されます。"}
+          {!currentUser ? "⚠️ 未設定です。操作履歴に記録されません。" : <>✅ 現在: <span style={{ color: C.text, fontWeight: 700 }}>{currentUser}</span>{isAdmin && <span style={{ color: "#FCD34D", marginLeft: 6 }}>👑 管理者</span>}</>}
+          <br />
+          <span style={{ fontSize: 11 }}>切替時はパスワード認証が必要です（未設定メンバーはそのまま切替可）</span>
         </div>
-        <select style={inp} value={currentUser} onChange={e => { const v = e.target.value; setCurrentUserState(v); setCurrentUser(v); }}>
+        <select style={inp} value={currentUser} onChange={e => tryChangeUser(e.target.value)}>
           <option value="">— 選択してください —</option>
-          {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+          {MEMBERS.map(m => {
+            const hasPwd = !!memberPasswords[m];
+            return <option key={m} value={m}>{m}{hasPwd ? " 🔒" : ""}{m === adminMember ? " 👑" : ""}</option>;
+          })}
         </select>
       </div>
+
+      {/* 🔐 メンバーパスワード管理 */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🔐 メンバーパスワード管理</div>
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.6 }}>
+          {isAdmin
+            ? <>👑 <span style={{ color: "#FCD34D", fontWeight: 700 }}>管理者モード</span>：全員のパスワードを設定・変更できます</>
+            : <>👤 一般モード：自分（<span style={{ color: C.text, fontWeight: 700 }}>{currentUser || "未設定"}</span>）のパスワードのみ変更できます</>
+          }
+        </div>
+        {MEMBERS.map(m => {
+          const hasPwd = !!memberPasswords[m];
+          const canEdit = isAdmin || m === currentUser;
+          const isMe = m === currentUser;
+          const isAdminRow = m === adminMember;
+          return (
+            <div key={m} style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "10px 12px", marginBottom: 6,
+              background: isMe ? C.accent + "11" : C.bg,
+              border: `1px solid ${isMe ? C.accent + "44" : "#1a2535"}`,
+              borderRadius: 10,
+            }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <MemberTag name={m} />
+                  {isAdminRow && <Tag label="👑 管理者" color="#FCD34D" />}
+                  {isMe && <Tag label="自分" color={C.accent} />}
+                </div>
+                <div style={{ fontSize: 11, color: hasPwd ? C.success : C.muted, marginTop: 4 }}>
+                  {hasPwd ? "🔒 パスワード設定済み" : "🔓 未設定（誰でも切替可能）"}
+                </div>
+              </div>
+              {canEdit ? (
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button onClick={() => tryOpenPwdSetting(m)} style={{
+                    background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent,
+                    borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 12,
+                    fontFamily: "inherit", fontWeight: 700,
+                  }}>{hasPwd ? "変更" : "設定"}</button>
+                  {hasPwd && isAdmin && (
+                    <button onClick={() => deletePwd(m)} style={{
+                      background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger,
+                      borderRadius: 8, padding: "8px 10px", cursor: "pointer", fontSize: 12,
+                      fontFamily: "inherit", fontWeight: 700,
+                    }}>削除</button>
+                  )}
+                </div>
+              ) : (
+                <span style={{ color: C.muted, fontSize: 11, flexShrink: 0 }}>🚫 編集不可</span>
+              )}
+            </div>
+          );
+        })}
+        {/* 管理者変更（管理者だけ可能） */}
+        {isAdmin && (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid #1a2535` }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontWeight: 700 }}>👑 管理者を変更（管理者操作）</div>
+            <select style={inp} value={adminMember} onChange={e => {
+              if (!window.confirm(`管理者を「${e.target.value}」に変更します。\n以降、あなたは一般メンバーになります。よろしいですか？`)) return;
+              setData(d => ({ ...d, adminMember: e.target.value }));
+            }}>
+              {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <div style={{ fontSize: 10, color: C.warn, marginTop: 4, lineHeight: 1.5 }}>
+              ⚠️ 管理者を変更すると、自分は一般メンバーになります
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* パスワード認証 BottomSheet */}
+      {pwdAuth && pwdAuth.action === "switch" && (
+        <BottomSheet title={`🔒 ${pwdAuth.member} のパスワード認証`} onClose={() => { setPwdAuth(null); setPwdInput(""); setPwdError(""); }}>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14, lineHeight: 1.6 }}>
+            <span style={{ color: C.text, fontWeight: 700 }}>{pwdAuth.member}</span> として作業するには、パスワードの入力が必要です。
+          </div>
+          <Field label="🔑 パスワード（4桁）">
+            <input type="password" inputMode="numeric" maxLength={4}
+              value={pwdInput} onChange={e => { setPwdInput(e.target.value.replace(/[^0-9]/g, "")); setPwdError(""); }}
+              onKeyDown={e => { if (e.key === "Enter") confirmSwitch(); }}
+              autoFocus placeholder="••••"
+              style={{ ...inp, fontSize: 28, textAlign: "center", letterSpacing: "0.5em", padding: "14px" }}
+            />
+          </Field>
+          {pwdError && <div style={{ color: C.danger, fontSize: 13, textAlign: "center", marginBottom: 10 }}>{pwdError}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setPwdAuth(null); setPwdInput(""); setPwdError(""); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={confirmSwitch}>🔓 認証して切替</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {pwdAuth && (pwdAuth.action === "setOwn" || pwdAuth.action === "setOther") && (
+        <BottomSheet title={`🔐 ${pwdAuth.member} のパスワード${memberPasswords[pwdAuth.member] ? "変更" : "設定"}`} onClose={() => { setPwdAuth(null); setPwdInput(""); setPwdInput2(""); setPwdOldInput(""); setPwdError(""); }}>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14, lineHeight: 1.6 }}>
+            {pwdAuth.action === "setOther" ? (
+              <>👑 管理者として、<span style={{ color: C.text, fontWeight: 700 }}>{pwdAuth.member}</span> のパスワードを設定します。</>
+            ) : memberPasswords[pwdAuth.member] ? (
+              <>自分のパスワードを変更します。旧パスワードの入力が必要です。</>
+            ) : (
+              <>自分のパスワードを初めて設定します。</>
+            )}
+          </div>
+          {pwdAuth.action === "setOwn" && memberPasswords[pwdAuth.member] && (
+            <Field label="🔑 現在のパスワード（4桁）">
+              <input type="password" inputMode="numeric" maxLength={4}
+                value={pwdOldInput} onChange={e => { setPwdOldInput(e.target.value.replace(/[^0-9]/g, "")); setPwdError(""); }}
+                placeholder="••••"
+                style={{ ...inp, fontSize: 22, textAlign: "center", letterSpacing: "0.5em", padding: "12px" }}
+              />
+            </Field>
+          )}
+          <Field label="🆕 新しいパスワード（4桁）">
+            <input type="password" inputMode="numeric" maxLength={4}
+              value={pwdInput} onChange={e => { setPwdInput(e.target.value.replace(/[^0-9]/g, "")); setPwdError(""); }}
+              autoFocus={pwdAuth.action === "setOther" || !memberPasswords[pwdAuth.member]}
+              placeholder="••••"
+              style={{ ...inp, fontSize: 22, textAlign: "center", letterSpacing: "0.5em", padding: "12px" }}
+            />
+          </Field>
+          <Field label="🔁 確認のため再入力">
+            <input type="password" inputMode="numeric" maxLength={4}
+              value={pwdInput2} onChange={e => { setPwdInput2(e.target.value.replace(/[^0-9]/g, "")); setPwdError(""); }}
+              onKeyDown={e => { if (e.key === "Enter") savePwd(); }}
+              placeholder="••••"
+              style={{ ...inp, fontSize: 22, textAlign: "center", letterSpacing: "0.5em", padding: "12px" }}
+            />
+          </Field>
+          {pwdError && <div style={{ color: C.danger, fontSize: 13, textAlign: "center", marginBottom: 10 }}>{pwdError}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setPwdAuth(null); setPwdInput(""); setPwdInput2(""); setPwdOldInput(""); setPwdError(""); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={savePwd}>💾 保存</button>
+          </div>
+        </BottomSheet>
+      )}
 
       {/* セキュリティ設定 */}
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🔐 セキュリティ</div>
