@@ -3085,7 +3085,8 @@ function ApproachPage({ data, setData }) {
 
   // ===== 月次タブ用：日別チャート =====
   const [dailyChartMember, setDailyChartMember] = useState(getCurrentUser() || MEMBERS[0]);
-  const [dailyChartItems, setDailyChartItems] = useState(["訪問"]); // 複数選択可
+  const [dailyChartItem, setDailyChartItem] = useState("訪問"); // 単一項目
+  const [dailyChartViewMode, setDailyChartViewMode] = useState("single"); // "single" | "overview"
 
   // ===== 案件タブ用 =====
   const [casesMember, setCasesMember] = useState("__ALL__"); // "__ALL__" or member name
@@ -4016,71 +4017,70 @@ function ApproachPage({ data, setData }) {
             </Field>
           </div>
 
-          {/* ★★★ 日別グラフ ★★★ */}
+          {/* ★★★ 進捗グラフ（リニューアル版） ★★★ */}
           {(() => {
             const [y, m] = selectedYM.split("-").map(Number);
             const daysInMonth = new Date(y, m, 0).getDate();
-            // selectedYM の各日の値を集計
-            const dailyData = Array.from({ length: daysInMonth }, (_, i) => {
-              const day = i + 1;
-              const date = `${selectedYM}-${String(day).padStart(2, "0")}`;
-              const entry = data.approaches.find(a => a.member === dailyChartMember && a.date === date);
-              const values = entry?.values || {};
-              const total = dailyChartItems.reduce((sum, item) => sum + (Number(values[item]) || 0), 0);
-              return { day, date, values, total, hasData: !!entry, mailDelivery: entry?.mailDelivery, dailyGoals: entry?.dailyGoals };
-            });
-
-            // 月間目標から日割り目標を算出（平均）
-            const totalGoal = dailyChartItems.reduce((sum, item) => sum + getGoal(dailyChartMember, item), 0);
-            const dailyGoalAvg = totalGoal > 0 ? Math.round(totalGoal / 22) : 0; // 月22営業日換算
-
-            // 累積データ計算
-            let runningSum = 0;
-            const cumulativeData = dailyData.map((d, i) => {
-              runningSum += d.total;
-              // 目標累計（その日までに達成すべき件数）= 月間目標 × (経過日数 / 月日数)
-              const targetCumulative = totalGoal > 0 ? Math.round(totalGoal * (i + 1) / daysInMonth) : 0;
-              return { ...d, cumulative: runningSum, targetCumulative };
-            });
-
-            // Y軸の最大値：実績累計と目標累計の大きい方
-            const max = Math.max(1, totalGoal, runningSum);
-
-            // 月の合計
-            const monthlyTotal = runningSum;
-            const activeDays = dailyData.filter(d => d.total > 0).length;
-            const avgPerActiveDay = activeDays > 0 ? Math.round(monthlyTotal / activeDays * 10) / 10 : 0;
-
-            // 今日の日付（selectedYMが今月の場合）
             const isCurrentMonth = selectedYM === today.slice(0, 7);
-            const todayDay = isCurrentMonth ? new Date().getDate() : -1;
+            const todayDay = isCurrentMonth ? new Date().getDate() : daysInMonth;
 
-            // 進捗率（目標に対する達成率）
-            const progressPct = totalGoal > 0 ? Math.round(monthlyTotal / totalGoal * 100) : 0;
-            // 経過進捗（今月の場合、今日時点で本来あるべき進捗）
-            const expectedPct = isCurrentMonth && totalGoal > 0
-              ? Math.round(todayDay / daysInMonth * 100)
-              : 100;
-            // ペース判定
-            const paceDiff = isCurrentMonth && totalGoal > 0
-              ? monthlyTotal - Math.round(totalGoal * todayDay / daysInMonth)
-              : (selectedYM < today.slice(0, 7) ? monthlyTotal - totalGoal : 0);
-
-            // SVGのサイズ計算
-            const svgW = 1000;
-            const svgH = 280;
-            const padL = 40, padR = 20, padT = 20, padB = 40;
-            const chartW = svgW - padL - padR;
-            const chartH = svgH - padT - padB;
-            const dayStep = chartW / Math.max(1, daysInMonth - 1);
+            // 全項目の進捗を計算
+            const itemsProgress = APPROACH_ITEMS.map(item => {
+              const goal = getGoal(dailyChartMember, item);
+              // 各日の値を集計
+              const daily = Array.from({ length: daysInMonth }, (_, i) => {
+                const day = i + 1;
+                const date = `${selectedYM}-${String(day).padStart(2, "0")}`;
+                const entry = data.approaches.find(a => a.member === dailyChartMember && a.date === date);
+                const val = Number((entry?.values || {})[item]) || 0;
+                return { day, date, val, hasData: !!entry };
+              });
+              const total = daily.reduce((s, d) => s + d.val, 0);
+              // 累積データ
+              let running = 0;
+              const cumulative = daily.map((d, i) => {
+                running += d.val;
+                const targetCum = goal > 0 ? Math.round(goal * (i + 1) / daysInMonth) : 0;
+                return { ...d, cumulative: running, targetCumulative: targetCum };
+              });
+              // ペース判定（今月の場合は今日まで／過去月の場合は月末まで）
+              const refDay = isCurrentMonth ? todayDay : daysInMonth;
+              const refIdx = Math.min(refDay - 1, daysInMonth - 1);
+              const refCum = cumulative[refIdx]?.cumulative || 0;
+              const refTarget = cumulative[refIdx]?.targetCumulative || 0;
+              const paceDiff = refCum - refTarget;
+              const pct = goal > 0 ? Math.round(total / goal * 100) : 0;
+              const expectedPct = isCurrentMonth && goal > 0 ? Math.round(refDay / daysInMonth * 100) : 100;
+              return { item, goal, total, daily, cumulative, paceDiff, pct, expectedPct, refCum, refTarget };
+            });
 
             return (
               <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 12 }}>📈 累積進捗グラフ — {dailyChartMember} ・ {dailyChartItems.join("＋") || "（項目未選択）"}</div>
+                {/* ヘッダー */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>
+                    📈 進捗グラフ — <span style={{ color: MEMBER_COLORS[dailyChartMember] || C.text }}>{dailyChartMember}</span>
+                  </div>
+                  {/* 表示モード切替 */}
+                  <div style={{ display: "flex", gap: 4, background: C.bg, padding: 3, borderRadius: 8 }}>
+                    <button onClick={() => setDailyChartViewMode("overview")} style={{
+                      padding: "5px 11px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      background: dailyChartViewMode === "overview" ? C.accent : "transparent",
+                      color: dailyChartViewMode === "overview" ? "#fff" : C.muted,
+                      border: "none", fontFamily: "inherit",
+                    }}>📋 全項目一覧</button>
+                    <button onClick={() => setDailyChartViewMode("single")} style={{
+                      padding: "5px 11px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      background: dailyChartViewMode === "single" ? C.accent : "transparent",
+                      color: dailyChartViewMode === "single" ? "#fff" : C.muted,
+                      border: "none", fontFamily: "inherit",
+                    }}>📈 1項目詳細</button>
+                  </div>
+                </div>
 
                 {/* メンバー選択 */}
                 <div style={{ fontSize: 11, color: C.muted, marginBottom: 4, fontWeight: 700 }}>👤 メンバー</div>
-                <div style={{ display: "flex", gap: 4, marginBottom: 10, overflowX: "auto", paddingBottom: 4 }}>
+                <div style={{ display: "flex", gap: 4, marginBottom: 12, overflowX: "auto", paddingBottom: 4 }}>
                   {MEMBERS.map(member => {
                     const active = dailyChartMember === member;
                     return (
@@ -4095,306 +4095,315 @@ function ApproachPage({ data, setData }) {
                   })}
                 </div>
 
-                {/* 項目選択（複数選択可） */}
-                <div style={{ fontSize: 11, color: C.muted, marginBottom: 4, fontWeight: 700 }}>📊 項目（複数選択可・タップで切替）</div>
-                <div style={{ display: "flex", gap: 4, marginBottom: 14, overflowX: "auto", paddingBottom: 4, flexWrap: "wrap" }}>
-                  <button onClick={() => setDailyChartItems([...APPROACH_ITEMS])} style={{
-                    padding: "5px 10px", borderRadius: 16, cursor: "pointer", fontSize: 10,
-                    background: dailyChartItems.length === APPROACH_ITEMS.length ? C.success : C.bg,
-                    color: dailyChartItems.length === APPROACH_ITEMS.length ? "#fff" : C.muted,
-                    border: `1px solid ${dailyChartItems.length === APPROACH_ITEMS.length ? C.success : "#1a2535"}`,
-                    fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0,
-                  }}>全選択</button>
-                  {APPROACH_ITEMS.map(item => {
-                    const active = dailyChartItems.includes(item);
-                    return (
-                      <button key={item} onClick={() => {
-                        setDailyChartItems(prev =>
-                          prev.includes(item) ? prev.filter(i => i !== item) : [...prev, item]
-                        );
-                      }} style={{
-                        padding: "5px 11px", borderRadius: 16, cursor: "pointer", fontSize: 11,
-                        background: active ? C.accent : C.bg,
-                        color: active ? "#fff" : C.muted,
-                        border: `1px solid ${active ? C.accent : "#1a2535"}`,
-                        fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0, fontWeight: active ? 700 : 400,
-                      }}>{active ? "✓" : ""}{item}</button>
-                    );
-                  })}
-                </div>
-
-                {/* サマリーKPI */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
-                  <div style={{ background: C.bg, borderRadius: 8, padding: "8px 6px", textAlign: "center" }}>
-                    <div style={{ color: C.muted, fontSize: 9 }}>累計</div>
-                    <div style={{ color: C.accent, fontSize: 17, fontWeight: 800, lineHeight: 1.1 }}>{monthlyTotal}<span style={{ fontSize: 10, color: C.muted, marginLeft: 2 }}>件</span></div>
-                  </div>
-                  <div style={{ background: C.bg, borderRadius: 8, padding: "8px 6px", textAlign: "center" }}>
-                    <div style={{ color: C.muted, fontSize: 9 }}>月間目標</div>
-                    <div style={{ color: "#FCD34D", fontSize: 17, fontWeight: 800, lineHeight: 1.1 }}>{totalGoal || "—"}<span style={{ fontSize: 10, color: C.muted, marginLeft: 2 }}>{totalGoal ? "件" : ""}</span></div>
-                  </div>
-                  <div style={{ background: C.bg, borderRadius: 8, padding: "8px 6px", textAlign: "center" }}>
-                    <div style={{ color: C.muted, fontSize: 9 }}>達成率</div>
-                    <div style={{ color: progressPct >= 100 ? C.success : progressPct >= 50 ? C.warn : C.danger, fontSize: 17, fontWeight: 800, lineHeight: 1.1 }}>{progressPct}<span style={{ fontSize: 10, color: C.muted, marginLeft: 2 }}>%</span></div>
-                  </div>
-                  <div style={{ background: C.bg, borderRadius: 8, padding: "8px 6px", textAlign: "center" }}>
-                    <div style={{ color: C.muted, fontSize: 9 }}>ペース</div>
-                    <div style={{ color: paceDiff >= 0 ? C.success : C.danger, fontSize: 17, fontWeight: 800, lineHeight: 1.1 }}>
-                      {paceDiff >= 0 ? "+" : ""}{paceDiff}
-                      <span style={{ fontSize: 10, color: C.muted, marginLeft: 2 }}>件</span>
+                {/* ===== 全項目一覧モード ===== */}
+                {dailyChartViewMode === "overview" && (
+                  <div>
+                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
+                      📊 {selectedYM} の全項目進捗（タップで詳細表示）
                     </div>
-                  </div>
-                </div>
-
-                {/* 中段：状況評価 */}
-                {totalGoal > 0 && (
-                  <div style={{
-                    background: paceDiff >= 0 ? C.success + "11" : C.danger + "11",
-                    border: `1px solid ${paceDiff >= 0 ? C.success + "55" : C.danger + "55"}`,
-                    borderRadius: 8, padding: "8px 12px", marginBottom: 12, fontSize: 12,
-                    color: paceDiff >= 0 ? C.success : C.danger, fontWeight: 700, textAlign: "center",
-                  }}>
-                    {!isCurrentMonth && selectedYM < today.slice(0, 7)
-                      ? (paceDiff >= 0
-                          ? `🎉 月間目標を ${paceDiff}件 オーバー達成！`
-                          : `📉 月間目標まで ${Math.abs(paceDiff)}件 届かず`)
-                      : (paceDiff >= 0
-                          ? `✅ 順調！目標ペースを ${paceDiff}件 リード中`
-                          : `⚠️ ペースを ${Math.abs(paceDiff)}件 取り戻そう（あと${daysInMonth - todayDay}日）`)
-                    }
+                    {itemsProgress.map(({ item, goal, total, paceDiff, pct, expectedPct, refCum, refTarget }) => {
+                      // ステータス判定
+                      const noGoal = goal === 0;
+                      let statusColor = C.muted, statusEmoji = "", statusText = "";
+                      if (noGoal) { statusColor = C.muted; statusEmoji = ""; statusText = "目標未設定"; }
+                      else if (!isCurrentMonth) {
+                        // 過去月：最終達成のみで評価
+                        if (pct >= 100) { statusColor = C.success; statusEmoji = "🎉"; statusText = "達成"; }
+                        else { statusColor = C.danger; statusEmoji = "📉"; statusText = "未達"; }
+                      } else {
+                        // 今月：ペースで評価
+                        if (paceDiff >= 0) { statusColor = C.success; statusEmoji = "🔥"; statusText = "順調"; }
+                        else if (paceDiff >= -Math.max(3, goal * 0.05)) { statusColor = C.warn; statusEmoji = "⚠️"; statusText = "やや遅れ"; }
+                        else { statusColor = C.danger; statusEmoji = "🚨"; statusText = "要追い込み"; }
+                      }
+                      const barPct = goal > 0 ? Math.min(100, pct) : 0;
+                      const expectedBarPct = isCurrentMonth ? expectedPct : 100;
+                      return (
+                        <button key={item} onClick={() => { setDailyChartItem(item); setDailyChartViewMode("single"); }}
+                          style={{
+                            width: "100%", background: C.bg, border: `1px solid ${statusColor + "33"}`,
+                            borderLeft: `4px solid ${statusColor}`, borderRadius: 10, padding: "10px 12px",
+                            marginBottom: 6, cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                            touchAction: "manipulation",
+                          }}>
+                          {/* 1行目：項目名とステータス */}
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{item}</span>
+                              {!noGoal && <span style={{
+                                fontSize: 10, padding: "2px 6px", borderRadius: 6,
+                                background: statusColor + "22", color: statusColor, fontWeight: 700,
+                              }}>{statusEmoji}{statusText}</span>}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+                              <span style={{ fontSize: 18, fontWeight: 800, color: statusColor }}>{total}</span>
+                              <span style={{ fontSize: 11, color: C.muted }}>/ {goal || "—"}件</span>
+                            </div>
+                          </div>
+                          {/* 2行目：進捗バー（オーバーレイで目標ペース表示） */}
+                          {goal > 0 && (
+                            <div style={{ position: "relative", height: 8, background: "#1a2535", borderRadius: 4, marginBottom: 4, overflow: "hidden" }}>
+                              {/* 目標ペース位置（縦線） */}
+                              {isCurrentMonth && (
+                                <div style={{
+                                  position: "absolute", left: `${expectedBarPct}%`, top: -2, bottom: -2,
+                                  width: 2, background: "#FCD34D", boxShadow: "0 0 4px #FCD34D",
+                                }} />
+                              )}
+                              {/* 実績バー */}
+                              <div style={{
+                                position: "absolute", left: 0, top: 0, bottom: 0,
+                                width: `${barPct}%`, background: statusColor, borderRadius: 4,
+                                transition: "width 0.3s",
+                              }} />
+                            </div>
+                          )}
+                          {/* 3行目：詳細メトリクス */}
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.muted }}>
+                            <span>達成率: <span style={{ color: statusColor, fontWeight: 700 }}>{pct}%</span></span>
+                            {goal > 0 && isCurrentMonth && (
+                              <span>ペース: <span style={{ color: paceDiff >= 0 ? C.success : C.danger, fontWeight: 700 }}>{paceDiff >= 0 ? "+" : ""}{paceDiff}件</span></span>
+                            )}
+                            <span style={{ color: C.accent }}>詳細を見る →</span>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
 
-                {/* 既存の3カードも残す */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
-                  <div style={{ background: C.bg, borderRadius: 8, padding: "6px 8px", textAlign: "center" }}>
-                    <div style={{ color: C.muted, fontSize: 9 }}>稼働日数</div>
-                    <div style={{ color: C.text, fontSize: 14, fontWeight: 700, lineHeight: 1.1 }}>{activeDays}日</div>
-                  </div>
-                  <div style={{ background: C.bg, borderRadius: 8, padding: "6px 8px", textAlign: "center" }}>
-                    <div style={{ color: C.muted, fontSize: 9 }}>1日平均</div>
-                    <div style={{ color: C.text, fontSize: 14, fontWeight: 700, lineHeight: 1.1 }}>{avgPerActiveDay}件</div>
-                  </div>
-                  <div style={{ background: C.bg, borderRadius: 8, padding: "6px 8px", textAlign: "center" }}>
-                    <div style={{ color: C.muted, fontSize: 9 }}>日割り目標</div>
-                    <div style={{ color: "#FCD34D", fontSize: 14, fontWeight: 700, lineHeight: 1.1 }}>{dailyGoalAvg || "—"}{dailyGoalAvg ? "件" : ""}</div>
-                  </div>
-                </div>
+                {/* ===== 1項目詳細モード ===== */}
+                {dailyChartViewMode === "single" && (() => {
+                  const target = itemsProgress.find(p => p.item === dailyChartItem) || itemsProgress[0];
+                  const { item, goal, total, cumulative, paceDiff, pct, expectedPct } = target;
+                  const lineColor = goal > 0 && pct >= expectedPct ? C.success : C.accent;
+                  const max = Math.max(1, goal, total);
 
-                {/* 累積折れ線グラフ（SVG） */}
-                {dailyChartItems.length === 0 ? (
-                  <div style={{ padding: 30, textAlign: "center", color: C.muted, fontSize: 13 }}>項目を1つ以上選択してください</div>
-                ) : monthlyTotal === 0 ? (
-                  <div style={{ padding: 30, textAlign: "center", color: C.muted, fontSize: 13 }}>{selectedYM} の {dailyChartMember} さんの<br/>{dailyChartItems.join("／")}データはまだありません</div>
-                ) : (
-                  <div style={{ background: C.bg, borderRadius: 10, padding: "10px 8px 4px" }}>
-                    <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" style={{ display: "block" }} preserveAspectRatio="xMidYMid meet">
-                      {/* 目盛り線（Y軸） */}
-                      {[0, 0.25, 0.5, 0.75, 1].map((r, i) => {
-                        const yPos = padT + chartH - chartH * r;
-                        const val = Math.round(max * r);
-                        return (
-                          <g key={i}>
-                            <line x1={padL} y1={yPos} x2={svgW - padR} y2={yPos} stroke="#1a2535" strokeWidth="1" strokeDasharray={r === 0 ? "0" : "3,3"} />
-                            <text x={padL - 4} y={yPos + 3} fill="#475569" fontSize="10" textAnchor="end" fontFamily="sans-serif">{val}</text>
-                          </g>
-                        );
-                      })}
+                  // SVGサイズ
+                  const svgW = 1000, svgH = 280;
+                  const padL = 40, padR = 20, padT = 25, padB = 40;
+                  const chartW = svgW - padL - padR;
+                  const chartH = svgH - padT - padB;
+                  const dayStep = chartW / Math.max(1, daysInMonth - 1);
 
-                      {/* 月間目標ライン（横の点線） */}
-                      {totalGoal > 0 && totalGoal <= max && (() => {
-                        const goalY = padT + chartH - (totalGoal / max) * chartH;
-                        return (
-                          <g>
-                            <line x1={padL} y1={goalY} x2={svgW - padR} y2={goalY} stroke="#FCD34D" strokeWidth="1.5" strokeDasharray="8,4" opacity="0.8" />
-                            <text x={padL + 6} y={goalY - 5} fill="#FCD34D" fontSize="10" fontFamily="sans-serif" fontWeight="800">🎯 月間目標 {totalGoal}件</text>
-                          </g>
-                        );
-                      })()}
+                  return (
+                    <div>
+                      {/* 項目チップ */}
+                      <div style={{ fontSize: 11, color: C.muted, marginBottom: 4, fontWeight: 700 }}>📊 項目を選択（1つ）</div>
+                      <div style={{ display: "flex", gap: 4, marginBottom: 12, overflowX: "auto", paddingBottom: 4, flexWrap: "wrap" }}>
+                        {APPROACH_ITEMS.map(it => {
+                          const active = dailyChartItem === it;
+                          return (
+                            <button key={it} onClick={() => setDailyChartItem(it)} style={{
+                              padding: "5px 11px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+                              background: active ? C.accent : C.bg,
+                              color: active ? "#fff" : C.muted,
+                              border: `1px solid ${active ? C.accent : "#1a2535"}`,
+                              fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0, fontWeight: active ? 700 : 400,
+                            }}>{it}</button>
+                          );
+                        })}
+                      </div>
 
-                      {/* 今日の縦線（今月の場合のみ） */}
-                      {isCurrentMonth && todayDay > 0 && (() => {
-                        const todayX = padL + (todayDay - 1) * dayStep;
-                        return (
-                          <g>
-                            <line x1={todayX} y1={padT} x2={todayX} y2={padT + chartH} stroke="#FCD34D" strokeWidth="1.5" strokeDasharray="2,3" opacity="0.5" />
-                            <text x={todayX} y={padT - 6} fill="#FCD34D" fontSize="10" fontFamily="sans-serif" fontWeight="700" textAnchor="middle">今日</text>
-                          </g>
-                        );
-                      })()}
+                      {/* タイトル＋メイン数値 */}
+                      <div style={{ background: lineColor + "11", border: `1px solid ${lineColor}44`, borderRadius: 10, padding: 12, marginBottom: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                          <div>
+                            <div style={{ fontSize: 11, color: C.muted }}>🎯 {item} の月間進捗</div>
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 2 }}>
+                              <span style={{ fontSize: 28, fontWeight: 800, color: lineColor, lineHeight: 1 }}>{total}</span>
+                              <span style={{ fontSize: 13, color: C.muted }}>/ {goal || "—"}件</span>
+                              {goal > 0 && <span style={{ fontSize: 14, color: lineColor, fontWeight: 700 }}>({pct}%)</span>}
+                            </div>
+                          </div>
+                          {goal > 0 && (
+                            <div style={{ textAlign: "right" }}>
+                              <div style={{ fontSize: 10, color: C.muted }}>ペース</div>
+                              <div style={{ fontSize: 22, fontWeight: 800, color: paceDiff >= 0 ? C.success : C.danger, lineHeight: 1 }}>
+                                {paceDiff >= 0 ? "+" : ""}{paceDiff}<span style={{ fontSize: 10, color: C.muted, marginLeft: 2 }}>件</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        {/* 状況メッセージ */}
+                        {goal > 0 && (
+                          <div style={{ marginTop: 8, fontSize: 12, color: paceDiff >= 0 ? C.success : C.danger, fontWeight: 700 }}>
+                            {!isCurrentMonth
+                              ? (paceDiff >= 0 ? `🎉 目標を ${paceDiff}件 オーバー達成！` : `📉 目標まで ${Math.abs(paceDiff)}件 不足`)
+                              : (paceDiff >= 0 ? `✅ 順調！ ${paceDiff}件 リード中` : `⚠️ ${Math.abs(paceDiff)}件 取り戻そう（あと${daysInMonth - todayDay}日）`)
+                            }
+                          </div>
+                        )}
+                      </div>
 
-                      {/* 目標累計ライン（金色の線） */}
-                      {totalGoal > 0 && (
-                        <polyline
-                          fill="none"
-                          stroke="#FCD34D"
-                          strokeWidth="2"
-                          strokeDasharray="5,3"
-                          opacity="0.65"
-                          points={cumulativeData.map((d, i) => {
-                            const x = padL + i * dayStep;
-                            const y = padT + chartH - (d.targetCumulative / max) * chartH;
-                            return `${x},${y}`;
-                          }).join(" ")}
-                        />
-                      )}
-
-                      {/* 実績累計エリア（塗りつぶし） */}
-                      {(() => {
-                        // 今日まで（今月の場合）or 月末まで（過去月の場合）
-                        const endIdx = isCurrentMonth ? Math.min(todayDay, daysInMonth) : daysInMonth;
-                        const visibleData = cumulativeData.slice(0, endIdx);
-                        if (visibleData.length === 0) return null;
-                        const points = visibleData.map((d, i) => {
-                          const x = padL + i * dayStep;
-                          const y = padT + chartH - (d.cumulative / max) * chartH;
-                          return `${x},${y}`;
-                        }).join(" ");
-                        // 塗りつぶし用のパス（下まで閉じる）
-                        const lastX = padL + (visibleData.length - 1) * dayStep;
-                        const firstX = padL;
-                        const baseY = padT + chartH;
-                        const fillPath = `${firstX},${baseY} ${points} ${lastX},${baseY}`;
-                        // 達成色：実績が目標を超えていれば緑、そうでなければアクセント
-                        const lastValue = visibleData[visibleData.length - 1].cumulative;
-                        const lastTarget = visibleData[visibleData.length - 1].targetCumulative;
-                        const lineColor = totalGoal > 0
-                          ? (lastValue >= lastTarget ? C.success : C.accent)
-                          : C.accent;
-                        return (
-                          <g>
-                            {/* 塗りつぶし */}
-                            <polygon
-                              fill={lineColor}
-                              fillOpacity="0.15"
-                              points={fillPath}
-                            />
-                            {/* 線 */}
-                            <polyline
-                              fill="none"
-                              stroke={lineColor}
-                              strokeWidth="3"
-                              strokeLinejoin="round"
-                              strokeLinecap="round"
-                              points={points}
-                            />
-                            {/* 各日のデータポイント（小さい円） */}
-                            {visibleData.map((d, i) => {
-                              const x = padL + i * dayStep;
-                              const y = padT + chartH - (d.cumulative / max) * chartH;
-                              const isToday = d.day === todayDay;
-                              const hasJump = d.total > 0;
+                      {/* 累積グラフ */}
+                      {total === 0 ? (
+                        <div style={{ padding: 30, textAlign: "center", color: C.muted, fontSize: 13, background: C.bg, borderRadius: 10 }}>
+                          {selectedYM} の{item}データはまだありません
+                        </div>
+                      ) : (
+                        <div style={{ background: C.bg, borderRadius: 10, padding: "10px 8px 4px" }}>
+                          <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" style={{ display: "block" }} preserveAspectRatio="xMidYMid meet">
+                            {/* 目盛り線 */}
+                            {[0, 0.25, 0.5, 0.75, 1].map((r, i) => {
+                              const yPos = padT + chartH - chartH * r;
+                              const val = Math.round(max * r);
                               return (
                                 <g key={i}>
-                                  {hasJump && (
-                                    <circle cx={x} cy={y} r={isToday ? 5 : 3.5} fill={isToday ? "#FCD34D" : lineColor} stroke={isToday ? "#451A03" : "#0a0f1a"} strokeWidth={isToday ? 1.5 : 1} />
-                                  )}
+                                  <line x1={padL} y1={yPos} x2={svgW - padR} y2={yPos} stroke="#1a2535" strokeWidth="1" strokeDasharray={r === 0 ? "0" : "3,3"} />
+                                  <text x={padL - 4} y={yPos + 3} fill="#475569" fontSize="10" textAnchor="end" fontFamily="sans-serif">{val}</text>
                                 </g>
                               );
                             })}
-                            {/* 最終値ラベル */}
-                            {visibleData.length > 0 && (() => {
-                              const lastD = visibleData[visibleData.length - 1];
-                              const x = padL + (visibleData.length - 1) * dayStep;
-                              const y = padT + chartH - (lastD.cumulative / max) * chartH;
+
+                            {/* 月間目標ライン */}
+                            {goal > 0 && goal <= max && (() => {
+                              const goalY = padT + chartH - (goal / max) * chartH;
                               return (
                                 <g>
-                                  <rect x={x - 22} y={y - 22} width="44" height="16" rx="3" fill={lineColor} />
-                                  <text x={x} y={y - 11} fill="#fff" fontSize="11" textAnchor="middle" fontFamily="sans-serif" fontWeight="800">{lastD.cumulative}</text>
+                                  <line x1={padL} y1={goalY} x2={svgW - padR} y2={goalY} stroke="#FCD34D" strokeWidth="1.5" strokeDasharray="8,4" opacity="0.8" />
+                                  <text x={padL + 6} y={goalY - 5} fill="#FCD34D" fontSize="10" fontFamily="sans-serif" fontWeight="800">🎯 月間目標 {goal}件</text>
                                 </g>
                               );
                             })()}
-                          </g>
-                        );
-                      })()}
 
-                      {/* X軸：日付ラベル（5日おき＋今日＋月末） */}
-                      {cumulativeData.map((d, i) => {
-                        const showLabel = (d.day % 5 === 0) || d.day === 1 || d.day === daysInMonth || d.day === todayDay;
-                        if (!showLabel) return null;
-                        const x = padL + i * dayStep;
-                        const dow = new Date(d.date).getDay();
-                        const isToday = d.day === todayDay;
-                        return (
-                          <g key={i}>
-                            <text x={x} y={svgH - padB + 14} fill={isToday ? "#FCD34D" : dow === 0 ? "#ef4444" : dow === 6 ? "#0ea5e9" : "#475569"} fontSize="10" textAnchor="middle" fontFamily="sans-serif" fontWeight={isToday ? "800" : "400"}>{d.day}</text>
-                          </g>
-                        );
-                      })}
-                      {/* X軸ライン */}
-                      <line x1={padL} y1={padT + chartH} x2={svgW - padR} y2={padT + chartH} stroke="#1a2535" strokeWidth="1.5" />
-                    </svg>
+                            {/* 今日の縦線 */}
+                            {isCurrentMonth && todayDay > 0 && (() => {
+                              const todayX = padL + (todayDay - 1) * dayStep;
+                              return (
+                                <g>
+                                  <line x1={todayX} y1={padT} x2={todayX} y2={padT + chartH} stroke="#FCD34D" strokeWidth="1.5" strokeDasharray="2,3" opacity="0.5" />
+                                  <text x={todayX} y={padT - 6} fill="#FCD34D" fontSize="10" fontFamily="sans-serif" fontWeight="700" textAnchor="middle">今日</text>
+                                </g>
+                              );
+                            })()}
 
-                    {/* 凡例 */}
-                    <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 6, fontSize: 11, color: C.muted, flexWrap: "wrap" }}>
-                      <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                        <svg width="22" height="3"><line x1="0" y1="1.5" x2="22" y2="1.5" stroke={progressPct >= expectedPct ? C.success : C.accent} strokeWidth="3" /></svg>
-                        累計実績
-                      </span>
-                      {totalGoal > 0 && (
-                        <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                          <svg width="22" height="3"><line x1="0" y1="1.5" x2="22" y2="1.5" stroke="#FCD34D" strokeWidth="2" strokeDasharray="4,2" /></svg>
-                          目標ペース
-                        </span>
+                            {/* 目標累計ライン */}
+                            {goal > 0 && (
+                              <polyline
+                                fill="none" stroke="#FCD34D" strokeWidth="2"
+                                strokeDasharray="5,3" opacity="0.65"
+                                points={cumulative.map((d, i) => {
+                                  const x = padL + i * dayStep;
+                                  const yPos = padT + chartH - (d.targetCumulative / max) * chartH;
+                                  return `${x},${yPos}`;
+                                }).join(" ")}
+                              />
+                            )}
+
+                            {/* 実績累計ライン */}
+                            {(() => {
+                              const endIdx = isCurrentMonth ? Math.min(todayDay, daysInMonth) : daysInMonth;
+                              const visible = cumulative.slice(0, endIdx);
+                              if (visible.length === 0) return null;
+                              const points = visible.map((d, i) => {
+                                const x = padL + i * dayStep;
+                                const yPos = padT + chartH - (d.cumulative / max) * chartH;
+                                return `${x},${yPos}`;
+                              }).join(" ");
+                              const lastX = padL + (visible.length - 1) * dayStep;
+                              const baseY = padT + chartH;
+                              const fillPath = `${padL},${baseY} ${points} ${lastX},${baseY}`;
+                              return (
+                                <g>
+                                  <polygon fill={lineColor} fillOpacity="0.15" points={fillPath} />
+                                  <polyline fill="none" stroke={lineColor} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" points={points} />
+                                  {visible.map((d, i) => {
+                                    if (d.val === 0) return null;
+                                    const x = padL + i * dayStep;
+                                    const yPos = padT + chartH - (d.cumulative / max) * chartH;
+                                    const isToday = d.day === todayDay;
+                                    return <circle key={i} cx={x} cy={yPos} r={isToday ? 5 : 3.5} fill={isToday ? "#FCD34D" : lineColor} stroke={isToday ? "#451A03" : "#0a0f1a"} strokeWidth={isToday ? 1.5 : 1} />;
+                                  })}
+                                  {/* 最終値ラベル */}
+                                  {(() => {
+                                    const lastD = visible[visible.length - 1];
+                                    const x = padL + (visible.length - 1) * dayStep;
+                                    const yPos = padT + chartH - (lastD.cumulative / max) * chartH;
+                                    return (
+                                      <g>
+                                        <rect x={x - 22} y={yPos - 22} width="44" height="16" rx="3" fill={lineColor} />
+                                        <text x={x} y={yPos - 11} fill="#fff" fontSize="11" textAnchor="middle" fontFamily="sans-serif" fontWeight="800">{lastD.cumulative}</text>
+                                      </g>
+                                    );
+                                  })()}
+                                </g>
+                              );
+                            })()}
+
+                            {/* X軸日付ラベル（5日おき） */}
+                            {cumulative.map((d, i) => {
+                              const show = (d.day % 5 === 0) || d.day === 1 || d.day === daysInMonth || d.day === todayDay;
+                              if (!show) return null;
+                              const x = padL + i * dayStep;
+                              const dow = new Date(d.date).getDay();
+                              const isToday = d.day === todayDay;
+                              return (
+                                <text key={i} x={x} y={svgH - padB + 14}
+                                  fill={isToday ? "#FCD34D" : dow === 0 ? "#ef4444" : dow === 6 ? "#0ea5e9" : "#475569"}
+                                  fontSize="10" textAnchor="middle" fontFamily="sans-serif" fontWeight={isToday ? "800" : "400"}>{d.day}</text>
+                              );
+                            })}
+                            <line x1={padL} y1={padT + chartH} x2={svgW - padR} y2={padT + chartH} stroke="#1a2535" strokeWidth="1.5" />
+                          </svg>
+
+                          {/* 凡例 */}
+                          <div style={{ display: "flex", gap: 14, justifyContent: "center", marginTop: 6, fontSize: 10, color: C.muted, flexWrap: "wrap" }}>
+                            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                              <svg width="20" height="3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke={lineColor} strokeWidth="3" /></svg>
+                              実績累計
+                            </span>
+                            {goal > 0 && (
+                              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                <svg width="20" height="3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke="#FCD34D" strokeWidth="2" strokeDasharray="4,2" /></svg>
+                                目標ペース
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       )}
-                      <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                        <span style={{ width: 8, height: 8, background: progressPct >= expectedPct ? C.success : C.accent, borderRadius: "50%", display: "inline-block" }} />
-                        稼働日
-                      </span>
-                      {isCurrentMonth && (
-                        <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                          <span style={{ width: 8, height: 8, background: "#FCD34D", borderRadius: "50%", display: "inline-block" }} />
-                          今日
-                        </span>
+
+                      {/* 日別詳細テーブル（折りたたみ） */}
+                      {total > 0 && (
+                        <details style={{ marginTop: 10 }}>
+                          <summary style={{ cursor: "pointer", color: C.accent, fontSize: 12, fontWeight: 700, padding: "8px 12px", background: C.bg, borderRadius: 8 }}>📋 日別の詳細</summary>
+                          <div style={{ marginTop: 6, background: C.bg, borderRadius: 8, padding: 8, maxHeight: 280, overflowY: "auto" }}>
+                            <table style={{ width: "100%", fontSize: 11, color: C.text, borderCollapse: "collapse" }}>
+                              <thead>
+                                <tr style={{ borderBottom: `1px solid #1a2535` }}>
+                                  <th style={{ padding: "5px 4px", textAlign: "left", color: C.muted }}>日</th>
+                                  <th style={{ padding: "5px 4px", textAlign: "left", color: C.muted }}>曜</th>
+                                  <th style={{ padding: "5px 4px", textAlign: "right", color: C.muted }}>当日</th>
+                                  <th style={{ padding: "5px 4px", textAlign: "right", color: C.muted }}>累計</th>
+                                  {goal > 0 && <th style={{ padding: "5px 4px", textAlign: "right", color: C.muted }}>目標</th>}
+                                  {goal > 0 && <th style={{ padding: "5px 4px", textAlign: "right", color: C.muted }}>差</th>}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {cumulative.filter(d => d.val > 0 || d.hasData).map(d => {
+                                  const dow = new Date(d.date).getDay();
+                                  const labels = ["日", "月", "火", "水", "木", "金", "土"];
+                                  const isToday = d.day === todayDay && isCurrentMonth;
+                                  const diff = d.cumulative - d.targetCumulative;
+                                  return (
+                                    <tr key={d.day} style={{ borderBottom: `1px solid #1a2535`, background: isToday ? "#FCD34D11" : "transparent" }}>
+                                      <td style={{ padding: "4px", color: isToday ? "#FCD34D" : C.text, fontWeight: isToday ? 800 : 400 }}>{d.day}</td>
+                                      <td style={{ padding: "4px", color: dow === 0 ? C.danger : dow === 6 ? C.accent : C.muted }}>{labels[dow]}</td>
+                                      <td style={{ padding: "4px", textAlign: "right", color: C.text }}>{d.val}</td>
+                                      <td style={{ padding: "4px", textAlign: "right", color: C.accent, fontWeight: 700 }}>{d.cumulative}</td>
+                                      {goal > 0 && <td style={{ padding: "4px", textAlign: "right", color: "#FCD34D" }}>{d.targetCumulative}</td>}
+                                      {goal > 0 && <td style={{ padding: "4px", textAlign: "right", color: diff >= 0 ? C.success : C.danger, fontWeight: 700 }}>{diff >= 0 ? "+" : ""}{diff}</td>}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </details>
                       )}
                     </div>
-                  </div>
-                )}
-
-                {/* 日別データテーブル（折りたたみ） */}
-                {monthlyTotal > 0 && (
-                  <details style={{ marginTop: 12 }}>
-                    <summary style={{ cursor: "pointer", color: C.accent, fontSize: 12, fontWeight: 700, padding: "8px 12px", background: C.bg, borderRadius: 8 }}>📋 日別の詳細テーブルを開く</summary>
-                    <div style={{ marginTop: 8, background: C.bg, borderRadius: 8, padding: 8, maxHeight: 300, overflowY: "auto" }}>
-                      <table style={{ width: "100%", fontSize: 11, color: C.text, borderCollapse: "collapse" }}>
-                        <thead>
-                          <tr style={{ borderBottom: `1px solid #1a2535` }}>
-                            <th style={{ padding: "6px 4px", textAlign: "left", color: C.muted }}>日</th>
-                            <th style={{ padding: "6px 4px", textAlign: "left", color: C.muted }}>曜</th>
-                            <th style={{ padding: "6px 4px", textAlign: "right", color: C.muted }}>当日</th>
-                            <th style={{ padding: "6px 4px", textAlign: "right", color: C.muted }}>累計</th>
-                            {totalGoal > 0 && <th style={{ padding: "6px 4px", textAlign: "right", color: C.muted }}>目標累計</th>}
-                            <th style={{ padding: "6px 4px", textAlign: "right", color: C.muted }}>差</th>
-                            {dailyChartItems.map(item => (
-                              <th key={item} style={{ padding: "6px 4px", textAlign: "right", color: C.muted }}>{item.slice(0, 3)}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {cumulativeData.filter(d => d.total > 0 || d.hasData).map(d => {
-                            const dow = new Date(d.date).getDay();
-                            const labels = ["日", "月", "火", "水", "木", "金", "土"];
-                            const isToday = d.day === todayDay;
-                            const diff = d.cumulative - d.targetCumulative;
-                            return (
-                              <tr key={d.day} style={{ borderBottom: `1px solid #1a2535`, background: isToday ? "#FCD34D11" : "transparent" }}>
-                                <td style={{ padding: "5px 4px", color: isToday ? "#FCD34D" : C.text, fontWeight: isToday ? 800 : 400 }}>{d.day}</td>
-                                <td style={{ padding: "5px 4px", color: dow === 0 ? C.danger : dow === 6 ? C.accent : C.muted }}>{labels[dow]}</td>
-                                <td style={{ padding: "5px 4px", textAlign: "right", color: C.text }}>{d.total}</td>
-                                <td style={{ padding: "5px 4px", textAlign: "right", color: C.accent, fontWeight: 700 }}>{d.cumulative}</td>
-                                {totalGoal > 0 && <td style={{ padding: "5px 4px", textAlign: "right", color: "#FCD34D" }}>{d.targetCumulative}</td>}
-                                <td style={{ padding: "5px 4px", textAlign: "right", color: diff >= 0 ? C.success : C.danger, fontWeight: 700 }}>{diff >= 0 ? "+" : ""}{diff}</td>
-                                {dailyChartItems.map(item => (
-                                  <td key={item} style={{ padding: "5px 4px", textAlign: "right", color: C.muted }}>{d.values[item] || ""}</td>
-                                ))}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </details>
-                )}
+                  );
+                })()}
               </div>
             );
           })()}
