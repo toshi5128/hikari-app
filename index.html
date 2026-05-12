@@ -1121,6 +1121,64 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480 }) 
   return <div ref={mapRef} style={{ height, width: "100%", borderRadius: 12, border: "1px solid #1a2535" }} />;
 }
 
+// 📍 手動でピン位置を指定するモーダル
+function ManualPinMap({ address, onCancel, onSelect }) {
+  const mapRef = React.useRef(null);
+  const mapInstanceRef = React.useRef(null);
+  const markerRef = React.useRef(null);
+  const [pickedLatLng, setPickedLatLng] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!mapRef.current || mapInstanceRef.current) return;
+    if (typeof L === "undefined") return;
+    // 埼玉県中心
+    const map = L.map(mapRef.current).setView([36.05, 139.4], 9);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap", maxZoom: 19,
+    }).addTo(map);
+    mapInstanceRef.current = map;
+    map.on("click", (e) => {
+      if (markerRef.current) map.removeLayer(markerRef.current);
+      const icon = L.divIcon({
+        className: "manual-pin",
+        html: `<div style="background:#f59e0b;width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.5);"></div>`,
+        iconSize: [24, 24], iconAnchor: [12, 12],
+      });
+      markerRef.current = L.marker(e.latlng, { icon }).addTo(map);
+      setPickedLatLng(e.latlng);
+    });
+    return () => {
+      try { map.remove(); } catch (e) {}
+      mapInstanceRef.current = null;
+    };
+  }, []);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 500, display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "12px 16px", background: "#0a0f1a", borderBottom: "1px solid #1a2535" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 4 }}>📍 マップをタップして位置を指定</div>
+        <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.4 }}>住所: {address}</div>
+      </div>
+      <div ref={mapRef} style={{ flex: 1 }} />
+      <div style={{ padding: "12px 16px", background: "#0a0f1a", borderTop: "1px solid #1a2535", display: "flex", gap: 10 }}>
+        <button onClick={onCancel} style={{
+          flex: 1, padding: "12px", background: "transparent", color: "#94a3b8",
+          border: "1px solid #1a2535", borderRadius: 8, cursor: "pointer", fontSize: 14, fontFamily: "inherit",
+        }}>キャンセル</button>
+        <button 
+          onClick={() => pickedLatLng && onSelect(pickedLatLng)}
+          disabled={!pickedLatLng}
+          style={{
+            flex: 2, padding: "12px", background: pickedLatLng ? "#10b981" : "#1a2535",
+            color: "#fff", border: "none", borderRadius: 8,
+            cursor: pickedLatLng ? "pointer" : "not-allowed", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+            opacity: pickedLatLng ? 1 : 0.5,
+          }}>{pickedLatLng ? "✅ この位置に決定" : "マップをタップしてください"}</button>
+      </div>
+    </div>
+  );
+}
+
 function StatusTag({ status }) {
   const map = {
     "見込": C.success, "仕入契約済": C.accent, "リフォーム中": C.purple, "リフォーム待ち": C.warn,
@@ -4915,6 +4973,10 @@ function JiagePage({ data, setData }) {
   const [mapPinTarget, setMapPinTarget] = useState("address"); // "address" | "ownerAddr"
   // ジオコーディング進捗
   const [geocodeProgress, setGeocodeProgress] = useState(null); // { current, total, cancel: boolean }
+  // 未取得物件一覧表示
+  const [showFailedList, setShowFailedList] = useState(false);
+  // 手動マップ選択モード（緯度経度をマップタップで指定）
+  const [manualPinTarget, setManualPinTarget] = useState(null); // { item, target: "address" | "ownerAddr" }
   const [selected, setSelected] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [addType, setAddType] = useState("jiage");
@@ -5821,9 +5883,12 @@ function JiagePage({ data, setData }) {
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span>📍 {itemsWithCoord.length}件のピンを表示中</span>
-                      <span style={{ fontSize: 10 }}>
-                        {itemsNoCoord.length > 0 && `未取得${itemsNoCoord.length}件`}
-                      </span>
+                      {itemsNoCoord.length > 0 && (
+                        <button onClick={() => setShowFailedList(true)} style={{
+                          background: C.warn + "22", color: C.warn, border: `1px solid ${C.warn}66`,
+                          borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                        }}>⚠️ 未取得 {itemsNoCoord.length}件を確認</button>
+                      )}
                     </div>
 
                     {/* ピン色凡例 */}
@@ -6237,6 +6302,125 @@ function JiagePage({ data, setData }) {
         style={{ display: "none" }}
         onChange={handleFileSelect}
       />
+
+      {/* ⚠️ ジオコーディング失敗物件リスト */}
+      {showFailedList && (() => {
+        const failedItems = filtered.filter(i => {
+          const addr = mapPinTarget === "ownerAddr" ? i.ownerAddress : i.address;
+          const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
+          return !!addr && (typeof lat !== "number");
+        });
+        return (
+          <BottomSheet title={`⚠️ 未取得 ${failedItems.length}件（${mapPinTarget === "ownerAddr" ? "所有者住所" : "物件住所"}）`} onClose={() => setShowFailedList(false)}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
+              緯度経度を取得できなかった物件です。<br />
+              ✅ 「住所を編集」で正確な住所に直す<br />
+              ✅ 「マップで指定」でタップして位置を指定する<br />
+              のどちらかで補正してください
+            </div>
+            
+            {/* 一括再試行ボタン */}
+            <button onClick={() => {
+              setShowFailedList(false);
+              runGeocoding(mapPinTarget);
+            }} style={{
+              width: "100%", padding: "10px", marginBottom: 14,
+              background: C.accent, color: "#fff",
+              border: "none", borderRadius: 8, cursor: "pointer",
+              fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+            }}>🛰️ 全件をもう一度ジオコーディング</button>
+
+            {/* 失敗物件リスト */}
+            <div style={{ maxHeight: 500, overflowY: "auto" }}>
+              {failedItems.map(item => {
+                const addr = mapPinTarget === "ownerAddr" ? item.ownerAddress : item.address;
+                return (
+                  <div key={item.id} style={{ 
+                    background: "#0a0f1a", border: `1px solid #1a2535`, borderRadius: 10,
+                    padding: 10, marginBottom: 8, fontSize: 12,
+                  }}>
+                    <div style={{ color: C.text, fontWeight: 700, marginBottom: 4 }}>📍 {addr}</div>
+                    {item.ownerName && <div style={{ color: C.muted, fontSize: 11, marginBottom: 6 }}>👤 {item.ownerName}</div>}
+                    
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <a href={`https://www.google.com/maps/search/${encodeURIComponent(addr)}`}
+                         target="_blank" rel="noopener noreferrer"
+                         style={{
+                           background: C.success + "22", color: C.success,
+                           border: `1px solid ${C.success}55`, borderRadius: 6,
+                           padding: "5px 10px", fontSize: 11, fontWeight: 700,
+                           textDecoration: "none", flex: 1, textAlign: "center",
+                         }}>🗺️ Googleマップで確認</a>
+                      <button onClick={async () => {
+                        const result = await geocodeAddress(addr);
+                        if (result) {
+                          const isOwner = mapPinTarget === "ownerAddr";
+                          setData(d => ({
+                            ...d,
+                            jiage: (d.jiage || []).map(j => {
+                              if (j.id !== item.rawId) return j;
+                              return isOwner
+                                ? { ...j, ownerLat: result.lat, ownerLng: result.lng }
+                                : { ...j, lat: result.lat, lng: result.lng };
+                            })
+                          }));
+                          alert(`✅ 取得成功！\n${result.matchedAddress || ""}`);
+                        } else {
+                          alert("❌ やっぱり失敗しました。住所を編集するか、マップで手動指定してください");
+                        }
+                      }} style={{
+                        background: C.accent + "22", color: C.accent,
+                        border: `1px solid ${C.accent}55`, borderRadius: 6,
+                        padding: "5px 10px", fontSize: 11, fontWeight: 700,
+                        cursor: "pointer", flex: 1, fontFamily: "inherit",
+                      }}>🔄 再試行</button>
+                      <button onClick={() => {
+                        setShowFailedList(false);
+                        setManualPinTarget({ item, target: mapPinTarget });
+                      }} style={{
+                        background: C.warn + "22", color: C.warn,
+                        border: `1px solid ${C.warn}55`, borderRadius: 6,
+                        padding: "5px 10px", fontSize: 11, fontWeight: 700,
+                        cursor: "pointer", flex: 1, fontFamily: "inherit",
+                      }}>📍 マップで指定</button>
+                    </div>
+                  </div>
+                );
+              })}
+              {failedItems.length === 0 && (
+                <div style={{ textAlign: "center", color: C.muted, fontSize: 12, padding: 20 }}>
+                  ✅ すべての物件の緯度経度を取得できました！
+                </div>
+              )}
+            </div>
+          </BottomSheet>
+        );
+      })()}
+
+      {/* 📍 マップで手動位置指定モーダル */}
+      {manualPinTarget && (() => {
+        const isOwner = manualPinTarget.target === "ownerAddr";
+        const addr = isOwner ? manualPinTarget.item.ownerAddress : manualPinTarget.item.address;
+        return (
+          <ManualPinMap
+            address={addr}
+            onCancel={() => setManualPinTarget(null)}
+            onSelect={(latlng) => {
+              setData(d => ({
+                ...d,
+                jiage: (d.jiage || []).map(j => {
+                  if (j.id !== manualPinTarget.item.rawId) return j;
+                  return isOwner
+                    ? { ...j, ownerLat: latlng.lat, ownerLng: latlng.lng }
+                    : { ...j, lat: latlng.lat, lng: latlng.lng };
+                })
+              }));
+              setManualPinTarget(null);
+              setShowFailedList(true); // 失敗リストに戻る
+            }}
+          />
+        );
+      })()}
 
       {/* 📍 訪問結果記録BottomSheet */}
       {visitRecordTarget && visitForm && (
