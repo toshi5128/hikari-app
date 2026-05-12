@@ -2879,6 +2879,7 @@ function ApproachPage({ data, setData }) {
   // ===== 案件タブ用 =====
   const [casesMember, setCasesMember] = useState("__ALL__"); // "__ALL__" or member name
   const [casesExpanded, setCasesExpanded] = useState(null); // 展開中のセクションkey
+  const [casesMonth, setCasesMonth] = useState(today.slice(0, 7)); // 「今月の活動」表示対象月（YYYY-MM形式）
 
   // 目標値はdataに保存（memberGoals: { "たっくん": { 訪問: 600, ... } }）
   const memberGoals = data.memberGoals || {};
@@ -3025,11 +3026,13 @@ function ApproachPage({ data, setData }) {
     const sekisanHot = sekisanActive.filter(s => s.judgment === "熱い");
     const sekisanCheck = sekisanActive.filter(s => s.judgment === "検討中");
     const stocksActive = filterByMember((data.stocks || []).filter(s => s.status !== "決済完了"));
+    // 「決済完了」は選択月の年（casesMonthの年）に決済完了したもの
+    const selectedYear = casesMonth.slice(0, 4);
     const stocksCompleted = filterByMember((data.stocks || []).filter(s =>
-      s.status === "決済完了" && (s.sellDate || "").startsWith(String(new Date().getFullYear()))
+      s.status === "決済完了" && (s.sellDate || "").startsWith(selectedYear)
     ));
-    return { jiageActive, ownersActive, sekisanActive, sekisanHot, sekisanCheck, stocksActive, stocksCompleted };
-  }, [data.jiage, data.owners, data.sekisan, data.stocks, casesMember]);
+    return { jiageActive, ownersActive, sekisanActive, sekisanHot, sekisanCheck, stocksActive, stocksCompleted, selectedYear };
+  }, [data.jiage, data.owners, data.sekisan, data.stocks, casesMember, casesMonth]);
 
   const alerts = useMemo(() => {
     const overdueJiage = filterByMember((data.jiage || []).filter(j =>
@@ -3057,8 +3060,8 @@ function ApproachPage({ data, setData }) {
   }, [data.jiage, data.owners, data.stocks, data.sekisan, casesMember, today]);
 
   const weekActivity = useMemo(() => {
-    // 今月1日〜今日の集計
-    const ym = today.slice(0, 7); // "2026-05"
+    // 選択月の集計（casesMonth に従う）
+    const ym = casesMonth; // "2026-05"
     const newSekisan = filterByMember((data.sekisan || []).filter(s => (s.createdAt || "").startsWith(ym)));
     const newPurchase = filterByMember((data.stocks || []).filter(s => (s.buyDate || "").startsWith(ym)));
     const newCompleted = filterByMember((data.stocks || []).filter(s =>
@@ -3066,7 +3069,17 @@ function ApproachPage({ data, setData }) {
     ));
     const currentHot = filterByMember((data.sekisan || []).filter(s => s.judgment === "熱い"));
     return { newSekisan, newPurchase, newCompleted, currentHot };
-  }, [data.sekisan, data.stocks, casesMember, today]);
+  }, [data.sekisan, data.stocks, casesMember, casesMonth]);
+
+  // 過去12ヶ月の選択肢
+  const casesMonthOptions = useMemo(() => {
+    return Array.from({ length: 12 }, (_, i) => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      const ym = d.toISOString().slice(0, 7);
+      return { ym, label: `${d.getFullYear()}年${d.getMonth() + 1}月${i === 0 ? "（今月）" : i === 1 ? "（先月）" : ""}` };
+    });
+  }, []);
 
   return (
     <div>
@@ -3098,6 +3111,9 @@ function ApproachPage({ data, setData }) {
           <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 12 }}>
               📊 {casesMember === "__ALL__" ? "全員" : casesMember} の案件パイプライン
+              {pipeline.selectedYear !== String(new Date().getFullYear()) && (
+                <span style={{ color: C.warn, marginLeft: 8, fontSize: 11 }}>（決済完了は{pipeline.selectedYear}年）</span>
+              )}
             </div>
             {[
               { key: "jiage", icon: "🗺️", label: "地上げ", count: pipeline.jiageActive.length, color: C.purple, sub: "訪問中・見込みなど", items: pipeline.jiageActive,
@@ -3112,7 +3128,7 @@ function ApproachPage({ data, setData }) {
                 sub: "リフォーム中・売却準備など", items: pipeline.stocksActive,
                 renderItem: (s) => { const si = stagnantInfo(s.buyDate); return { title: s.name, sub: `${s.status}${si ? ` · ${si.level}仕入${si.days}日経過` : ""}`, badge: s.assignee }; } },
               { key: "completed", icon: "✅", label: "決済完了", count: pipeline.stocksCompleted.length, color: C.muted,
-                sub: `${new Date().getFullYear()}年実績`, items: pipeline.stocksCompleted,
+                sub: `${pipeline.selectedYear}年実績`, items: pipeline.stocksCompleted,
                 renderItem: (s) => ({ title: s.name, sub: `利益${Math.round(((s.sellPrice||0)-(s.buyCost||0))/10000)}万 · ${s.sellDate}`, badge: s.assignee }) },
             ].map(stage => {
               const isExpanded = casesExpanded === stage.key;
@@ -3193,15 +3209,60 @@ function ApproachPage({ data, setData }) {
             })()}
           </div>
 
-          {/* ========== 段3：今月の活動 ========== */}
+          {/* ========== 段3：月別の活動（月選択可） ========== */}
           <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.success, marginBottom: 12 }}>📅 今月の活動（{today.slice(0, 7)}）— カードをタップで詳細</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.success }}>
+                📅 {casesMonth === today.slice(0, 7) ? "今月" : casesMonth.replace("-", "年") + "月"}の活動
+                {casesMember !== "__ALL__" && <span style={{ color: MEMBER_COLORS[casesMember] || C.muted, marginLeft: 6 }}>· {casesMember}</span>}
+              </div>
+              {/* 月切替ナビ */}
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <button onClick={() => {
+                  const d = new Date(casesMonth + "-01");
+                  d.setMonth(d.getMonth() - 1);
+                  setCasesMonth(d.toISOString().slice(0, 7));
+                  setCasesExpanded(null);
+                }} style={{
+                  background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent,
+                  borderRadius: 6, width: 30, height: 28, cursor: "pointer", fontSize: 16, fontWeight: 800, fontFamily: "inherit",
+                }}>‹</button>
+                <select value={casesMonth} onChange={e => { setCasesMonth(e.target.value); setCasesExpanded(null); }}
+                  style={{ ...inp, padding: "5px 8px", fontSize: 12, width: "auto", minWidth: 130, height: 28 }}>
+                  {casesMonthOptions.map(({ ym, label }) => <option key={ym} value={ym}>{label}</option>)}
+                </select>
+                <button onClick={() => {
+                  const d = new Date(casesMonth + "-01");
+                  d.setMonth(d.getMonth() + 1);
+                  const next = d.toISOString().slice(0, 7);
+                  // 未来は禁止（今月まで）
+                  if (next > today.slice(0, 7)) return;
+                  setCasesMonth(next);
+                  setCasesExpanded(null);
+                }}
+                disabled={casesMonth >= today.slice(0, 7)}
+                style={{
+                  background: casesMonth >= today.slice(0, 7) ? "#1a2535" : C.accent + "22",
+                  border: `1px solid ${casesMonth >= today.slice(0, 7) ? "#1a2535" : C.accent + "66"}`,
+                  color: casesMonth >= today.slice(0, 7) ? "#334155" : C.accent,
+                  borderRadius: 6, width: 30, height: 28, cursor: casesMonth >= today.slice(0, 7) ? "default" : "pointer",
+                  fontSize: 16, fontWeight: 800, fontFamily: "inherit",
+                }}>›</button>
+                {casesMonth !== today.slice(0, 7) && (
+                  <button onClick={() => { setCasesMonth(today.slice(0, 7)); setCasesExpanded(null); }} style={{
+                    background: C.warn + "22", border: `1px solid ${C.warn}66`, color: C.warn,
+                    borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit", height: 28,
+                  }}>今月</button>
+                )}
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 12 }}>カードをタップで詳細</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               {[
                 { key: "sekisan", label: "新規積算", count: weekActivity.newSekisan.length, color: C.warn, icon: "🧮" },
                 { key: "purchase", label: "仕入確定", count: weekActivity.newPurchase.length, color: C.accent, icon: "🏠" },
                 { key: "completed", label: "決済完了", count: weekActivity.newCompleted.length, color: C.success, icon: "✅" },
-                { key: "hot", label: "現在「熱い」", count: weekActivity.currentHot.length, color: C.danger, icon: "🔥" },
+                { key: "hot", label: "🔥熱い案件", count: weekActivity.currentHot.length, color: C.danger, icon: "🔥" },
               ].map(a => {
                 const isExpanded = casesExpanded === `month_${a.key}`;
                 const isClickable = a.count > 0;
