@@ -3087,8 +3087,11 @@ function ApproachPage({ data, setData }) {
 
   // ===== 月次タブ用：日別チャート =====
   const [dailyChartMember, setDailyChartMember] = useState(getCurrentUser() || MEMBERS[0]);
-  // 積算表の編集モード（案件タブ内のカードから開く）
+  // 各種の編集モード（パイプライン・カードから開く）
   const [editingSekisan, setEditingSekisan] = useState(null);
+  const [editingStock, setEditingStock] = useState(null);
+  const [editingJiage, setEditingJiage] = useState(null);
+  const [editingOwner, setEditingOwner] = useState(null);
 
   // ===== 案件タブ用 =====
   const [casesMember, setCasesMember] = useState("__ALL__"); // "__ALL__" or member name
@@ -3333,8 +3336,8 @@ function ApproachPage({ data, setData }) {
           name: form.address,
           status: "仕入契約済",
           buyDate: new Date().toISOString().split("T")[0],
-          buyCost: Number(form.buyPrice) * 10000 || 0,
-          sellPrice: Number(form.sellPrice) * 10000 || 0,
+          buyCost: Number(form.buyPrice) || 0,
+          sellPrice: Number(form.sellPrice) || 0,
           memo: `仕入検討積算表から転記\n判定: ${form.judgment}`,
           year: new Date().getFullYear(),
           fromSekisanId: editingSekisan.id,
@@ -3392,19 +3395,24 @@ function ApproachPage({ data, setData }) {
             </div>
             {[
               { key: "jiage", icon: "🗺️", label: "地上げ", count: pipeline.jiageActive.length, color: C.purple, sub: "訪問中・見込みなど", items: pipeline.jiageActive,
-                renderItem: (j) => ({ title: j.address, sub: `${j.status} · ${j.owner || "所有者不明"}`, badge: j.assignee }) },
+                type: "jiage",
+                renderItem: (j) => ({ title: j.address, sub: `${j.status} · ${j.owner || "所有者不明"}`, badge: j.assignee, raw: j }) },
               { key: "owners", icon: "👤", label: "所有者交渉", count: pipeline.ownersActive.length, color: C.accent, sub: "アタック中", items: pipeline.ownersActive,
-                renderItem: (o) => ({ title: o.address, sub: `${o.status} · ${o.ownerName || "所有者不明"}`, badge: o.assignee }) },
+                type: "owner",
+                renderItem: (o) => ({ title: o.address, sub: `${o.status} · ${o.ownerName || "所有者不明"}`, badge: o.assignee, raw: o }) },
               { key: "sekisan", icon: "🧮", label: "積算検討", count: pipeline.sekisanActive.length, color: C.warn,
                 sub: `🔥熱い${pipeline.sekisanHot.length} / 🟡検討中${pipeline.sekisanCheck.length}`,
                 items: pipeline.sekisanActive,
-                renderItem: (s) => ({ title: s.address || "住所未設定", sub: `${s.judgment} · 仕入想定${s.buyPrice ? Math.round(Number(s.buyPrice)/10000)+"万" : "未"}`, badge: s.assignee }) },
+                type: "sekisan",
+                renderItem: (s) => ({ title: s.address || "住所未設定", sub: `${s.judgment} · 仕入想定${s.buyPrice ? Math.round(Number(s.buyPrice)/10000)+"万" : "未"}`, badge: s.assignee, raw: s }) },
               { key: "stocks", icon: "🏠", label: "在庫", count: pipeline.stocksActive.length, color: C.success,
                 sub: "リフォーム中・売却準備など", items: pipeline.stocksActive,
-                renderItem: (s) => { const si = stagnantInfo(s.buyDate); return { title: s.name, sub: `${s.status}${si ? ` · ${si.level}仕入${si.days}日経過` : ""}`, badge: s.assignee }; } },
+                type: "stock",
+                renderItem: (s) => { const si = stagnantInfo(s.buyDate); return { title: s.name, sub: `${s.status}${si ? ` · ${si.level}仕入${si.days}日経過` : ""}`, badge: s.assignee, raw: s }; } },
               { key: "completed", icon: "✅", label: "決済完了", count: pipeline.stocksCompleted.length, color: C.muted,
                 sub: `${pipeline.selectedYear}年実績`, items: pipeline.stocksCompleted,
-                renderItem: (s) => ({ title: s.name, sub: `利益${Math.round(((s.sellPrice||0)-(s.buyCost||0))/10000)}万 · ${s.sellDate}`, badge: s.assignee }) },
+                type: "stock",
+                renderItem: (s) => ({ title: s.name, sub: `利益${Math.round(((s.sellPrice||0)-(s.buyCost||0))/10000)}万 · ${s.sellDate}`, badge: s.assignee, raw: s }) },
             ].map(stage => {
               const isExpanded = casesExpanded === stage.key;
               return (
@@ -3438,7 +3446,21 @@ function ApproachPage({ data, setData }) {
                               <span style={{ color: C.text, fontSize: 13, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
                               <MemberTag name={r.badge} />
                             </div>
-                            <div style={{ color: C.muted, fontSize: 11 }}>{r.sub}</div>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                              <span style={{ color: C.muted, fontSize: 11, flex: 1 }}>{r.sub}</span>
+                              {r.raw && (
+                                <button onClick={() => {
+                                  if (stage.type === "jiage") setEditingJiage(r.raw);
+                                  else if (stage.type === "owner") setEditingOwner(r.raw);
+                                  else if (stage.type === "sekisan") setEditingSekisan(r.raw);
+                                  else if (stage.type === "stock") setEditingStock(r.raw);
+                                }} style={{
+                                  padding: "4px 9px", background: stage.color + "22", border: `1px solid ${stage.color}`,
+                                  color: stage.color, borderRadius: 6, cursor: "pointer", fontSize: 10, fontWeight: 700,
+                                  fontFamily: "inherit", flexShrink: 0, whiteSpace: "nowrap",
+                                }}>📋 詳細</button>
+                              )}
+                            </div>
                           </div>
                         );
                       })}
@@ -4492,6 +4514,167 @@ function ApproachPage({ data, setData }) {
           </div>
         </BottomSheet>
       )}
+
+      {/* 🗺️ 地上げ詳細BottomSheet */}
+      {editingJiage && (
+        <BottomSheet title={`🗺️ ${editingJiage.address || "(無住所)"}`} onClose={() => setEditingJiage(null)}>
+          <Field label="📍 住所">
+            <input style={inp} value={editingJiage.address || ""} onChange={e => setEditingJiage({ ...editingJiage, address: e.target.value })} />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="👤 所有者">
+              <input style={inp} value={editingJiage.owner || ""} onChange={e => setEditingJiage({ ...editingJiage, owner: e.target.value })} />
+            </Field>
+            <Field label="🚦 ステータス">
+              <select style={inp} value={editingJiage.status || ""} onChange={e => setEditingJiage({ ...editingJiage, status: e.target.value })}>
+                {ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="📅 次回訪問">
+              <input type="date" style={inp} value={editingJiage.nextVisit || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisit: e.target.value })} />
+            </Field>
+            <Field label="👥 担当者">
+              <select style={inp} value={editingJiage.assignee || ""} onChange={e => setEditingJiage({ ...editingJiage, assignee: e.target.value })}>
+                {MEMBERS.map(m => <option key={m}>{m}</option>)}
+              </select>
+            </Field>
+          </div>
+          <Field label="📝 メモ">
+            <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={editingJiage.memo || ""} onChange={e => setEditingJiage({ ...editingJiage, memo: e.target.value })} />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setEditingJiage(null)}>閉じる</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={() => {
+              setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === editingJiage.id ? editingJiage : j) }));
+              setEditingJiage(null);
+            }}>💾 保存</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* 👤 所有者アタック詳細BottomSheet */}
+      {editingOwner && (
+        <BottomSheet title={`👤 ${editingOwner.address || "(無住所)"}`} onClose={() => setEditingOwner(null)}>
+          <Field label="📍 住所">
+            <input style={inp} value={editingOwner.address || ""} onChange={e => setEditingOwner({ ...editingOwner, address: e.target.value })} />
+          </Field>
+          <Field label="👤 所有者名">
+            <input style={inp} value={editingOwner.ownerName || ""} onChange={e => setEditingOwner({ ...editingOwner, ownerName: e.target.value })} />
+          </Field>
+          <Field label="🏠 所有者住所">
+            <input style={inp} value={editingOwner.ownerAddress || ""} onChange={e => setEditingOwner({ ...editingOwner, ownerAddress: e.target.value })} />
+          </Field>
+          <Field label="📞 連絡先">
+            <input style={inp} value={editingOwner.ownerContact || ""} onChange={e => setEditingOwner({ ...editingOwner, ownerContact: e.target.value })} />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="🚦 ステータス">
+              <select style={inp} value={editingOwner.status || ""} onChange={e => setEditingOwner({ ...editingOwner, status: e.target.value })}>
+                {OWNER_STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="📅 次回フォロー">
+              <input type="date" style={inp} value={editingOwner.nextFollowDate || ""} onChange={e => setEditingOwner({ ...editingOwner, nextFollowDate: e.target.value })} />
+            </Field>
+            <Field label="👥 担当者">
+              <select style={inp} value={editingOwner.assignee || ""} onChange={e => setEditingOwner({ ...editingOwner, assignee: e.target.value })}>
+                {MEMBERS.map(m => <option key={m}>{m}</option>)}
+              </select>
+            </Field>
+          </div>
+          <Field label="📝 メモ">
+            <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={editingOwner.memo || ""} onChange={e => setEditingOwner({ ...editingOwner, memo: e.target.value })} />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setEditingOwner(null)}>閉じる</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={() => {
+              setData(d => ({ ...d, owners: d.owners.map(o => o.id === editingOwner.id ? editingOwner : o) }));
+              setEditingOwner(null);
+            }}>💾 保存</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* 🏠 在庫物件詳細BottomSheet */}
+      {editingStock && (() => {
+        const currentUser2 = getCurrentUser();
+        const adminMember2 = data.adminMember || "下田";
+        const isEditable = !editingStock.assignee || editingStock.assignee === currentUser2 || currentUser2 === adminMember2 || isAssignedTo([editingStock.assignee], currentUser2);
+        return (
+          <BottomSheet title={`🏠 ${editingStock.name || "(無題)"}`} onClose={() => setEditingStock(null)}>
+            {!isEditable && (
+              <div style={{ background: C.warn + "22", color: C.warn, padding: "8px 12px", borderRadius: 8, fontSize: 11, marginBottom: 10, fontWeight: 700 }}>
+                👁 担当者ではないため閲覧のみ可能（編集は{editingStock.assignee}さんまたは管理者）
+              </div>
+            )}
+            <fieldset disabled={!isEditable} style={{ border: "none", padding: 0, margin: 0, opacity: isEditable ? 1 : 0.7 }}>
+              <Field label="🏠 物件名">
+                <input style={inp} value={editingStock.name || ""} onChange={e => setEditingStock({ ...editingStock, name: e.target.value })} />
+              </Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="🚦 ステータス">
+                  <select style={inp} value={editingStock.status || ""} onChange={e => setEditingStock({ ...editingStock, status: e.target.value })}>
+                    {["仕入契約済", "決済前", "リフォーム中", "売却準備中", "売却中", "決済完了"].map(s => <option key={s}>{s}</option>)}
+                  </select>
+                </Field>
+                <Field label="👥 担当者">
+                  <select style={inp} value={editingStock.assignee || ""} onChange={e => setEditingStock({ ...editingStock, assignee: e.target.value })}>
+                    {MEMBERS.map(m => <option key={m}>{m}</option>)}
+                  </select>
+                </Field>
+                <Field label="📅 仕入日">
+                  <input type="date" style={inp} value={editingStock.buyDate || ""} onChange={e => setEditingStock({ ...editingStock, buyDate: e.target.value })} />
+                </Field>
+                <Field label="📅 売却日">
+                  <input type="date" style={inp} value={editingStock.sellDate || ""} onChange={e => setEditingStock({ ...editingStock, sellDate: e.target.value })} />
+                </Field>
+                <Field label="💰 仕入額（円）">
+                  <input type="number" style={inp} value={editingStock.buyCost || ""} onChange={e => setEditingStock({ ...editingStock, buyCost: Number(e.target.value) || 0 })} />
+                  {editingStock.buyCost > 0 && <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>= {Math.round(editingStock.buyCost / 10000)}万円</div>}
+                </Field>
+                <Field label="💰 売却額（円）">
+                  <input type="number" style={inp} value={editingStock.sellPrice || ""} onChange={e => setEditingStock({ ...editingStock, sellPrice: Number(e.target.value) || 0 })} />
+                  {editingStock.sellPrice > 0 && <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>= {Math.round(editingStock.sellPrice / 10000)}万円</div>}
+                </Field>
+              </div>
+              <Field label="📝 メモ">
+                <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={editingStock.memo || ""} onChange={e => setEditingStock({ ...editingStock, memo: e.target.value })} />
+              </Field>
+              {/* 利益サマリー */}
+              {(editingStock.buyCost > 0 || editingStock.sellPrice > 0) && (() => {
+                const profit = (editingStock.sellPrice || 0) - (editingStock.buyCost || 0);
+                return (
+                  <div style={{ background: C.bg, border: `1px solid ${profit > 0 ? C.success : C.danger}55`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, fontSize: 11 }}>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ color: C.muted, fontSize: 9 }}>仕入</div>
+                        <div style={{ color: C.accent, fontWeight: 700 }}>{Math.round((editingStock.buyCost||0)/10000)}万</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ color: C.muted, fontSize: 9 }}>売却</div>
+                        <div style={{ color: C.warn, fontWeight: 700 }}>{Math.round((editingStock.sellPrice||0)/10000)}万</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ color: C.muted, fontSize: 9 }}>利益</div>
+                        <div style={{ color: profit > 0 ? C.success : C.danger, fontWeight: 800 }}>{profit > 0 ? "+" : ""}{Math.round(profit/10000)}万</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </fieldset>
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setEditingStock(null)}>閉じる</button>
+              {isEditable && (
+                <button style={{ ...btnStyle(), flex: 2 }} onClick={() => {
+                  setData(d => ({ ...d, stocks: d.stocks.map(s => s.id === editingStock.id ? editingStock : s) }));
+                  setEditingStock(null);
+                }}>💾 保存</button>
+              )}
+            </div>
+          </BottomSheet>
+        );
+      })()}
     </div>
   );
 }
@@ -6234,6 +6417,105 @@ const SEKISAN_EMPTY = {
   rentMin: "", rentMax: "", rentMemo: "",
   yieldBase: "", yieldMemo: "",
   judgment: "検討中", judgmentMemo: "",
+  features: [], // 物件特徴（複数選択可）
+};
+
+// 物件特徴のカテゴリ定義
+const FEATURE_CATEGORIES = [
+  {
+    title: "🚧 接道・建築", color: "#fb923c",
+    items: [
+      { name: "再建築不可", risk: "high" },
+      { name: "私道のみ", risk: "mid" },
+      { name: "セットバック要", risk: "mid" },
+      { name: "既存不適格", risk: "high" },
+      { name: "接道階段", risk: "mid" },
+    ],
+  },
+  {
+    title: "🗾 用途・規制", color: "#f59e0b",
+    items: [
+      { name: "市街化調整区域", risk: "high" },
+      { name: "風致地区", risk: "mid" },
+      { name: "高度地区", risk: "mid" },
+      { name: "高圧線下", risk: "high" },
+    ],
+  },
+  {
+    title: "🚌 立地", color: "#0ea5e9",
+    items: [
+      { name: "駅近", risk: "good" },
+      { name: "バス便", risk: "mid" },
+      { name: "駅遠", risk: "mid" },
+    ],
+  },
+  {
+    title: "⚠️ ハザード", color: "#ef4444",
+    items: [
+      { name: "レッドゾーン", risk: "high" },
+      { name: "イエローゾーン", risk: "mid" },
+      { name: "浸水想定", risk: "mid" },
+      { name: "急傾斜地", risk: "high" },
+    ],
+  },
+  {
+    title: "🏞 土地形状", color: "#a855f7",
+    items: [
+      { name: "旗竿地", risk: "mid" },
+      { name: "角地", risk: "good" },
+      { name: "不整形地", risk: "mid" },
+      { name: "高低差あり", risk: "mid" },
+      { name: "崖地", risk: "high" },
+      { name: "擁壁", risk: "mid" },
+    ],
+  },
+  {
+    title: "🏚 建物状態", color: "#dc2626",
+    items: [
+      { name: "旧耐震", risk: "mid" },
+      { name: "違法建築", risk: "high" },
+      { name: "共有持分", risk: "mid" },
+      { name: "連棟式", risk: "mid" },
+      { name: "雨漏り", risk: "mid" },
+      { name: "傾き", risk: "high" },
+      { name: "クラック", risk: "mid" },
+      { name: "シロアリ", risk: "mid" },
+      { name: "床ふわつき", risk: "mid" },
+    ],
+  },
+  {
+    title: "🔌 インフラ", color: "#6366f1",
+    items: [
+      { name: "上水道なし", risk: "mid" },
+      { name: "下水道なし", risk: "mid" },
+      { name: "プロパン", risk: "mid" },
+      { name: "浄化槽", risk: "mid" },
+    ],
+  },
+  {
+    title: "💼 権利関係", color: "#ec4899",
+    items: [
+      { name: "借地権", risk: "high" },
+      { name: "借家あり", risk: "mid" },
+      { name: "心理的瑕疵", risk: "high" },
+      { name: "境界未確定", risk: "mid" },
+    ],
+  },
+  {
+    title: "🐾 環境", color: "#84cc16",
+    items: [
+      { name: "動物", risk: "mid" },
+      { name: "匂い", risk: "mid" },
+      { name: "近所クレーマー", risk: "high" },
+    ],
+  },
+];
+
+// risk → 色
+const RISK_COLORS = {
+  high: "#ef4444",   // 赤（危険）
+  mid: "#f59e0b",    // オレンジ（注意）
+  good: "#10b981",   // 緑（強み）
 };
 
 function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true }) {
@@ -6310,6 +6592,68 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true 
             <Field label="築年数"><SekisanNInp form={form} setForm={setForm} fkey="age" placeholder="40" suffix="年" /></Field>
             <Field label="間取"><input style={inp} value={form.layout} onChange={f("layout")} placeholder="3DK" /></Field>
           </div>
+        </div>
+
+        {/* 🏘 物件特徴 */}
+        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.accent, marginBottom: 4 }}>🏘 物件特徴</div>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>該当するものをタップして選択（複数選択可）。<span style={{ color: "#ef4444" }}>赤=危険</span> / <span style={{ color: "#f59e0b" }}>橙=注意</span> / <span style={{ color: "#10b981" }}>緑=強み</span></div>
+          
+          {/* 選択中サマリー */}
+          {(form.features || []).length > 0 && (
+            <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: "8px 10px", marginBottom: 12 }}>
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>選択中（{(form.features || []).length}件）</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {(form.features || []).map(feat => {
+                  // どのカテゴリに属するか探す
+                  let risk = "mid";
+                  for (const cat of FEATURE_CATEGORIES) {
+                    const item = cat.items.find(it => it.name === feat);
+                    if (item) { risk = item.risk; break; }
+                  }
+                  const color = RISK_COLORS[risk];
+                  return (
+                    <span key={feat} style={{
+                      background: color + "22", color, padding: "3px 8px",
+                      borderRadius: 6, fontSize: 11, fontWeight: 700,
+                      border: `1px solid ${color}55`,
+                    }}>{feat}</span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* カテゴリ別チップ */}
+          {FEATURE_CATEGORIES.map(cat => (
+            <div key={cat.title} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: cat.color, marginBottom: 5 }}>{cat.title}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {cat.items.map(item => {
+                  const active = (form.features || []).includes(item.name);
+                  const color = RISK_COLORS[item.risk];
+                  return (
+                    <button key={item.name} onClick={() => {
+                      setForm(p => {
+                        const curr = p.features || [];
+                        const next = curr.includes(item.name)
+                          ? curr.filter(n => n !== item.name)
+                          : [...curr, item.name];
+                        return { ...p, features: next };
+                      });
+                    }} style={{
+                      padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
+                      background: active ? color : "transparent",
+                      color: active ? "#fff" : color,
+                      border: `1.5px solid ${active ? color : color + "55"}`,
+                      fontFamily: "inherit", fontWeight: active ? 700 : 500,
+                      transition: "all 0.15s",
+                    }}>{active ? "✓ " : ""}{item.name}</button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
 
         {/* タブ切替 */}
