@@ -21,8 +21,23 @@ input[type="date"]::-webkit-calendar-picker-indicator,input[type="time"]::-webki
 input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::-webkit-calendar-picker-indicator:hover{background:rgba(14,165,233,0.2)}</style>
 </head>
 <body>
-<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;font-size:18px;color:#0ea5e9;font-family:'Noto Sans JP',sans-serif">読み込み中...</div></div>
+<div id="root"><div id="hikari-loading" style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:'Noto Sans JP',sans-serif;flex-direction:column;gap:14px;padding:20px;text-align:center"><div style="font-size:36px">🏠</div><div style="font-size:18px;color:#0ea5e9;font-weight:700">ひかり不動産</div><div style="font-size:13px;color:#475569" id="hikari-loading-msg">読み込み中...</div><div style="width:200px;height:4px;background:#1a2535;border-radius:2px;overflow:hidden"><div style="width:0;height:100%;background:#0ea5e9;animation:hikariProgress 30s linear forwards" id="hikari-progress-bar"></div></div><button onclick="window.__showHikariRecovery__&&window.__showHikariRecovery__()" style="background:none;border:1px solid #1a2535;color:#475569;padding:8px 16px;border-radius:8px;font-size:11px;cursor:pointer;font-family:inherit;margin-top:20px">読み込みが終わらない場合</button></div></div>
+<style>@keyframes hikariProgress{0%{width:0}100%{width:100%}}</style>
 <script>
+// ローディングメッセージを段階的に変える（ユーザーに状況を伝える）
+var hikariLoadingMessages = [
+  { delay: 0, msg: "読み込み中..." },
+  { delay: 5000, msg: "コードを読み込んでいます..." },
+  { delay: 15000, msg: "もうしばらくお待ちください..." },
+  { delay: 30000, msg: "通信や端末の状況により時間がかかっています..." },
+  { delay: 45000, msg: "それでも開かない場合は下のボタンを押してください" },
+];
+hikariLoadingMessages.forEach(function(item) {
+  setTimeout(function() {
+    var el = document.getElementById('hikari-loading-msg');
+    if (el && !window.__hikariReactStarted__) el.textContent = item.msg;
+  }, item.delay);
+});
 // グローバルエラーキャッチ（最初に登録）
 window.__hikariErrors__ = [];
 window.addEventListener('error', function(e) {
@@ -55,21 +70,19 @@ window.forceHikariReset = async function() {
   setTimeout(function() { window.location.reload(true); }, 500);
 };
 
-// 30秒経ってもReactが起動しなかったらエラー画面を表示
-setTimeout(function() {
+// タイムアウト処理は削除した（React起動を待つ）
+// もし読み込み中のままで動かない場合、ユーザーは画面長押し→更新で対応してもらう
+// 一応、手動で呼び出せるエラー画面復旧関数だけ残しておく
+window.__showHikariRecovery__ = function() {
   var root = document.getElementById('root');
-  if (root && (root.textContent.indexOf('読み込み中') >= 0 || root.children.length <= 1)) {
-    var errInfo = (window.__hikariErrors__ || []).map(function(e){ return e.type+': '+e.msg+(e.line?' ('+e.line+')':''); }).join('\n');
+  if (root) {
     root.innerHTML = '<div style="padding:32px 24px;color:#e2e8f0;font-family:sans-serif;max-width:480px;margin:0 auto">' +
-      '<h2 style="color:#ef4444;margin-bottom:16px">⚠️ 読み込みに失敗しました</h2>' +
-      '<p style="margin-bottom:20px;line-height:1.6;font-size:14px">アプリのキャッシュに問題が発生している可能性があります。下のボタンを押して再起動してください。</p>' +
-      '<button onclick="window.forceHikariReset()" style="width:100%;padding:16px;background:#0ea5e9;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:16px">🔄 強制リセット（キャッシュ全削除）</button>' +
-      '<button onclick="window.location.reload(true)" style="width:100%;padding:14px;background:#1a2535;color:#e2e8f0;border:1px solid #475569;border-radius:10px;font-size:14px;cursor:pointer;font-family:inherit">🔁 再読み込みのみ</button>' +
-      (errInfo ? '<div style="margin-top:24px;padding:12px;background:#1a2535;border-radius:8px;font-size:11px;color:#fca5a5;font-family:monospace;white-space:pre-wrap;word-break:break-all">エラー詳細：\n'+errInfo.replace(/</g,'&lt;')+'</div>' : '') +
-      '<p style="margin-top:16px;font-size:11px;color:#94a3b8;line-height:1.6">それでも改善しない場合は、ブラウザの設定からキャッシュを削除して再度アクセスしてください。</p>' +
+      '<h2 style="color:#0ea5e9;margin-bottom:16px">🔧 リカバリーメニュー</h2>' +
+      '<button onclick="window.location.reload(true)" style="width:100%;padding:14px;background:#0ea5e9;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:10px">🔁 再読み込み</button>' +
+      '<button onclick="window.forceHikariReset()" style="width:100%;padding:14px;background:#1a2535;color:#e2e8f0;border:1px solid #475569;border-radius:10px;font-size:13px;cursor:pointer;font-family:inherit">🔄 強制リセット（キャッシュ全削除）</button>' +
       '</div>';
   }
-}, 30000);
+};
 
 // PWA: Service Worker 登録
 if ('serviceWorker' in navigator) {
