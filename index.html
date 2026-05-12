@@ -4775,6 +4775,7 @@ function JiagePage({ data, setData }) {
   const [filterStatuses, setFilterStatuses] = useState([]);
   const [filterMembers, setFilterMembers] = useState([]);
   const [search, setSearch] = useState("");
+  const [searchTarget, setSearchTarget] = useState("address"); // "address" | "ownerAddr" | "ownerName" | "all"
   const [selected, setSelected] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [addType, setAddType] = useState("jiage");
@@ -5035,7 +5036,18 @@ function JiagePage({ data, setData }) {
     }
     if (filterStatuses.length && !filterStatuses.includes(item.status)) return false;
     if (filterMembers.length && !filterMembers.includes(item.assignee)) return false;
-    if (search && !item.address.includes(search) && !(item.ownerName || "").includes(search)) return false;
+    if (search) {
+      const s = search;
+      const inAddr = (item.address || "").includes(s);
+      const inOwnerAddr = (item.ownerAddress || "").includes(s);
+      const inOwnerName = (item.ownerName || "").includes(s);
+      let matched = false;
+      if (searchTarget === "address") matched = inAddr;
+      else if (searchTarget === "ownerAddr") matched = inOwnerAddr;
+      else if (searchTarget === "ownerName") matched = inOwnerName;
+      else matched = inAddr || inOwnerAddr || inOwnerName; // "all"
+      if (!matched) return false;
+    }
     // クイックフィルター
     if (quickFilter === "overdue") {
       if (!(item.nextDate && item.nextDate < today && !["NG", "断られた", "仕入れ完了"].includes(item.status))) return false;
@@ -5089,7 +5101,7 @@ function JiagePage({ data, setData }) {
       if (sameBucketFail) return false;
     }
     return true;
-  }), [allItems, typeFilter, areaFilter, filterStatuses, filterMembers, search, quickFilter, today]);
+  }), [allItems, typeFilter, areaFilter, filterStatuses, filterMembers, search, searchTarget, quickFilter, today]);
 
   const isOverdue = item => item.nextDate && item.nextDate < today && !["NG", "断られた", "仕入れ完了"].includes(item.status);
 
@@ -5488,10 +5500,47 @@ function JiagePage({ data, setData }) {
           </div>
         </div>
 
-        {/* 検索 */}
-        <div style={{ position: "relative" }}>
-          <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: C.muted, fontSize: 14 }}>🔍</span>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="住所・所有者名で検索..." style={{ ...inp, paddingLeft: 36, fontSize: 14, padding: "10px 14px 10px 36px" }} />
+        {/* 🔍 検索（対象選択 + 入力） */}
+        <div style={{ marginBottom: 4 }}>
+          <div style={{ display: "flex", gap: 4, marginBottom: 6, flexWrap: "wrap" }}>
+            {[
+              { key: "address",    label: "🏠 物件住所" },
+              { key: "ownerAddr",  label: "📮 所有者住所" },
+              { key: "ownerName",  label: "👤 所有者名" },
+              { key: "all",        label: "🔍 すべて" },
+            ].map(t => {
+              const active = searchTarget === t.key;
+              return (
+                <button key={t.key} onClick={() => setSearchTarget(t.key)} style={{
+                  padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700,
+                  background: active ? C.accent : C.bg,
+                  color: active ? "#fff" : C.muted,
+                  border: `1.5px solid ${active ? C.accent : "#1a2535"}`,
+                  fontFamily: "inherit", whiteSpace: "nowrap",
+                }}>{t.label}</button>
+              );
+            })}
+          </div>
+          <div style={{ position: "relative" }}>
+            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: C.muted, fontSize: 14 }}>🔍</span>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder={
+                searchTarget === "address" ? "物件住所で検索（例: 熊谷市柿沼）" :
+                searchTarget === "ownerAddr" ? "所有者住所で検索（例: 大宮区桜木町）" :
+                searchTarget === "ownerName" ? "所有者名で検索（例: 田中太郎）" :
+                "全項目から検索..."
+              }
+              style={{ ...inp, paddingLeft: 36, fontSize: 14, padding: "10px 14px 10px 36px" }} />
+            {search && (
+              <button onClick={() => setSearch("")} style={{
+                position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                background: "transparent", border: "none", color: C.muted, fontSize: 18, cursor: "pointer",
+                padding: "4px 8px", fontFamily: "inherit",
+              }}>✕</button>
+            )}
+          </div>
         </div>
         <div style={{ color: C.muted, fontSize: 11, marginTop: 6 }}>{filtered.length}件表示</div>
       </div>
