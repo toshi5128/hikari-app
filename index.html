@@ -21,14 +21,62 @@ input[type="date"]::-webkit-calendar-picker-indicator,input[type="time"]::-webki
 input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::-webkit-calendar-picker-indicator:hover{background:rgba(14,165,233,0.2)}</style>
 </head>
 <body>
-<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;font-size:18px;color:#0ea5e9">読み込み中...</div></div>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;font-size:18px;color:#0ea5e9;font-family:'Noto Sans JP',sans-serif">読み込み中...</div></div>
 <script>
+// グローバルエラーキャッチ（最初に登録）
+window.__hikariErrors__ = [];
+window.addEventListener('error', function(e) {
+  window.__hikariErrors__.push({
+    type: 'error', msg: e.message || String(e.error),
+    src: e.filename || '', line: e.lineno || 0, col: e.colno || 0
+  });
+});
+window.addEventListener('unhandledrejection', function(e) {
+  window.__hikariErrors__.push({
+    type: 'promise', msg: String(e.reason && (e.reason.message || e.reason))
+  });
+});
+
+// 強制リセット関数（HTMLから呼べる）
+window.forceHikariReset = async function() {
+  try { localStorage.clear(); } catch(e) {}
+  try {
+    if ('caches' in window) {
+      const names = await caches.keys();
+      await Promise.all(names.map(n => caches.delete(n)));
+    }
+  } catch(e) {}
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+  } catch(e) {}
+  setTimeout(function() { window.location.reload(true); }, 500);
+};
+
+// 20秒経ってもReactが起動しなかったらエラー画面を表示
+setTimeout(function() {
+  var root = document.getElementById('root');
+  if (root && (root.textContent.indexOf('読み込み中') >= 0 || root.children.length <= 1)) {
+    var errInfo = (window.__hikariErrors__ || []).map(function(e){ return e.type+': '+e.msg+(e.line?' ('+e.line+')':''); }).join('\n');
+    root.innerHTML = '<div style="padding:32px 24px;color:#e2e8f0;font-family:sans-serif;max-width:480px;margin:0 auto">' +
+      '<h2 style="color:#ef4444;margin-bottom:16px">⚠️ 読み込みに失敗しました</h2>' +
+      '<p style="margin-bottom:20px;line-height:1.6;font-size:14px">アプリのキャッシュに問題が発生している可能性があります。下のボタンを押して再起動してください。</p>' +
+      '<button onclick="window.forceHikariReset()" style="width:100%;padding:16px;background:#0ea5e9;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:16px">🔄 強制リセット（キャッシュ全削除）</button>' +
+      '<button onclick="window.location.reload(true)" style="width:100%;padding:14px;background:#1a2535;color:#e2e8f0;border:1px solid #475569;border-radius:10px;font-size:14px;cursor:pointer;font-family:inherit">🔁 再読み込みのみ</button>' +
+      (errInfo ? '<div style="margin-top:24px;padding:12px;background:#1a2535;border-radius:8px;font-size:11px;color:#fca5a5;font-family:monospace;white-space:pre-wrap;word-break:break-all">エラー詳細：\n'+errInfo.replace(/</g,'&lt;')+'</div>' : '') +
+      '<p style="margin-top:16px;font-size:11px;color:#94a3b8;line-height:1.6">それでも改善しない場合は、ブラウザの設定からキャッシュを削除して再度アクセスしてください。</p>' +
+      '</div>';
+  }
+}, 20000);
+
 // PWA: Service Worker 登録
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').then(reg => {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('./sw.js').then(function(reg) {
       console.log('[PWA] Service Worker 登録成功:', reg.scope);
-    }).catch(err => {
+    }).catch(function(err) {
       console.warn('[PWA] Service Worker 登録失敗:', err);
     });
   });
@@ -2302,6 +2350,8 @@ function ApproachPage({ data, setData }) {
   const [memo, setMemo] = useState("");
   const [mailDelivery, setMailDelivery] = useState(false);
   const [area, setArea] = useState("");
+  const [isLoaded, setIsLoaded] = useState(false); // 初回読み込み完了フラグ
+  const [autoSaveStatus, setAutoSaveStatus] = useState("idle"); // "idle" | "saving" | "saved"
   const [showGoalEdit, setShowGoalEdit] = useState(false);
   const [goalEditMember, setGoalEditMember] = useState(MEMBERS[0]);
   const [goalForm, setGoalForm] = useState({});
@@ -2321,7 +2371,9 @@ function ApproachPage({ data, setData }) {
     data.approaches.find(a => a.member === selectedMember && a.date === selectedDate),
     [data.approaches, selectedMember, selectedDate]);
 
+  // 既存データ読み込み（担当者・日付が変わったらリセット→読み込み）
   useEffect(() => {
+    setIsLoaded(false); // 切替時は自動保存を一旦止める
     if (existing) {
       setInputValues(existing.values || {});
       setMemo(existing.memo || "");
@@ -2330,7 +2382,33 @@ function ApproachPage({ data, setData }) {
     } else {
       setInputValues({}); setMemo(""); setMailDelivery(false); setArea("");
     }
-  }, [existing]);
+    // 読み込み完了をマーク（次のレンダリングサイクル後）
+    setTimeout(() => setIsLoaded(true), 50);
+  }, [existing, selectedMember, selectedDate]);
+
+  // ===== 自動保存：カウンター・トグル・テキストが変わるたびに保存 =====
+  useEffect(() => {
+    if (!isLoaded) return; // 初回読み込み時はスキップ
+    setAutoSaveStatus("saving");
+    setData(d => {
+      const existingRec = d.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
+      const entry = {
+        id: existingRec?.id || Date.now(),
+        member: selectedMember, date: selectedDate,
+        values: inputValues, memo, mailDelivery, area,
+      };
+      return {
+        ...d,
+        approaches: existingRec
+          ? d.approaches.map(a => a.id === existingRec.id ? entry : a)
+          : [...d.approaches, entry],
+      };
+    });
+    // 800ms後に「保存完了」表示
+    const timer = setTimeout(() => setAutoSaveStatus("saved"), 300);
+    const fadeTimer = setTimeout(() => setAutoSaveStatus("idle"), 2500);
+    return () => { clearTimeout(timer); clearTimeout(fadeTimer); };
+  }, [inputValues, memo, mailDelivery, area, isLoaded, selectedMember, selectedDate]);
 
   // 月次集計
   const monthlyData = useMemo(() => {
@@ -2668,7 +2746,15 @@ function ApproachPage({ data, setData }) {
             <textarea style={{ ...inp, height: 70, resize: "vertical" }} value={memo} onChange={e => setMemo(e.target.value)} placeholder="駅前は業者多め、A社が反応良かったなど" />
           </Field>
 
-          <button style={{ ...btnStyle(), width: "100%", marginTop: 4, padding: "14px", fontSize: 15 }} onClick={handleSave}>💾 保存する</button>
+          <button style={{ ...btnStyle(), width: "100%", marginTop: 4, padding: "14px", fontSize: 15 }} onClick={handleSave}>💾 今すぐ保存する</button>
+          <div style={{ marginTop: 10, padding: "10px 14px", borderRadius: 10, textAlign: "center", fontSize: 12, fontWeight: 700,
+            background: autoSaveStatus === "saving" ? C.warn + "22" : autoSaveStatus === "saved" ? C.success + "22" : C.bg,
+            border: `1px solid ${autoSaveStatus === "saving" ? C.warn : autoSaveStatus === "saved" ? C.success : "#1a2535"}`,
+            color: autoSaveStatus === "saving" ? C.warn : autoSaveStatus === "saved" ? C.success : C.muted,
+            transition: "all 0.3s",
+          }}>
+            {autoSaveStatus === "saving" ? "💾 自動保存中..." : autoSaveStatus === "saved" ? "✅ 自動保存しました" : "✨ 数字をタップすると自動で保存されます"}
+          </div>
         </div>
       )}
 
