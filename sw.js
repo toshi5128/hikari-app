@@ -1,12 +1,23 @@
 // ひかり不動産 PWA Service Worker
-const CACHE_NAME = 'hikari-app-v1';
+const CACHE_VERSION = 'hikari-app-v3-2026-05-11';
 
 self.addEventListener('install', e => {
+  // 新しい SW はすぐにアクティブにする
   self.skipWaiting();
 });
 
 self.addEventListener('activate', e => {
-  e.waitUntil(self.clients.claim());
+  e.waitUntil((async () => {
+    // 古いキャッシュを全削除
+    const cacheNames = await caches.keys();
+    await Promise.all(
+      cacheNames
+        .filter(name => name !== CACHE_VERSION)
+        .map(name => caches.delete(name))
+    );
+    // すべての開いているクライアントをこの SW の制御下に置く
+    await self.clients.claim();
+  })());
 });
 
 // 通知をクリックしたらアプリを開く
@@ -21,7 +32,7 @@ self.addEventListener('notificationclick', e => {
   );
 });
 
-// メインスレッドからのメッセージで通知を表示（バックグラウンドでも動く）
+// メインスレッドからのメッセージで通知を表示
 self.addEventListener('message', e => {
   if (e.data && e.data.type === 'SHOW_NOTIFICATION') {
     const { title, body, tag, icon } = e.data;
@@ -34,9 +45,12 @@ self.addEventListener('message', e => {
       requireInteraction: false,
     });
   }
+  if (e.data && e.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
-// オフライン時の最低限のフォールバック（無くてもOK）
+// fetchはパススルー（キャッシュしないでブラウザ標準にまかせる）
 self.addEventListener('fetch', e => {
-  // パススルー（オフライン対応は今回は最小限）
+  // パススルー
 });
