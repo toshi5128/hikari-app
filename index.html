@@ -4686,6 +4686,69 @@ function ApproachPage({ data, setData }) {
 // Excelから取り込んだ地上げデータ（エリア別）
 const JIAGE_AREAS = ["熊谷", "行田", "深谷", "東松山", "本庄", "秩父", "上里"];
 
+// 訪問結果の定義
+const VISIT_RESULTS = [
+  { key: "home",      label: "😊 在宅",   short: "在宅",   color: "#10b981", autoStatus: "訪問済" },
+  { key: "ignore",    label: "🚪 居留守", short: "居留守", color: "#f59e0b", autoStatus: "訪問済" },
+  { key: "absent",    label: "🚫 不在",   short: "不在",   color: "#94a3b8", autoStatus: "不在" },
+  { key: "voicemail", label: "📞 留守電", short: "留守電", color: "#0ea5e9", autoStatus: "訪問済" },
+  { key: "rejected",  label: "❌ NG",     short: "NG",     color: "#ef4444", autoStatus: "NG" },
+];
+
+// 居留守の気配サイン
+const PRESENCE_SIGNS = [
+  { key: "car",     label: "🚗 車あり" },
+  { key: "light",   label: "💡 灯りあり" },
+  { key: "person",  label: "👤 人影見えた" },
+  { key: "sound",   label: "🔊 音した" },
+  { key: "pet",     label: "🐶 ペット気配" },
+  { key: "laundry", label: "👕 洗濯物" },
+];
+
+// 居留守度
+const IGNORE_LEVELS = [
+  { key: "low",  label: "🟢 弱", color: "#10b981" },
+  { key: "mid",  label: "🟡 中", color: "#f59e0b" },
+  { key: "high", label: "🔴 強", color: "#ef4444" },
+];
+
+// 曜日ラベル
+const DOW_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
+
+// 時間帯のラベル化（時刻 → カテゴリ）
+function timeBucket(timeStr) {
+  if (!timeStr) return null;
+  const h = parseInt(timeStr.split(":")[0]);
+  if (isNaN(h)) return null;
+  if (h < 9) return "早朝";
+  if (h < 12) return "午前";
+  if (h < 14) return "昼";
+  if (h < 17) return "午後";
+  if (h < 20) return "夕方";
+  return "夜";
+}
+
+// 訪問パターン分析
+function analyzeVisitLog(visitLog) {
+  if (!visitLog || visitLog.length === 0) return null;
+  const absent = visitLog.filter(v => v.result === "absent");
+  const ignore = visitLog.filter(v => v.result === "ignore");
+  const home = visitLog.filter(v => v.result === "home");
+  // 曜日×時間帯マップ
+  const buckets = {};
+  visitLog.forEach(v => {
+    if (!v.dayOfWeek && v.dayOfWeek !== 0) return;
+    const tb = timeBucket(v.time);
+    if (!tb) return;
+    const key = `${DOW_LABELS[v.dayOfWeek]}${tb}`;
+    if (!buckets[key]) buckets[key] = { absent: 0, ignore: 0, home: 0 };
+    if (v.result === "absent") buckets[key].absent++;
+    else if (v.result === "ignore") buckets[key].ignore++;
+    else if (v.result === "home") buckets[key].home++;
+  });
+  return { total: visitLog.length, absent: absent.length, ignore: ignore.length, home: home.length, buckets };
+}
+
 // 住所からエリアを推測（「○○市」を含むかどうか）
 function inferAreaFromAddress(address) {
   if (!address) return "";
@@ -4721,6 +4784,9 @@ function JiagePage({ data, setData }) {
   const [importing, setImporting] = useState(false);
   const [quickFilter, setQuickFilter] = useState(null); // "overdue" | "dm_un" | "hot" | null
   const [histForm, setHistForm] = useState({ date: today, method: "電話", note: "", member: MEMBERS[0] });
+  // 訪問結果記録モード
+  const [visitRecordTarget, setVisitRecordTarget] = useState(null); // 記録対象のitem
+  const [visitForm, setVisitForm] = useState(null); // { date, time, result, signs, intensityLevel, memo }
 
   const navUrl = addr => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving`;
 
@@ -5004,6 +5070,24 @@ function JiagePage({ data, setData }) {
     if (quickFilter === "meet") {
       if (!(item.status === "見込" || item.status === "興味あり" || item.status === "検討中" || item.status === "交渉中")) return false;
     }
+    // 🚪 居留守攻略ラウンド（居留守記録あり）
+    if (quickFilter === "ignore_attack") {
+      const log = (item.raw && item.raw.visitLog) || [];
+      if (!log.some(v => v.result === "ignore")) return false;
+    }
+    // ⏰ 今この時間ベスト（現在の曜日×時間帯で過去 不在/居留守 を除外）
+    if (quickFilter === "now_best") {
+      const log = (item.raw && item.raw.visitLog) || [];
+      const now = new Date();
+      const nowDow = now.getDay();
+      const nowBucket = timeBucket(`${String(now.getHours()).padStart(2, "0")}:00`);
+      const sameBucketFail = log.some(v =>
+        v.dayOfWeek === nowDow &&
+        timeBucket(v.time) === nowBucket &&
+        (v.result === "absent" || v.result === "ignore")
+      );
+      if (sameBucketFail) return false;
+    }
     return true;
   }), [allItems, typeFilter, areaFilter, filterStatuses, filterMembers, search, quickFilter, today]);
 
@@ -5028,6 +5112,81 @@ function JiagePage({ data, setData }) {
     setData(d => ({ ...d, owners: d.owners.map(o => o.id === updated.id ? updated : o) }));
     setSelected(s => ({ ...s, item: { ...s.item, history: updated.history, raw: updated } }));
     setHistForm({ date: today, method: "電話", note: "", member: MEMBERS[0] });
+  };
+
+  // 訪問記録モーダルを開く
+  const openVisitRecord = (item) => {
+    const now = new Date();
+    const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    setVisitRecordTarget(item);
+    setVisitForm({
+      date: today,
+      time,
+      result: "home",
+      signs: [],
+      intensityLevel: "mid",
+      memo: "",
+    });
+  };
+
+  // 訪問記録を保存
+  const saveVisitRecord = () => {
+    if (!visitRecordTarget || !visitForm) return;
+    const dow = new Date(visitForm.date).getDay(); // 0=日
+    const newEntry = {
+      id: Date.now(),
+      date: visitForm.date,
+      time: visitForm.time,
+      dayOfWeek: dow,
+      result: visitForm.result,
+      signs: visitForm.result === "ignore" ? visitForm.signs : [],
+      intensityLevel: visitForm.result === "ignore" ? visitForm.intensityLevel : null,
+      memo: visitForm.memo,
+      recordedBy: getCurrentUser() || MEMBERS[0],
+    };
+    const resDef = VISIT_RESULTS.find(r => r.key === visitForm.result);
+    const newStatus = resDef ? resDef.autoStatus : null;
+    
+    const targetType = visitRecordTarget.type;
+    const targetId = visitRecordTarget.rawId || visitRecordTarget.id;
+    
+    setData(d => {
+      if (targetType === "jiage") {
+        return {
+          ...d,
+          jiage: d.jiage.map(j => {
+            if (j.id !== targetId) return j;
+            return {
+              ...j,
+              visitLog: [...(j.visitLog || []), newEntry],
+              status: newStatus || j.status,
+            };
+          }),
+        };
+      } else {
+        return {
+          ...d,
+          owners: d.owners.map(o => {
+            if (o.id !== targetId) return o;
+            return {
+              ...o,
+              visitLog: [...(o.visitLog || []), newEntry],
+              status: newStatus || o.status,
+            };
+          }),
+        };
+      }
+    });
+    setVisitRecordTarget(null);
+    setVisitForm(null);
+    // selectedも更新
+    setSelected(s => {
+      if (!s) return s;
+      const updated = { ...s.item };
+      updated.raw = { ...updated.raw, visitLog: [...((s.item.raw?.visitLog) || []), newEntry], status: newStatus || s.item.status };
+      updated.status = newStatus || s.item.status;
+      return { item: updated };
+    });
   };
 
   const updateStatus = (item, status) => {
@@ -5255,9 +5414,11 @@ function JiagePage({ data, setData }) {
           <div style={{ fontSize: 11, color: C.accent, fontWeight: 700, marginBottom: 6 }}>🎯 今日の行動を選ぶ</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
             {[
+              { key: "now_best",  label: "⏰ 今この時間ベスト", sub: "現在の曜日・時間で不在/居留守を除外", color: "#fbbf24" },
               { key: "untouched", label: "🚪 未訪問エリア攻め", sub: "未訪問・不在", color: C.purple },
               { key: "dm_un",     label: "📩 DM配る",          sub: "DM未送付", color: C.warn },
               { key: "redo",      label: "🔄 再訪ラウンド",     sub: "前回不在・3日以内", color: C.accent },
+              { key: "ignore_attack", label: "🚪 居留守攻略", sub: "居留守記録あり", color: "#f97316" },
               { key: "phone",     label: "📞 電話アタック",     sub: "見込・連絡先あり", color: "#0ea5e9" },
               { key: "meet",      label: "🤝 商談ラウンド",     sub: "見込・交渉中", color: C.success },
               { key: "overdue",   label: "⚠️ 期限切れ",         sub: "再訪日が過去", color: C.danger },
@@ -5505,7 +5666,7 @@ function JiagePage({ data, setData }) {
           </div>
 
           {/* アクションボタン群 */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
             <a href={navUrl(selected.item.address)} target="_blank" rel="noopener noreferrer"
               style={{ ...btnStyle(), textDecoration: "none", textAlign: "center", padding: "13px", background: C.success, borderColor: C.success, fontSize: 15 }}>
               🚗 物件にナビ
@@ -5515,6 +5676,93 @@ function JiagePage({ data, setData }) {
               🚗 所有者にナビ
             </a>
           </div>
+
+          {/* 📍 訪問記録ボタン */}
+          <button onClick={() => openVisitRecord(selected.item)} style={{
+            width: "100%", padding: "12px", background: "#fbbf24", color: "#000",
+            border: "none", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 800,
+            marginBottom: 14, fontFamily: "inherit",
+          }}>📍 訪問結果を記録する</button>
+
+          {/* 訪問履歴 & パターン分析 */}
+          {selected.item.raw && selected.item.raw.visitLog && selected.item.raw.visitLog.length > 0 && (() => {
+            const log = selected.item.raw.visitLog;
+            const analysis = analyzeVisitLog(log);
+            const sortedLog = [...log].sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+            return (
+              <div style={{ background: "#0a0f1a", border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 8 }}>⏰ 訪問履歴（{log.length}回）</div>
+                {/* サマリー */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 10 }}>
+                  <div style={{ background: "#10b98122", borderRadius: 6, padding: "6px 8px", textAlign: "center" }}>
+                    <div style={{ fontSize: 9, color: C.muted }}>在宅</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: "#10b981" }}>{analysis.home}</div>
+                  </div>
+                  <div style={{ background: "#f59e0b22", borderRadius: 6, padding: "6px 8px", textAlign: "center" }}>
+                    <div style={{ fontSize: 9, color: C.muted }}>居留守</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: "#f59e0b" }}>{analysis.ignore}</div>
+                  </div>
+                  <div style={{ background: "#94a3b822", borderRadius: 6, padding: "6px 8px", textAlign: "center" }}>
+                    <div style={{ fontSize: 9, color: C.muted }}>不在</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: "#94a3b8" }}>{analysis.absent}</div>
+                  </div>
+                </div>
+                {/* 履歴リスト */}
+                <div style={{ marginBottom: 10 }}>
+                  {sortedLog.slice(0, 6).map(v => {
+                    const resDef = VISIT_RESULTS.find(r => r.key === v.result);
+                    if (!resDef) return null;
+                    const dowLabel = (v.dayOfWeek !== undefined && v.dayOfWeek !== null) ? DOW_LABELS[v.dayOfWeek] : "?";
+                    return (
+                      <div key={v.id} style={{ padding: "6px 0", borderBottom: `1px solid #1a2535`, fontSize: 11 }}>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <span style={{ color: C.muted }}>{v.date}</span>
+                          <span style={{ color: dowLabel === "日" ? "#ef4444" : dowLabel === "土" ? "#0ea5e9" : C.muted, fontWeight: 700 }}>({dowLabel})</span>
+                          <span style={{ color: C.text, fontWeight: 700 }}>{v.time}</span>
+                          <span style={{ flex: 1 }} />
+                          <span style={{ background: resDef.color + "33", color: resDef.color, padding: "2px 7px", borderRadius: 6, fontWeight: 700 }}>
+                            {resDef.label}
+                          </span>
+                        </div>
+                        {v.signs && v.signs.length > 0 && (
+                          <div style={{ marginTop: 3, fontSize: 10, color: C.muted }}>
+                            気配: {v.signs.map(s => PRESENCE_SIGNS.find(p => p.key === s)?.label).filter(Boolean).join(" / ")}
+                            {v.intensityLevel && <span style={{ marginLeft: 6 }}>居留守度: <b style={{ color: IGNORE_LEVELS.find(l => l.key === v.intensityLevel)?.color }}>{IGNORE_LEVELS.find(l => l.key === v.intensityLevel)?.label}</b></span>}
+                          </div>
+                        )}
+                        {v.memo && <div style={{ marginTop: 3, fontSize: 10, color: C.muted }}>📝 {v.memo}</div>}
+                      </div>
+                    );
+                  })}
+                  {sortedLog.length > 6 && <div style={{ textAlign: "center", color: C.muted, fontSize: 10, padding: 4 }}>...他 {sortedLog.length - 6}件</div>}
+                </div>
+                {/* パターン分析 */}
+                {(analysis.absent > 0 || analysis.ignore > 0) && (
+                  <div style={{ background: "#1a1410", border: `1px solid ${C.warn}44`, borderRadius: 8, padding: "8px 10px" }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.warn, marginBottom: 5 }}>💡 パターン分析</div>
+                    {analysis.ignore > 0 && (() => {
+                      const ignoreBuckets = Object.entries(analysis.buckets).filter(([k, v]) => v.ignore > 0);
+                      return (
+                        <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, lineHeight: 1.5 }}>
+                          🚪 居留守パターン: <span style={{ color: "#f59e0b", fontWeight: 700 }}>{ignoreBuckets.map(([k]) => k).join(" / ")}</span><br />
+                          → 同じ時間でも粘り訪問・夜間訪問・手紙作戦が有効
+                        </div>
+                      );
+                    })()}
+                    {analysis.absent > 0 && (() => {
+                      const absentBuckets = Object.entries(analysis.buckets).filter(([k, v]) => v.absent > 0);
+                      return (
+                        <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.5 }}>
+                          🚫 不在パターン: <span style={{ color: "#94a3b8", fontWeight: 700 }}>{absentBuckets.map(([k]) => k).join(" / ")}</span><br />
+                          → 別の曜日・時間帯を試そう
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* ステータス・次回日変更 */}
           <Field label="ステータス変更">
@@ -5620,6 +5868,103 @@ function JiagePage({ data, setData }) {
         onChange={handleFileSelect}
       />
 
+      {/* 📍 訪問結果記録BottomSheet */}
+      {visitRecordTarget && visitForm && (
+        <BottomSheet title={`📍 訪問記録 - ${visitRecordTarget.address || "(無住所)"}`} onClose={() => { setVisitRecordTarget(null); setVisitForm(null); }}>
+          {/* 日時 */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="📅 訪問日">
+              <input type="date" style={inp} value={visitForm.date} onChange={e => setVisitForm({ ...visitForm, date: e.target.value })} />
+            </Field>
+            <Field label="🕐 訪問時刻">
+              <input type="time" style={inp} value={visitForm.time} onChange={e => setVisitForm({ ...visitForm, time: e.target.value })} />
+            </Field>
+          </div>
+          {/* 曜日表示 */}
+          {visitForm.date && (() => {
+            const dow = new Date(visitForm.date).getDay();
+            return (
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, marginTop: -4 }}>
+                曜日: <span style={{ color: dow === 0 ? "#ef4444" : dow === 6 ? "#0ea5e9" : C.accent, fontWeight: 700 }}>{DOW_LABELS[dow]}曜日</span>
+                {visitForm.time && <span style={{ marginLeft: 8 }}>時間帯: <b style={{ color: C.accent }}>{timeBucket(visitForm.time)}</b></span>}
+              </div>
+            );
+          })()}
+
+          {/* 訪問結果 5択 */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 6 }}>📊 訪問結果</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 12 }}>
+            {VISIT_RESULTS.map(r => {
+              const active = visitForm.result === r.key;
+              return (
+                <button key={r.key} onClick={() => setVisitForm({ ...visitForm, result: r.key })} style={{
+                  padding: "11px 10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700,
+                  background: active ? r.color : "transparent",
+                  color: active ? "#fff" : r.color,
+                  border: `2px solid ${active ? r.color : r.color + "55"}`,
+                  fontFamily: "inherit",
+                }}>{r.label}</button>
+              );
+            })}
+          </div>
+
+          {/* 居留守の気配サイン */}
+          {visitForm.result === "ignore" && (
+            <div style={{ background: "#f59e0b11", border: `1px solid #f59e0b44`, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#f59e0b", marginBottom: 6 }}>🔍 どんな気配？（複数選択可）</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                {PRESENCE_SIGNS.map(s => {
+                  const active = visitForm.signs.includes(s.key);
+                  return (
+                    <button key={s.key} onClick={() => {
+                      setVisitForm(f => ({
+                        ...f,
+                        signs: f.signs.includes(s.key) ? f.signs.filter(x => x !== s.key) : [...f.signs, s.key]
+                      }));
+                    }} style={{
+                      padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700,
+                      background: active ? "#f59e0b" : "transparent",
+                      color: active ? "#fff" : "#f59e0b",
+                      border: `1.5px solid ${active ? "#f59e0b" : "#f59e0b55"}`,
+                      fontFamily: "inherit",
+                    }}>{s.label}</button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#f59e0b", marginBottom: 6 }}>居留守度</div>
+              <div style={{ display: "flex", gap: 5 }}>
+                {IGNORE_LEVELS.map(l => {
+                  const active = visitForm.intensityLevel === l.key;
+                  return (
+                    <button key={l.key} onClick={() => setVisitForm({ ...visitForm, intensityLevel: l.key })} style={{
+                      flex: 1, padding: "8px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700,
+                      background: active ? l.color : "transparent",
+                      color: active ? "#fff" : l.color,
+                      border: `1.5px solid ${active ? l.color : l.color + "55"}`,
+                      fontFamily: "inherit",
+                    }}>{l.label}</button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* メモ */}
+          <Field label="📝 メモ（任意）">
+            <textarea style={{ ...inp, height: 60, resize: "vertical" }}
+              value={visitForm.memo}
+              onChange={e => setVisitForm({ ...visitForm, memo: e.target.value })}
+              placeholder={visitForm.result === "ignore" ? "車のナンバー、生活音、灯りの位置など" : visitForm.result === "home" ? "話せた内容、対応者など" : "次回の作戦"} />
+          </Field>
+
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setVisitRecordTarget(null); setVisitForm(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={saveVisitRecord}>💾 訪問記録を保存</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* 📊 Excelファイル直接インポート */}
       {/* インポートプレビューBottomSheet */}
       {importPreview && (() => {
         const currentSheet = importPreview.sheets.find(s => s.name === importPreview.selectedSheetName);
