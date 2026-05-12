@@ -843,6 +843,35 @@ function Dashboard({ data, setData }) {
     buyCount: String((data.annualGoals?.buyCount) ?? 30),
   });
 
+  // ===== クイック編集用 state =====
+  const [quickEditStock, setQuickEditStock] = useState(null);
+  const [quickEditForm, setQuickEditForm] = useState(null);
+
+  const openQuickEdit = (stock) => {
+    setQuickEditStock(stock);
+    setQuickEditForm({
+      ...stock,
+      buyCost: String(stock.buyCost || ""),
+      sellPrice: String(stock.sellPrice || ""),
+    });
+  };
+
+  const saveQuickEdit = () => {
+    if (!quickEditStock || !quickEditForm) return;
+    const updated = {
+      ...quickEditStock,
+      ...quickEditForm,
+      buyCost: Number(quickEditForm.buyCost) || 0,
+      sellPrice: Number(quickEditForm.sellPrice) || 0,
+    };
+    setData(d => {
+      const next = { ...d, stocks: d.stocks.map(s => s.id === quickEditStock.id ? updated : s) };
+      return appendLog(next, "update", "stock", `${updated.name || "(無題)"}（${updated.status}）をホームから編集`);
+    });
+    setQuickEditStock(null);
+    setQuickEditForm(null);
+  };
+
   // ===== カレンダー用 state =====
   const [calMode, setCalMode] = useState("month"); // "month" | "week"
   const [calCursor, setCalCursor] = useState(() => new Date());
@@ -1815,15 +1844,102 @@ function Dashboard({ data, setData }) {
                 {sinfo && <Tag label={`${sinfo.level} 仕入${sinfo.days}日経過`} color={sinfo.color} />}
               </div>
               <div style={{ color: C.text, fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{s.name}</div>
-              <div style={{ display: "flex", gap: 14, fontSize: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 14, fontSize: 12, flexWrap: "wrap", marginBottom: 10 }}>
                 <span style={{ color: C.muted }}>仕入 <span style={{ color: C.text }}>{(nv(s.buyCost) / 10000).toFixed(0)}万</span></span>
                 <span style={{ color: C.muted }}>売値 <span style={{ color: C.text }}>{(nv(s.sellPrice) / 10000).toFixed(0)}万</span></span>
                 <span style={{ color: C.muted }}>利益 <span style={{ color: C.success, fontWeight: 700 }}>{((nv(s.sellPrice) - nv(s.buyCost)) / 10000).toFixed(0)}万</span></span>
               </div>
+              <button onClick={() => openQuickEdit(s)} style={{
+                width: "100%", background: C.accent + "22", border: `1.5px solid ${C.accent}`,
+                color: C.accent, borderRadius: 8, padding: "9px", cursor: "pointer",
+                fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+              }}>✏ クイック編集</button>
             </div>
           );
         })}
       </div>
+
+      {/* ✏ クイック編集 BottomSheet */}
+      {quickEditStock && quickEditForm && (
+        <BottomSheet title={`✏ ${quickEditStock.name || "物件"} を編集`} onClose={() => { setQuickEditStock(null); setQuickEditForm(null); }}>
+          <div style={{ background: C.accent + "11", border: `1px solid ${C.accent}44`, borderRadius: 8, padding: "10px 12px", marginBottom: 16, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+            💡 ここではよく使う項目のみ編集できます。<br />
+            <span style={{ color: C.accent }}>反響情報・写真・反響リスト</span>などの詳細編集は「🏠 在庫」タブから行ってください。
+          </div>
+
+          <Field label="👤 担当者">
+            <select style={inp} value={quickEditForm.assignee} onChange={e => setQuickEditForm(p => ({ ...p, assignee: e.target.value }))}>
+              {MEMBERS.map(m => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="物件名">
+            <input style={inp} value={quickEditForm.name || ""} onChange={e => setQuickEditForm(p => ({ ...p, name: e.target.value }))} />
+          </Field>
+          <Field label="📊 ステータス">
+            <select style={inp} value={quickEditForm.status} onChange={e => setQuickEditForm(p => ({ ...p, status: e.target.value }))}>
+              {STOCK_STATUSES.map(st => <option key={st}>{st}</option>)}
+            </select>
+          </Field>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="仕入原価（円）">
+              <MoneyInput value={quickEditForm.buyCost} onChange={v => setQuickEditForm(p => ({ ...p, buyCost: v }))} placeholder="3,000,000" />
+            </Field>
+            <Field label="売却額（円）">
+              <MoneyInput value={quickEditForm.sellPrice} onChange={v => setQuickEditForm(p => ({ ...p, sellPrice: v }))} placeholder="5,000,000" />
+            </Field>
+          </div>
+
+          {/* 仕入関連日付 */}
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.success, marginBottom: 10 }}>🏠 仕入関連</div>
+            {(() => { const dow = dayOfWeekLabel(quickEditForm.buyContractDate); return (
+              <Field label={<>📝 仕入契約日{dow && <span style={{ color: dow.color, marginLeft: 8, fontWeight: 800 }}>（{dow.label}）</span>}</>}>
+                <input type="date" style={inp} value={quickEditForm.buyContractDate || ""} onChange={e => setQuickEditForm(p => ({ ...p, buyContractDate: e.target.value }))} />
+              </Field>
+            ); })()}
+            {(() => { const dow = dayOfWeekLabel(quickEditForm.buyDate); return (
+              <Field label={<>🏠 仕入決済日{dow && <span style={{ color: dow.color, marginLeft: 8, fontWeight: 800 }}>（{dow.label}）</span>}</>}>
+                <input type="date" style={inp} value={quickEditForm.buyDate || ""} onChange={e => setQuickEditForm(p => ({ ...p, buyDate: e.target.value }))} />
+              </Field>
+            ); })()}
+          </div>
+
+          {/* 売却関連日付 */}
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.warn, marginBottom: 10 }}>💰 売却関連</div>
+            {(() => { const dow = dayOfWeekLabel(quickEditForm.sellContractDate); return (
+              <Field label={<>📋 売却契約日{dow && <span style={{ color: dow.color, marginLeft: 8, fontWeight: 800 }}>（{dow.label}）</span>}</>}>
+                <input type="date" style={inp} value={quickEditForm.sellContractDate || ""} onChange={e => setQuickEditForm(p => ({ ...p, sellContractDate: e.target.value }))} />
+              </Field>
+            ); })()}
+            {(() => { const dow = dayOfWeekLabel(quickEditForm.sellDate); return (
+              <Field label={<>✅ 売却決済日{dow && <span style={{ color: dow.color, marginLeft: 8, fontWeight: 800 }}>（{dow.label}）</span>}</>}>
+                <input type="date" style={inp} value={quickEditForm.sellDate || ""} onChange={e => setQuickEditForm(p => ({ ...p, sellDate: e.target.value }))} />
+              </Field>
+            ); })()}
+          </div>
+
+          <Field label="📝 メモ">
+            <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={quickEditForm.memo || ""} onChange={e => setQuickEditForm(p => ({ ...p, memo: e.target.value }))} />
+          </Field>
+
+          {/* 反響件数・写真件数の確認表示 */}
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: "10px 12px", marginBottom: 16, display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+            <span style={{ color: C.muted }}>
+              👀 反響: <span style={{ color: "#06b6d4", fontWeight: 700 }}>{(quickEditForm.viewings || []).length}件</span>
+            </span>
+            <span style={{ color: C.muted }}>
+              📷 写真: <span style={{ color: C.warn, fontWeight: 700 }}>{(quickEditForm.photos || []).length}枚</span>
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setQuickEditStock(null); setQuickEditForm(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={saveQuickEdit}>💾 保存する</button>
+          </div>
+        </BottomSheet>
+      )}
     </div>
   );
 }
