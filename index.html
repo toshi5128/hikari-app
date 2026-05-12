@@ -4774,25 +4774,46 @@ function ApproachPage({ data, setData }) {
 // Excelから取り込んだ地上げデータ（エリア別）
 const JIAGE_AREAS = ["熊谷", "行田", "深谷", "東松山", "本庄", "秩父", "上里"];
 
-// 🗺️ ジオコーディング：住所→緯度経度（Nominatim API）
+// 🗺️ ジオコーディング：住所→緯度経度（国土地理院API・日本特化・無料）
 async function geocodeAddress(address) {
   if (!address) return null;
-  // 末尾の全角空白を除去、正規化
-  const q = address.replace(/[\u3000\s]+$/g, "").trim();
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1&countrycodes=jp`;
-    const res = await fetch(url, {
-      headers: { "Accept-Language": "ja" },
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data && data.length > 0) {
-      const lat = parseFloat(data[0].lat);
-      const lng = parseFloat(data[0].lon);
-      if (!isNaN(lat) && !isNaN(lng)) return { lat, lng };
+  
+  // 住所の前処理
+  const normalize = (s) => {
+    return String(s)
+      .replace(/[\u3000\s]+/g, " ") // 全角空白→半角
+      .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)) // 全角数字→半角
+      .replace(/[Ａ-Ｚａ-ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)) // 全角アルファベット→半角
+      .replace(/[－ー−―‐]/g, "-") // 各種ダッシュ→半角ハイフン
+      .replace(/\s+$/, "")
+      .trim();
+  };
+  
+  const q = normalize(address);
+  
+  // 試行する住所のバリエーション（番地を段階的に削る）
+  const candidates = [q];
+  // 1. 番地の枝番を削る（例: "1-2-3" → "1-2"）
+  const m1 = q.match(/^(.+?)(\d+)-\d+(?:-\d+)?$/);
+  if (m1) candidates.push(`${m1[1]}${m1[2]}`);
+  // 2. 番地を全部削る（例: "熊谷市中奈良1824" → "熊谷市中奈良"）
+  const m2 = q.match(/^(.+?[市町村区])(.+?)\d/);
+  if (m2) candidates.push(`${m2[1]}${m2[2]}`);
+  
+  for (const candidate of candidates) {
+    try {
+      // 国土地理院ジオコーディングAPI（日本特化・無料）
+      const url = `https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(candidate)}`;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data && data.length > 0 && data[0].geometry && data[0].geometry.coordinates) {
+        const [lng, lat] = data[0].geometry.coordinates;
+        if (!isNaN(lat) && !isNaN(lng)) return { lat, lng, matchedAddress: data[0].properties?.title };
+      }
+    } catch (e) {
+      console.warn("Geocode error:", candidate, e);
     }
-  } catch (e) {
-    console.warn("Geocode error:", q, e);
   }
   return null;
 }
@@ -5351,7 +5372,7 @@ function JiagePage({ data, setData }) {
       alert(`✅ ${isOwner ? "所有者住所" : "物件住所"}の緯度経度はすべて取得済みです`);
       return;
     }
-    if (!confirm(`${targetJiage.length}件の${isOwner ? "所有者住所" : "物件住所"}を緯度経度に変換します。\n\n約${Math.ceil(targetJiage.length * 1.2 / 60)}分かかります（1秒1件のレート制限のため）。\n\n実行しますか？`)) return;
+    if (!confirm(`${targetJiage.length}件の${isOwner ? "所有者住所" : "物件住所"}を緯度経度に変換します。\n\n約${Math.ceil(targetJiage.length * 0.3 / 60)}分かかります。\n\n国土地理院の無料APIを使用します。\n\n実行しますか？`)) return;
     
     cancelGeocodeRef.current = false;
     setGeocodeProgress({ current: 0, total: targetJiage.length });
@@ -5378,8 +5399,8 @@ function JiagePage({ data, setData }) {
         failed++;
       }
       setGeocodeProgress({ current: i + 1, total: targetJiage.length });
-      // レート制限：1.2秒待機
-      if (i < targetJiage.length - 1) await sleep(1200);
+      // レート制限：300ms（国土地理院APIは厳しくないが念のため）
+      if (i < targetJiage.length - 1) await sleep(300);
     }
     setGeocodeProgress(null);
     if (cancelGeocodeRef.current) {
@@ -5785,7 +5806,7 @@ function JiagePage({ data, setData }) {
                     border: "none", borderRadius: 10, cursor: "pointer",
                     fontSize: 13, fontWeight: 800, fontFamily: "inherit",
                   }}>
-                    🛰️ ジオコーディング実行（未取得 {itemsNoCoord.length}件・約{Math.ceil(itemsNoCoord.length * 1.2 / 60)}分）
+                    🛰️ ジオコーディング実行（未取得 {itemsNoCoord.length}件・約{Math.max(1, Math.ceil(itemsNoCoord.length * 0.3 / 60))}分）
                   </button>
                 ) : null}
 
