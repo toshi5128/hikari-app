@@ -610,11 +610,11 @@ function MainApp({ onLock }) {
     });
   }, []);
 
-  // ポーリング：30秒ごとに最新データを取得（他のメンバーの更新を反映）
-  // ただし「自分が60秒以内に保存した」or「ユーザーが入力中」の時はスキップして、編集中のデータが消えないようにする
+  // ポーリング：15秒ごとに最新データを取得（他のメンバーの更新を素早く反映）
+  // ただし「自分が30秒以内に保存した」or「ユーザーが入力中」の時はスキップして、編集中のデータが消えないようにする
   useEffect(() => {
     const timer = setInterval(() => {
-      if (Date.now() - lastLocalSaveRef.current < 60000) return; // 直近の自分の保存はスキップ
+      if (Date.now() - lastLocalSaveRef.current < 30000) return; // 直近の自分の保存はスキップ
       if (isUserEditing()) return; // 入力中はスキップ
       loadFromSupabase().then(remote => {
         const merged = mergeRemoteSafely(remote);
@@ -623,7 +623,7 @@ function MainApp({ onLock }) {
           try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
         }
       });
-    }, 30000);
+    }, 15000);
     return () => clearInterval(timer);
   }, []);
 
@@ -992,6 +992,12 @@ function Dashboard({ data, setData }) {
   const handleSaveEvent = () => {
     if (!eventForm.title.trim()) { alert("タイトルを入力してください"); return; }
     if (!eventForm.date) { alert("日付を入力してください"); return; }
+    const me = getCurrentUser() || "未設定";
+    const assignees = eventForm.assignees || [];
+    // 自分が作成者の場合は、自分への通知はスキップ済みとしてマーク（重複通知防止）
+    const initialNotifiedTo = {};
+    if (me && assignees.includes(me)) initialNotifiedTo[me] = true;
+
     const item = {
       id: editingEvent?.id || Date.now(),
       title: eventForm.title,
@@ -999,11 +1005,12 @@ function Dashboard({ data, setData }) {
       time: eventForm.time,
       location: eventForm.location,
       memo: eventForm.memo,
-      assignees: eventForm.assignees || [],
+      assignees,
       reminderMinutes: eventForm.reminderMinutes || 0,
       createdAt: editingEvent?.createdAt || new Date().toISOString(),
-      createdBy: editingEvent?.createdBy || getCurrentUser() || "未設定",
+      createdBy: editingEvent?.createdBy || me,
       notified: editingEvent?.notified || false,
+      newNotifiedTo: editingEvent?.newNotifiedTo || initialNotifiedTo,
     };
     setData(d => {
       const next = { ...d, customEvents: editingEvent
@@ -1018,6 +1025,17 @@ function Dashboard({ data, setData }) {
     // リマインダーが設定されてたら通知許可をリクエスト
     if (item.reminderMinutes > 0 && "Notification" in window && Notification.permission === "default") {
       Notification.requestPermission();
+    }
+
+    // 新規作成時で担当者がいる場合、通知が飛ぶことを作成者にフィードバック
+    if (!editingEvent && assignees.length > 0) {
+      const otherAssignees = assignees.filter(a => a !== me);
+      // 「比嘉・下田」のような連結担当者を分解
+      const allAssignees = expandAssignees(otherAssignees);
+      if (allAssignees.length > 0) {
+        // alertじゃなくて控えめに通知（操作の邪魔にならない）
+        console.log(`[通知] ${allAssignees.join("、")}さんの端末で次回起動時に通知が表示されます`);
+      }
     }
   };
 
@@ -1080,6 +1098,60 @@ function Dashboard({ data, setData }) {
     check();
     const timer = setInterval(check, 60000);
     return () => clearInterval(timer);
+  }, [data.customEvents]);
+
+  // ===== 新規予定の即時通知：data.customEventsが変化するたびに、自分宛の未通知予定をチェック =====
+  // 別端末で作成された予定 → 自分の端末が30秒ポーリングで取得 → 即通知される仕組み
+  useEffect(() => {
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    const me = getCurrentUser();
+    if (!me) return; // 「現在のユーザー」未設定なら通知できない
+
+    (data.customEvents || []).forEach(ev => {
+      const assignees = ev.assignees || (ev.assignee ? [ev.assignee] : []);
+      if (assignees.length === 0) return; // 担当者なしならスキップ
+      if (!isAssignedTo(assignees, me)) return; // 自分が担当者じゃないならスキップ
+
+      const newNotifiedTo = ev.newNotifiedTo || {};
+      if (newNotifiedTo[me]) return; // 既に自分に通知済み
+      if (ev.createdBy === me) {
+        // 自分が作成者の場合は通知不要だが、フラグだけ立てる（他端末で同じユーザーログインしてた時の重複防止）
+        setData(d => ({
+          ...d,
+          customEvents: (d.customEvents || []).map(e =>
+            e.id === ev.id
+              ? { ...e, newNotifiedTo: { ...(e.newNotifiedTo || {}), [me]: true } }
+              : e
+          )
+        }));
+        return;
+      }
+
+      // 通知発火！
+      const dateLabel = `${ev.date}${ev.time ? " " + ev.time : ""}`;
+      const title = `📅 新しい予定: ${ev.title}`;
+      const body = `${dateLabel}${ev.location ? " @" + ev.location : ""}\n作成者: ${ev.createdBy || "未設定"}${ev.memo ? "\n" + ev.memo : ""}`;
+      const tag = `hikari-new-event-${ev.id}`;
+
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: 'SHOW_NOTIFICATION', title, body, tag,
+        });
+      } else {
+        try { new Notification(title, { body, tag }); } catch (e) {}
+      }
+
+      // 通知済みフラグ（メンバー別）を立てる
+      setData(d => ({
+        ...d,
+        customEvents: (d.customEvents || []).map(e =>
+          e.id === ev.id
+            ? { ...e, newNotifiedTo: { ...(e.newNotifiedTo || {}), [me]: true } }
+            : e
+        )
+      }));
+    });
   }, [data.customEvents]);
 
   // 既存データから全カレンダーイベントを集計
