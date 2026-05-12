@@ -846,6 +846,10 @@ function Dashboard({ data, setData }) {
   // ===== クイック編集用 state =====
   const [quickEditStock, setQuickEditStock] = useState(null);
   const [quickEditForm, setQuickEditForm] = useState(null);
+  const [quickEditJiage, setQuickEditJiage] = useState(null);
+  const [quickEditJiageForm, setQuickEditJiageForm] = useState(null);
+  const [quickEditOwner, setQuickEditOwner] = useState(null);
+  const [quickEditOwnerForm, setQuickEditOwnerForm] = useState(null);
 
   const openQuickEdit = (stock) => {
     setQuickEditStock(stock);
@@ -870,6 +874,38 @@ function Dashboard({ data, setData }) {
     });
     setQuickEditStock(null);
     setQuickEditForm(null);
+  };
+
+  const openJiageEdit = (j) => {
+    setQuickEditJiage(j);
+    setQuickEditJiageForm({ ...j });
+  };
+
+  const saveJiageEdit = () => {
+    if (!quickEditJiage || !quickEditJiageForm) return;
+    const updated = { ...quickEditJiage, ...quickEditJiageForm };
+    setData(d => {
+      const next = { ...d, jiage: d.jiage.map(j => j.id === quickEditJiage.id ? updated : j) };
+      return appendLog(next, "update", "jiage", `${updated.address || "(無住所)"}（${updated.status}）をホームから編集`);
+    });
+    setQuickEditJiage(null);
+    setQuickEditJiageForm(null);
+  };
+
+  const openOwnerEdit = (o) => {
+    setQuickEditOwner(o);
+    setQuickEditOwnerForm({ ...o });
+  };
+
+  const saveOwnerEdit = () => {
+    if (!quickEditOwner || !quickEditOwnerForm) return;
+    const updated = { ...quickEditOwner, ...quickEditOwnerForm };
+    setData(d => {
+      const next = { ...d, owners: d.owners.map(o => o.id === quickEditOwner.id ? updated : o) };
+      return appendLog(next, "update", "owner", `${updated.address || "(無住所)"}（${updated.status}）をホームから編集`);
+    });
+    setQuickEditOwner(null);
+    setQuickEditOwnerForm(null);
   };
 
   // ===== カレンダー用 state =====
@@ -1563,21 +1599,32 @@ function Dashboard({ data, setData }) {
         border: `1px solid ${(jiageToday.length + ownerToday.length > 0 || stagnant90.length > 0 || stagnant180.length > 0) ? C.warn + "55" : "#1a2535"}`,
         borderRadius: 14, padding: 14,
       }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 12 }}>⚡ 今日のアクション</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 12 }}>⚡ 今日のアクション（タップで編集）</div>
 
         {/* 本日フォロー予定 */}
         {(jiageToday.length + ownerToday.length) > 0 ? (
           <div style={{ marginBottom: stagnant180.length + stagnant90.length > 0 ? 12 : 0 }}>
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, fontWeight: 700 }}>📞 本日フォロー予定 {jiageToday.length + ownerToday.length}件</div>
-            {[...jiageToday.map(j => ({ label: j.address, type: "地上げ", assignee: j.assignee })),
-              ...ownerToday.map(o => ({ label: o.address, type: "所有者", assignee: o.assignee }))
-            ].map((item, i) => (
-              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, fontSize: 13 }}>
-                <Tag label={item.type} color={item.type === "地上げ" ? C.purple : C.accent} />
-                <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
-                <MemberTag name={item.assignee} />
-              </div>
-            ))}
+            {[
+              ...jiageToday.map(j => ({ raw: j, _type: "jiage" })),
+              ...ownerToday.map(o => ({ raw: o, _type: "owner" }))
+            ].map((item, i) => {
+              const isJiage = item._type === "jiage";
+              return (
+                <button key={i} onClick={() => isJiage ? openJiageEdit(item.raw) : openOwnerEdit(item.raw)} style={{
+                  display: "flex", gap: 8, alignItems: "center", marginBottom: 6,
+                  width: "100%", background: C.bg, border: `1px solid #1a2535`,
+                  cursor: "pointer", padding: "8px 10px", borderRadius: 8,
+                  fontFamily: "inherit", fontSize: 13, color: C.text, textAlign: "left",
+                  touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
+                }}>
+                  <Tag label={isJiage ? "📍地上げ" : "👤所有者"} color={isJiage ? C.purple : C.accent} />
+                  <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.raw.address}</span>
+                  <MemberTag name={item.raw.assignee} />
+                  <span style={{ color: C.accent, fontSize: 13, flexShrink: 0 }}>✏</span>
+                </button>
+              );
+            })}
           </div>
         ) : (
           <div style={{ fontSize: 12, color: C.muted, marginBottom: stagnant180.length + stagnant90.length > 0 ? 12 : 0 }}>
@@ -1592,11 +1639,18 @@ function Dashboard({ data, setData }) {
             {stagnant180.slice(0, 3).map(s => {
               const days = daysSinceBuy(s.buyDate);
               return (
-                <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, fontSize: 12 }}>
-                  <span style={{ color: C.danger, fontWeight: 700, minWidth: 60 }}>{days}日</span>
+                <button key={s.id} onClick={() => openQuickEdit(s)} style={{
+                  display: "flex", gap: 8, alignItems: "center", marginBottom: 4,
+                  width: "100%", background: "rgba(255,255,255,0.03)", border: `1px solid ${C.danger}33`,
+                  cursor: "pointer", padding: "7px 9px", borderRadius: 7,
+                  fontFamily: "inherit", fontSize: 12, textAlign: "left",
+                  touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
+                }}>
+                  <span style={{ color: C.danger, fontWeight: 700, minWidth: 60 }}>{days}日経過</span>
                   <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
                   <MemberTag name={s.assignee} />
-                </div>
+                  <span style={{ color: C.accent, fontSize: 12, flexShrink: 0 }}>✏</span>
+                </button>
               );
             })}
             {stagnant180.length > 3 && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>他 {stagnant180.length - 3}件</div>}
@@ -1610,11 +1664,18 @@ function Dashboard({ data, setData }) {
             {stagnant90.slice(0, 3).map(s => {
               const days = daysSinceBuy(s.buyDate);
               return (
-                <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, fontSize: 12 }}>
-                  <span style={{ color: C.warn, fontWeight: 700, minWidth: 60 }}>{days}日</span>
+                <button key={s.id} onClick={() => openQuickEdit(s)} style={{
+                  display: "flex", gap: 8, alignItems: "center", marginBottom: 4,
+                  width: "100%", background: "rgba(255,255,255,0.03)", border: `1px solid ${C.warn}33`,
+                  cursor: "pointer", padding: "7px 9px", borderRadius: 7,
+                  fontFamily: "inherit", fontSize: 12, textAlign: "left",
+                  touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
+                }}>
+                  <span style={{ color: C.warn, fontWeight: 700, minWidth: 60 }}>{days}日経過</span>
                   <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
                   <MemberTag name={s.assignee} />
-                </div>
+                  <span style={{ color: C.accent, fontSize: 12, flexShrink: 0 }}>✏</span>
+                </button>
               );
             })}
             {stagnant90.length > 3 && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>他 {stagnant90.length - 3}件</div>}
@@ -1626,11 +1687,18 @@ function Dashboard({ data, setData }) {
           <div style={{ marginTop: (stagnant90.length + stagnant180.length) > 0 ? 8 : 0, background: "#0a1520", border: `1px solid ${C.accent}55`, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ fontSize: 12, color: C.accent, fontWeight: 700, marginBottom: 6 }}>🏛 役所調査未実施 {needYakusho.length}件 — シート作成しよう</div>
             {needYakusho.slice(0, 3).map(s => (
-              <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, fontSize: 12 }}>
+              <button key={s.id} onClick={() => openQuickEdit(s)} style={{
+                display: "flex", gap: 8, alignItems: "center", marginBottom: 4,
+                width: "100%", background: "rgba(255,255,255,0.03)", border: `1px solid ${C.accent}33`,
+                cursor: "pointer", padding: "7px 9px", borderRadius: 7,
+                fontFamily: "inherit", fontSize: 12, textAlign: "left",
+                touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
+              }}>
                 <StatusTag status={s.status} />
                 <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
                 <MemberTag name={s.assignee} />
-              </div>
+                <span style={{ color: C.accent, fontSize: 12, flexShrink: 0 }}>✏</span>
+              </button>
             ))}
             {needYakusho.length > 3 && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>他 {needYakusho.length - 3}件</div>}
           </div>
@@ -1858,6 +1926,109 @@ function Dashboard({ data, setData }) {
           );
         })}
       </div>
+
+      {/* 📍 地上げ クイック編集 BottomSheet */}
+      {quickEditJiage && quickEditJiageForm && (
+        <BottomSheet title={`📍 地上げを編集`} onClose={() => { setQuickEditJiage(null); setQuickEditJiageForm(null); }}>
+          <Field label="物件住所">
+            <input style={inp} value={quickEditJiageForm.address || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, address: e.target.value }))} placeholder="埼玉県熊谷市〇〇" />
+          </Field>
+          <Field label="所有者名">
+            <input style={inp} value={quickEditJiageForm.owner || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, owner: e.target.value }))} />
+          </Field>
+          <Field label="所有者住所">
+            <input style={inp} value={quickEditJiageForm.ownerAddr || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, ownerAddr: e.target.value }))} placeholder="謄本記載の住所" />
+          </Field>
+          <Field label="👤 担当者">
+            <select style={inp} value={quickEditJiageForm.assignee} onChange={e => setQuickEditJiageForm(p => ({ ...p, assignee: e.target.value }))}>
+              {MEMBERS.map(m => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="エリア">
+            <select style={inp} value={quickEditJiageForm.area || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, area: e.target.value }))}>
+              <option value="">選択</option>{JIAGE_AREAS.map(a => <option key={a}>{a}</option>)}
+            </select>
+          </Field>
+          <Field label="📩 DM状況">
+            <select style={inp} value={quickEditJiageForm.dm || "未"} onChange={e => setQuickEditJiageForm(p => ({ ...p, dm: e.target.value }))}>
+              {DM_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="📊 訪問状況">
+            <select style={inp} value={quickEditJiageForm.status} onChange={e => setQuickEditJiageForm(p => ({ ...p, status: e.target.value }))}>
+              {ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          {(() => { const dow = dayOfWeekLabel(quickEditJiageForm.nextVisit); return (
+            <Field label={<>📅 次回訪問日{dow && <span style={{ color: dow.color, marginLeft: 8, fontWeight: 800 }}>（{dow.label}）</span>}</>}>
+              <input type="date" style={inp} value={quickEditJiageForm.nextVisit || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisit: e.target.value }))} />
+            </Field>
+          ); })()}
+          <Field label="📝 メモ">
+            <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={quickEditJiageForm.memo || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, memo: e.target.value }))} />
+          </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setQuickEditJiage(null); setQuickEditJiageForm(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={saveJiageEdit}>💾 保存する</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* 👤 所有者 クイック編集 BottomSheet */}
+      {quickEditOwner && quickEditOwnerForm && (
+        <BottomSheet title={`👤 所有者アタックを編集`} onClose={() => { setQuickEditOwner(null); setQuickEditOwnerForm(null); }}>
+          <Field label="物件住所">
+            <input style={inp} value={quickEditOwnerForm.address || ""} onChange={e => setQuickEditOwnerForm(p => ({ ...p, address: e.target.value }))} placeholder="埼玉県熊谷市〇〇" />
+          </Field>
+          <Field label="所有者名">
+            <input style={inp} value={quickEditOwnerForm.ownerName || ""} onChange={e => setQuickEditOwnerForm(p => ({ ...p, ownerName: e.target.value }))} />
+          </Field>
+          <Field label="所有者住所">
+            <input style={inp} value={quickEditOwnerForm.ownerAddress || ""} onChange={e => setQuickEditOwnerForm(p => ({ ...p, ownerAddress: e.target.value }))} placeholder="謄本記載の住所" />
+          </Field>
+          <Field label="📞 連絡先">
+            <input style={inp} value={quickEditOwnerForm.ownerContact || ""} onChange={e => setQuickEditOwnerForm(p => ({ ...p, ownerContact: e.target.value }))} placeholder="電話番号など" />
+          </Field>
+          {quickEditOwnerForm.ownerContact && (
+            <a href={`tel:${quickEditOwnerForm.ownerContact}`} style={{
+              display: "block", textDecoration: "none", background: C.success + "22",
+              border: `1.5px solid ${C.success}`, color: C.success,
+              borderRadius: 8, padding: "10px", textAlign: "center", fontSize: 13, fontWeight: 700,
+              marginBottom: 16,
+            }}>📞 電話発信</a>
+          )}
+          <Field label="👤 担当者">
+            <select style={inp} value={quickEditOwnerForm.assignee} onChange={e => setQuickEditOwnerForm(p => ({ ...p, assignee: e.target.value }))}>
+              {MEMBERS.map(m => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="📊 ステータス">
+            <select style={inp} value={quickEditOwnerForm.status} onChange={e => setQuickEditOwnerForm(p => ({ ...p, status: e.target.value }))}>
+              {OWNER_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          {(() => { const dow = dayOfWeekLabel(quickEditOwnerForm.nextFollowDate); return (
+            <Field label={<>📅 次回フォロー日{dow && <span style={{ color: dow.color, marginLeft: 8, fontWeight: 800 }}>（{dow.label}）</span>}</>}>
+              <input type="date" style={inp} value={quickEditOwnerForm.nextFollowDate || ""} onChange={e => setQuickEditOwnerForm(p => ({ ...p, nextFollowDate: e.target.value }))} />
+            </Field>
+          ); })()}
+          <Field label="📝 メモ">
+            <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={quickEditOwnerForm.memo || ""} onChange={e => setQuickEditOwnerForm(p => ({ ...p, memo: e.target.value }))} />
+          </Field>
+          {(quickEditOwnerForm.history || []).length > 0 && (
+            <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: "10px 12px", marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, marginBottom: 6 }}>📋 アタック履歴 {quickEditOwnerForm.history.length}件</div>
+              <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.6 }}>
+                履歴の追加・編集は「🗺️ 地上げ」タブから行ってください
+              </div>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setQuickEditOwner(null); setQuickEditOwnerForm(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={saveOwnerEdit}>💾 保存する</button>
+          </div>
+        </BottomSheet>
+      )}
 
       {/* ✏ クイック編集 BottomSheet */}
       {quickEditStock && quickEditForm && (
