@@ -4686,6 +4686,20 @@ function ApproachPage({ data, setData }) {
 // Excelから取り込んだ地上げデータ（エリア別）
 const JIAGE_AREAS = ["熊谷", "行田", "深谷", "東松山", "本庄", "秩父", "上里"];
 
+// 住所からエリアを推測（「○○市」を含むかどうか）
+function inferAreaFromAddress(address) {
+  if (!address) return "";
+  const s = String(address);
+  for (const area of JIAGE_AREAS) {
+    if (s.includes(area + "市") || s.includes(area + "町") || s.includes(area + "郡")) {
+      return area;
+    }
+  }
+  // 上里町は児玉郡上里町なので別途判定
+  if (s.includes("上里町")) return "上里";
+  return "";
+}
+
 function JiagePage({ data, setData }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
@@ -4834,7 +4848,9 @@ function JiagePage({ data, setData }) {
     const newItems = [];
     let uid = Date.now() + Math.floor(Math.random() * 1000);
     // シート名からエリアを推測（「○○リスト」→「○○」）
-    const areaName = name.replace(/\s*リスト\s*$/, "").trim();
+    const sheetAreaName = name.replace(/\s*リスト\s*$/, "").trim();
+    // シート名から有効なエリアが判定できる場合のみ使用
+    const sheetIsValidArea = JIAGE_AREAS.includes(sheetAreaName);
     
     dataRows.forEach(row => {
       const getRaw = (key) => mapping[key] !== undefined ? row[mapping[key]] : "";
@@ -4858,6 +4874,13 @@ function JiagePage({ data, setData }) {
         else if (rawStatus.includes("居住")) status = "居住している";
       }
       
+      // エリア判定の優先順位：
+      //   1. 住所から自動判定（最優先＝最も信頼できる）
+      //   2. シート名（有効なエリアの場合のみ）
+      //   3. 空（後でユーザーが手動設定 or 自動補正機能で補正）
+      const addressArea = inferAreaFromAddress(address);
+      const finalArea = addressArea || (sheetIsValidArea ? sheetAreaName : "");
+      
       newItems.push({
         id: uid++,
         bmPage: get("bmPage"),
@@ -4872,7 +4895,7 @@ function JiagePage({ data, setData }) {
         memo: combinedMemo,
         assignee: get("assignee") || defaultAssignee,
         date: normalizeImportDate(getRaw("date")) || normalizeImportDate(getRaw("recordDate")) || today,
-        area: areaName,
+        area: finalArea,
       });
     });
     return newItems;
@@ -4939,7 +4962,11 @@ function JiagePage({ data, setData }) {
   const filtered = useMemo(() => allItems.filter(item => {
     if (typeFilter === "jiage" && item.type !== "jiage") return false;
     if (typeFilter === "owner" && item.type !== "owner") return false;
-    if (areaFilter !== "すべて" && item.area !== areaFilter) return false;
+    if (areaFilter !== "すべて") {
+      if (areaFilter === "未設定") {
+        if (JIAGE_AREAS.includes(item.area)) return false;
+      } else if (item.area !== areaFilter) return false;
+    }
     if (filterStatuses.length && !filterStatuses.includes(item.status)) return false;
     if (filterMembers.length && !filterMembers.includes(item.assignee)) return false;
     if (search && !item.address.includes(search) && !(item.ownerName || "").includes(search)) return false;
@@ -5142,19 +5169,62 @@ function JiagePage({ data, setData }) {
 
         {/* エリアフィルター */}
         <div style={{ display: "flex", gap: 6, marginBottom: 8, overflowX: "auto", paddingBottom: 2 }}>
-          {["すべて", ...JIAGE_AREAS].map(area => {
-            const count = area === "すべて" ? Object.values(areaCounts).reduce((a, b) => a + b, 0) : (areaCounts[area] || 0);
+          {["すべて", ...JIAGE_AREAS, "未設定"].map(area => {
+            const count = area === "すべて" 
+              ? Object.values(areaCounts).reduce((a, b) => a + b, 0)
+              : area === "未設定"
+                ? (data.jiage || []).filter(j => !JIAGE_AREAS.includes(j.area)).length
+                : (areaCounts[area] || 0);
             return (
               <button key={area} onClick={() => setAreaFilter(area)} style={{
                 padding: "5px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12,
                 background: areaFilter === area ? C.purple : C.bg,
-                color: areaFilter === area ? "#fff" : C.muted,
-                border: `1px solid ${areaFilter === area ? C.purple : "#1a2535"}`,
+                color: areaFilter === area ? "#fff" : (area === "未設定" && count > 0 ? C.warn : C.muted),
+                border: `1px solid ${areaFilter === area ? C.purple : (area === "未設定" && count > 0 ? C.warn + "66" : "#1a2535")}`,
                 fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0,
-              }}>{area} {count > 0 ? count : ""}</button>
+              }}>{area === "未設定" && count > 0 ? "⚠️ " : ""}{area} {count > 0 ? count : ""}</button>
             );
           })}
         </div>
+
+        {/* エリア未設定がある場合の自動補正ボタン */}
+        {(() => {
+          const unsetItems = (data.jiage || []).filter(j => !JIAGE_AREAS.includes(j.area));
+          const fixableCount = unsetItems.filter(j => inferAreaFromAddress(j.address)).length;
+          if (fixableCount === 0) return null;
+          return (
+            <div style={{ background: C.warn + "11", border: `1px solid ${C.warn}55`, borderRadius: 10, padding: "8px 12px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 11, color: C.warn, lineHeight: 1.4 }}>
+                ⚠️ エリア未設定の物件が <b>{unsetItems.length}件</b> あります<br />
+                <span style={{ fontSize: 10, color: C.muted }}>住所から自動で {fixableCount}件 を補正できます</span>
+              </div>
+              <button onClick={() => {
+                if (!confirm(`住所から自動でエリアを判定して、${fixableCount}件のエリアを補正します。よろしいですか？`)) return;
+                let fixedCount = 0;
+                setData(d => {
+                  const next = {
+                    ...d,
+                    jiage: (d.jiage || []).map(j => {
+                      if (JIAGE_AREAS.includes(j.area)) return j;
+                      const newArea = inferAreaFromAddress(j.address);
+                      if (newArea) {
+                        fixedCount++;
+                        return { ...j, area: newArea };
+                      }
+                      return j;
+                    })
+                  };
+                  return appendLog(next, "update", "jiage", `エリアを${fixableCount}件自動補正`);
+                });
+                setTimeout(() => alert(`✅ ${fixableCount}件のエリアを補正しました！`), 100);
+              }} style={{
+                background: C.warn, color: "#fff", border: "none", borderRadius: 8,
+                padding: "8px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                whiteSpace: "nowrap", flexShrink: 0,
+              }}>🔧 {fixableCount}件を自動補正</button>
+            </div>
+          );
+        })()}
 
         {/* クイックフィルター */}
         <div style={{ display: "flex", gap: 6, marginBottom: 8, overflowX: "auto", paddingBottom: 2 }}>
