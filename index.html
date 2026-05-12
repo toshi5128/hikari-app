@@ -2373,6 +2373,7 @@ function ApproachPage({ data, setData }) {
   const [dailyGoalForm, setDailyGoalForm] = useState({});
   const [isLoaded, setIsLoaded] = useState(false); // 初回読み込み完了フラグ
   const [autoSaveStatus, setAutoSaveStatus] = useState("idle"); // "idle" | "saving" | "saved"
+  const [lastSavedAt, setLastSavedAt] = useState(null); // 最終自動保存時刻
   const [showGoalEdit, setShowGoalEdit] = useState(false);
   const [goalEditMember, setGoalEditMember] = useState(MEMBERS[0]);
   const [goalForm, setGoalForm] = useState({});
@@ -2396,6 +2397,7 @@ function ApproachPage({ data, setData }) {
   // ※ existingやdata.approachesを依存に入れると、自動保存→data更新→再読込→自動保存…の無限ループになるので外す
   useEffect(() => {
     setIsLoaded(false);
+    setLastSavedAt(null); // 切替時に保存時刻をリセット
     // 直接data.approachesから検索（existingを使わない）
     const rec = data.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
     if (rec) {
@@ -2448,6 +2450,7 @@ function ApproachPage({ data, setData }) {
         };
       });
       setAutoSaveStatus("saved");
+      setLastSavedAt(new Date()); // 最終保存時刻を記録
     }, 800);
 
     const fadeTimer = setTimeout(() => setAutoSaveStatus("idle"), 3500);
@@ -2722,7 +2725,7 @@ function ApproachPage({ data, setData }) {
       {tab === "input" && (
         <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
           {/* ヘッダー：担当者＋日付 */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
             <Field label="👤 担当者">
               <select style={inp} value={selectedMember} onChange={e => setSelectedMember(e.target.value)}>
                 {MEMBERS.map(m => <option key={m}>{m}</option>)}
@@ -2731,6 +2734,40 @@ function ApproachPage({ data, setData }) {
             <Field label={<>📅 日付{(() => { const d = dayOfWeekLabel(selectedDate); return d ? <span style={{ color: d.color, marginLeft: 6, fontWeight: 800 }}>({d.label})</span> : null; })()}</>}>
               <input type="date" style={inp} value={selectedDate} onChange={e => setSelectedDate(e.target.value)} />
             </Field>
+          </div>
+
+          {/* 📡 自動保存インジケータ（常時表示） */}
+          <div style={{
+            background: autoSaveStatus === "saving"
+              ? C.warn + "22"
+              : autoSaveStatus === "saved" || lastSavedAt
+                ? C.success + "11"
+                : C.bg,
+            border: `1px solid ${autoSaveStatus === "saving" ? C.warn + "66" : C.success + "44"}`,
+            borderRadius: 8, padding: "8px 12px", marginBottom: 14,
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+            fontSize: 11,
+            transition: "all 0.3s",
+          }}>
+            <span style={{
+              color: autoSaveStatus === "saving" ? C.warn : C.success,
+              fontWeight: 700,
+              display: "flex", alignItems: "center", gap: 6,
+            }}>
+              {autoSaveStatus === "saving" ? (
+                <><span style={{ display: "inline-block", animation: "hikariGoldSparkle 0.8s infinite" }}>💾</span> 保存中…</>
+              ) : (
+                <>📡 自動保存ON</>
+              )}
+            </span>
+            {lastSavedAt && (
+              <span style={{ color: C.muted }}>
+                最終保存 <span style={{ color: C.success, fontWeight: 700 }}>{lastSavedAt.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+              </span>
+            )}
+            {!lastSavedAt && autoSaveStatus !== "saving" && (
+              <span style={{ color: C.muted, fontSize: 10 }}>入力すると自動で保存されます</span>
+            )}
           </div>
 
           {/* 今日の目標サマリー */}
@@ -3027,14 +3064,18 @@ function ApproachPage({ data, setData }) {
             <textarea style={{ ...inp, height: 70, resize: "vertical" }} value={memo} onChange={e => setMemo(e.target.value)} placeholder="駅前は業者多め、A社が反応良かったなど" />
           </Field>
 
-          <button style={{ ...btnStyle(), width: "100%", marginTop: 4, padding: "14px", fontSize: 15 }} onClick={handleSave}>💾 今すぐ保存する</button>
-          <div style={{ marginTop: 10, padding: "10px 14px", borderRadius: 10, textAlign: "center", fontSize: 12, fontWeight: 700,
-            background: autoSaveStatus === "saving" ? C.warn + "22" : autoSaveStatus === "saved" ? C.success + "22" : C.bg,
-            border: `1px solid ${autoSaveStatus === "saving" ? C.warn : autoSaveStatus === "saved" ? C.success : "#1a2535"}`,
-            color: autoSaveStatus === "saving" ? C.warn : autoSaveStatus === "saved" ? C.success : C.muted,
+          <button style={{ ...btnStyle("ghost"), width: "100%", marginTop: 4, padding: "12px", fontSize: 13 }} onClick={handleSave}>💾 念のため今すぐ保存（通常は不要）</button>
+          <div style={{ marginTop: 10, padding: "12px 14px", borderRadius: 10, textAlign: "center", fontSize: 12, fontWeight: 700,
+            background: autoSaveStatus === "saving" ? C.warn + "22" : (autoSaveStatus === "saved" || lastSavedAt) ? C.success + "22" : C.bg,
+            border: `1px solid ${autoSaveStatus === "saving" ? C.warn : (autoSaveStatus === "saved" || lastSavedAt) ? C.success : "#1a2535"}`,
+            color: autoSaveStatus === "saving" ? C.warn : (autoSaveStatus === "saved" || lastSavedAt) ? C.success : C.muted,
             transition: "all 0.3s",
           }}>
-            {autoSaveStatus === "saving" ? "💾 自動保存中..." : autoSaveStatus === "saved" ? "✅ 自動保存しました" : "✨ 数字をタップすると自動で保存されます"}
+            {autoSaveStatus === "saving"
+              ? "💾 Supabaseに保存中..."
+              : lastSavedAt
+                ? <>✅ 最終保存 {lastSavedAt.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}（全端末で共有済み）</>
+                : "✨ 入力するたびに自動で保存・同期されます"}
           </div>
         </div>
       )}
