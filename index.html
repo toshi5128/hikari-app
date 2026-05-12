@@ -284,6 +284,94 @@ const SUPABASE_URL = "https://ckcykbvislsjwvkizkqc.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrY3lrYnZpc2xzand2a2l6a3FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0Njk1MzIsImV4cCI6MjA5NDA0NTUzMn0.Yf2EnNHRi6M5mwaaNFwBATNZb8jVBG3LsFxMt6eDfH8";
 const DATA_ID = "hikari_main";
 
+// ===================== Web Push 設定 =====================
+// VAPID 公開鍵（このアプリ専用に生成済み）
+const VAPID_PUBLIC_KEY = "BLnPVy446VC9z9PW9KtspyDNUBp39TS85uro26wWfDcR4GB9QflyZkc0uJtzHkD3rxXYzzoWfjcBTkH3gT3HOYI";
+
+// VAPID公開鍵をUint8Arrayに変換するヘルパー
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+// Push購読を取得 or 新規作成
+async function ensurePushSubscription() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    throw new Error("このブラウザはWeb Pushに対応していません");
+  }
+  if (Notification.permission !== "granted") {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") throw new Error("通知が許可されませんでした");
+  }
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
+  }
+  return sub;
+}
+
+// Supabaseに購読情報を保存
+async function savePushSubscriptionToSupabase(member, sub) {
+  const body = {
+    member,
+    endpoint: sub.endpoint,
+    p256dh: btoa(String.fromCharCode(...new Uint8Array(sub.getKey("p256dh")))),
+    auth: btoa(String.fromCharCode(...new Uint8Array(sub.getKey("auth")))),
+    updated_at: new Date().toISOString(),
+  };
+  // 既存チェック
+  const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/push_subscriptions?member=eq.${encodeURIComponent(member)}&select=id`, {
+    headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+  });
+  const existing = await checkRes.json();
+  const method = existing && existing.length > 0 ? "PATCH" : "POST";
+  const url = existing && existing.length > 0
+    ? `${SUPABASE_URL}/rest/v1/push_subscriptions?member=eq.${encodeURIComponent(member)}`
+    : `${SUPABASE_URL}/rest/v1/push_subscriptions`;
+  const res = await fetch(url, {
+    method,
+    headers: {
+      "apikey": SUPABASE_KEY,
+      "Authorization": `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+      "Prefer": "return=minimal",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Supabase保存失敗: ${res.status} ${await res.text()}`);
+  return true;
+}
+
+// Edge Function を呼んでプッシュ通知を送信
+async function sendPushNotification(targets, title, body, extra = {}) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ targets, title, body, ...extra }),
+    });
+    if (!res.ok) {
+      console.warn("Push send failed:", res.status, await res.text());
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn("Push send error:", e);
+    return false;
+  }
+}
+
 const STORAGE_KEY = "hikari_v4_cache";
 
 const DEFAULT_DATA = {
@@ -1027,14 +1115,15 @@ function Dashboard({ data, setData }) {
       Notification.requestPermission();
     }
 
-    // 新規作成時で担当者がいる場合、通知が飛ぶことを作成者にフィードバック
+    // ★ Web Push 送信：担当者の端末にリアルタイム通知（アプリ閉じてても届く）
     if (!editingEvent && assignees.length > 0) {
       const otherAssignees = assignees.filter(a => a !== me);
-      // 「比嘉・下田」のような連結担当者を分解
-      const allAssignees = expandAssignees(otherAssignees);
-      if (allAssignees.length > 0) {
-        // alertじゃなくて控えめに通知（操作の邪魔にならない）
-        console.log(`[通知] ${allAssignees.join("、")}さんの端末で次回起動時に通知が表示されます`);
+      const allTargets = expandAssignees(otherAssignees); // 「比嘉・下田」など分解
+      if (allTargets.length > 0) {
+        const dateLabel = `${item.date}${item.time ? " " + item.time : ""}`;
+        const pushTitle = `📅 新しい予定: ${item.title}`;
+        const pushBody = `${dateLabel}${item.location ? " @" + item.location : ""}\n作成者: ${me}${item.memo ? "\n" + item.memo : ""}`;
+        sendPushNotification(allTargets, pushTitle, pushBody, { tag: `hikari-new-event-${item.id}` });
       }
     }
   };
@@ -4341,6 +4430,141 @@ function ImportModal({ onClose, onImport, importing, currentCount }) {
   );
 }
 
+// ===================== Web Push 購読セクション =====================
+function WebPushSection({ currentUser }) {
+  const [pushStatus, setPushStatus] = useState("checking"); // "checking"|"unsubscribed"|"subscribed"|"unsupported"
+  const [busy, setBusy] = useState(false);
+  const [lastError, setLastError] = useState("");
+
+  // 初期状態チェック
+  useEffect(() => {
+    (async () => {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        setPushStatus("unsupported");
+        return;
+      }
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        setPushStatus(sub ? "subscribed" : "unsubscribed");
+      } catch (e) {
+        setPushStatus("unsubscribed");
+      }
+    })();
+  }, []);
+
+  const enable = async () => {
+    if (!currentUser) {
+      alert("先に「現在のユーザー」を設定してください");
+      return;
+    }
+    setBusy(true);
+    setLastError("");
+    try {
+      const sub = await ensurePushSubscription();
+      await savePushSubscriptionToSupabase(currentUser, sub);
+      setPushStatus("subscribed");
+      alert(`✅ Web Push 有効化完了！\n${currentUser}さん宛の予定が、アプリ閉じてても通知されます。`);
+    } catch (e) {
+      console.error(e);
+      setLastError(e.message);
+      alert(`エラー: ${e.message}`);
+    }
+    setBusy(false);
+  };
+
+  const disable = async () => {
+    if (!window.confirm("Web Push を解除しますか？以降、アプリ閉じてる時の通知が届かなくなります。")) return;
+    setBusy(true);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe();
+      // Supabase からも削除
+      if (currentUser) {
+        await fetch(`${SUPABASE_URL}/rest/v1/push_subscriptions?member=eq.${encodeURIComponent(currentUser)}`, {
+          method: "DELETE",
+          headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+        });
+      }
+      setPushStatus("unsubscribed");
+      alert("Web Push を解除しました");
+    } catch (e) { alert(`エラー: ${e.message}`); }
+    setBusy(false);
+  };
+
+  const test = async () => {
+    if (!currentUser) { alert("現在のユーザーを設定してください"); return; }
+    setBusy(true);
+    try {
+      const ok = await sendPushNotification([currentUser], "🎉 Web Push テスト", `${currentUser}さんに届いてればOK！\nアプリ閉じてても通知される設定です。`, { tag: "test-push" });
+      if (ok) {
+        alert("✅ テスト送信完了！\nアプリを閉じてしばらく待ってみてください。\n通知が届いたらOK。");
+      } else {
+        alert("❌ 送信失敗。Supabase Edge Function の設定を確認してください。\n（その他タブの手順書参照）");
+      }
+    } catch (e) { alert(`エラー: ${e.message}`); }
+    setBusy(false);
+  };
+
+  if (pushStatus === "unsupported") {
+    return (
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ color: C.danger, fontSize: 13, fontWeight: 700 }}>❌ このブラウザはWeb Pushに非対応</div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>Chrome / Safari (iOS 16.4+, macOS) / Firefox / Edge をご利用ください。</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>
+        {pushStatus === "subscribed"
+          ? <>✅ <span style={{ color: C.success, fontWeight: 700 }}>{currentUser}</span> として購読中。<br />予定が追加されると、アプリ閉じてても即通知が届きます。</>
+          : pushStatus === "checking"
+            ? "⌛ 確認中..."
+            : "⚠️ Web Push 未設定。下のボタンで有効化してください。"}
+      </div>
+
+      {pushStatus === "unsubscribed" && (
+        <button onClick={enable} disabled={busy || !currentUser} style={{
+          ...btnStyle(), width: "100%", padding: "14px", fontSize: 14,
+          background: "linear-gradient(135deg, #0ea5e9, #06b6d4)",
+          borderColor: "#0ea5e9", opacity: (busy || !currentUser) ? 0.6 : 1,
+        }}>{busy ? "⌛ 設定中..." : "🚀 Web Push を有効化する"}</button>
+      )}
+
+      {pushStatus === "subscribed" && (
+        <>
+          <button onClick={test} disabled={busy} style={{
+            ...btnStyle(), width: "100%", padding: "12px", fontSize: 13,
+            background: C.success, borderColor: C.success, marginBottom: 8,
+          }}>{busy ? "送信中..." : "🧪 自分宛に Web Push テスト送信"}</button>
+          <button onClick={disable} disabled={busy} style={{
+            ...btnStyle("ghost"), width: "100%", padding: "10px", fontSize: 12,
+            color: C.danger, borderColor: C.danger + "55",
+          }}>🛑 Web Push を解除</button>
+        </>
+      )}
+
+      {!currentUser && (
+        <div style={{ marginTop: 10, padding: 10, background: C.warn + "22", border: `1px solid ${C.warn}55`, borderRadius: 8, fontSize: 11, color: C.warn }}>
+          ⚠️ 先に「現在のユーザー」を設定してください
+        </div>
+      )}
+
+      <div style={{ marginTop: 14, padding: 12, background: C.bg, border: `1px solid #1a2535`, borderRadius: 8, fontSize: 10, color: C.muted, lineHeight: 1.7 }}>
+        <div style={{ color: C.accent, fontWeight: 700, marginBottom: 6 }}>💡 仕組み</div>
+        ① 自分の端末で購読 → Supabaseに登録<br />
+        ② 別の人が予定を作って自分を担当者に指定<br />
+        ③ Supabase Edge Function が自分の端末にプッシュ送信<br />
+        ④ アプリ閉じてても通知が届く<br /><br />
+        <span style={{ color: C.warn }}>※ 初回セットアップで Supabase 側の設定が必要です（手順は別途）</span>
+      </div>
+    </div>
+  );
+}
+
 // ===================== MORE PAGE (役所・積算) =====================
 function MorePage({ data, setData, onLock }) {
   const [subPage, setSubPage] = useState(null);
@@ -4524,6 +4748,10 @@ function MorePage({ data, setData, onLock }) {
           </div>
         )}
       </div>
+
+      {/* 🚀 Web Push（アプリ閉じてても届くリアルタイム通知） */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🚀 Web Push（アプリ閉じててもOK）</div>
+      <WebPushSection currentUser={currentUser} />
 
       {/* 📋 操作履歴 */}
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>📋 操作履歴</div>
