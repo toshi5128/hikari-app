@@ -17,6 +17,8 @@
 <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
 
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap" rel="stylesheet">
+<!-- SheetJS for Excel import -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#04080f;color:#e2e8f0;font-family:'Noto Sans JP',sans-serif}input,select,textarea,button{font-family:inherit}
 input[type="date"],input[type="time"]{color-scheme:dark}
 input[type="date"]::-webkit-calendar-picker-indicator,input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(0.7) sepia(1) saturate(5) hue-rotate(175deg) brightness(1.2);cursor:pointer;opacity:1;padding:4px;border-radius:4px}
@@ -4708,40 +4710,163 @@ function JiagePage({ data, setData }) {
 
   const navUrl = addr => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving`;
 
-  // Excelデータをインポートする処理
-  const handleImport = async (selectedAreas) => {
+  // Excelファイル直接インポート用state
+  const [importPreview, setImportPreview] = useState(null); // { rows, mapping, sheetName, totalRows }
+  const fileInputRef = React.useRef(null);
+
+  // Excel/CSVファイルを読み込み
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     setImporting(true);
     try {
-      // 選択エリアのデータをlocalStorageから取得
-      const importData = JSON.parse(localStorage.getItem("hikari_jiage_import") || "{}");
-      const newItems = [];
-      let uid = Date.now();
-      for (const area of selectedAreas) {
-        const items = importData[area] || [];
-        items.forEach(item => {
-          newItems.push({
-            id: uid++,
-            address: item.address,
-            owner: item.owner,
-            ownerAddr: item.ownerAddr,
-            dm: item.dm || "未",
-            visit: item.visit || "未",
-            status: item.status || "未訪問",
-            assignee: item.assignee || "未割当",
-            memo: item.memo || "",
-            date: item.date || today,
-            nextVisit: item.nextVisit || "",
-            area: item.area,
-          });
-        });
+      if (typeof XLSX === "undefined") {
+        alert("Excelライブラリの読み込みに失敗しました。ページを再読み込みして再度お試しください。");
+        setImporting(false);
+        return;
       }
-      setData(d => ({ ...d, jiage: [...d.jiage, ...newItems] }));
-      alert(`✅ ${newItems.length}件をインポートしました！`);
-      setShowImport(false);
-    } catch (e) {
-      alert("インポートに失敗しました");
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      // ヘッダー行を含む形式で取得
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      if (rows.length < 2) {
+        alert("データが見つかりませんでした");
+        setImporting(false);
+        return;
+      }
+      // ヘッダー行から列を自動マッピング（としのExcelフォーマット最適化版）
+      const headers = rows[0].map(h => String(h || "").trim());
+      const mapping = {};
+      headers.forEach((h, i) => {
+        const lower = h.toLowerCase();
+        // 順番が重要：より具体的なものから先に判定
+        if (h === "BMページ数" || h.includes("BMページ") || lower.includes("bm")) {
+          if (mapping.bmPage === undefined) mapping.bmPage = i;
+        } else if (h === "物件住所" || h.includes("物件住所")) {
+          mapping.address = i; // 優先で上書き
+        } else if (h === "所有者住所" || h.includes("所有者住所") || h.includes("所有者の住所")) {
+          mapping.ownerAddr = i;
+        } else if (h === "所有者" || h.includes("オーナー")) {
+          if (mapping.owner === undefined) mapping.owner = i;
+        } else if (h === "DM" || h === "ＤＭ" || lower === "dm") {
+          if (mapping.dm === undefined) mapping.dm = i;
+        } else if (h === "住確" || h.includes("住確") || h.includes("住所確認")) {
+          if (mapping.visit === undefined) mapping.visit = i;
+        } else if (h === "訪問状況" || h.includes("訪問状況")) {
+          mapping.status = i;
+        } else if (h === "初訪" || h.includes("初訪") || h.includes("初回訪問")) {
+          if (mapping.date === undefined) mapping.date = i;
+        } else if (h === "再訪予定" || h.includes("再訪") || h.includes("次回")) {
+          if (mapping.nextVisit === undefined) mapping.nextVisit = i;
+        } else if (h === "備考" || h.includes("備考")) {
+          if (mapping.bikou === undefined) mapping.bikou = i;
+        } else if (h === "メモ" || h.includes("メモ") || lower.includes("memo") || lower.includes("note") || h.includes("コメント")) {
+          if (mapping.memo === undefined) mapping.memo = i;
+        } else if (h.includes("ステータス") || h.includes("状態") || h.includes("状況")) {
+          if (mapping.status === undefined) mapping.status = i;
+        } else if (h.includes("住所") || h.includes("所在") || lower.includes("address")) {
+          if (mapping.address === undefined) mapping.address = i;
+        } else if (h.includes("電話") || h.includes("TEL") || h.includes("tel") || h.includes("連絡")) {
+          if (mapping.contact === undefined) mapping.contact = i;
+        } else if (h.includes("担当") || lower.includes("assignee")) {
+          if (mapping.assignee === undefined) mapping.assignee = i;
+        }
+      });
+      // 1件目から末尾までデータ行
+      const dataRows = rows.slice(1).filter(r => r.some(c => String(c || "").trim() !== ""));
+      setImportPreview({
+        sheetName,
+        headers,
+        dataRows,
+        mapping,
+        totalRows: dataRows.length,
+        defaultAssignee: getCurrentUser() || MEMBERS[0],
+      });
+    } catch (err) {
+      console.error(err);
+      alert("ファイル読み込みに失敗しました: " + err.message);
     }
     setImporting(false);
+    // input をリセット（同じファイルを再選択できるように）
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  // インポート実行
+  const executeImport = () => {
+    if (!importPreview) return;
+    const { dataRows, mapping, defaultAssignee } = importPreview;
+    const newItems = [];
+    let uid = Date.now();
+    
+    // 日付の正規化（Excelのシリアル値 or 文字列に対応）
+    const normalizeDate = (v) => {
+      if (!v) return "";
+      // Excel のシリアル番号（数値）
+      if (typeof v === "number" && v > 0) {
+        const d = new Date((v - 25569) * 86400 * 1000);
+        if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
+      }
+      const s = String(v).trim();
+      if (!s) return "";
+      // 日付形式の自動検出: "2026/3/15", "2026-03-15", "2026年3月15日"
+      const m1 = s.match(/(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
+      if (m1) return `${m1[1]}-${String(m1[2]).padStart(2, "0")}-${String(m1[3]).padStart(2, "0")}`;
+      return s;
+    };
+
+    dataRows.forEach(row => {
+      const getRaw = (key) => mapping[key] !== undefined ? row[mapping[key]] : "";
+      const get = (key) => String(getRaw(key) || "").trim();
+      const address = get("address");
+      if (!address) return; // 住所なしはスキップ
+      
+      // 備考とメモを統合
+      const bikou = get("bikou");
+      const memo = get("memo");
+      const combinedMemo = [bikou, memo].filter(Boolean).join("\n---\n");
+      
+      // ステータスを既存の値に正規化
+      const rawStatus = get("status");
+      let status = "未訪問";
+      if (rawStatus) {
+        const found = ATTACK_STATUSES.find(s => rawStatus.includes(s) || s.includes(rawStatus));
+        if (found) status = found;
+        else if (rawStatus.includes("訪問") && !rawStatus.includes("未")) status = "訪問済";
+        else if (rawStatus.includes("不在")) status = "不在";
+        else if (rawStatus.includes("NG") || rawStatus.includes("ng")) status = "NG";
+        else if (rawStatus.includes("見込") || rawStatus.includes("検討")) status = "見込";
+        else if (rawStatus.includes("居住")) status = "居住している";
+      }
+      
+      newItems.push({
+        id: uid++,
+        bmPage: get("bmPage"),
+        address,
+        owner: get("owner"),
+        ownerAddr: get("ownerAddr"),
+        ownerContact: get("contact"),
+        dm: get("dm") || "未",
+        visit: get("visit") || "未",
+        status,
+        nextVisit: normalizeDate(getRaw("nextVisit")),
+        memo: combinedMemo,
+        assignee: get("assignee") || defaultAssignee,
+        date: normalizeDate(getRaw("date")) || today,
+        area: "",
+      });
+    });
+    if (newItems.length === 0) {
+      alert("インポート可能なデータがありませんでした（住所列が必要です）");
+      return;
+    }
+    setData(d => {
+      const next = { ...d, jiage: [...(d.jiage || []), ...newItems] };
+      return appendLog(next, "import", "jiage", `Excelから${newItems.length}件インポート`);
+    });
+    alert(`✅ ${newItems.length}件をインポートしました！`);
+    setImportPreview(null);
   };
 
   // 地上げと所有者を統合
@@ -4956,7 +5081,7 @@ function JiagePage({ data, setData }) {
                 {[["jiage", "📍 地上げ物件"], ["owner", "👤 所有者アタック"]].map(([type, label]) => (
                   <button key={type} onClick={() => { setAddType(type); setForm(type === "jiage" ? emptyJiage : emptyOwner); setEditItem(null); setShowAdd(true); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid #1a2535` }}>{label}</button>
                 ))}
-                <button onClick={() => { setShowImport(true); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.success, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>📥 Excelからインポート</button>
+                <button onClick={() => { fileInputRef.current?.click(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.success, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>📥 Excel/CSVをインポート</button>
               </div>
             )}
           </div>
@@ -5289,8 +5414,112 @@ function JiagePage({ data, setData }) {
         </BottomSheet>
       )}
 
-      {/* Excelインポートモーダル */}
-      {showImport && <ImportModal onClose={() => setShowImport(false)} onImport={handleImport} importing={importing} currentCount={(data.jiage||[]).length} />}
+      {/* 📊 Excelファイル直接インポート */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".xlsx,.xls,.csv"
+        style={{ display: "none" }}
+        onChange={handleFileSelect}
+      />
+
+      {/* インポートプレビューBottomSheet */}
+      {importPreview && (
+        <BottomSheet title={`📊 Excelインポート確認`} onClose={() => setImportPreview(null)}>
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>📋 シート: <b style={{ color: C.text }}>{importPreview.sheetName}</b></div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>📊 検出行数: <b style={{ color: C.accent }}>{importPreview.totalRows}件</b></div>
+            <div style={{ fontSize: 11, color: C.muted }}>📑 ヘッダー: {importPreview.headers.filter(h => h).slice(0, 6).join(" / ")}</div>
+          </div>
+
+          {/* 列マッピング */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 8 }}>🔗 列マッピング（自動検出済）</div>
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 10, marginBottom: 12 }}>
+            {[
+              ["bmPage", "📖 BMページ数"],
+              ["address", "📍 物件住所（必須）"],
+              ["owner", "👤 所有者"],
+              ["ownerAddr", "🏠 所有者住所"],
+              ["contact", "📞 連絡先"],
+              ["dm", "📨 DM"],
+              ["visit", "✅ 住確"],
+              ["status", "🚦 訪問状況"],
+              ["date", "📅 初訪"],
+              ["nextVisit", "📅 再訪予定"],
+              ["bikou", "📝 備考"],
+              ["memo", "📝 メモ"],
+              ["assignee", "👥 担当者"],
+            ].map(([key, label]) => (
+              <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: `1px solid #1a2535`, fontSize: 12 }}>
+                <span style={{ color: C.muted }}>{label}</span>
+                <select
+                  value={importPreview.mapping[key] !== undefined ? importPreview.mapping[key] : ""}
+                  onChange={e => setImportPreview(p => ({
+                    ...p,
+                    mapping: { ...p.mapping, [key]: e.target.value === "" ? undefined : Number(e.target.value) }
+                  }))}
+                  style={{
+                    background: "#0a0f1a", border: `1px solid #1a2535`, color: C.text,
+                    borderRadius: 6, padding: "4px 8px", fontSize: 11, fontFamily: "inherit",
+                  }}>
+                  <option value="">(なし)</option>
+                  {importPreview.headers.map((h, i) => (
+                    <option key={i} value={i}>{i + 1}列目: {h || "(無題)"}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+
+          {/* デフォルト担当者 */}
+          <Field label="担当者列が空の場合のデフォルト">
+            <select style={inp} value={importPreview.defaultAssignee} onChange={e => setImportPreview(p => ({ ...p, defaultAssignee: e.target.value }))}>
+              {MEMBERS.map(m => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+
+          {/* プレビュー（最初の3件） */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 8, marginTop: 10 }}>👀 プレビュー（最初の3件）</div>
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 10, marginBottom: 14, maxHeight: 240, overflowY: "auto" }}>
+            {importPreview.dataRows.slice(0, 3).map((row, i) => {
+              const get = (key) => importPreview.mapping[key] !== undefined ? String(row[importPreview.mapping[key]] || "").trim() : "";
+              return (
+                <div key={i} style={{ padding: "8px 0", borderBottom: i < 2 ? `1px solid #1a2535` : "none", fontSize: 11 }}>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 3, flexWrap: "wrap" }}>
+                    {get("bmPage") && <span style={{ background: C.accent + "33", color: C.accent, padding: "1px 5px", borderRadius: 4, fontSize: 9, fontWeight: 700 }}>P.{get("bmPage")}</span>}
+                    {get("status") && <span style={{ background: C.warn + "33", color: C.warn, padding: "1px 5px", borderRadius: 4, fontSize: 9, fontWeight: 700 }}>{get("status")}</span>}
+                    {get("dm") && <span style={{ background: C.purple + "33", color: C.purple, padding: "1px 5px", borderRadius: 4, fontSize: 9, fontWeight: 700 }}>DM:{get("dm")}</span>}
+                  </div>
+                  <div style={{ color: C.text, fontWeight: 700, marginBottom: 2 }}>📍 {get("address") || <span style={{ color: C.danger }}>(住所なし)</span>}</div>
+                  {get("owner") && <div style={{ color: C.muted, fontSize: 10 }}>👤 {get("owner")}</div>}
+                  {get("ownerAddr") && <div style={{ color: C.muted, fontSize: 10 }}>🏠 {get("ownerAddr")}</div>}
+                  {get("date") && <div style={{ color: C.muted, fontSize: 10 }}>📅 初訪: {get("date")}</div>}
+                  {get("nextVisit") && <div style={{ color: C.muted, fontSize: 10 }}>📅 再訪予定: {get("nextVisit")}</div>}
+                  {(get("bikou") || get("memo")) && <div style={{ color: C.muted, fontSize: 10 }}>📝 {[get("bikou"), get("memo")].filter(Boolean).join(" / ").slice(0, 50)}{([get("bikou"), get("memo")].filter(Boolean).join(" / ").length > 50) ? "…" : ""}</div>}
+                </div>
+              );
+            })}
+            {importPreview.dataRows.length > 3 && (
+              <div style={{ color: C.muted, fontSize: 10, textAlign: "center", padding: 4 }}>...他 {importPreview.dataRows.length - 3}件</div>
+            )}
+          </div>
+
+          {!importPreview.mapping.address && (
+            <div style={{ background: C.danger + "22", color: C.danger, padding: "10px 12px", borderRadius: 8, fontSize: 11, fontWeight: 700, marginBottom: 10 }}>
+              ⚠️ 「住所」列が必須です。列マッピングで指定してください
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setImportPreview(null)}>キャンセル</button>
+            <button
+              style={{ ...btnStyle(), flex: 2, opacity: importPreview.mapping.address === undefined ? 0.4 : 1 }}
+              disabled={importPreview.mapping.address === undefined}
+              onClick={executeImport}
+            >📥 {importPreview.totalRows}件インポート</button>
+          </div>
+        </BottomSheet>
+      )}
     </div>
   );
 }
