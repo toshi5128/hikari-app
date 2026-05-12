@@ -3087,6 +3087,8 @@ function ApproachPage({ data, setData }) {
 
   // ===== 月次タブ用：日別チャート =====
   const [dailyChartMember, setDailyChartMember] = useState(getCurrentUser() || MEMBERS[0]);
+  // 積算表の編集モード（案件タブ内のカードから開く）
+  const [editingSekisan, setEditingSekisan] = useState(null);
 
   // ===== 案件タブ用 =====
   const [casesMember, setCasesMember] = useState("__ALL__"); // "__ALL__" or member name
@@ -3309,6 +3311,46 @@ function ApproachPage({ data, setData }) {
     });
   }, []);
 
+  // 積算表の編集モード（案件タブから開いた時）
+  if (editingSekisan) {
+    return <SekisanForm
+      initial={editingSekisan}
+      onSave={(form) => {
+        const item = { ...form, id: editingSekisan.id || Date.now() };
+        setData(d => ({
+          ...d,
+          sekisan: editingSekisan.id
+            ? d.sekisan.map(s => s.id === item.id ? item : s)
+            : [...d.sekisan, item]
+        }));
+        setEditingSekisan(null);
+      }}
+      onClose={() => setEditingSekisan(null)}
+      onTransfer={(form) => {
+        const stockItem = {
+          id: Date.now(),
+          assignee: form.assignee,
+          name: form.address,
+          status: "仕入契約済",
+          buyDate: new Date().toISOString().split("T")[0],
+          buyCost: Number(form.buyPrice) * 10000 || 0,
+          sellPrice: Number(form.sellPrice) * 10000 || 0,
+          memo: `仕入検討積算表から転記\n判定: ${form.judgment}`,
+          year: new Date().getFullYear(),
+          fromSekisanId: editingSekisan.id,
+        };
+        setData(d => ({
+          ...d,
+          stocks: [...d.stocks, stockItem],
+          sekisan: d.sekisan.map(s => s.id === editingSekisan.id ? { ...form, id: editingSekisan.id } : s)
+        }));
+        setEditingSekisan(null);
+        alert(`✅「${form.address}」を在庫管理に転記しました！`);
+      }}
+      canEditThis={true}
+    />;
+  }
+
   return (
     <div>
       <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 14 }}>📞 業者アプローチ管理</div>
@@ -3526,19 +3568,32 @@ function ApproachPage({ data, setData }) {
               const key = casesExpanded.slice(6); // "month_xxx" -> "xxx"
               const config = {
                 sekisan: { items: weekActivity.newSekisan, color: C.warn, icon: "🧮", title: "新規積算",
-                  render: (s) => ({
-                    title: s.address || "(住所未設定)",
-                    sub: `${s.judgment || "判断未"}${s.buyPrice ? " · 仕入想定" + Math.round(Number(s.buyPrice)/10000) + "万" : ""}${s.sellPrice ? " · 売却想定" + Math.round(Number(s.sellPrice)/10000) + "万" : ""}`,
-                    date: s.createdAt,
-                    badge: s.assignee,
-                    judgment: s.judgment,
-                  })},
+                  render: (s) => {
+                    const buyPriceYen = Number(s.buyPrice) || 0;
+                    const sellPriceYen = Number(s.sellPrice) || 0;
+                    const expensesYen = ["brokerFeeIn","registration","acquisitionTax","stamp","leftover","reform","demolition","brokerFeeOut","other"].reduce((a, k) => a + (Number(s[k])||0), 0);
+                    const totalCostYen = buyPriceYen + expensesYen;
+                    const profitYen = sellPriceYen - totalCostYen;
+                    const buyMan = Math.round(buyPriceYen / 10000);
+                    const sellMan = Math.round(sellPriceYen / 10000);
+                    const profitMan = Math.round(profitYen / 10000);
+                    return {
+                      title: s.address || "(住所未設定)",
+                      sub: `${s.judgment || "判断未"}${buyMan ? " · 仕入" + buyMan + "万" : ""}${sellMan ? " · 売却" + sellMan + "万" : ""}`,
+                      date: s.createdAt,
+                      badge: s.assignee,
+                      judgment: s.judgment,
+                      sekisanDetail: { buyMan, sellMan, profitMan, totalCostMan: Math.round(totalCostYen/10000), expensesMan: Math.round(expensesYen/10000), memo: s.memo, judgmentMemo: s.judgmentMemo, layout: s.layout, landArea: s.landArea, buildingArea: s.buildingArea, age: s.age, structure: s.structure, stationDist: s.stationDist },
+                      rawSekisan: s,
+                    };
+                  }},
                 purchase: { items: weekActivity.newPurchase, color: C.accent, icon: "🏠", title: "仕入確定",
                   render: (s) => ({
                     title: s.name || "(無題)",
                     sub: `${s.status} · 仕入${Math.round((s.buyCost||0)/10000)}万 · 想定売却${Math.round((s.sellPrice||0)/10000)}万`,
                     date: s.buyDate,
                     badge: s.assignee,
+                    stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo },
                   })},
                 completed: { items: weekActivity.newCompleted, color: C.success, icon: "✅", title: "決済完了",
                   render: (s) => {
@@ -3549,15 +3604,28 @@ function ApproachPage({ data, setData }) {
                       date: s.sellDate,
                       badge: s.assignee,
                       highlight: profit > 0 ? `+${Math.round(profit/10000)}万` : null,
+                      stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo, profitMan: Math.round(profit/10000) },
                     };
                   }},
                 hot: { items: weekActivity.currentHot, color: C.danger, icon: "🔥", title: "現在「熱い」",
-                  render: (s) => ({
-                    title: s.address || "(住所未設定)",
-                    sub: `仕入想定${s.buyPrice ? Math.round(Number(s.buyPrice)/10000) + "万" : "未"} · 売却想定${s.sellPrice ? Math.round(Number(s.sellPrice)/10000) + "万" : "未"}`,
-                    date: s.createdAt,
-                    badge: s.assignee,
-                  })},
+                  render: (s) => {
+                    const buyPriceYen = Number(s.buyPrice) || 0;
+                    const sellPriceYen = Number(s.sellPrice) || 0;
+                    const expensesYen = ["brokerFeeIn","registration","acquisitionTax","stamp","leftover","reform","demolition","brokerFeeOut","other"].reduce((a, k) => a + (Number(s[k])||0), 0);
+                    const totalCostYen = buyPriceYen + expensesYen;
+                    const profitYen = sellPriceYen - totalCostYen;
+                    const buyMan = Math.round(buyPriceYen / 10000);
+                    const sellMan = Math.round(sellPriceYen / 10000);
+                    const profitMan = Math.round(profitYen / 10000);
+                    return {
+                      title: s.address || "(住所未設定)",
+                      sub: `仕入想定${buyMan}万 · 売却想定${sellMan}万${profitMan ? " · 利益" + profitMan + "万" : ""}`,
+                      date: s.createdAt,
+                      badge: s.assignee,
+                      sekisanDetail: { buyMan, sellMan, profitMan, totalCostMan: Math.round(totalCostYen/10000), expensesMan: Math.round(expensesYen/10000), memo: s.memo, judgmentMemo: s.judgmentMemo, layout: s.layout, landArea: s.landArea, buildingArea: s.buildingArea, age: s.age, structure: s.structure, stationDist: s.stationDist },
+                      rawSekisan: s,
+                    };
+                  }},
               };
               const cfg = config[key];
               if (!cfg) return null;
@@ -3598,17 +3666,62 @@ function ApproachPage({ data, setData }) {
                       const JCOLOR = { "熱い": C.danger, "検討中": C.warn, "普通": C.muted, "見送り": "#334155" };
                       const JEMOJI = { "熱い": "🔥", "検討中": "🟡", "普通": "⚪", "見送り": "❌" };
                       return (
-                        <div key={i} style={{ padding: "9px 6px", borderBottom: i < sortedItems.length - 1 ? `1px solid #1a2535` : "none" }}>
+                        <div key={i} style={{ padding: "10px 8px", borderBottom: i < sortedItems.length - 1 ? `1px solid #1a2535` : "none" }}>
                           <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
                             <span style={{ color: C.text, fontSize: 13, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
                             {r.judgment && <span style={{ background: (JCOLOR[r.judgment] || C.muted) + "33", color: JCOLOR[r.judgment] || C.muted, padding: "2px 6px", borderRadius: 8, fontSize: 10, fontWeight: 700 }}>{JEMOJI[r.judgment] || ""}{r.judgment}</span>}
                             <MemberTag name={r.badge} />
                             {r.highlight && <Tag label={r.highlight} color={C.success} />}
                           </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: r.sekisanDetail ? 8 : 0 }}>
                             <span style={{ color: C.muted, fontSize: 11, flex: 1 }}>{r.sub}</span>
                             {r.date && <span style={{ color: C.muted, fontSize: 11, flexShrink: 0 }}>{r.date}</span>}
                           </div>
+
+                          {/* 📋 積算詳細情報（rawSekisan ある時） */}
+                          {r.sekisanDetail && (
+                            <div style={{ background: "#080d18", border: `1px solid #1a2535`, borderRadius: 8, padding: "8px 10px", marginTop: 6 }}>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, fontSize: 10, marginBottom: 6 }}>
+                                <div>
+                                  <div style={{ color: C.muted, fontSize: 9 }}>仕入</div>
+                                  <div style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>{r.sekisanDetail.buyMan}<span style={{ fontSize: 9, marginLeft: 1 }}>万</span></div>
+                                </div>
+                                <div>
+                                  <div style={{ color: C.muted, fontSize: 9 }}>売却想定</div>
+                                  <div style={{ color: C.warn, fontWeight: 700, fontSize: 13 }}>{r.sekisanDetail.sellMan}<span style={{ fontSize: 9, marginLeft: 1 }}>万</span></div>
+                                </div>
+                                <div>
+                                  <div style={{ color: C.muted, fontSize: 9 }}>想定利益</div>
+                                  <div style={{ color: r.sekisanDetail.profitMan > 0 ? C.success : C.danger, fontWeight: 800, fontSize: 13 }}>{r.sekisanDetail.profitMan > 0 ? "+" : ""}{r.sekisanDetail.profitMan}<span style={{ fontSize: 9, marginLeft: 1 }}>万</span></div>
+                                </div>
+                              </div>
+                              {(r.sekisanDetail.layout || r.sekisanDetail.landArea || r.sekisanDetail.buildingArea || r.sekisanDetail.age) && (
+                                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, lineHeight: 1.5 }}>
+                                  {r.sekisanDetail.age && <span style={{ marginRight: 8 }}>築{r.sekisanDetail.age}年</span>}
+                                  {r.sekisanDetail.structure && <span style={{ marginRight: 8 }}>{r.sekisanDetail.structure}</span>}
+                                  {r.sekisanDetail.layout && <span style={{ marginRight: 8 }}>{r.sekisanDetail.layout}</span>}
+                                  {r.sekisanDetail.landArea && <span style={{ marginRight: 8 }}>土地{r.sekisanDetail.landArea}㎡</span>}
+                                  {r.sekisanDetail.buildingArea && <span style={{ marginRight: 8 }}>建物{r.sekisanDetail.buildingArea}㎡</span>}
+                                  {r.sekisanDetail.stationDist && <span>駅{r.sekisanDetail.stationDist}分</span>}
+                                </div>
+                              )}
+                              {r.sekisanDetail.judgmentMemo && (
+                                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, lineHeight: 1.5, padding: "4px 6px", background: (JCOLOR[r.judgment]||C.muted)+"11", borderRadius: 4, borderLeft: `2px solid ${JCOLOR[r.judgment]||C.muted}` }}>
+                                  💭 {r.sekisanDetail.judgmentMemo.length > 60 ? r.sekisanDetail.judgmentMemo.slice(0, 60) + "…" : r.sekisanDetail.judgmentMemo}
+                                </div>
+                              )}
+                              {r.sekisanDetail.memo && (
+                                <div style={{ fontSize: 10, color: C.muted, marginBottom: 6, lineHeight: 1.5 }}>
+                                  📝 {r.sekisanDetail.memo.length > 60 ? r.sekisanDetail.memo.slice(0, 60) + "…" : r.sekisanDetail.memo}
+                                </div>
+                              )}
+                              <button onClick={() => setEditingSekisan(r.rawSekisan)} style={{
+                                width: "100%", padding: "7px", background: C.warn + "22", border: `1.5px solid ${C.warn}`,
+                                color: C.warn, borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit",
+                                marginTop: 4,
+                              }}>📋 物件の詳細を見る・編集する</button>
+                            </div>
+                          )}
                         </div>
                       );
                     })
@@ -6495,7 +6608,7 @@ function SekisanPage({ data, setData, onBack, embedded = false }) {
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
   const [filterMember, setFilterMember] = useState("すべて");
-  const [filterJudgment, setFilterJudgment] = useState("すべて");
+  const [filterJudgment, setFilterJudgment] = useState(embedded ? "熱い" : "すべて");
 
   const JCOLOR = { "熱い": C.danger, "検討中": C.warn, "普通": C.muted, "見送り": "#334155" };
   const JEMOJI = { "熱い": "🔥", "検討中": "🟡", "普通": "⚪", "見送り": "❌" };
@@ -6575,17 +6688,37 @@ function SekisanPage({ data, setData, onBack, embedded = false }) {
           <button key={m} onClick={() => setFilterMember(m)} style={{ padding: "6px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, background: filterMember === m ? C.accent : "#0d1422", color: filterMember === m ? "#fff" : C.muted, border: `1px solid ${filterMember === m ? C.accent : "#1a2535"}`, fontFamily: "inherit" }}>{m}</button>
         ))}
       </div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-        {["すべて", "熱い", "検討中", "普通", "見送り"].map(j => (
-          <button key={j} onClick={() => setFilterJudgment(j)} style={{ padding: "6px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, background: filterJudgment === j ? (JCOLOR[j] || C.accent) : "#0d1422", color: filterJudgment === j ? "#fff" : C.muted, border: `1px solid ${filterJudgment === j ? (JCOLOR[j] || C.accent) : "#1a2535"}`, fontFamily: "inherit" }}>
-            {JEMOJI[j] || ""} {j}
-          </button>
-        ))}
+      {/* 判定別タブ（件数バッジ付き） */}
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10, background: "#0a0f1a", padding: 4, borderRadius: 10, border: `1px solid #1a2535` }}>
+        {["熱い", "検討中", "普通", "見送り", "すべて"].map(j => {
+          const count = j === "すべて" 
+            ? data.sekisan.filter(s => filterMember === "すべて" || s.assignee === filterMember).length
+            : data.sekisan.filter(s => (filterMember === "すべて" || s.assignee === filterMember) && s.judgment === j).length;
+          const active = filterJudgment === j;
+          const jcolor = JCOLOR[j] || C.accent;
+          return (
+            <button key={j} onClick={() => setFilterJudgment(j)} style={{
+              flex: "1 1 auto", minWidth: 70, padding: "8px 6px", borderRadius: 7,
+              cursor: "pointer", fontSize: 11, fontWeight: 700,
+              background: active ? jcolor : "transparent",
+              color: active ? "#fff" : (count > 0 ? jcolor : C.muted),
+              border: `1.5px solid ${active ? jcolor : (count > 0 ? jcolor + "44" : "#1a2535")}`,
+              fontFamily: "inherit", display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+              transition: "all 0.15s",
+            }}>
+              <span style={{ fontSize: 14 }}>{JEMOJI[j] || "📋"}</span>
+              <span style={{ fontSize: 10 }}>{j}</span>
+              <span style={{ fontSize: 16, fontWeight: 800, lineHeight: 1 }}>{count}</span>
+            </button>
+          );
+        })}
       </div>
-      <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
+      <div style={{ color: C.muted, fontSize: 11, marginBottom: 10 }}>
+        {filterJudgment === "すべて" ? "全件表示中" : `${JEMOJI[filterJudgment]}${filterJudgment} のみ表示`} · {filtered.length}件
+      </div>
 
       {filtered.length === 0 && (
-        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 32, textAlign: "center", color: C.muted }}>まだ積算表がありません</div>
+        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 32, textAlign: "center", color: C.muted }}>該当する積算表がありません</div>
       )}
 
       {filtered.map(s => {
