@@ -189,6 +189,21 @@ function isAssignedTo(assignees, member) {
   return expanded.includes(member);
 }
 
+// 編集権限チェック：管理者は全件編集可、一般メンバーは自分が担当者の場合のみ
+function canEditItem(item, currentUser, adminMember = "下田") {
+  if (!currentUser) return false; // 未認証は全て不可
+  if (currentUser === adminMember) return true; // 管理者は全権限
+  if (!item) return false;
+  // 単一assignee（stocks/jiage/owners/sekisan/yakusho）
+  // 配列assignees（customEvents）
+  // memberプロパティ（approaches）
+  const single = item.assignee || item.member || "";
+  const arr = item.assignees || [];
+  const createdBy = item.createdBy || "";
+  const all = [single, ...arr, createdBy].filter(Boolean);
+  return isAssignedTo(all, currentUser);
+}
+
 // 日付文字列から曜日ラベル（色付き）を返す
 function dayOfWeekLabel(dateStr) {
   if (!dateStr) return null;
@@ -1099,6 +1114,11 @@ function FilterChips({ options, value, onChange, multi = false }) {
 function Dashboard({ data, setData }) {
   const today = new Date().toISOString().split("T")[0];
   const currentYear = new Date().getFullYear();
+  // 権限制御用
+  const currentUser = getCurrentUser();
+  const adminMember = data.adminMember || "下田";
+  const isAdmin = currentUser === adminMember;
+  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
   const [selectedYear, setSelectedYear] = useState(currentYear);
   const [showGoalEdit, setShowGoalEdit] = useState(false);
   const [goalForm, setGoalForm] = useState({
@@ -1116,6 +1136,10 @@ function Dashboard({ data, setData }) {
   const [quickEditOwnerForm, setQuickEditOwnerForm] = useState(null);
 
   const openQuickEdit = (stock) => {
+    if (!canEdit(stock)) {
+      alert(`⚠️ 編集権限がありません\n\nこの物件の担当者は「${stock.assignee}」さんです。\n管理者（${adminMember}）または担当者本人のみ編集できます。`);
+      return;
+    }
     setQuickEditStock(stock);
     setQuickEditForm({
       ...stock,
@@ -1141,6 +1165,10 @@ function Dashboard({ data, setData }) {
   };
 
   const openJiageEdit = (j) => {
+    if (!canEdit(j)) {
+      alert(`⚠️ 編集権限がありません\n\nこの地上げの担当者は「${j.assignee}」さんです。\n管理者（${adminMember}）または担当者本人のみ編集できます。`);
+      return;
+    }
     setQuickEditJiage(j);
     setQuickEditJiageForm({ ...j });
   };
@@ -1157,6 +1185,10 @@ function Dashboard({ data, setData }) {
   };
 
   const openOwnerEdit = (o) => {
+    if (!canEdit(o)) {
+      alert(`⚠️ 編集権限がありません\n\nこの所有者アタックの担当者は「${o.assignee}」さんです。\n管理者（${adminMember}）または担当者本人のみ編集できます。`);
+      return;
+    }
     setQuickEditOwner(o);
     setQuickEditOwnerForm({ ...o });
   };
@@ -1191,6 +1223,11 @@ function Dashboard({ data, setData }) {
   };
 
   const openEditEvent = (ev) => {
+    if (!canEdit(ev)) {
+      const assigneeLabel = (ev.assignees || []).length > 0 ? ev.assignees.join("・") : (ev.createdBy || "他のメンバー");
+      alert(`⚠️ 編集権限がありません\n\nこの予定の担当者/作成者は「${assigneeLabel}」です。\n管理者（${adminMember}）または担当者本人のみ編集できます。`);
+      return;
+    }
     setEventForm({
       title: ev.title || "",
       date: ev.date || today,
@@ -1259,6 +1296,11 @@ function Dashboard({ data, setData }) {
   const handleDeleteEvent = (id) => {
     const target = (data.customEvents || []).find(e => e.id === id);
     if (!target) return;
+    if (!canEdit(target)) {
+      const assigneeLabel = (target.assignees || []).length > 0 ? target.assignees.join("・") : (target.createdBy || "他のメンバー");
+      alert(`⚠️ 削除権限がありません\n\nこの予定の担当者/作成者は「${assigneeLabel}」です。\n管理者（${adminMember}）または担当者本人のみ削除できます。`);
+      return;
+    }
     if (!window.confirm(`予定「${target.title}」を削除しますか？`)) return;
     setData(d => {
       const next = { ...d, customEvents: (d.customEvents || []).filter(e => e.id !== id) };
@@ -1828,15 +1870,16 @@ function Dashboard({ data, setData }) {
                       {e.assignees.map(a => <MemberTag key={a} name={a} />)}
                     </div>
                   ) : (e.assignee && <MemberTag name={e.assignee} />)}
-                  {e.isCustom && (
-                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                      <button onClick={() => {
-                        const customEv = (data.customEvents || []).find(ev => ev.id === e.rawId);
-                        if (customEv) openEditEvent(customEv);
-                      }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "6px 9px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
-                      <button onClick={() => handleDeleteEvent(e.rawId)} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "6px 9px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
-                    </div>
-                  )}
+                  {e.isCustom && (() => {
+                    const customEv = (data.customEvents || []).find(ev => ev.id === e.rawId);
+                    if (!customEv || !canEdit(customEv)) return null;
+                    return (
+                      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                        <button onClick={() => openEditEvent(customEv)} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "6px 9px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
+                        <button onClick={() => handleDeleteEvent(e.rawId)} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "6px 9px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
+                      </div>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -2254,11 +2297,19 @@ function Dashboard({ data, setData }) {
                 <span style={{ color: C.muted }}>売値 <span style={{ color: C.text }}>{(nv(s.sellPrice) / 10000).toFixed(0)}万</span></span>
                 <span style={{ color: C.muted }}>利益 <span style={{ color: C.success, fontWeight: 700 }}>{((nv(s.sellPrice) - nv(s.buyCost)) / 10000).toFixed(0)}万</span></span>
               </div>
-              <button onClick={() => openQuickEdit(s)} style={{
-                width: "100%", background: C.accent + "22", border: `1.5px solid ${C.accent}`,
-                color: C.accent, borderRadius: 8, padding: "9px", cursor: "pointer",
-                fontSize: 13, fontWeight: 700, fontFamily: "inherit",
-              }}>✏ クイック編集</button>
+              {canEdit(s) ? (
+                <button onClick={() => openQuickEdit(s)} style={{
+                  width: "100%", background: C.accent + "22", border: `1.5px solid ${C.accent}`,
+                  color: C.accent, borderRadius: 8, padding: "9px", cursor: "pointer",
+                  fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+                }}>✏ クイック編集</button>
+              ) : (
+                <div style={{
+                  width: "100%", background: C.bg, border: `1px solid #1a2535`,
+                  color: C.muted, borderRadius: 8, padding: "9px", textAlign: "center",
+                  fontSize: 12, fontWeight: 600,
+                }}>👁 閲覧のみ（{s.assignee}さん担当）</div>
+              )}
             </div>
           );
         })}
@@ -2455,6 +2506,10 @@ function Dashboard({ data, setData }) {
 
 // ===================== STOCK PAGE =====================
 function StockPage({ data, setData }) {
+  const currentUser = getCurrentUser();
+  const adminMember = data.adminMember || "下田";
+  const isAdmin = currentUser === adminMember;
+  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
   const [showAdd, setShowAdd] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
@@ -2631,8 +2686,18 @@ function StockPage({ data, setData }) {
             })()}
             {s.memo && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{s.memo}</div>}
             <div style={{ display: "flex", gap: 8 }}>
-              <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(s)}>編集</button>
-              <button style={{ ...btnStyle("danger"), padding: "10px 14px", fontSize: 14 }} onClick={() => handleDelete(s.id)}>削除</button>
+              {canEdit(s) ? (
+                <>
+                  <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(s)}>編集</button>
+                  <button style={{ ...btnStyle("danger"), padding: "10px 14px", fontSize: 14 }} onClick={() => handleDelete(s.id)}>削除</button>
+                </>
+              ) : (
+                <div style={{
+                  flex: 1, padding: "10px", textAlign: "center",
+                  background: C.bg, border: `1px solid #1a2535`, borderRadius: 10,
+                  color: C.muted, fontSize: 12,
+                }}>👁 閲覧のみ（{s.assignee}さん担当）</div>
+              )}
             </div>
           </div>
         );
@@ -2984,8 +3049,14 @@ function ApproachPage({ data, setData }) {
   const today = new Date().toISOString().split("T")[0];
   const currentYM = today.slice(0, 7);
 
+  // 権限制御
+  const currentUser = getCurrentUser();
+  const adminMember = data.adminMember || "下田";
+  const isAdmin = currentUser === adminMember;
+
   const [tab, setTab] = useState("cases"); // "cases" | "input" | "monthly" | "goals"
-  const [selectedMember, setSelectedMember] = useState(MEMBERS[0]);
+  // 一般メンバーは自分自身を初期選択、管理者は1番目のメンバー
+  const [selectedMember, setSelectedMember] = useState(currentUser && !isAdmin ? currentUser : MEMBERS[0]);
   const [selectedYM, setSelectedYM] = useState(currentYM);
   const [selectedDate, setSelectedDate] = useState(today);
   const [inputValues, setInputValues] = useState({});
@@ -3045,6 +3116,11 @@ function ApproachPage({ data, setData }) {
   // ===== 自動保存：実際に変更があるときだけ保存（debounce 800ms） =====
   useEffect(() => {
     if (!isLoaded) return; // 初回読み込み完了前はスキップ
+    // 権限チェック：管理者でなく、自分以外のメンバーが選択されてる場合は保存しない
+    if (!isAdmin && currentUser && selectedMember !== currentUser) {
+      setAutoSaveStatus("idle");
+      return;
+    }
 
     // 既存レコードと現在の入力を比較。同じなら保存しない（無駄なSupabaseリクエスト防止）
     const rec = data.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
@@ -3526,17 +3602,39 @@ function ApproachPage({ data, setData }) {
       {/* ===== 入力タブ ===== */}
       {tab === "input" && (
         <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
+          {/* 一般メンバー警告 */}
+          {!isAdmin && currentUser && selectedMember !== currentUser && (
+            <div style={{ background: C.warn + "22", border: `1px solid ${C.warn}66`, borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+              <div style={{ color: C.warn, fontSize: 13, fontWeight: 700, marginBottom: 4 }}>👁 閲覧モード</div>
+              <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.6 }}>
+                {selectedMember}さんのデータは閲覧のみです。<br />
+                自分（{currentUser}）のデータを入力するには、担当者を「{currentUser}」に切り替えてください。
+              </div>
+            </div>
+          )}
+
           {/* ヘッダー：担当者＋日付 */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-            <Field label="👤 担当者">
+            <Field label={<>👤 担当者{!isAdmin && <span style={{ color: C.muted, fontSize: 10, marginLeft: 4 }}>（管理者以外は自分のみ入力可）</span>}</>}>
               <select style={inp} value={selectedMember} onChange={e => setSelectedMember(e.target.value)}>
-                {MEMBERS.map(m => <option key={m}>{m}</option>)}
+                {MEMBERS.map(m => {
+                  const editable = isAdmin || m === currentUser;
+                  return <option key={m} value={m}>{m}{!editable ? " 👁" : ""}</option>;
+                })}
               </select>
             </Field>
             <Field label={<>📅 日付{(() => { const d = dayOfWeekLabel(selectedDate); return d ? <span style={{ color: d.color, marginLeft: 6, fontWeight: 800 }}>({d.label})</span> : null; })()}</>}>
               <input type="date" style={inp} value={selectedDate} onChange={e => setSelectedDate(e.target.value)} />
             </Field>
           </div>
+
+          {/* 編集可否で全体をラップ：閲覧モードなら全フォームを薄く＆操作不可に */}
+          <div style={{
+            opacity: (!isAdmin && currentUser && selectedMember !== currentUser) ? 0.55 : 1,
+            pointerEvents: (!isAdmin && currentUser && selectedMember !== currentUser) ? "none" : "auto",
+            filter: (!isAdmin && currentUser && selectedMember !== currentUser) ? "saturate(0.6)" : "none",
+            transition: "opacity 0.2s",
+          }}>
 
           {/* 📡 自動保存インジケータ（常時表示） */}
           <div style={{
@@ -3879,6 +3977,7 @@ function ApproachPage({ data, setData }) {
                 ? <>✅ 最終保存 {lastSavedAt.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}（全端末で共有済み）</>
                 : "✨ 入力するたびに自動で保存・同期されます"}
           </div>
+          </div>{/* end of edit-ability wrapper */}
         </div>
       )}
 
@@ -4395,6 +4494,10 @@ function ApproachPage({ data, setData }) {
 const JIAGE_AREAS = ["熊谷", "行田", "深谷", "東松山", "本庄", "秩父", "上里"];
 
 function JiagePage({ data, setData }) {
+  const currentUser = getCurrentUser();
+  const adminMember = data.adminMember || "下田";
+  const isAdmin = currentUser === adminMember;
+  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
   const today = new Date().toISOString().split("T")[0];
   const [viewMode, setViewMode] = useState("list");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -4867,8 +4970,10 @@ function JiagePage({ data, setData }) {
                 <div style={{ padding: "10px 14px" }}>
                   {item.memo && <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>{item.memo.length > 80 ? item.memo.slice(0, 80) + "…" : item.memo}</div>}
                   <div style={{ display: "flex", gap: 8 }}>
-                    <button style={{ ...btnStyle("ghost"), flex: 1, padding: "9px", fontSize: 13 }} onClick={() => setSelected({ item })}>詳細・編集</button>
-                    <button style={{ ...btnStyle("danger"), padding: "9px 12px", fontSize: 13 }} onClick={() => handleDelete(item)}>削除</button>
+                    <button style={{ ...btnStyle("ghost"), flex: 1, padding: "9px", fontSize: 13 }} onClick={() => setSelected({ item })}>{canEdit(item) ? "詳細・編集" : "👁 詳細を見る"}</button>
+                    {canEdit(item) && (
+                      <button style={{ ...btnStyle("danger"), padding: "9px 12px", fontSize: 13 }} onClick={() => handleDelete(item)}>削除</button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -4920,15 +5025,19 @@ function JiagePage({ data, setData }) {
             )}
           </div>
 
-          {/* ステータス・次回日変更 */}
-          <Field label="ステータス変更">
-            <select style={inp} value={selected.item.status} onChange={e => updateStatus(selected.item, e.target.value)}>
-              {(selected.item.type === "jiage" ? ATTACK_STATUSES : OWNER_STATUSES).map(s => <option key={s}>{s}</option>)}
-            </select>
-          </Field>
-          <Field label="次回訪問日">
-            <input type="date" style={inp} value={selected.item.nextDate || ""} onChange={e => updateNextDate(selected.item, e.target.value)} />
-          </Field>
+          {/* ステータス・次回日変更（編集権限ある時のみ） */}
+          {canEdit(selected.item) && (
+            <>
+              <Field label="ステータス変更">
+                <select style={inp} value={selected.item.status} onChange={e => updateStatus(selected.item, e.target.value)}>
+                  {(selected.item.type === "jiage" ? ATTACK_STATUSES : OWNER_STATUSES).map(s => <option key={s}>{s}</option>)}
+                </select>
+              </Field>
+              <Field label="次回訪問日">
+                <input type="date" style={inp} value={selected.item.nextDate || ""} onChange={e => updateNextDate(selected.item, e.target.value)} />
+              </Field>
+            </>
+          )}
 
           {/* 所有者アタックの履歴 */}
           {selected.item.type === "owner" && (
@@ -4943,45 +5052,55 @@ function JiagePage({ data, setData }) {
                   <div style={{ fontSize: 14, color: C.text }}>{h.note}</div>
                 </div>
               ))}
-              <div style={{ borderTop: `1px solid #1a2535`, paddingTop: 14 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>履歴を追加</div>
-                <Field label="日付"><input type="date" style={inp} value={histForm.date} onChange={e => setHistForm(h => ({ ...h, date: e.target.value }))} /></Field>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <Field label="方法"><select style={inp} value={histForm.method} onChange={e => setHistForm(h => ({ ...h, method: e.target.value }))}>{["手紙", "電話", "訪問", "その他"].map(m => <option key={m}>{m}</option>)}</select></Field>
-                  <Field label="担当"><select style={inp} value={histForm.member} onChange={e => setHistForm(h => ({ ...h, member: e.target.value }))}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+              {canEdit(selected.item) && (
+                <div style={{ borderTop: `1px solid #1a2535`, paddingTop: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>履歴を追加</div>
+                  <Field label="日付"><input type="date" style={inp} value={histForm.date} onChange={e => setHistForm(h => ({ ...h, date: e.target.value }))} /></Field>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="方法"><select style={inp} value={histForm.method} onChange={e => setHistForm(h => ({ ...h, method: e.target.value }))}>{["手紙", "電話", "訪問", "その他"].map(m => <option key={m}>{m}</option>)}</select></Field>
+                    <Field label="担当"><select style={inp} value={histForm.member} onChange={e => setHistForm(h => ({ ...h, member: e.target.value }))}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+                  </div>
+                  <Field label="内容・結果"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={histForm.note} onChange={e => setHistForm(h => ({ ...h, note: e.target.value }))} placeholder="電話にて対応。売却検討中とのこと。" /></Field>
+                  <button style={{ ...btnStyle(), width: "100%" }} onClick={addHistory}>履歴を追加する</button>
                 </div>
-                <Field label="内容・結果"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={histForm.note} onChange={e => setHistForm(h => ({ ...h, note: e.target.value }))} placeholder="電話にて対応。売却検討中とのこと。" /></Field>
-                <button style={{ ...btnStyle(), width: "100%" }} onClick={addHistory}>履歴を追加する</button>
+              )}
+            </div>
+          )}
+
+          {/* ワークフロー昇格ボタン（編集権限ある場合のみ） */}
+          {canEdit(selected.item) && (
+            <div style={{ borderTop: `1px solid #1a2535`, paddingTop: 14, marginTop: 14, marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, marginBottom: 8, letterSpacing: "0.05em" }}>🔄 ワークフロー</div>
+              {selected.item.type === "jiage" ? (
+                <button onClick={() => promoteToOwner(selected.item)} style={{
+                  width: "100%", padding: "13px", background: C.purple + "22", border: `1px solid ${C.purple}66`,
+                  color: C.purple, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+                }}>👤 所有者アタックに昇格する</button>
+              ) : (
+                <button onClick={() => promoteToSekisan(selected.item)} style={{
+                  width: "100%", padding: "13px", background: C.warn + "22", border: `1px solid ${C.warn}66`,
+                  color: C.warn, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+                }}>🧮 仕入検討積算表を作成する</button>
+              )}
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                {selected.item.type === "jiage"
+                  ? "住所・所有者情報を引き継いで「所有者アタック」に追加します"
+                  : "住所・担当者を引き継いで「仕入検討積算表」を新規作成します"}
               </div>
             </div>
           )}
 
-          {/* ワークフロー昇格ボタン */}
-          <div style={{ borderTop: `1px solid #1a2535`, paddingTop: 14, marginTop: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, marginBottom: 8, letterSpacing: "0.05em" }}>🔄 ワークフロー</div>
-            {selected.item.type === "jiage" ? (
-              <button onClick={() => promoteToOwner(selected.item)} style={{
-                width: "100%", padding: "13px", background: C.purple + "22", border: `1px solid ${C.purple}66`,
-                color: C.purple, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
-              }}>👤 所有者アタックに昇格する</button>
-            ) : (
-              <button onClick={() => promoteToSekisan(selected.item)} style={{
-                width: "100%", padding: "13px", background: C.warn + "22", border: `1px solid ${C.warn}66`,
-                color: C.warn, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
-              }}>🧮 仕入検討積算表を作成する</button>
-            )}
-            <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-              {selected.item.type === "jiage"
-                ? "住所・所有者情報を引き継いで「所有者アタック」に追加します"
-                : "住所・担当者を引き継いで「仕入検討積算表」を新規作成します"}
-            </div>
-          </div>
-
           {/* 編集・削除 */}
-          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => openEdit(selected.item)}>編集する</button>
-            <button style={{ ...btnStyle("danger"), flex: 1 }} onClick={() => handleDelete(selected.item)}>削除する</button>
-          </div>
+          {canEdit(selected.item) ? (
+            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+              <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => openEdit(selected.item)}>編集する</button>
+              <button style={{ ...btnStyle("danger"), flex: 1 }} onClick={() => handleDelete(selected.item)}>削除する</button>
+            </div>
+          ) : (
+            <div style={{ marginTop: 14, padding: 12, background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, fontSize: 12, color: C.muted, textAlign: "center" }}>
+              👁 担当者ではないため閲覧のみ可能（編集・削除は{selected.item.assignee}さんまたは管理者のみ）
+            </div>
+          )}
         </BottomSheet>
       )}
 
@@ -5996,6 +6115,9 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
 }
 
 function YakushoPage({ data, setData, onBack }) {
+  const currentUser = getCurrentUser();
+  const adminMember = data.adminMember || "下田";
+  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
   const [showAdd, setShowAdd] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
@@ -6036,10 +6158,16 @@ function YakushoPage({ data, setData, onBack }) {
             {y.floorRatio && <span>容積 {y.floorRatio}%</span>}
             {y.road1Width && <span>前面道路 {y.road1Dir}{y.road1Width}m</span>}
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(y)}>編集</button>
-            <button style={{ ...btnStyle("danger"), padding: "10px 14px", fontSize: 14 }} onClick={() => handleDelete(y.id)}>削除</button>
-          </div>
+          {canEdit(y) ? (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(y)}>編集</button>
+              <button style={{ ...btnStyle("danger"), padding: "10px 14px", fontSize: 14 }} onClick={() => handleDelete(y.id)}>削除</button>
+            </div>
+          ) : (
+            <div style={{ padding: "10px", textAlign: "center", background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, color: C.muted, fontSize: 12 }}>
+              👁 閲覧のみ（{y.assignee}さん担当）
+            </div>
+          )}
         </div>
       ))}
       {showAdd && (
@@ -6461,6 +6589,9 @@ function SekisanForm({ initial, onSave, onClose, onTransfer }) {
 }
 
 function SekisanPage({ data, setData, onBack }) {
+  const currentUser = getCurrentUser();
+  const adminMember = data.adminMember || "下田";
+  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
   const [showForm, setShowForm] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
@@ -6586,8 +6717,10 @@ function SekisanPage({ data, setData, onBack }) {
               </div>
             )}
             <div style={{ display: "flex", gap: 8 }}>
-              <button style={{ ...btnStyle("ghost"), flex: 1, padding: "11px", fontSize: 14 }} onClick={() => { setEditItem(s); setShowForm(true); }}>編集・詳細</button>
-              <button style={{ ...btnStyle("danger"), padding: "11px 14px", fontSize: 14 }} onClick={() => handleDelete(s.id)}>削除</button>
+              <button style={{ ...btnStyle("ghost"), flex: 1, padding: "11px", fontSize: 14 }} onClick={() => { setEditItem(s); setShowForm(true); }}>{canEdit(s) ? "編集・詳細" : "👁 詳細を見る"}</button>
+              {canEdit(s) && (
+                <button style={{ ...btnStyle("danger"), padding: "11px 14px", fontSize: 14 }} onClick={() => handleDelete(s.id)}>削除</button>
+              )}
             </div>
           </div>
         );
