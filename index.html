@@ -3085,8 +3085,6 @@ function ApproachPage({ data, setData }) {
 
   // ===== 月次タブ用：日別チャート =====
   const [dailyChartMember, setDailyChartMember] = useState(getCurrentUser() || MEMBERS[0]);
-  const [dailyChartItem, setDailyChartItem] = useState("訪問"); // 単一項目
-  const [dailyChartViewMode, setDailyChartViewMode] = useState("table"); // "table" | "single" | "overview"
 
   // ===== 案件タブ用 =====
   const [casesMember, setCasesMember] = useState("__ALL__"); // "__ALL__" or member name
@@ -4017,71 +4015,56 @@ function ApproachPage({ data, setData }) {
             </Field>
           </div>
 
-          {/* ★★★ 進捗グラフ（リニューアル版） ★★★ */}
+          {/* ★★★ 月別進捗テーブル ★★★ */}
           {(() => {
             const [y, m] = selectedYM.split("-").map(Number);
             const daysInMonth = new Date(y, m, 0).getDate();
             const isCurrentMonth = selectedYM === today.slice(0, 7);
             const todayDay = isCurrentMonth ? new Date().getDate() : daysInMonth;
 
-            // 全項目の進捗を計算
-            const itemsProgress = APPROACH_ITEMS.map(item => {
-              const goal = getGoal(dailyChartMember, item);
-              // 各日の値を集計
-              const daily = Array.from({ length: daysInMonth }, (_, i) => {
-                const day = i + 1;
-                const date = `${selectedYM}-${String(day).padStart(2, "0")}`;
-                const entry = data.approaches.find(a => a.member === dailyChartMember && a.date === date);
-                const val = Number((entry?.values || {})[item]) || 0;
-                return { day, date, val, hasData: !!entry };
-              });
-              const total = daily.reduce((s, d) => s + d.val, 0);
-              // 累積データ
-              let running = 0;
-              const cumulative = daily.map((d, i) => {
-                running += d.val;
-                const targetCum = goal > 0 ? Math.round(goal * (i + 1) / daysInMonth) : 0;
-                return { ...d, cumulative: running, targetCumulative: targetCum };
-              });
-              // ペース判定（今月の場合は今日まで／過去月の場合は月末まで）
-              const refDay = isCurrentMonth ? todayDay : daysInMonth;
-              const refIdx = Math.min(refDay - 1, daysInMonth - 1);
-              const refCum = cumulative[refIdx]?.cumulative || 0;
-              const refTarget = cumulative[refIdx]?.targetCumulative || 0;
-              const paceDiff = refCum - refTarget;
-              const pct = goal > 0 ? Math.round(total / goal * 100) : 0;
-              const expectedPct = isCurrentMonth && goal > 0 ? Math.round(refDay / daysInMonth * 100) : 100;
-              return { item, goal, total, daily, cumulative, paceDiff, pct, expectedPct, refCum, refTarget };
+            // 集計
+            const totals = {};
+            const goals = {};
+            APPROACH_ITEMS.forEach(item => {
+              totals[item] = 0;
+              goals[item] = getGoal(dailyChartMember, item);
             });
+
+            const rows = Array.from({ length: daysInMonth }, (_, i) => {
+              const day = i + 1;
+              const date = `${selectedYM}-${String(day).padStart(2, "0")}`;
+              const entry = data.approaches.find(a => a.member === dailyChartMember && a.date === date);
+              const values = entry?.values || {};
+              APPROACH_ITEMS.forEach(item => {
+                totals[item] += Number(values[item]) || 0;
+              });
+              return { day, date, values, hasData: !!entry };
+            });
+
+            const activeDays = rows.filter(r =>
+              APPROACH_ITEMS.some(item => (Number(r.values[item]) || 0) > 0)
+            ).length;
+
+            // 曜日色
+            const dowBg = (dow, isToday) => {
+              if (isToday) return "#FCD34D11";
+              if (dow === 0) return "#06b6d420";
+              if (dow === 3) return "#fb923c15";
+              if (dow === 6) return "#0ea5e915";
+              return "transparent";
+            };
+            const dowColor = (dow) => {
+              if (dow === 0) return "#06b6d4";
+              if (dow === 6) return "#0ea5e9";
+              return C.muted;
+            };
+            const dowLabel = (dow) => ["日", "月", "火", "水", "木", "金", "土"][dow];
 
             return (
               <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
-                {/* ヘッダー */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>
-                    📈 進捗グラフ — <span style={{ color: MEMBER_COLORS[dailyChartMember] || C.text }}>{dailyChartMember}</span>
-                  </div>
-                  {/* 表示モード切替 */}
-                  <div style={{ display: "flex", gap: 4, background: C.bg, padding: 3, borderRadius: 8, flexWrap: "wrap" }}>
-                    <button onClick={() => setDailyChartViewMode("table")} style={{
-                      padding: "5px 11px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
-                      background: dailyChartViewMode === "table" ? C.accent : "transparent",
-                      color: dailyChartViewMode === "table" ? "#fff" : C.muted,
-                      border: "none", fontFamily: "inherit",
-                    }}>📅 月別表</button>
-                    <button onClick={() => setDailyChartViewMode("overview")} style={{
-                      padding: "5px 11px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
-                      background: dailyChartViewMode === "overview" ? C.accent : "transparent",
-                      color: dailyChartViewMode === "overview" ? "#fff" : C.muted,
-                      border: "none", fontFamily: "inherit",
-                    }}>📋 全項目一覧</button>
-                    <button onClick={() => setDailyChartViewMode("single")} style={{
-                      padding: "5px 11px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
-                      background: dailyChartViewMode === "single" ? C.accent : "transparent",
-                      color: dailyChartViewMode === "single" ? "#fff" : C.muted,
-                      border: "none", fontFamily: "inherit",
-                    }}>📈 1項目詳細</button>
-                  </div>
+                {/* タイトル */}
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 10 }}>
+                  📊 月別進捗 — <span style={{ color: MEMBER_COLORS[dailyChartMember] || C.text }}>{dailyChartMember}</span>
                 </div>
 
                 {/* メンバー選択 */}
@@ -4101,481 +4084,139 @@ function ApproachPage({ data, setData }) {
                   })}
                 </div>
 
-                {/* ===== 📅 月別表モード（スプレッドシート風） ===== */}
-                {dailyChartViewMode === "table" && (() => {
-                  // 各日 × 各項目のマトリックス計算
-                  const totals = {}; // 項目ごとの合計
-                  const goals = {}; // 項目ごとの月間目標
-                  APPROACH_ITEMS.forEach(item => {
-                    totals[item] = 0;
-                    goals[item] = getGoal(dailyChartMember, item);
-                  });
-
-                  const rows = Array.from({ length: daysInMonth }, (_, i) => {
-                    const day = i + 1;
-                    const date = `${selectedYM}-${String(day).padStart(2, "0")}`;
-                    const entry = data.approaches.find(a => a.member === dailyChartMember && a.date === date);
-                    const values = entry?.values || {};
-                    APPROACH_ITEMS.forEach(item => {
-                      totals[item] += Number(values[item]) || 0;
-                    });
-                    return { day, date, values, hasData: !!entry, memo: entry?.memo, area: entry?.area, mailDelivery: entry?.mailDelivery };
-                  });
-
-                  // 稼働日数（少なくとも1つの値があった日）
-                  const activeDays = rows.filter(r =>
-                    APPROACH_ITEMS.some(item => (Number(r.values[item]) || 0) > 0)
-                  ).length;
-
-                  // 曜日別の背景色
-                  const dowBg = (dow, isToday) => {
-                    if (isToday) return "#FCD34D11";
-                    if (dow === 0) return "#06b6d420"; // 日曜：水色
-                    if (dow === 3) return "#fb923c15"; // 水曜：オレンジ（としのスプレッドシート踏襲）
-                    if (dow === 6) return "#0ea5e915"; // 土曜：青
-                    return "transparent";
-                  };
-                  const dowColor = (dow) => {
-                    if (dow === 0) return "#06b6d4";
-                    if (dow === 6) return "#0ea5e9";
-                    return C.muted;
-                  };
-                  const dowLabel = (dow) => ["日", "月", "火", "水", "木", "金", "土"][dow];
-
-                  return (
-                    <div>
-                      <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
-                        📅 {selectedYM} のデイリー記録 — 横スクロールで全項目表示
-                      </div>
-                      {/* 横スクロール可能なテーブル */}
-                      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", background: "#0a0f1a", borderRadius: 10, border: `1px solid #1a2535` }}>
-                        <table style={{
-                          width: "100%", minWidth: 600, fontSize: 12, color: C.text,
-                          borderCollapse: "collapse", whiteSpace: "nowrap",
-                        }}>
-                          <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
-                            <tr style={{ background: "#1e3a5f" }}>
-                              <th style={{ padding: "8px 6px", textAlign: "left", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, position: "sticky", left: 0, background: "#1e3a5f", zIndex: 2, minWidth: 100 }}>
-                                {selectedYM.split("-")[1]}月 / {dailyChartMember}
-                              </th>
-                              {APPROACH_ITEMS.map(item => (
-                                <th key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, minWidth: 60 }}>
-                                  {item}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {rows.map(r => {
-                              const dow = new Date(r.date).getDay();
-                              const isToday = r.day === todayDay && isCurrentMonth;
-                              const bg = dowBg(dow, isToday);
-                              return (
-                                <tr key={r.day} style={{
-                                  background: bg,
-                                  borderBottom: `1px solid #1a2535`,
-                                }}>
-                                  <td style={{
-                                    padding: "6px 8px", color: isToday ? "#FCD34D" : C.text,
-                                    fontWeight: isToday ? 800 : 400, fontSize: 11,
-                                    position: "sticky", left: 0, background: bg || "#0a0f1a",
-                                    borderRight: `1px solid #1a2535`,
-                                  }}>
-                                    <span>{selectedYM.split("-")[0]}年{Number(selectedYM.split("-")[1])}月{r.day}日</span>
-                                    <span style={{ color: dowColor(dow), marginLeft: 6, fontWeight: 700 }}>{dowLabel(dow)}</span>
-                                  </td>
-                                  {APPROACH_ITEMS.map(item => {
-                                    const v = Number(r.values[item]) || 0;
-                                    return (
-                                      <td key={item} style={{
-                                        padding: "6px 4px", textAlign: "center", color: v > 0 ? C.text : "#334155",
-                                        fontWeight: v > 0 ? 700 : 400, fontSize: 12,
-                                      }}>
-                                        {v > 0 ? v : ""}
-                                      </td>
-                                    );
-                                  })}
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                          <tfoot>
-                            {/* 合計 */}
-                            <tr style={{ background: "#1e3a5f", borderTop: `2px solid ${C.accent}` }}>
-                              <td style={{ padding: "8px", color: "#fff", fontWeight: 800, fontSize: 12, position: "sticky", left: 0, background: "#1e3a5f", borderRight: `1px solid ${C.accent}` }}>
-                                合計
-                              </td>
-                              {APPROACH_ITEMS.map(item => (
-                                <td key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontWeight: 800, fontSize: 13 }}>
-                                  {totals[item] || ""}
-                                </td>
-                              ))}
-                            </tr>
-                            {/* 一日平均 */}
-                            <tr style={{ background: "#0d1a2a" }}>
-                              <td style={{ padding: "6px 8px", color: C.muted, fontWeight: 700, fontSize: 11, position: "sticky", left: 0, background: "#0d1a2a", borderRight: `1px solid #1a2535` }}>
-                                一日平均
-                                <span style={{ fontSize: 9, color: C.muted, marginLeft: 4 }}>（{activeDays}稼働日）</span>
-                              </td>
-                              {APPROACH_ITEMS.map(item => {
-                                const avg = activeDays > 0 ? Math.round(totals[item] / activeDays * 10) / 10 : 0;
-                                return (
-                                  <td key={item} style={{ padding: "6px 4px", textAlign: "center", color: C.text, fontSize: 11 }}>
-                                    {avg > 0 ? avg : ""}
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                            {/* 目標数値 */}
-                            <tr style={{ background: "#FCD34D11" }}>
-                              <td style={{ padding: "6px 8px", color: "#FCD34D", fontWeight: 700, fontSize: 11, position: "sticky", left: 0, background: "#1a1410", borderRight: `1px solid #1a2535` }}>
-                                目標数値
-                              </td>
-                              {APPROACH_ITEMS.map(item => (
-                                <td key={item} style={{ padding: "6px 4px", textAlign: "center", color: "#FCD34D", fontWeight: 700, fontSize: 11 }}>
-                                  {goals[item] || ""}
-                                </td>
-                              ))}
-                            </tr>
-                            {/* 不足数 / 達成 */}
-                            <tr style={{ background: "#0d1422" }}>
-                              <td style={{ padding: "6px 8px", color: C.muted, fontWeight: 700, fontSize: 11, position: "sticky", left: 0, background: "#0d1422", borderRight: `1px solid #1a2535` }}>
-                                差分
-                              </td>
-                              {APPROACH_ITEMS.map(item => {
-                                const diff = totals[item] - goals[item];
-                                const noGoal = goals[item] === 0;
-                                if (noGoal) return <td key={item} style={{ padding: "6px 4px" }} />;
-                                const color = diff >= 0 ? C.success : C.danger;
-                                return (
-                                  <td key={item} style={{
-                                    padding: "6px 4px", textAlign: "center", color, fontSize: 11, fontWeight: 800,
-                                  }}>
-                                    {diff >= 0 ? "+" : ""}{diff}
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          </tfoot>
-                        </table>
-                      </div>
-                      <div style={{ marginTop: 8, fontSize: 10, color: C.muted, textAlign: "center", lineHeight: 1.6 }}>
-                        💡 横スクロール ←→ で全項目表示<br />
-                        <span style={{ color: "#06b6d4" }}>日曜</span> / <span style={{ color: "#fb923c" }}>水曜</span> / <span style={{ color: "#0ea5e9" }}>土曜</span> / <span style={{ color: "#FCD34D" }}>今日</span>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {/* ===== 全項目一覧モード ===== */}
-                {dailyChartViewMode === "overview" && (
-                  <div>
-                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
-                      📊 {selectedYM} の全項目進捗（タップで詳細表示）
-                    </div>
-                    {itemsProgress.map(({ item, goal, total, paceDiff, pct, expectedPct, refCum, refTarget }) => {
-                      // ステータス判定
-                      const noGoal = goal === 0;
-                      let statusColor = C.muted, statusEmoji = "", statusText = "";
-                      if (noGoal) { statusColor = C.muted; statusEmoji = ""; statusText = "目標未設定"; }
-                      else if (!isCurrentMonth) {
-                        // 過去月：最終達成のみで評価
-                        if (pct >= 100) { statusColor = C.success; statusEmoji = "🎉"; statusText = "達成"; }
-                        else { statusColor = C.danger; statusEmoji = "📉"; statusText = "未達"; }
-                      } else {
-                        // 今月：ペースで評価
-                        if (paceDiff >= 0) { statusColor = C.success; statusEmoji = "🔥"; statusText = "順調"; }
-                        else if (paceDiff >= -Math.max(3, goal * 0.05)) { statusColor = C.warn; statusEmoji = "⚠️"; statusText = "やや遅れ"; }
-                        else { statusColor = C.danger; statusEmoji = "🚨"; statusText = "要追い込み"; }
-                      }
-                      const barPct = goal > 0 ? Math.min(100, pct) : 0;
-                      const expectedBarPct = isCurrentMonth ? expectedPct : 100;
-                      return (
-                        <button key={item} onClick={() => { setDailyChartItem(item); setDailyChartViewMode("single"); }}
-                          style={{
-                            width: "100%", background: C.bg, border: `1px solid ${statusColor + "33"}`,
-                            borderLeft: `4px solid ${statusColor}`, borderRadius: 10, padding: "10px 12px",
-                            marginBottom: 6, cursor: "pointer", fontFamily: "inherit", textAlign: "left",
-                            touchAction: "manipulation",
-                          }}>
-                          {/* 1行目：項目名とステータス */}
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{item}</span>
-                              {!noGoal && <span style={{
-                                fontSize: 10, padding: "2px 6px", borderRadius: 6,
-                                background: statusColor + "22", color: statusColor, fontWeight: 700,
-                              }}>{statusEmoji}{statusText}</span>}
-                            </div>
-                            <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-                              <span style={{ fontSize: 18, fontWeight: 800, color: statusColor }}>{total}</span>
-                              <span style={{ fontSize: 11, color: C.muted }}>/ {goal || "—"}件</span>
-                            </div>
-                          </div>
-                          {/* 2行目：進捗バー（オーバーレイで目標ペース表示） */}
-                          {goal > 0 && (
-                            <div style={{ position: "relative", height: 8, background: "#1a2535", borderRadius: 4, marginBottom: 4, overflow: "hidden" }}>
-                              {/* 目標ペース位置（縦線） */}
-                              {isCurrentMonth && (
-                                <div style={{
-                                  position: "absolute", left: `${expectedBarPct}%`, top: -2, bottom: -2,
-                                  width: 2, background: "#FCD34D", boxShadow: "0 0 4px #FCD34D",
-                                }} />
-                              )}
-                              {/* 実績バー */}
-                              <div style={{
-                                position: "absolute", left: 0, top: 0, bottom: 0,
-                                width: `${barPct}%`, background: statusColor, borderRadius: 4,
-                                transition: "width 0.3s",
-                              }} />
-                            </div>
-                          )}
-                          {/* 3行目：詳細メトリクス */}
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.muted }}>
-                            <span>達成率: <span style={{ color: statusColor, fontWeight: 700 }}>{pct}%</span></span>
-                            {goal > 0 && isCurrentMonth && (
-                              <span>ペース: <span style={{ color: paceDiff >= 0 ? C.success : C.danger, fontWeight: 700 }}>{paceDiff >= 0 ? "+" : ""}{paceDiff}件</span></span>
-                            )}
-                            <span style={{ color: C.accent }}>詳細を見る →</span>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* ===== 1項目詳細モード ===== */}
-                {dailyChartViewMode === "single" && (() => {
-                  const target = itemsProgress.find(p => p.item === dailyChartItem) || itemsProgress[0];
-                  const { item, goal, total, cumulative, paceDiff, pct, expectedPct } = target;
-                  const lineColor = goal > 0 && pct >= expectedPct ? C.success : C.accent;
-                  const max = Math.max(1, goal, total);
-
-                  // SVGサイズ
-                  const svgW = 1000, svgH = 280;
-                  const padL = 40, padR = 20, padT = 25, padB = 40;
-                  const chartW = svgW - padL - padR;
-                  const chartH = svgH - padT - padB;
-                  const dayStep = chartW / Math.max(1, daysInMonth - 1);
-
-                  return (
-                    <div>
-                      {/* 項目チップ */}
-                      <div style={{ fontSize: 11, color: C.muted, marginBottom: 4, fontWeight: 700 }}>📊 項目を選択（1つ）</div>
-                      <div style={{ display: "flex", gap: 4, marginBottom: 12, overflowX: "auto", paddingBottom: 4, flexWrap: "wrap" }}>
-                        {APPROACH_ITEMS.map(it => {
-                          const active = dailyChartItem === it;
+                {/* ===== 集計テーブル（常時表示） ===== */}
+                <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", background: "#0a0f1a", borderRadius: 10, border: `1px solid #1a2535`, marginBottom: 10 }}>
+                  <table style={{ width: "100%", minWidth: 600, fontSize: 12, color: C.text, borderCollapse: "collapse", whiteSpace: "nowrap" }}>
+                    <thead>
+                      <tr style={{ background: "#1e3a5f" }}>
+                        <th style={{ padding: "8px 10px", textAlign: "left", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, position: "sticky", left: 0, background: "#1e3a5f", zIndex: 2, minWidth: 100 }}>
+                          {Number(selectedYM.split("-")[1])}月 集計
+                        </th>
+                        {APPROACH_ITEMS.map(item => (
+                          <th key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, minWidth: 56 }}>
+                            {item}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* 合計 */}
+                      <tr style={{ background: "#0d1a2a" }}>
+                        <td style={{ padding: "8px 10px", color: "#fff", fontWeight: 800, fontSize: 12, position: "sticky", left: 0, background: "#0d1a2a", borderRight: `1px solid #1a2535` }}>
+                          合計
+                        </td>
+                        {APPROACH_ITEMS.map(item => (
+                          <td key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontWeight: 800, fontSize: 13 }}>
+                            {totals[item] || ""}
+                          </td>
+                        ))}
+                      </tr>
+                      {/* 一日平均 */}
+                      <tr style={{ background: "#0a1424", borderTop: `1px solid #1a2535` }}>
+                        <td style={{ padding: "6px 10px", color: C.muted, fontWeight: 700, fontSize: 11, position: "sticky", left: 0, background: "#0a1424", borderRight: `1px solid #1a2535` }}>
+                          一日平均
+                          <span style={{ fontSize: 9, color: C.muted, marginLeft: 4 }}>({activeDays}日)</span>
+                        </td>
+                        {APPROACH_ITEMS.map(item => {
+                          const avg = activeDays > 0 ? Math.round(totals[item] / activeDays * 10) / 10 : 0;
                           return (
-                            <button key={it} onClick={() => setDailyChartItem(it)} style={{
-                              padding: "5px 11px", borderRadius: 16, cursor: "pointer", fontSize: 11,
-                              background: active ? C.accent : C.bg,
-                              color: active ? "#fff" : C.muted,
-                              border: `1px solid ${active ? C.accent : "#1a2535"}`,
-                              fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0, fontWeight: active ? 700 : 400,
-                            }}>{it}</button>
+                            <td key={item} style={{ padding: "6px 4px", textAlign: "center", color: C.text, fontSize: 11 }}>
+                              {avg > 0 ? avg : ""}
+                            </td>
                           );
                         })}
-                      </div>
+                      </tr>
+                      {/* 目標数値 */}
+                      <tr style={{ background: "#1a1410", borderTop: `1px solid #1a2535` }}>
+                        <td style={{ padding: "6px 10px", color: "#FCD34D", fontWeight: 700, fontSize: 11, position: "sticky", left: 0, background: "#1a1410", borderRight: `1px solid #1a2535` }}>
+                          🎯 目標数値
+                        </td>
+                        {APPROACH_ITEMS.map(item => (
+                          <td key={item} style={{ padding: "6px 4px", textAlign: "center", color: "#FCD34D", fontWeight: 700, fontSize: 11 }}>
+                            {goals[item] || ""}
+                          </td>
+                        ))}
+                      </tr>
+                      {/* 差分 */}
+                      <tr style={{ background: "#0d1422", borderTop: `1px solid #1a2535` }}>
+                        <td style={{ padding: "6px 10px", color: C.muted, fontWeight: 700, fontSize: 11, position: "sticky", left: 0, background: "#0d1422", borderRight: `1px solid #1a2535` }}>
+                          差分
+                        </td>
+                        {APPROACH_ITEMS.map(item => {
+                          const diff = totals[item] - goals[item];
+                          const noGoal = goals[item] === 0;
+                          if (noGoal) return <td key={item} style={{ padding: "6px 4px" }} />;
+                          const color = diff >= 0 ? C.success : C.danger;
+                          return (
+                            <td key={item} style={{ padding: "6px 4px", textAlign: "center", color, fontSize: 11, fontWeight: 800 }}>
+                              {diff >= 0 ? "+" : ""}{diff}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
 
-                      {/* タイトル＋メイン数値 */}
-                      <div style={{ background: lineColor + "11", border: `1px solid ${lineColor}44`, borderRadius: 10, padding: 12, marginBottom: 10 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                          <div>
-                            <div style={{ fontSize: 11, color: C.muted }}>🎯 {item} の月間進捗</div>
-                            <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 2 }}>
-                              <span style={{ fontSize: 28, fontWeight: 800, color: lineColor, lineHeight: 1 }}>{total}</span>
-                              <span style={{ fontSize: 13, color: C.muted }}>/ {goal || "—"}件</span>
-                              {goal > 0 && <span style={{ fontSize: 14, color: lineColor, fontWeight: 700 }}>({pct}%)</span>}
-                            </div>
-                          </div>
-                          {goal > 0 && (
-                            <div style={{ textAlign: "right" }}>
-                              <div style={{ fontSize: 10, color: C.muted }}>ペース</div>
-                              <div style={{ fontSize: 22, fontWeight: 800, color: paceDiff >= 0 ? C.success : C.danger, lineHeight: 1 }}>
-                                {paceDiff >= 0 ? "+" : ""}{paceDiff}<span style={{ fontSize: 10, color: C.muted, marginLeft: 2 }}>件</span>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        {/* 状況メッセージ */}
-                        {goal > 0 && (
-                          <div style={{ marginTop: 8, fontSize: 12, color: paceDiff >= 0 ? C.success : C.danger, fontWeight: 700 }}>
-                            {!isCurrentMonth
-                              ? (paceDiff >= 0 ? `🎉 目標を ${paceDiff}件 オーバー達成！` : `📉 目標まで ${Math.abs(paceDiff)}件 不足`)
-                              : (paceDiff >= 0 ? `✅ 順調！ ${paceDiff}件 リード中` : `⚠️ ${Math.abs(paceDiff)}件 取り戻そう（あと${daysInMonth - todayDay}日）`)
-                            }
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 累積グラフ */}
-                      {total === 0 ? (
-                        <div style={{ padding: 30, textAlign: "center", color: C.muted, fontSize: 13, background: C.bg, borderRadius: 10 }}>
-                          {selectedYM} の{item}データはまだありません
-                        </div>
-                      ) : (
-                        <div style={{ background: C.bg, borderRadius: 10, padding: "10px 8px 4px" }}>
-                          <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" style={{ display: "block" }} preserveAspectRatio="xMidYMid meet">
-                            {/* 目盛り線 */}
-                            {[0, 0.25, 0.5, 0.75, 1].map((r, i) => {
-                              const yPos = padT + chartH - chartH * r;
-                              const val = Math.round(max * r);
-                              return (
-                                <g key={i}>
-                                  <line x1={padL} y1={yPos} x2={svgW - padR} y2={yPos} stroke="#1a2535" strokeWidth="1" strokeDasharray={r === 0 ? "0" : "3,3"} />
-                                  <text x={padL - 4} y={yPos + 3} fill="#475569" fontSize="10" textAnchor="end" fontFamily="sans-serif">{val}</text>
-                                </g>
-                              );
-                            })}
-
-                            {/* 月間目標ライン */}
-                            {goal > 0 && goal <= max && (() => {
-                              const goalY = padT + chartH - (goal / max) * chartH;
-                              return (
-                                <g>
-                                  <line x1={padL} y1={goalY} x2={svgW - padR} y2={goalY} stroke="#FCD34D" strokeWidth="1.5" strokeDasharray="8,4" opacity="0.8" />
-                                  <text x={padL + 6} y={goalY - 5} fill="#FCD34D" fontSize="10" fontFamily="sans-serif" fontWeight="800">🎯 月間目標 {goal}件</text>
-                                </g>
-                              );
-                            })()}
-
-                            {/* 今日の縦線 */}
-                            {isCurrentMonth && todayDay > 0 && (() => {
-                              const todayX = padL + (todayDay - 1) * dayStep;
-                              return (
-                                <g>
-                                  <line x1={todayX} y1={padT} x2={todayX} y2={padT + chartH} stroke="#FCD34D" strokeWidth="1.5" strokeDasharray="2,3" opacity="0.5" />
-                                  <text x={todayX} y={padT - 6} fill="#FCD34D" fontSize="10" fontFamily="sans-serif" fontWeight="700" textAnchor="middle">今日</text>
-                                </g>
-                              );
-                            })()}
-
-                            {/* 目標累計ライン */}
-                            {goal > 0 && (
-                              <polyline
-                                fill="none" stroke="#FCD34D" strokeWidth="2"
-                                strokeDasharray="5,3" opacity="0.65"
-                                points={cumulative.map((d, i) => {
-                                  const x = padL + i * dayStep;
-                                  const yPos = padT + chartH - (d.targetCumulative / max) * chartH;
-                                  return `${x},${yPos}`;
-                                }).join(" ")}
-                              />
-                            )}
-
-                            {/* 実績累計ライン */}
-                            {(() => {
-                              const endIdx = isCurrentMonth ? Math.min(todayDay, daysInMonth) : daysInMonth;
-                              const visible = cumulative.slice(0, endIdx);
-                              if (visible.length === 0) return null;
-                              const points = visible.map((d, i) => {
-                                const x = padL + i * dayStep;
-                                const yPos = padT + chartH - (d.cumulative / max) * chartH;
-                                return `${x},${yPos}`;
-                              }).join(" ");
-                              const lastX = padL + (visible.length - 1) * dayStep;
-                              const baseY = padT + chartH;
-                              const fillPath = `${padL},${baseY} ${points} ${lastX},${baseY}`;
-                              return (
-                                <g>
-                                  <polygon fill={lineColor} fillOpacity="0.15" points={fillPath} />
-                                  <polyline fill="none" stroke={lineColor} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" points={points} />
-                                  {visible.map((d, i) => {
-                                    if (d.val === 0) return null;
-                                    const x = padL + i * dayStep;
-                                    const yPos = padT + chartH - (d.cumulative / max) * chartH;
-                                    const isToday = d.day === todayDay;
-                                    return <circle key={i} cx={x} cy={yPos} r={isToday ? 5 : 3.5} fill={isToday ? "#FCD34D" : lineColor} stroke={isToday ? "#451A03" : "#0a0f1a"} strokeWidth={isToday ? 1.5 : 1} />;
-                                  })}
-                                  {/* 最終値ラベル */}
-                                  {(() => {
-                                    const lastD = visible[visible.length - 1];
-                                    const x = padL + (visible.length - 1) * dayStep;
-                                    const yPos = padT + chartH - (lastD.cumulative / max) * chartH;
-                                    return (
-                                      <g>
-                                        <rect x={x - 22} y={yPos - 22} width="44" height="16" rx="3" fill={lineColor} />
-                                        <text x={x} y={yPos - 11} fill="#fff" fontSize="11" textAnchor="middle" fontFamily="sans-serif" fontWeight="800">{lastD.cumulative}</text>
-                                      </g>
-                                    );
-                                  })()}
-                                </g>
-                              );
-                            })()}
-
-                            {/* X軸日付ラベル（5日おき） */}
-                            {cumulative.map((d, i) => {
-                              const show = (d.day % 5 === 0) || d.day === 1 || d.day === daysInMonth || d.day === todayDay;
-                              if (!show) return null;
-                              const x = padL + i * dayStep;
-                              const dow = new Date(d.date).getDay();
-                              const isToday = d.day === todayDay;
-                              return (
-                                <text key={i} x={x} y={svgH - padB + 14}
-                                  fill={isToday ? "#FCD34D" : dow === 0 ? "#ef4444" : dow === 6 ? "#0ea5e9" : "#475569"}
-                                  fontSize="10" textAnchor="middle" fontFamily="sans-serif" fontWeight={isToday ? "800" : "400"}>{d.day}</text>
-                              );
-                            })}
-                            <line x1={padL} y1={padT + chartH} x2={svgW - padR} y2={padT + chartH} stroke="#1a2535" strokeWidth="1.5" />
-                          </svg>
-
-                          {/* 凡例 */}
-                          <div style={{ display: "flex", gap: 14, justifyContent: "center", marginTop: 6, fontSize: 10, color: C.muted, flexWrap: "wrap" }}>
-                            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                              <svg width="20" height="3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke={lineColor} strokeWidth="3" /></svg>
-                              実績累計
-                            </span>
-                            {goal > 0 && (
-                              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                                <svg width="20" height="3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke="#FCD34D" strokeWidth="2" strokeDasharray="4,2" /></svg>
-                                目標ペース
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 日別詳細テーブル（折りたたみ） */}
-                      {total > 0 && (
-                        <details style={{ marginTop: 10 }}>
-                          <summary style={{ cursor: "pointer", color: C.accent, fontSize: 12, fontWeight: 700, padding: "8px 12px", background: C.bg, borderRadius: 8 }}>📋 日別の詳細</summary>
-                          <div style={{ marginTop: 6, background: C.bg, borderRadius: 8, padding: 8, maxHeight: 280, overflowY: "auto" }}>
-                            <table style={{ width: "100%", fontSize: 11, color: C.text, borderCollapse: "collapse" }}>
-                              <thead>
-                                <tr style={{ borderBottom: `1px solid #1a2535` }}>
-                                  <th style={{ padding: "5px 4px", textAlign: "left", color: C.muted }}>日</th>
-                                  <th style={{ padding: "5px 4px", textAlign: "left", color: C.muted }}>曜</th>
-                                  <th style={{ padding: "5px 4px", textAlign: "right", color: C.muted }}>当日</th>
-                                  <th style={{ padding: "5px 4px", textAlign: "right", color: C.muted }}>累計</th>
-                                  {goal > 0 && <th style={{ padding: "5px 4px", textAlign: "right", color: C.muted }}>目標</th>}
-                                  {goal > 0 && <th style={{ padding: "5px 4px", textAlign: "right", color: C.muted }}>差</th>}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {cumulative.filter(d => d.val > 0 || d.hasData).map(d => {
-                                  const dow = new Date(d.date).getDay();
-                                  const labels = ["日", "月", "火", "水", "木", "金", "土"];
-                                  const isToday = d.day === todayDay && isCurrentMonth;
-                                  const diff = d.cumulative - d.targetCumulative;
-                                  return (
-                                    <tr key={d.day} style={{ borderBottom: `1px solid #1a2535`, background: isToday ? "#FCD34D11" : "transparent" }}>
-                                      <td style={{ padding: "4px", color: isToday ? "#FCD34D" : C.text, fontWeight: isToday ? 800 : 400 }}>{d.day}</td>
-                                      <td style={{ padding: "4px", color: dow === 0 ? C.danger : dow === 6 ? C.accent : C.muted }}>{labels[dow]}</td>
-                                      <td style={{ padding: "4px", textAlign: "right", color: C.text }}>{d.val}</td>
-                                      <td style={{ padding: "4px", textAlign: "right", color: C.accent, fontWeight: 700 }}>{d.cumulative}</td>
-                                      {goal > 0 && <td style={{ padding: "4px", textAlign: "right", color: "#FCD34D" }}>{d.targetCumulative}</td>}
-                                      {goal > 0 && <td style={{ padding: "4px", textAlign: "right", color: diff >= 0 ? C.success : C.danger, fontWeight: 700 }}>{diff >= 0 ? "+" : ""}{diff}</td>}
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                        </details>
-                      )}
-                    </div>
-                  );
-                })()}
+                {/* ===== 日別詳細テーブル（折りたたみ） ===== */}
+                <details>
+                  <summary style={{
+                    cursor: "pointer", padding: "10px 14px", background: C.bg,
+                    border: `1px solid #1a2535`, borderRadius: 10, color: C.accent,
+                    fontSize: 12, fontWeight: 700, userSelect: "none",
+                  }}>📅 日別の詳細を見る（{daysInMonth}日分）</summary>
+                  <div style={{ marginTop: 6, overflowX: "auto", WebkitOverflowScrolling: "touch", background: "#0a0f1a", borderRadius: 10, border: `1px solid #1a2535` }}>
+                    <table style={{ width: "100%", minWidth: 600, fontSize: 12, color: C.text, borderCollapse: "collapse", whiteSpace: "nowrap" }}>
+                      <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
+                        <tr style={{ background: "#1e3a5f" }}>
+                          <th style={{ padding: "8px 6px", textAlign: "left", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, position: "sticky", left: 0, background: "#1e3a5f", zIndex: 2, minWidth: 130 }}>
+                            日付
+                          </th>
+                          {APPROACH_ITEMS.map(item => (
+                            <th key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, minWidth: 56 }}>
+                              {item}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(r => {
+                          const dow = new Date(r.date).getDay();
+                          const isToday = r.day === todayDay && isCurrentMonth;
+                          const bg = dowBg(dow, isToday);
+                          return (
+                            <tr key={r.day} style={{ background: bg, borderBottom: `1px solid #1a2535` }}>
+                              <td style={{
+                                padding: "6px 8px", color: isToday ? "#FCD34D" : C.text,
+                                fontWeight: isToday ? 800 : 400, fontSize: 11,
+                                position: "sticky", left: 0, background: bg || "#0a0f1a",
+                                borderRight: `1px solid #1a2535`,
+                              }}>
+                                <span>{Number(selectedYM.split("-")[1])}月{r.day}日</span>
+                                <span style={{ color: dowColor(dow), marginLeft: 6, fontWeight: 700 }}>{dowLabel(dow)}</span>
+                              </td>
+                              {APPROACH_ITEMS.map(item => {
+                                const v = Number(r.values[item]) || 0;
+                                return (
+                                  <td key={item} style={{
+                                    padding: "6px 4px", textAlign: "center", color: v > 0 ? C.text : "#334155",
+                                    fontWeight: v > 0 ? 700 : 400, fontSize: 12,
+                                  }}>
+                                    {v > 0 ? v : ""}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 10, color: C.muted, textAlign: "center", lineHeight: 1.6 }}>
+                    💡 横スクロール ←→ で全項目表示<br />
+                    <span style={{ color: "#06b6d4" }}>日曜</span> / <span style={{ color: "#fb923c" }}>水曜</span> / <span style={{ color: "#0ea5e9" }}>土曜</span> / <span style={{ color: "#FCD34D" }}>今日</span>
+                  </div>
+                </details>
               </div>
             );
           })()}
