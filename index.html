@@ -4980,6 +4980,30 @@ function JiagePage({ data, setData }) {
     if (quickFilter === "hot") {
       if (!(item.status === "見込" || item.status === "興味あり")) return false;
     }
+    // 🚪 未訪問エリア攻め（飛び込み・ピンポン）
+    if (quickFilter === "untouched") {
+      if (!(item.status === "未訪問" || item.status === "不在")) return false;
+    }
+    // 🔄 再訪ラウンド（前回訪問済・不在で再訪日が3日以内 or 期限切れ）
+    if (quickFilter === "redo") {
+      const isVisitedBefore = (item.status === "訪問済" || item.status === "不在");
+      if (!isVisitedBefore) return false;
+      if (!item.nextDate) return false;
+      const threeDaysLater = new Date();
+      threeDaysLater.setDate(threeDaysLater.getDate() + 3);
+      const threeDaysStr = threeDaysLater.toISOString().split("T")[0];
+      if (item.nextDate > threeDaysStr) return false;
+    }
+    // 📞 電話アタック（連絡先あり + 商談見込み）
+    if (quickFilter === "phone") {
+      const hasContact = !!(item.ownerContact || (item.raw && item.raw.ownerContact));
+      if (!hasContact) return false;
+      if (!(item.status === "見込" || item.status === "興味あり" || item.status === "検討中" || item.status === "電話済")) return false;
+    }
+    // 🤝 商談ラウンド（見込み + 訪問予定が決まってる）
+    if (quickFilter === "meet") {
+      if (!(item.status === "見込" || item.status === "興味あり" || item.status === "検討中" || item.status === "交渉中")) return false;
+    }
     return true;
   }), [allItems, typeFilter, areaFilter, filterStatuses, filterMembers, search, quickFilter, today]);
 
@@ -5226,24 +5250,81 @@ function JiagePage({ data, setData }) {
           );
         })()}
 
-        {/* クイックフィルター */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 8, overflowX: "auto", paddingBottom: 2 }}>
-          {[
-            { key: "overdue", label: "⚠️ 期限切れ", activeColor: C.danger },
-            { key: "dm_un",   label: "📩 DM未送付", activeColor: C.warn },
-            { key: "hot",     label: "🔥 熱い案件", activeColor: C.success },
-          ].map(qf => {
-            const isActive = quickFilter === qf.key;
-            return (
-              <button key={qf.key} onClick={() => setQuickFilter(isActive ? null : qf.key)} style={{
-                padding: "5px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12,
-                background: isActive ? qf.activeColor : C.bg,
-                color: isActive ? "#fff" : C.muted,
-                border: `1px solid ${isActive ? qf.activeColor : "#1a2535"}`,
-                fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0, fontWeight: isActive ? 700 : 400,
-              }}>{qf.label}</button>
-            );
-          })}
+        {/* 🎯 今日の行動モード（ワンタップで複数条件絞り込み） */}
+        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 10, padding: "8px 10px", marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: C.accent, fontWeight: 700, marginBottom: 6 }}>🎯 今日の行動を選ぶ</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
+            {[
+              { key: "untouched", label: "🚪 未訪問エリア攻め", sub: "未訪問・不在", color: C.purple },
+              { key: "dm_un",     label: "📩 DM配る",          sub: "DM未送付", color: C.warn },
+              { key: "redo",      label: "🔄 再訪ラウンド",     sub: "前回不在・3日以内", color: C.accent },
+              { key: "phone",     label: "📞 電話アタック",     sub: "見込・連絡先あり", color: "#0ea5e9" },
+              { key: "meet",      label: "🤝 商談ラウンド",     sub: "見込・交渉中", color: C.success },
+              { key: "overdue",   label: "⚠️ 期限切れ",         sub: "再訪日が過去", color: C.danger },
+            ].map(qf => {
+              const isActive = quickFilter === qf.key;
+              return (
+                <button key={qf.key} onClick={() => setQuickFilter(isActive ? null : qf.key)} style={{
+                  padding: "7px 8px", borderRadius: 8, cursor: "pointer",
+                  background: isActive ? qf.color : C.bg,
+                  color: isActive ? "#fff" : qf.color,
+                  border: `1.5px solid ${isActive ? qf.color : qf.color + "55"}`,
+                  fontFamily: "inherit", textAlign: "left",
+                  display: "flex", flexDirection: "column", gap: 1,
+                  transition: "all 0.15s",
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 700 }}>{qf.label}</span>
+                  <span style={{ fontSize: 9, opacity: 0.8, fontWeight: 400 }}>{qf.sub}</span>
+                </button>
+              );
+            })}
+          </div>
+          {quickFilter && (
+            <button onClick={() => setQuickFilter(null)} style={{
+              marginTop: 6, background: "transparent", border: "none", color: C.muted,
+              fontSize: 10, cursor: "pointer", padding: 0, fontFamily: "inherit",
+            }}>✕ 行動モード解除</button>
+          )}
+        </div>
+
+        {/* 🚦 状況で絞り込み（複数選択可） */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, marginBottom: 5 }}>
+            🚦 状況で絞り込み {filterStatuses.length > 0 && <span style={{ color: C.accent }}>（{filterStatuses.length}件選択中）</span>}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {ATTACK_STATUSES.map(st => {
+              const isActive = filterStatuses.includes(st);
+              const count = (data.jiage || []).filter(j => j.status === st).length;
+              const stColor = st === "未訪問" ? C.muted
+                : st === "訪問済" ? C.success
+                : st === "不在" ? C.warn
+                : st === "NG" ? C.danger
+                : st === "見込" ? C.accent
+                : st === "居住している" ? "#0ea5e9"
+                : C.muted;
+              return (
+                <button key={st} onClick={() => {
+                  setFilterStatuses(prev => prev.includes(st) ? prev.filter(s => s !== st) : [...prev, st]);
+                }} style={{
+                  padding: "5px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+                  background: isActive ? stColor : C.bg,
+                  color: isActive ? "#fff" : (count > 0 ? stColor : C.muted),
+                  border: `1.5px solid ${isActive ? stColor : (count > 0 ? stColor + "55" : "#1a2535")}`,
+                  fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: isActive ? 700 : 400,
+                }}>
+                  {isActive ? "✓ " : ""}{st} <span style={{ opacity: 0.7, fontSize: 10 }}>{count}</span>
+                </button>
+              );
+            })}
+            {filterStatuses.length > 0 && (
+              <button onClick={() => setFilterStatuses([])} style={{
+                padding: "5px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+                background: "transparent", color: C.muted, border: `1.5px solid #1a2535`,
+                fontFamily: "inherit",
+              }}>✕ 解除</button>
+            )}
+          </div>
         </div>
 
         {/* 検索 */}
