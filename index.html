@@ -284,7 +284,7 @@ function stagnantInfo(buyDateStr) {
   return { days: d, color, level };
 }
 const STOCK_STATUSES = ["見込", "仕入契約済", "リフォーム中", "リフォーム待ち", "売却契約準備中", "売却契約完了", "契約書作成中", "決済完了"];
-const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "NG", "見込", "居住している"];
+const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "断られた", "NG", "仕入れ完了"];
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
 const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "仕入"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
@@ -3396,12 +3396,9 @@ function ApproachPage({ data, setData }) {
               )}
             </div>
             {[
-              { key: "jiage", icon: "🗺️", label: "地上げ", count: pipeline.jiageActive.length, color: C.purple, sub: "訪問中・見込みなど", items: pipeline.jiageActive,
+              { key: "jiage", icon: "🗺️", label: "地上げ・交渉", count: pipeline.jiageActive.length, color: C.purple, sub: "訪問・DM・交渉", items: pipeline.jiageActive,
                 type: "jiage",
                 renderItem: (j) => ({ title: j.address, sub: `${j.status} · ${j.owner || "所有者不明"}`, badge: j.assignee, raw: j }) },
-              { key: "owners", icon: "👤", label: "所有者交渉", count: pipeline.ownersActive.length, color: C.accent, sub: "アタック中", items: pipeline.ownersActive,
-                type: "owner",
-                renderItem: (o) => ({ title: o.address, sub: `${o.status} · ${o.ownerName || "所有者不明"}`, badge: o.assignee, raw: o }) },
               { key: "sekisan", icon: "🧮", label: "積算検討", count: pipeline.sekisanActive.length, color: C.warn,
                 sub: `🔥熱い${pipeline.sekisanHot.length} / 🟡検討中${pipeline.sekisanCheck.length}`,
                 items: pipeline.sekisanActive,
@@ -4774,6 +4771,7 @@ function JiagePage({ data, setData }) {
   const [areaFilter, setAreaFilter] = useState("すべて");
   const [filterStatuses, setFilterStatuses] = useState([]);
   const [filterMembers, setFilterMembers] = useState([]);
+  const [actionExpanded, setActionExpanded] = useState(false); // 「今日の行動」折りたたみ状態
   const [search, setSearch] = useState("");
   const [searchTarget, setSearchTarget] = useState("address"); // "address" | "ownerAddr" | "ownerName" | "all"
   const [mapPinTarget, setMapPinTarget] = useState("address"); // "address" | "ownerAddr"
@@ -5008,28 +5006,17 @@ function JiagePage({ data, setData }) {
 
   // 地上げと所有者を統合
   const allItems = useMemo(() => {
-    const jiage = (data.jiage || []).map(j => ({
+    return (data.jiage || []).map(j => ({
       type: "jiage", id: `j_${j.id}`, rawId: j.id,
       address: j.address, ownerName: j.owner, ownerAddress: j.ownerAddr,
-      ownerContact: "", assignee: j.assignee,
+      ownerContact: j.ownerContact || "", assignee: j.assignee,
       status: j.status, subStatus: `DM:${j.dm}`,
       nextDate: j.nextVisit, memo: j.memo, history: [],
       dm: j.dm, visit: j.visit, area: j.area || "", raw: j,
     }));
-    const owners = (data.owners || []).map(o => ({
-      type: "owner", id: `o_${o.id}`, rawId: o.id,
-      address: o.address, ownerName: o.ownerName, ownerAddress: o.ownerAddress,
-      ownerContact: o.ownerContact, assignee: o.assignee,
-      status: o.status, subStatus: null,
-      nextDate: o.nextFollowDate, memo: o.memo, history: o.history || [],
-      area: "", raw: o,
-    }));
-    return [...jiage, ...owners];
-  }, [data.jiage, data.owners]);
+  }, [data.jiage]);
 
   const filtered = useMemo(() => allItems.filter(item => {
-    if (typeFilter === "jiage" && item.type !== "jiage") return false;
-    if (typeFilter === "owner" && item.type !== "owner") return false;
     if (areaFilter !== "すべて") {
       if (areaFilter === "未設定") {
         if (JIAGE_AREAS.includes(item.area)) return false;
@@ -5229,45 +5216,16 @@ function JiagePage({ data, setData }) {
     }
   };
 
-  // 地上げ → 所有者アタックに昇格（誰でも実行可）
-  const promoteToOwner = (item) => {
-    const j = item.raw;
-    // 重複チェック
-    const alreadyExists = (data.owners || []).some(o => o.address === j.address && o.fromJiageId === j.id);
-    if (alreadyExists) { alert("この物件は既に所有者アタックに登録されています"); return; }
-    if (!window.confirm(`「${j.address}」を所有者アタックに昇格しますか？\n\n所有者情報・担当者・メモを引き継ぎます。`)) return;
-    const newOwner = {
-      id: Date.now(),
-      address: j.address,
-      ownerName: j.owner || "",
-      ownerAddress: j.ownerAddr || "",
-      ownerContact: "",
-      status: "未アタック",
-      assignee: j.assignee,
-      nextFollowDate: "",
-      memo: j.memo || "",
-      history: [],
-      createdAt: today,
-      fromJiageId: j.id,
-    };
-    setData(d => {
-      const next = { ...d, owners: [...d.owners, newOwner] };
-      return appendLog(next, "promote", "owner", `${j.address}を地上げ→所有者に昇格`);
-    });
-    alert(`✅「${j.address}」を所有者アタックに昇格しました！\n「👤所有者」タブで確認できます。`);
-    setSelected(null);
-  };
-
-  // 所有者 → 積算表を作成（誰でも実行可）
+  // 地上げ → 積算表を作成（誰でも実行可）
   const promoteToSekisan = (item) => {
-    const o = item.raw;
-    const alreadyExists = (data.sekisan || []).some(s => s.address === o.address && s.fromOwnerId === o.id);
+    const j = item.raw;
+    const alreadyExists = (data.sekisan || []).some(s => s.address === j.address && s.fromJiageId === j.id);
     if (alreadyExists) { alert("この物件の積算表は既に作成されています"); return; }
-    if (!window.confirm(`「${o.address}」の仕入検討積算表を作成しますか？\n\n住所・担当者を自動入力します。「その他」タブから確認できます。`)) return;
+    if (!window.confirm(`「${j.address}」の仕入検討積算表を作成しますか？\n\n住所・担当者を自動入力します。「その他」タブから確認できます。`)) return;
     const newSekisan = {
       id: Date.now(),
-      address: o.address,
-      assignee: o.assignee,
+      address: j.address,
+      assignee: j.assignee,
       createdAt: today,
       age: "", structure: "", layout: "", landArea: "", buildingArea: "", stationDist: "",
       buyPrice: "", brokerFeeIn: "", registration: "", acquisitionTax: "", stamp: "",
@@ -5280,19 +5238,19 @@ function JiagePage({ data, setData }) {
       atHomeMemo: "", competitorCount: "",
       rentMin: "", rentMax: "", rentMemo: "",
       yieldBase: "", yieldMemo: "",
-      judgment: "検討中", judgmentMemo: o.memo || "",
-      fromOwnerId: o.id,
+      judgment: "検討中", judgmentMemo: j.memo || "",
+      features: [],
+      fromJiageId: j.id,
     };
     setData(d => {
       const next = { ...d, sekisan: [...(d.sekisan || []), newSekisan] };
-      return appendLog(next, "promote", "sekisan", `${o.address}を所有者→積算に昇格`);
+      return appendLog(next, "promote", "sekisan", `${j.address}を地上げ→積算に昇格`);
     });
-    alert(`✅「${o.address}」の積算表を作成しました！\n「その他」→「仕入検討積算表」から編集できます。`);
+    alert(`✅「${j.address}」の積算表を作成しました！\n「その他」→「仕入検討積算表」から編集できます。`);
     setSelected(null);
   };
 
-  const emptyJiage = { address: "", owner: "", ownerAddr: "", dm: "未", visit: "未", status: "未訪問", assignee: currentUser || MEMBERS[0], memo: "", nextVisit: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
-  const emptyOwner = { address: "", ownerName: "", ownerAddress: "", ownerContact: "", status: "未アタック", assignee: currentUser || MEMBERS[0], nextFollowDate: "", memo: "", history: [], createdAt: today };
+  const emptyJiage = { address: "", owner: "", ownerAddr: "", ownerContact: "", dm: "未", visit: "未", status: "未訪問", assignee: currentUser || MEMBERS[0], memo: "", nextVisit: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
   const [form, setForm] = useState(emptyJiage);
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
 
@@ -5350,20 +5308,11 @@ function JiagePage({ data, setData }) {
             <button style={{ ...btnStyle(), padding: "8px 12px", fontSize: 13 }} onClick={() => setShowAddMenu(v => !v)}>＋</button>
             {showAddMenu && (
               <div style={{ position: "absolute", right: 0, top: "110%", background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 10, overflow: "hidden", zIndex: 50, minWidth: 180 }}>
-                {[["jiage", "📍 地上げ物件"], ["owner", "👤 所有者アタック"]].map(([type, label]) => (
-                  <button key={type} onClick={() => { setAddType(type); setForm(type === "jiage" ? emptyJiage : emptyOwner); setEditItem(null); setShowAdd(true); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid #1a2535` }}>{label}</button>
-                ))}
+                <button onClick={() => { setAddType("jiage"); setForm(emptyJiage); setEditItem(null); setShowAdd(true); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid #1a2535` }}>📍 物件を追加</button>
                 <button onClick={() => { fileInputRef.current?.click(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.success, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>📥 Excel/CSVをインポート</button>
               </div>
             )}
           </div>
-        </div>
-
-        {/* タイプフィルター */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 8, overflowX: "auto", paddingBottom: 2 }}>
-          {[["all", `全て ${allItems.length}`], ["jiage", `📍地上げ ${(data.jiage||[]).length}`], ["owner", `👤所有者 ${(data.owners||[]).length}`]].map(([key, label]) => (
-            <button key={key} onClick={() => setTypeFilter(key)} style={{ padding: "5px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, background: typeFilter === key ? C.accent : C.bg, color: typeFilter === key ? "#fff" : C.muted, border: `1px solid ${typeFilter === key ? C.accent : "#1a2535"}`, fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}>{label}</button>
-          ))}
         </div>
 
         {/* エリアフィルター */}
@@ -5425,44 +5374,86 @@ function JiagePage({ data, setData }) {
           );
         })()}
 
-        {/* 🎯 今日の行動モード（ワンタップで複数条件絞り込み） */}
-        <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 10, padding: "8px 10px", marginBottom: 8 }}>
-          <div style={{ fontSize: 11, color: C.accent, fontWeight: 700, marginBottom: 6 }}>🎯 今日の行動を選ぶ</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
-            {[
-              { key: "now_best",  label: "⏰ 今この時間ベスト", sub: "現在の曜日・時間で不在/居留守を除外", color: "#fbbf24" },
-              { key: "untouched", label: "🚪 未訪問エリア攻め", sub: "未訪問・不在", color: C.purple },
-              { key: "dm_un",     label: "📩 DM配る",          sub: "DM未送付", color: C.warn },
-              { key: "redo",      label: "🔄 再訪ラウンド",     sub: "前回不在・3日以内", color: C.accent },
-              { key: "ignore_attack", label: "🚪 居留守攻略", sub: "居留守記録あり", color: "#f97316" },
-              { key: "phone",     label: "📞 電話アタック",     sub: "見込・連絡先あり", color: "#0ea5e9" },
-              { key: "meet",      label: "🤝 商談ラウンド",     sub: "見込・交渉中", color: C.success },
-              { key: "overdue",   label: "⚠️ 期限切れ",         sub: "再訪日が過去", color: C.danger },
-            ].map(qf => {
-              const isActive = quickFilter === qf.key;
-              return (
-                <button key={qf.key} onClick={() => setQuickFilter(isActive ? null : qf.key)} style={{
-                  padding: "7px 8px", borderRadius: 8, cursor: "pointer",
-                  background: isActive ? qf.color : C.bg,
-                  color: isActive ? "#fff" : qf.color,
-                  border: `1.5px solid ${isActive ? qf.color : qf.color + "55"}`,
-                  fontFamily: "inherit", textAlign: "left",
-                  display: "flex", flexDirection: "column", gap: 1,
-                  transition: "all 0.15s",
-                }}>
-                  <span style={{ fontSize: 12, fontWeight: 700 }}>{qf.label}</span>
-                  <span style={{ fontSize: 9, opacity: 0.8, fontWeight: 400 }}>{qf.sub}</span>
-                </button>
-              );
-            })}
-          </div>
-          {quickFilter && (
-            <button onClick={() => setQuickFilter(null)} style={{
-              marginTop: 6, background: "transparent", border: "none", color: C.muted,
-              fontSize: 10, cursor: "pointer", padding: 0, fontFamily: "inherit",
-            }}>✕ 行動モード解除</button>
-          )}
-        </div>
+        {/* 🎯 今日の行動モード（折りたたみ式） */}
+        {(() => {
+          const allModes = [
+            { key: "now_best",  label: "⏰ 今この時間ベスト", sub: "現在の曜日・時間で不在/居留守を除外", color: "#fbbf24" },
+            { key: "untouched", label: "🚪 未訪問エリア攻め", sub: "未訪問・不在", color: C.purple },
+            { key: "dm_un",     label: "📩 DM配る",          sub: "DM未送付", color: C.warn },
+            { key: "redo",      label: "🔄 再訪ラウンド",     sub: "前回不在・3日以内", color: C.accent },
+            { key: "ignore_attack", label: "🚪 居留守攻略", sub: "居留守記録あり", color: "#f97316" },
+            { key: "phone",     label: "📞 電話アタック",     sub: "見込・連絡先あり", color: "#0ea5e9" },
+            { key: "meet",      label: "🤝 商談ラウンド",     sub: "見込・交渉中", color: C.success },
+            { key: "overdue",   label: "⚠️ 期限切れ",         sub: "再訪日が過去", color: C.danger },
+          ];
+          const currentMode = allModes.find(m => m.key === quickFilter);
+          
+          return (
+            <div style={{ background: "#0d1422", border: `1px solid ${currentMode ? currentMode.color + "55" : "#1a2535"}`, borderRadius: 10, marginBottom: 8, overflow: "hidden" }}>
+              {/* ヘッダー（折りたたみトグル） */}
+              <button onClick={() => setActionExpanded(v => !v)} style={{
+                width: "100%", padding: "9px 12px", background: "transparent", border: "none",
+                color: currentMode ? currentMode.color : C.accent,
+                fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+              }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  🎯 今日の行動を選ぶ
+                  {currentMode && !actionExpanded && (
+                    <span style={{ background: currentMode.color, color: "#fff", padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700 }}>
+                      {currentMode.label}
+                    </span>
+                  )}
+                </span>
+                <span style={{ fontSize: 14, color: C.muted }}>{actionExpanded ? "▲" : "▼"}</span>
+              </button>
+
+              {/* 展開時のグリッド */}
+              {actionExpanded && (
+                <div style={{ padding: "0 10px 10px" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
+                    {allModes.map(qf => {
+                      const isActive = quickFilter === qf.key;
+                      return (
+                        <button key={qf.key} onClick={() => {
+                          setQuickFilter(isActive ? null : qf.key);
+                          setActionExpanded(false); // 選択したら自動的に折りたたむ
+                        }} style={{
+                          padding: "7px 8px", borderRadius: 8, cursor: "pointer",
+                          background: isActive ? qf.color : C.bg,
+                          color: isActive ? "#fff" : qf.color,
+                          border: `1.5px solid ${isActive ? qf.color : qf.color + "55"}`,
+                          fontFamily: "inherit", textAlign: "left",
+                          display: "flex", flexDirection: "column", gap: 1,
+                          transition: "all 0.15s",
+                        }}>
+                          <span style={{ fontSize: 12, fontWeight: 700 }}>{qf.label}</span>
+                          <span style={{ fontSize: 9, opacity: 0.8, fontWeight: 400 }}>{qf.sub}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {quickFilter && (
+                    <button onClick={() => setQuickFilter(null)} style={{
+                      marginTop: 6, background: "transparent", border: "none", color: C.muted,
+                      fontSize: 10, cursor: "pointer", padding: 0, fontFamily: "inherit",
+                    }}>✕ 行動モード解除</button>
+                  )}
+                </div>
+              )}
+
+              {/* 折りたたみ時に行動モード解除ボタン（モード選択中のみ） */}
+              {!actionExpanded && currentMode && (
+                <div style={{ padding: "0 12px 8px" }}>
+                  <button onClick={() => setQuickFilter(null)} style={{
+                    background: "transparent", border: "none", color: C.muted,
+                    fontSize: 10, cursor: "pointer", padding: 0, fontFamily: "inherit",
+                  }}>✕ 行動モード解除</button>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* 🚦 状況で絞り込み（複数選択可） */}
         <div style={{ marginBottom: 8 }}>
@@ -5890,7 +5881,7 @@ function JiagePage({ data, setData }) {
           {/* ステータス・次回日変更 */}
           <Field label="ステータス変更">
             <select style={inp} value={selected.item.status} onChange={e => updateStatus(selected.item, e.target.value)}>
-              {(selected.item.type === "jiage" ? ATTACK_STATUSES : OWNER_STATUSES).map(s => <option key={s}>{s}</option>)}
+              {ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}
             </select>
           </Field>
           <Field label="次回訪問日">
@@ -5926,21 +5917,12 @@ function JiagePage({ data, setData }) {
           {/* ワークフロー昇格ボタン（誰でも実行可） */}
           <div style={{ borderTop: `1px solid #1a2535`, paddingTop: 14, marginTop: 14, marginBottom: 14 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, marginBottom: 8, letterSpacing: "0.05em" }}>🔄 ワークフロー</div>
-            {selected.item.type === "jiage" ? (
-              <button onClick={() => promoteToOwner(selected.item)} style={{
-                width: "100%", padding: "13px", background: C.purple + "22", border: `1px solid ${C.purple}66`,
-                color: C.purple, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
-              }}>👤 所有者アタックに昇格する</button>
-            ) : (
-              <button onClick={() => promoteToSekisan(selected.item)} style={{
-                width: "100%", padding: "13px", background: C.warn + "22", border: `1px solid ${C.warn}66`,
-                color: C.warn, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
-              }}>🧮 仕入検討積算表を作成する</button>
-            )}
+            <button onClick={() => promoteToSekisan(selected.item)} style={{
+              width: "100%", padding: "13px", background: C.warn + "22", border: `1px solid ${C.warn}66`,
+              color: C.warn, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+            }}>🧮 仕入検討積算表を作成する</button>
             <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-              {selected.item.type === "jiage"
-                ? "住所・所有者情報を引き継いで「所有者アタック」に追加します"
-                : "住所・担当者を引き継いで「仕入検討積算表」を新規作成します"}
+              住所・担当者を引き継いで「仕入検討積算表」を新規作成します
             </div>
           </div>
 
