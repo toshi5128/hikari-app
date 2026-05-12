@@ -2389,12 +2389,26 @@ function ApproachPage({ data, setData }) {
     return () => clearTimeout(t);
   }, [selectedMember, selectedDate]);
 
-  // ===== 自動保存：カウンター・トグル・テキストが変わるたびに保存（debounce 800ms） =====
+  // ===== 自動保存：実際に変更があるときだけ保存（debounce 800ms） =====
   useEffect(() => {
-    if (!isLoaded) return; // 初回読み込み時はスキップ
-    setAutoSaveStatus("saving");
+    if (!isLoaded) return; // 初回読み込み完了前はスキップ
 
-    // 800msのdebounceで連打時の保存頻度を抑制（Supabaseのレート制限対策）
+    // 既存レコードと現在の入力を比較。同じなら保存しない（無駄なSupabaseリクエスト防止）
+    const rec = data.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
+    if (rec) {
+      const sameValues = JSON.stringify(rec.values || {}) === JSON.stringify(inputValues);
+      if (sameValues && (rec.memo || "") === memo && !!rec.mailDelivery === !!mailDelivery && (rec.area || "") === area) {
+        setAutoSaveStatus("idle");
+        return; // 完全に同じ → 保存しない
+      }
+    } else {
+      // 新規だが全項目が空 → 空レコードを保存しない
+      const allEmpty = Object.keys(inputValues).every(k => !inputValues[k]) && !memo && !mailDelivery && !area;
+      if (allEmpty) { setAutoSaveStatus("idle"); return; }
+    }
+
+    setAutoSaveStatus("saving");
+    // 800msのdebounceで連打時の保存頻度を抑制
     const saveTimer = setTimeout(() => {
       setData(d => {
         const existingRec = d.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
