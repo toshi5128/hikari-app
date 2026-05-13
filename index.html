@@ -222,23 +222,23 @@ function isAssignedTo(assignees, member) {
 }
 
 // 編集権限チェック：管理者は全件編集可、一般メンバーは自分が担当者の場合のみ
-function canEditItem(item, currentUser, adminMember = "下田") {
-  // ⚠️ 一時的に「誰でも全部編集可能」にしている設定 ⚠️
-  // 元の権限制御に戻すには、下の return true を削除して、その下のコードを有効化してください。
-  return true;
+function canEditItem(item, currentUser, adminMembers) {
+  // adminMembers は配列 ["下田", "比嘉"] or 文字列 "下田"（後方互換）
+  const admins = Array.isArray(adminMembers)
+    ? adminMembers
+    : (adminMembers ? [adminMembers] : ["下田", "比嘉"]); // デフォルト
 
-  // ===== 元の権限制御（一時的にコメントアウト中）=====
-  // if (!currentUser) return false; // 未認証は全て不可
-  // if (currentUser === adminMember) return true; // 管理者は全権限
-  // if (!item) return false;
-  // // 単一assignee（stocks/jiage/owners/sekisan/yakusho）
-  // // 配列assignees（customEvents）
-  // // memberプロパティ（approaches）
-  // const single = item.assignee || item.member || "";
-  // const arr = item.assignees || [];
-  // const createdBy = item.createdBy || "";
-  // const all = [single, ...arr, createdBy].filter(Boolean);
-  // return isAssignedTo(all, currentUser);
+  if (!currentUser) return false; // 未認証は全て不可
+  if (admins.includes(currentUser)) return true; // 管理者は全権限
+  if (!item) return false;
+  // 単一assignee（stocks/jiage/owners/sekisan/yakusho）
+  // 配列assignees（customEvents）
+  // memberプロパティ（approaches）
+  const single = item.assignee || item.member || "";
+  const arr = item.assignees || [];
+  const createdBy = item.createdBy || "";
+  const all = [single, ...arr, createdBy].filter(Boolean);
+  return isAssignedTo(all, currentUser);
 }
 
 // 日付文字列から曜日ラベル（色付き）を返す
@@ -413,6 +413,22 @@ function getNotifyTargets(data, excludeUser) {
   return getNotifyMembers(data).filter(m => m !== (excludeUser || ""));
 }
 
+// 🆕 管理者メンバー取得（複数管理者対応：下田・比嘉）
+function getAdminMembers(data) {
+  if (data && Array.isArray(data.adminMembers) && data.adminMembers.length > 0) {
+    return data.adminMembers;
+  }
+  // 後方互換: data.adminMember が単数の場合
+  if (data && data.adminMember) {
+    return [data.adminMember];
+  }
+  return ["下田", "比嘉"];
+}
+function isAdminUser(data, currentUser) {
+  if (!currentUser) return false;
+  return getAdminMembers(data).includes(currentUser);
+}
+
 // Edge Function を呼んでプッシュ通知を送信
 async function sendPushNotification(targets, title, body, extra = {}) {
   try {
@@ -461,6 +477,7 @@ const DEFAULT_DATA = {
   activityLog: [], // 操作履歴（最新200件保持）
   customEvents: [], // カスタム予定（自由入力）
   adminMember: "下田", // 管理者メンバー（全員のパスワード変更可能）
+  adminMembers: ["下田", "比嘉"], // 🆕 管理者リスト（複数。全データの編集権限あり）
   notifyMembers: ["下田", "比嘉"], // 🆕 通知を受け取るメンバー（変更があった時に Push 通知が飛ぶ）
   memberPasswords: {}, // { "下田": "1234", "比嘉": "5678", ... }
 };
@@ -1359,8 +1376,8 @@ function Dashboard({ data, setData }) {
   // 権限制御用
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
-  const isAdmin = true; // ⚠️ 一時的に全員管理者扱い（権限解除中）。元に戻すには: const isAdmin = currentUser === adminMember;
-  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
+  const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
+  const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const [selectedYear, setSelectedYear] = useState(currentYear);
   const [showGoalEdit, setShowGoalEdit] = useState(false);
   const [goalForm, setGoalForm] = useState({
@@ -2804,8 +2821,8 @@ function Dashboard({ data, setData }) {
 function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
-  const isAdmin = true; // ⚠️ 一時的に全員管理者扱い（権限解除中）。元に戻すには: const isAdmin = currentUser === adminMember;
-  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
+  const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
+  const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const [showAdd, setShowAdd] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
@@ -3487,7 +3504,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   // 権限制御
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
-  const isAdmin = true; // ⚠️ 一時的に全員管理者扱い（権限解除中）。元に戻すには: const isAdmin = currentUser === adminMember;
+  const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
 
   const [tab, setTab] = useState("cases"); // "cases" | "input" | "monthly" | "goals"
   // 一般メンバーは自分自身を初期選択、管理者は1番目のメンバー
@@ -4022,7 +4039,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
         setEditingSekisan(null);
         alert(`✅「${form.address}」を在庫管理に転記しました！`);
       }}
-      canEditThis={true}
+      canEditThis={canEdit(editingSekisan)}
     />;
   }
 
@@ -5674,8 +5691,8 @@ function inferAreaFromAddress(address) {
 function JiagePage({ data, setData }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
-  const isAdmin = true; // ⚠️ 一時的に全員管理者扱い（権限解除中）。元に戻すには: const isAdmin = currentUser === adminMember;
-  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
+  const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
+  const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const today = new Date().toISOString().split("T")[0];
   const [viewMode, setViewMode] = useState("list");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -7832,7 +7849,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
 
   // 管理者判定
   const adminMember = data.adminMember || "下田";
-  const isAdmin = true; // ⚠️ 一時的に全員管理者扱い（権限解除中）。元に戻すには: const isAdmin = currentUser === adminMember;
+  const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
   const memberPasswords = data.memberPasswords || {};
 
   // ユーザー切替試行（パスワード必要なら認証ダイアログを開く）
@@ -8737,7 +8754,7 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
 function YakushoPage({ data, setData, onBack }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
-  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
+  const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const [showAdd, setShowAdd] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
@@ -9609,7 +9626,7 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
 function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee = null, casesMember = null }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
-  const canEdit = (item) => canEditItem(item, currentUser, adminMember);
+  const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const [showForm, setShowForm] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
@@ -9725,7 +9742,7 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
   };
   const nv = v => parseFloat(v) || 0;
 
-  if (showForm) return <SekisanForm initial={editItem} onSave={handleSave} onClose={() => { setShowForm(false); setEditItem(null); }} onTransfer={handleTransfer} canEditThis={true} defaultAssignee={defaultAssignee} />;
+  if (showForm) return <SekisanForm initial={editItem} onSave={handleSave} onClose={() => { setShowForm(false); setEditItem(null); }} onTransfer={handleTransfer} canEditThis={!editItem || canEdit(editItem)} defaultAssignee={defaultAssignee} />;
 
   return (
     <div>
