@@ -7089,7 +7089,7 @@ function WebPushSection({ currentUser }) {
   const [busy, setBusy] = useState(false);
   const [lastError, setLastError] = useState("");
 
-  // 初期状態チェック
+  // 初期状態チェック（3秒タイムアウト＋SW再登録）
   useEffect(() => {
     (async () => {
       if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
@@ -7097,11 +7097,34 @@ function WebPushSection({ currentUser }) {
         return;
       }
       try {
-        const reg = await navigator.serviceWorker.ready;
-        const sub = await reg.pushManager.getSubscription();
+        // ① まず既存の登録を確認。なかったらすぐ登録してみる
+        let reg = await navigator.serviceWorker.getRegistration();
+        if (!reg) {
+          try {
+            reg = await navigator.serviceWorker.register('./sw.js');
+            console.log("[Web Push] SW を新規登録しました");
+          } catch (err) {
+            console.warn("[Web Push] SW 登録失敗:", err);
+            setPushStatus("unsubscribed");
+            setLastError("Service Worker 登録失敗: " + err.message);
+            return;
+          }
+        }
+        // ② SW が ready するのを最大3秒待つ（無限待機防止）
+        await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise((_, rej) => setTimeout(() => rej(new Error("SW ready timeout")), 3000))
+        ]);
+        const finalReg = await navigator.serviceWorker.ready;
+        const sub = await finalReg.pushManager.getSubscription();
         setPushStatus(sub ? "subscribed" : "unsubscribed");
       } catch (e) {
+        // タイムアウトでもエラーでも、とにかく「未購読」扱いにしてボタンを出す
+        console.warn("[Web Push] 初期化エラー:", e);
         setPushStatus("unsubscribed");
+        if (e.message && e.message.includes("timeout")) {
+          setLastError("Service Worker の起動に時間がかかっています。下のボタンで手動有効化してください。");
+        }
       }
     })();
   }, []);
@@ -7185,6 +7208,17 @@ function WebPushSection({ currentUser }) {
           background: "linear-gradient(135deg, #0ea5e9, #06b6d4)",
           borderColor: "#0ea5e9", opacity: (busy || !currentUser) ? 0.6 : 1,
         }}>{busy ? "⌛ 設定中..." : "🚀 Web Push を有効化する"}</button>
+      )}
+
+      {/* エラー表示（タイムアウトや SW 失敗時） */}
+      {lastError && pushStatus !== "subscribed" && (
+        <div style={{
+          marginTop: 10, padding: "10px 12px",
+          background: C.warn + "22", border: `1px solid ${C.warn}55`,
+          borderRadius: 8, fontSize: 11, color: C.warn, lineHeight: 1.6,
+        }}>
+          ⚠️ {lastError}
+        </div>
       )}
 
       {pushStatus === "subscribed" && (
