@@ -402,6 +402,17 @@ async function savePushSubscriptionToSupabase(member, sub) {
   return true;
 }
 
+// 🆕 通知対象メンバー取得（設定があればそれを、なければデフォルト["下田", "比嘉"]）
+function getNotifyMembers(data) {
+  if (data && Array.isArray(data.notifyMembers) && data.notifyMembers.length > 0) {
+    return data.notifyMembers;
+  }
+  return ["下田", "比嘉"];
+}
+function getNotifyTargets(data, excludeUser) {
+  return getNotifyMembers(data).filter(m => m !== (excludeUser || ""));
+}
+
 // Edge Function を呼んでプッシュ通知を送信
 async function sendPushNotification(targets, title, body, extra = {}) {
   try {
@@ -450,6 +461,7 @@ const DEFAULT_DATA = {
   activityLog: [], // 操作履歴（最新200件保持）
   customEvents: [], // カスタム予定（自由入力）
   adminMember: "下田", // 管理者メンバー（全員のパスワード変更可能）
+  notifyMembers: ["下田", "比嘉"], // 🆕 通知を受け取るメンバー（変更があった時に Push 通知が飛ぶ）
   memberPasswords: {}, // { "下田": "1234", "比嘉": "5678", ... }
 };
 
@@ -2938,7 +2950,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
             date: dateVal,
             time: "10:00",
             title: `${info.label}: ${item.name || "(無題)"}`,
-            assignees: ["下田", "比嘉"],
+            assignees: getNotifyMembers(data),
             memo: `担当: ${item.assignee}${item.keyBoxLocation || item.keyBoxNumber ? `\n🔑 ${item.keyBoxLocation || ""}${item.keyBoxNumber ? ` 番号: ${item.keyBoxNumber}` : ""}` : ""}`,
             stockLinkId: item.id, // 物件との紐付け
             color: info.color,
@@ -2952,7 +2964,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
     // 🆕 変更があった日付について下田・比嘉に通知（送信者除く）
     const me = currentUser || "";
-    const targets = ["下田", "比嘉"].filter(t => t !== me);
+    const targets = getNotifyTargets(data, me);
     if (targets.length > 0) {
       const keyBoxInfo = (item.keyBoxLocation || item.keyBoxNumber)
         ? `\n🔑 ${item.keyBoxLocation || ""}${item.keyBoxNumber ? ` 番号: ${item.keyBoxNumber}` : ""}`
@@ -3725,7 +3737,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
       .map(item => `${item}${inputValues[item]}`)
       .join(" / ");
     const memoLabel = memo ? `\n💭 ${memo}` : "";
-    const targets = ["下田", "比嘉"].filter(t => t !== me);
+    const targets = getNotifyTargets(data, me);
     if (targets.length > 0) {
       sendPushNotification(
         targets,
@@ -3877,7 +3889,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
 
     // 🆕 下田・比嘉に通知（送信者除外）
     const me = currentUser || "";
-    const targets = ["下田", "比嘉"].filter(t => t !== me);
+    const targets = getNotifyTargets(data, me);
     if (targets.length > 0) {
       const goalSummary = APPROACH_ITEMS
         .filter(item => Number(goalForm[item]) > 0)
@@ -4785,7 +4797,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                       .filter(item => updated[item] > 0)
                       .map(item => `${item}${updated[item]}`)
                       .join(" / ");
-                    const targets = ["下田", "比嘉"].filter(t => t !== me);
+                    const targets = getNotifyTargets(data, me);
                     if (targets.length > 0) {
                       sendPushNotification(
                         targets,
@@ -7574,7 +7586,7 @@ function ImportModal({ onClose, onImport, importing, currentCount }) {
 }
 
 // ===================== Web Push 購読セクション =====================
-function WebPushSection({ currentUser }) {
+function WebPushSection({ currentUser, data }) {
   const [pushStatus, setPushStatus] = useState("checking"); // "checking"|"unsubscribed"|"subscribed"|"unsupported"
   const [busy, setBusy] = useState(false);
   const [lastError, setLastError] = useState("");
@@ -7749,18 +7761,19 @@ function WebPushSection({ currentUser }) {
             background: C.success, borderColor: C.success, marginBottom: 8,
           }}>{busy ? "送信中..." : "🧪 自分宛に Web Push テスト送信"}</button>
 
-          {/* 🆕 下田・比嘉 両方に通知テスト */}
+          {/* 🆕 通知メンバー全員にテスト */}
           <button onClick={async () => {
             setBusy(true);
             try {
+              const notifyTargets = getNotifyMembers(data);
               const ok = await sendPushNotification(
-                ["下田", "比嘉"],
-                "🧪 下田・比嘉 通知テスト",
-                `${currentUser || "送信者不明"} さんから両方に送信テスト。\n下田・比嘉の両方の端末で受信確認してください。`,
+                notifyTargets,
+                `🧪 通知メンバー (${notifyTargets.length}名) テスト`,
+                `${currentUser || "送信者不明"} さんから ${notifyTargets.join("・")} さんへの送信テスト。\n各端末で受信確認してください。`,
                 { tag: "test-push-managers" }
               );
               if (ok) {
-                alert("✅ 送信完了！\n下田さん・比嘉さん 両方の端末で、\n通知が届いたか確認してください。\n\n届かない方は「🚀 Web Push を有効化する」が必要です。");
+                alert(`✅ 送信完了！\n通知メンバー（${notifyTargets.join("・")}）の端末で、\n通知が届いたか確認してください。\n\n届かない方は「🚀 Web Push を有効化する」が必要です。`);
               } else {
                 alert("❌ 送信失敗。Edge Function や Supabase 設定を確認してください。");
               }
@@ -7769,7 +7782,7 @@ function WebPushSection({ currentUser }) {
           }} disabled={busy} style={{
             ...btnStyle(), width: "100%", padding: "12px", fontSize: 13,
             background: C.accent, borderColor: C.accent, marginBottom: 8,
-          }}>{busy ? "送信中..." : "📨 下田・比嘉 両方に通知テスト"}</button>
+          }}>{busy ? "送信中..." : `📨 通知メンバー全員にテスト (${getNotifyMembers(data).join("・")})`}</button>
 
           <button onClick={disable} disabled={busy} style={{
             ...btnStyle("ghost"), width: "100%", padding: "10px", fontSize: 12,
@@ -8036,6 +8049,52 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
             </select>
             <div style={{ fontSize: 10, color: C.warn, marginTop: 4, lineHeight: 1.5 }}>
               ⚠️ 管理者を変更すると、自分は一般メンバーになります
+            </div>
+          </div>
+        )}
+
+        {/* 🆕 通知メンバー設定 */}
+        {isAdmin && (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid #1a2535` }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontWeight: 700 }}>🔔 通知を受け取るメンバー</div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
+              チェックを入れたメンバーに、変更があったときに Push 通知が飛びます。<br />
+              <span style={{ color: C.text }}>現在: <b style={{ color: C.accent }}>{getNotifyMembers(data).join("・")}</b></span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {MEMBERS.map(m => {
+                const current = getNotifyMembers(data);
+                const active = current.includes(m);
+                return (
+                  <button
+                    key={m}
+                    onClick={() => {
+                      setData(d => {
+                        const cur = (Array.isArray(d.notifyMembers) && d.notifyMembers.length > 0) ? d.notifyMembers : ["下田", "比嘉"];
+                        const next = cur.includes(m) ? cur.filter(x => x !== m) : [...cur, m];
+                        // 0人は許可しない（必ず1人以上）
+                        if (next.length === 0) {
+                          alert("⚠️ 通知メンバーを 0 人にはできません。\n少なくとも 1 人は選択してください。");
+                          return d;
+                        }
+                        return { ...d, notifyMembers: next };
+                      });
+                    }}
+                    style={{
+                      padding: "8px 14px", borderRadius: 20, cursor: "pointer", fontSize: 13,
+                      background: active ? C.accent : "#0a0f1a",
+                      color: active ? "#fff" : C.muted,
+                      border: `1.5px solid ${active ? C.accent : "#1a2535"}`,
+                      fontFamily: "inherit", fontWeight: active ? 700 : 500,
+                    }}
+                  >
+                    {active ? "✓ " : ""}{m}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
+              💡 アクション実行者本人には通知が飛びません（重複防止）
             </div>
           </div>
         )}
@@ -8385,7 +8444,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
 
       {/* 🚀 Web Push（アプリ閉じてても届くリアルタイム通知） */}
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🚀 Web Push（アプリ閉じててもOK）</div>
-      <WebPushSection currentUser={currentUser} />
+      <WebPushSection currentUser={currentUser} data={data} />
 
       {/* 📋 操作履歴 */}
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>📋 操作履歴</div>
@@ -9590,7 +9649,7 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
           date: date,
           time: time || "09:00",
           title: `📋 売主結果確認: ${item.address || "(住所未設定)"}`,
-          assignees: ["下田", "比嘉"],
+          assignees: getNotifyMembers(data),
           memo: `仕入検討積算表との連動\n担当: ${item.assignee}\n判定: ${item.judgment || "未設定"}${item.vendorName ? `\n紹介元: ${item.vendorName}` : ""}`,
           sekisanLinkId: item.id, // 積算表との紐付け
           color: "#f59e0b",
@@ -9609,7 +9668,7 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
     if (nowIsResult) {
       const [date, time] = String(item.caseStatusAt).split("T");
       const me = currentUser || "";
-      const targets = ["下田", "比嘉"].filter(t => t !== me);
+      const targets = getNotifyTargets(data, me);
       if (targets.length > 0) {
         sendPushNotification(
           targets,
