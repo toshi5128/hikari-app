@@ -1,5 +1,5 @@
-// ひかり不動産 PWA Service Worker（Web Push + 通知タップ画面遷移 + タグfallback）
-const CACHE_VERSION = 'hikari-app-v8-2026-05-13';
+// ひかり不動産 PWA Service Worker（Web Push + 通知タップ画面遷移 + 全タグパターン対応 v10）
+const CACHE_VERSION = 'hikari-app-v10-2026-05-14';
 
 self.addEventListener('install', e => {
   self.skipWaiting();
@@ -17,147 +17,145 @@ self.addEventListener('activate', e => {
   })());
 });
 
-// 通知の tag 文字列から飛び先情報を抽出（Edge Function が data を落とした場合の保険）
 function parseTagToNav(tag) {
   if (!tag || typeof tag !== 'string') return null;
 
-  // パターン①: hikari-business-start-<member>-<YYYY-MM-DD>
   let m = tag.match(/^hikari-business-start-(.+)-(\d{4}-\d{2}-\d{2})$/);
-  if (m) {
-    return { tab: 'approach', sub: 'input', member: m[1], date: m[2] };
-  }
-  // パターン②: hikari-business-close-<member>-<YYYY-MM-DD>
+  if (m) return { tab: 'approach', sub: 'input', member: m[1], date: m[2] };
+
   m = tag.match(/^hikari-business-close-(.+)-(\d{4}-\d{2}-\d{2})$/);
-  if (m) {
-    return { tab: 'approach', sub: 'input', member: m[1], date: m[2] };
-  }
-  // パターン③: hikari-comment-<member>-<YYYY-MM-DD>-<commentId>
+  if (m) return { tab: 'approach', sub: 'input', member: m[1], date: m[2] };
+
   m = tag.match(/^hikari-comment-(.+)-(\d{4}-\d{2}-\d{2})-\d+$/);
+  if (m) return { tab: 'approach', sub: 'input', member: m[1], date: m[2], scrollTo: 'comments' };
+
+  m = tag.match(/^hikari-goal-(.+)-\d+$/);
+  if (m) return { tab: 'approach', sub: 'goals' };
+
+  m = tag.match(/^hikari-stock-[a-z-]+-(\d+)/);
+  if (m) return { tab: 'stock', stockLinkId: m[1] };
+
+  m = tag.match(/^hikari-sekisan-result-(\d+)$/);
+  if (m) return { tab: 'dashboard', sekisanLinkId: m[1] };
+
+  m = tag.match(/^hikari-new-event-(\d+)$/);
+  if (m) return { tab: 'dashboard', eventId: m[1] };
+
+  // 🆕 v10 汎用パターン: hikari-<target>-<action>-<itemId>
+  m = tag.match(/^hikari-(stock|jiage|owner|sekisan|yakusho|event)-(add|update|delete|promote|import)-(\d+)$/);
   if (m) {
-    return { tab: 'approach', sub: 'input', member: m[1], date: m[2], scrollTo: 'comments' };
+    const target = m[1];
+    const itemId = m[3];
+    const tabMap = {
+      stock: { tab: 'stock', linkKey: 'stockLinkId' },
+      jiage: { tab: 'jiage', linkKey: 'jiageLinkId' },
+      owner: { tab: 'jiage', linkKey: 'ownerLinkId' },
+      sekisan: { tab: 'approach', sub: 'cases', linkKey: 'sekisanLinkId' },
+      yakusho: { tab: 'dashboard', linkKey: 'yakushoLinkId' },
+      event: { tab: 'dashboard', linkKey: 'eventId' },
+    };
+    const info = tabMap[target];
+    if (info) {
+      const nav = { tab: info.tab };
+      if (info.sub) nav.sub = info.sub;
+      nav[info.linkKey] = itemId;
+      return nav;
+    }
   }
+
   return null;
 }
 
-// payload から「飛び先情報」を抽出（nested / flat / tag fallback の3段階）
 function extractNavData(payload) {
   if (!payload) return {};
-  // ① nested: payload.data.tab
-  if (payload.data && (payload.data.tab || payload.data.member)) {
+  if (payload.data && (payload.data.tab || payload.data.member || payload.data.stockLinkId || payload.data.sekisanLinkId || payload.data.jiageLinkId || payload.data.ownerLinkId || payload.data.yakushoLinkId || payload.data.eventId)) {
     return payload.data;
   }
-  // ② flat: payload.tab
-  if (payload.tab || payload.member) {
+  if (payload.tab || payload.member || payload.stockLinkId || payload.sekisanLinkId || payload.jiageLinkId || payload.ownerLinkId || payload.yakushoLinkId || payload.eventId) {
     return {
-      tab: payload.tab,
-      sub: payload.sub,
-      member: payload.member,
-      date: payload.date,
+      tab: payload.tab, sub: payload.sub, member: payload.member, date: payload.date,
       scrollTo: payload.scrollTo,
+      stockLinkId: payload.stockLinkId, sekisanLinkId: payload.sekisanLinkId,
+      jiageLinkId: payload.jiageLinkId, ownerLinkId: payload.ownerLinkId,
+      yakushoLinkId: payload.yakushoLinkId, eventId: payload.eventId,
     };
   }
-  // ③ タグから推測（最後の保険）
-  if (payload.tag) {
-    const navFromTag = parseTagToNav(payload.tag);
-    if (navFromTag) {
-      console.log('[SW] tagから飛び先情報を復元:', JSON.stringify(navFromTag));
-      return navFromTag;
-    }
-  }
+  const fromTag = parseTagToNav(payload.tag);
+  if (fromTag) return fromTag;
   return {};
 }
 
-// 🔔 通知をクリック：既存タブにメッセージ送りつつフォーカス / 無ければクエリ付きで新規ウィンドウ
-self.addEventListener('notificationclick', e => {
-  e.notification.close();
-  let navData = e.notification.data || {};
-
-  // notification.data が空でも tag から復元できないか試す
-  if ((!navData || Object.keys(navData).length === 0) && e.notification.tag) {
-    const fromTag = parseTagToNav(e.notification.tag);
-    if (fromTag) {
-      navData = fromTag;
-      console.log('[SW] notificationclick: tagから navData 復元:', JSON.stringify(navData));
-    }
-  }
-
-  console.log('[SW] notificationclick 最終 navData:', JSON.stringify(navData));
-
-  const buildQuery = (d) => {
-    const keys = Object.keys(d || {}).filter(k => d[k] != null && d[k] !== '');
-    if (keys.length === 0) return '';
-    return '?' + keys.map(k => encodeURIComponent(k) + '=' + encodeURIComponent(d[k])).join('&');
-  };
-
-  e.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientsArr => {
-      const existingClient = clientsArr.find(c => c.url.includes('hikari-app'));
-      if (existingClient) {
-        try { existingClient.postMessage({ type: 'NAVIGATE', data: navData }); } catch (err) {}
-        return existingClient.focus();
-      }
-      return self.clients.openWindow('./' + buildQuery(navData));
-    })
-  );
-});
-
-// メインスレッドからのメッセージで通知を表示（アプリ開いてる時用）
-self.addEventListener('message', e => {
-  if (e.data && e.data.type === 'SHOW_NOTIFICATION') {
-    const { title, body, tag, icon, data } = e.data;
-    self.registration.showNotification(title, {
-      body,
-      tag: tag || 'hikari-event',
-      icon: icon || './icon-192.png',
-      badge: icon || './icon-192.png',
-      vibrate: [200, 100, 200],
-      requireInteraction: false,
-      data: data || {},
-    });
-  }
-  if (e.data && e.data.type === 'SKIP_WAITING') {
-    self.skipWaiting();
-  }
-});
-
-// ★ Web Push 受信 ★
 self.addEventListener('push', event => {
   let payload = {};
   try {
-    payload = event.data ? event.data.json() : {};
+    payload = event.data?.json() || {};
   } catch (e) {
-    payload = { title: 'ひかり不動産', body: event.data ? event.data.text() : '新しい通知' };
+    payload = { title: event.data?.text() || '通知', body: '' };
   }
 
-  console.log('[SW] push received payload:', JSON.stringify(payload));
-
-  // 飛び先情報を柔軟に抽出（nested / flat / tag fallback）
   const navData = extractNavData(payload);
+  console.log('[SW v10] Push received:', payload, '→ navData:', navData);
 
-  console.log('[SW] extracted navData:', JSON.stringify(navData));
-
-  const title = payload.title || '📅 ひかり不動産';
+  const title = payload.title || 'ひかり不動産';
   const options = {
     body: payload.body || '',
-    tag: payload.tag || ('hikari-push-' + Date.now()),
     icon: payload.icon || './icon-192.png',
-    badge: './icon-192.png',
-    vibrate: [200, 100, 200, 100, 200],
-    requireInteraction: payload.requireInteraction || false,
-    data: navData, // ← 通知タップ時に使われる飛び先情報
+    badge: payload.badge || './icon-192.png',
+    tag: payload.tag,
+    data: navData,
+    requireInteraction: false,
+    vibrate: [200, 100, 200],
   };
+
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
-// 購読状態変化時の再購読依頼
-self.addEventListener('pushsubscriptionchange', event => {
-  event.waitUntil(
-    self.clients.matchAll().then(clients => {
-      clients.forEach(c => c.postMessage({ type: 'RESUBSCRIBE_PUSH' }));
-    })
-  );
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const nav = event.notification.data || {};
+  console.log('[SW v10] Notification clicked, nav:', nav);
+
+  event.waitUntil((async () => {
+    const allClients = await self.clients.matchAll({
+      type: 'window', includeUncontrolled: true,
+    });
+
+    for (const client of allClients) {
+      if ('focus' in client) {
+        await client.focus();
+        try { client.postMessage({ type: 'NAVIGATE', data: nav }); } catch (e) {}
+        return;
+      }
+    }
+
+    if (self.clients.openWindow) {
+      const params = new URLSearchParams();
+      if (nav.tab) params.set('tab', nav.tab);
+      if (nav.sub) params.set('sub', nav.sub);
+      if (nav.member) params.set('member', nav.member);
+      if (nav.date) params.set('date', nav.date);
+      if (nav.scrollTo) params.set('scrollTo', nav.scrollTo);
+      if (nav.stockLinkId) params.set('stockLinkId', nav.stockLinkId);
+      if (nav.sekisanLinkId) params.set('sekisanLinkId', nav.sekisanLinkId);
+      if (nav.jiageLinkId) params.set('jiageLinkId', nav.jiageLinkId);
+      if (nav.ownerLinkId) params.set('ownerLinkId', nav.ownerLinkId);
+      if (nav.yakushoLinkId) params.set('yakushoLinkId', nav.yakushoLinkId);
+      if (nav.eventId) params.set('eventId', nav.eventId);
+      const qs = params.toString();
+      return self.clients.openWindow(qs ? `./?${qs}` : './');
+    }
+  })());
 });
 
-self.addEventListener('fetch', e => {
-  // パススルー
+self.addEventListener('message', event => {
+  if (event.data?.type === 'SHOW_NOTIFICATION') {
+    const { title, body, tag } = event.data;
+    self.registration.showNotification(title || '通知', {
+      body: body || '', tag: tag || 'in-page-test',
+      icon: './icon-192.png', badge: './icon-192.png',
+    });
+  }
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
