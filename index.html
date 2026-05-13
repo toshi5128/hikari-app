@@ -3301,6 +3301,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
 
   // ===== コメント入力用 =====
   const [newComment, setNewComment] = useState("");
+  // コメント編集モード用
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editingCommentText, setEditingCommentText] = useState("");
   const [casesExpanded, setCasesExpanded] = useState(null); // 展開中のセクションkey
   const [casesMonth, setCasesMonth] = useState(today.slice(0, 7)); // 「今月の活動」表示対象月（YYYY-MM形式）
 
@@ -3540,6 +3543,49 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
       );
     }
     setNewComment("");
+  };
+
+  // ===== ✏️ コメント編集 =====
+  const handleStartEditComment = (c) => {
+    setEditingCommentId(c.id);
+    setEditingCommentText(c.text);
+  };
+  const handleCancelEditComment = () => {
+    setEditingCommentId(null);
+    setEditingCommentText("");
+  };
+  const handleSaveEditComment = (commentId) => {
+    const newText = editingCommentText.trim();
+    if (!newText) { alert("内容が空です"); return; }
+    setData(d => ({
+      ...d,
+      approaches: d.approaches.map(a => {
+        if (a.member !== selectedMember || a.date !== selectedDate) return a;
+        return {
+          ...a,
+          comments: (a.comments || []).map(c =>
+            c.id === commentId ? { ...c, text: newText, editedAt: new Date().toISOString() } : c
+          ),
+        };
+      }),
+    }));
+    setEditingCommentId(null);
+    setEditingCommentText("");
+  };
+
+  // ===== 🗑️ コメント削除 =====
+  const handleDeleteComment = (commentId) => {
+    if (!window.confirm("このコメントを削除しますか？")) return;
+    setData(d => ({
+      ...d,
+      approaches: d.approaches.map(a => {
+        if (a.member !== selectedMember || a.date !== selectedDate) return a;
+        return {
+          ...a,
+          comments: (a.comments || []).filter(c => c.id !== commentId),
+        };
+      }),
+    }));
   };
 
   const handleSave = () => {
@@ -4544,9 +4590,50 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                   <MemberTag name={c.member} />
                   <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>
                     {new Date(c.createdAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    {c.editedAt && <span style={{ marginLeft: 4 }}>(編集済)</span>}
                   </span>
                 </div>
-                <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{c.text}</div>
+                {editingCommentId === c.id ? (
+                  // 編集モード
+                  <>
+                    <textarea
+                      value={editingCommentText}
+                      onChange={e => setEditingCommentText(e.target.value)}
+                      style={{ ...inp, height: 60, resize: "vertical", marginBottom: 6 }}
+                    />
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        onClick={() => handleSaveEditComment(c.id)}
+                        style={{ ...btnStyle(), flex: 1, padding: "8px 10px", fontSize: 12 }}
+                      >💾 保存</button>
+                      <button
+                        onClick={handleCancelEditComment}
+                        style={{ ...btnStyle("ghost"), flex: 1, padding: "8px 10px", fontSize: 12 }}
+                      >キャンセル</button>
+                    </div>
+                  </>
+                ) : (
+                  // 通常表示
+                  <>
+                    <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, whiteSpace: "pre-wrap", marginBottom: 6 }}>{c.text}</div>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button
+                        onClick={() => handleStartEditComment(c)}
+                        style={{
+                          background: "transparent", border: `1px solid ${C.muted}33`, color: C.muted,
+                          borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                        }}
+                      >✏️ 編集</button>
+                      <button
+                        onClick={() => handleDeleteComment(c.id)}
+                        style={{
+                          background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger,
+                          borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                        }}
+                      >🗑️ 削除</button>
+                    </div>
+                  </>
+                )}
               </div>
             ))}
             {(existing?.comments || []).length === 0 && (
