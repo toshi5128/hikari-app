@@ -8369,6 +8369,9 @@ const SEKISAN_EMPTY = {
   address: "", assignee: MEMBERS[0], createdAt: new Date().toISOString().split("T")[0],
   // 🆕 案件発生日時（業者連絡があった日時など）
   occurredAt: new Date().toISOString().slice(0, 16), // YYYY-MM-DDTHH:MM
+  // 🆕 案件状況
+  caseStatus: "", // "" | "未査定" | "査定済" | "売主結果日"
+  caseStatusAt: "", // YYYY-MM-DDTHH:MM
   // 🆕 案件の出所
   source: "", // "地上げ" | "チラシ" | "業者☎" | "業者✉" | "業者訪問"
   vendorName: "",      // 業者名
@@ -8537,6 +8540,7 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
     { key: "yield", label: "📐 利回り" },
     { key: "evidence", label: "📋 根拠" },
     { key: "summary", label: "🔥 判断" },
+    { key: "progress", label: "📅 進捗" },
   ];
 
   return (
@@ -8972,6 +8976,50 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
             )}
           </div>
         )}
+
+        {tab === "progress" && (
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.accent, marginBottom: 4 }}>📅 案件進捗</div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 16, lineHeight: 1.6 }}>
+              この案件の現在のステータスと、関連する日時を記録します。
+            </div>
+
+            <Field label="📋 ステータス">
+              <select style={inp} value={form.caseStatus || ""} onChange={f("caseStatus")}>
+                <option value="">未設定</option>
+                <option value="未査定">未査定</option>
+                <option value="査定済">査定済</option>
+                <option value="売主結果確認日">売主結果確認日</option>
+              </select>
+            </Field>
+
+            {form.caseStatus && (
+              <Field label={form.caseStatus === "売主結果確認日" ? "🗓 結果確認の日時" : "🗓 日時"}>
+                <input
+                  type="datetime-local"
+                  style={inp}
+                  value={form.caseStatusAt || ""}
+                  onChange={f("caseStatusAt")}
+                />
+              </Field>
+            )}
+
+            {form.caseStatus === "売主結果確認日" && form.caseStatusAt && (
+              <div style={{
+                marginTop: 12, padding: "12px 14px",
+                background: C.warn + "15", border: `1px solid ${C.warn}55`,
+                borderRadius: 10, fontSize: 12, color: C.text, lineHeight: 1.7,
+              }}>
+                <div style={{ fontWeight: 700, color: C.warn, marginBottom: 6 }}>💡 カレンダー連動について</div>
+                保存すると、この日時で <b style={{ color: C.accent }}>下田さん・比嘉さん宛のカレンダー予定</b> が自動登録され、
+                Web Push通知が飛びます。
+                <br /><br />
+                日時を変更して再保存すれば、カレンダー予定も自動更新されます。
+                ステータスを「売主結果確認日」以外に変えると、カレンダー予定は削除されます。
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -8999,10 +9047,56 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
 
   const handleSave = form => {
     const item = { ...form, id: editItem?.id || Date.now() };
+
+    // 売主結果確認日のカレンダー連動判定
+    const nowIsResult = item.caseStatus === "売主結果確認日" && item.caseStatusAt;
+
     setData(d => {
-      const next = { ...d, sekisan: editItem ? d.sekisan.map(s => s.id === editItem.id ? item : s) : [...d.sekisan, item] };
+      // この積算表に紐付いた既存の customEvents を一旦削除（重複防止 / 日時変更対応）
+      let nextEvents = (d.customEvents || []).filter(e => !(e.sekisanLinkId && e.sekisanLinkId === item.id));
+
+      // 売主結果確認日なら customEvents に新規追加
+      if (nowIsResult) {
+        const [date, time] = String(item.caseStatusAt).split("T");
+        nextEvents = [...nextEvents, {
+          id: Date.now() + 1,
+          date: date,
+          time: time || "09:00",
+          title: `📋 売主結果確認: ${item.address || "(住所未設定)"}`,
+          assignees: ["下田", "比嘉"],
+          memo: `仕入検討積算表との連動\n担当: ${item.assignee}\n判定: ${item.judgment || "未設定"}${item.vendorName ? `\n紹介元: ${item.vendorName}` : ""}`,
+          sekisanLinkId: item.id, // 積算表との紐付け
+          color: "#f59e0b",
+        }];
+      }
+
+      const next = {
+        ...d,
+        sekisan: editItem ? d.sekisan.map(s => s.id === editItem.id ? item : s) : [...d.sekisan, item],
+        customEvents: nextEvents,
+      };
       return appendLog(next, editItem ? "update" : "add", "sekisan", `${item.address || "(無住所)"}（判定: ${item.judgment}）`);
     });
+
+    // 売主結果確認日が新規追加 or 更新された時、下田・比嘉に通知
+    if (nowIsResult) {
+      const [date, time] = String(item.caseStatusAt).split("T");
+      const me = currentUser || "";
+      const targets = ["下田", "比嘉"].filter(t => t !== me);
+      if (targets.length > 0) {
+        sendPushNotification(
+          targets,
+          `📋 売主結果確認日が登録されました`,
+          `${item.address || "(住所未設定)"}\n📅 ${date} ${time || "09:00"}\n担当: ${item.assignee}`,
+          {
+            tag: `hikari-sekisan-result-${item.id}`,
+            data: { tab: 'dashboard' },
+            tab: 'dashboard',
+          }
+        );
+      }
+    }
+
     setShowForm(false); setEditItem(null);
   };
 
