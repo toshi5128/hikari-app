@@ -5947,6 +5947,8 @@ function JiagePage({ data, setData }) {
       sellPrice: "",
       similarRent: "", similarArea: "", targetBuildingArea: "",
       yieldRate: "15", investorRegistration: "50", investorReform: "150",
+      realYieldRate: "", // 🆕 投資家実質利回り（参考値）
+  realYieldRate: "", // 🆕 投資家実質利回り（参考値）
       targetProfitMin: "100", targetProfitMax: "200",
       rainzPriceMin: "", rainzPriceMax: "", rainzMemo: "",
       atHomeMemo: "", competitorCount: "",
@@ -8554,6 +8556,7 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
     const simArea = nv(form.similarArea);
     const tgtArea = nv(form.targetBuildingArea) || nv(form.buildingArea);
     const yr = nv(form.yieldRate) / 100;
+    const realYr = nv(form.realYieldRate) / 100; // 🆕 実質利回り
     const invCost = (nv(form.investorRegistration) + nv(form.investorReform)) * 10000;
     if (!simRent || !simArea || !tgtArea || !yr) return null;
     const sqmRent = simRent / simArea;
@@ -8561,14 +8564,17 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
     const annual = estRent * 12;
     const invBuy = annual / yr;
     const ourSell = invBuy - invCost;
+    // 🆕 実質利回りベースの投資家値（年間収入 / 実質利回り − 諸経費）
+    const realInvBuy = realYr > 0 ? (annual / realYr - invCost) : ourSell;
     return {
       sqmRent: Math.round(sqmRent),
       estRent: Math.round(estRent / 10000 * 10) / 10,
       annual: Math.round(annual / 10000),
       invBuy: Math.round(invBuy / 10000),
       ourSell: Math.round(ourSell / 10000),
-      buyMax: Math.round(ourSell / 10000 - nv(form.targetProfitMin)),
-      buyMin: Math.round(ourSell / 10000 - nv(form.targetProfitMax)),
+      realInvBuy: Math.round(realInvBuy / 10000), // 🆕
+      buyMax: Math.round(realInvBuy / 10000 - nv(form.targetProfitMin)),
+      buyMin: Math.round(realInvBuy / 10000 - nv(form.targetProfitMax)),
     };
   }, [form]);
 
@@ -8806,8 +8812,8 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
           <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.accent, marginBottom: 12 }}>📐 利回りから仕入目線を出す</div>
             <div style={{ background: "#0a1520", border: `1px solid ${C.accent}33`, borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 12, color: C.muted, lineHeight: 1.8 }}>
-              ① 類似物件の㎡賃料を算出 → ② 推定賃料 → ③ 年間収入 ÷ 利回り = 投資家買値<br />
-              ④ 投資家買値 − 投資家コスト = うちの売値 → ⑤ 売値 − 目標利益 = <span style={{ color: C.danger, fontWeight: 700 }}>仕入上限</span>
+              ① 類似物件の㎡賃料を算出 → ② 推定賃料 → ③ 年間収入 ÷ 実質利回り = 投資家値<br />
+              ④ 投資家値 − 目標利益 = <span style={{ color: C.danger, fontWeight: 700 }}>仕入上限</span>
             </div>
 
             <div style={{ fontSize: 13, fontWeight: 700, color: C.muted, marginBottom: 10 }}>🏠 類似物件データ（レインズで確認）</div>
@@ -8832,9 +8838,10 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
             <div style={{ fontSize: 13, fontWeight: 700, color: C.muted, margin: "14px 0 10px" }}>💹 投資家目線（楽待で確認）</div>
             <Field label="投資家表面利回り（%）"><SekisanNInp form={form} setForm={setForm} fkey="yieldRate" placeholder="15" suffix="%" /></Field>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Field label="投資家 登記費用（万）"><SekisanNInp form={form} setForm={setForm} fkey="investorRegistration" placeholder="50" suffix="万" /></Field>
-              <Field label="投資家 リフォーム費（万）"><SekisanNInp form={form} setForm={setForm} fkey="investorReform" placeholder="150" suffix="万" /></Field>
+              <Field label="投資家 登記費用(万)"><SekisanNInp form={form} setForm={setForm} fkey="investorRegistration" placeholder="50" suffix="万" /></Field>
+              <Field label="投資家 リフォーム費(万)"><SekisanNInp form={form} setForm={setForm} fkey="investorReform" placeholder="150" suffix="万" /></Field>
             </div>
+            <Field label="投資家実質利回り(%)"><SekisanNInp form={form} setForm={setForm} fkey="realYieldRate" placeholder="10" suffix="%" /></Field>
 
             <div style={{ fontSize: 13, fontWeight: 700, color: C.muted, margin: "14px 0 10px" }}>🎯 うちの目標利益</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -8849,8 +8856,8 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
                   ["㎡賃料", yieldCalc.sqmRent.toLocaleString() + "円/㎡", C.muted],
                   ["推定月額賃料", yieldCalc.estRent + "万円", C.text],
                   ["年間収入", yieldCalc.annual + "万円", C.text],
-                  [`投資家買値（利回り${form.yieldRate}%）`, yieldCalc.invBuy + "万円", C.accent],
-                  ["うちの売値", yieldCalc.ourSell + "万円", C.accent],
+                  [`投資家買値（表面利回り${form.yieldRate}%）`, yieldCalc.invBuy + "万円", C.accent],
+                  [`投資家値（実質利回り${form.realYieldRate || "?"}%）`, yieldCalc.realInvBuy + "万円", C.success],
                 ].map(([l, v, c]) => (
                   <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid #1a2535` }}>
                     <span style={{ color: C.muted, fontSize: 12 }}>{l}</span>
