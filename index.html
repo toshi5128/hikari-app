@@ -289,9 +289,9 @@ function stagnantInfo(buyDateStr) {
 const STOCK_STATUSES = ["見込", "仕入契約済", "リフォーム中", "リフォーム待ち", "売却契約準備中", "売却契約完了", "契約書作成中", "決済完了"];
 const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "断られた", "NG", "仕入れ完了"];
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
-const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "仕入"];
+const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
-const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "仕入": 3 };
+const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "査定": 60, "仕入検討": 10, "仕入": 3 };
 
 // 仕入検討積算表の判断ステータス（判断タブで使用）
 const JUDGMENTS = [
@@ -3246,6 +3246,9 @@ function ApproachPage({ data, setData }) {
 
   // ===== 案件タブ用 =====
   const [casesMember, setCasesMember] = useState("__ALL__"); // "__ALL__" or member name
+
+  // ===== コメント入力用 =====
+  const [newComment, setNewComment] = useState("");
   const [casesExpanded, setCasesExpanded] = useState(null); // 展開中のセクションkey
   const [casesMonth, setCasesMonth] = useState(today.slice(0, 7)); // 「今月の活動」表示対象月（YYYY-MM形式）
 
@@ -3352,6 +3355,98 @@ function ApproachPage({ data, setData }) {
       return { ym, label: `${d.getFullYear()}年${d.getMonth() + 1}月` };
     });
   }, []);
+
+  // ===== 🏁 就業報告 =====
+  const handleCloseReport = () => {
+    const me = selectedMember;
+    if (currentUser !== me && !isAdmin) {
+      alert("⚠️ 自分の業務報告のみ送信できます");
+      return;
+    }
+    if (!window.confirm(`今日の業務を終了して、下田さん・比嘉さんに就業報告を送ります。\nよろしいですか？\n\n※ カウンター実績と振り返りメモが通知されます。`)) return;
+    const now = new Date().toISOString();
+    setData(d => {
+      const rec = d.approaches.find(a => a.member === me && a.date === selectedDate);
+      const entry = {
+        id: rec?.id || Date.now(),
+        member: me, date: selectedDate,
+        values: inputValues, memo, mailDelivery, area, dailyGoals,
+        goalSetAt: rec?.goalSetAt || now,
+        goalNotifiedToManagers: rec?.goalNotifiedToManagers || false,
+        closedAt: now,
+        closeNotifiedToManagers: true,
+        comments: rec?.comments || [],
+      };
+      return {
+        ...d,
+        approaches: rec
+          ? d.approaches.map(a => a.id === rec.id ? entry : a)
+          : [...d.approaches, entry]
+      };
+    });
+    // 通知送信
+    const resultLabel = APPROACH_ITEMS
+      .filter(item => (Number(inputValues[item]) || 0) > 0)
+      .map(item => `${item}${inputValues[item]}`)
+      .join(" / ");
+    const memoLabel = memo ? `\n💭 ${memo}` : "";
+    const targets = ["下田", "比嘉"].filter(t => t !== me);
+    if (targets.length > 0) {
+      sendPushNotification(
+        targets,
+        `🏁 ${me}さんが業務終了`,
+        `${selectedDate}の実績\n${resultLabel || "(なし)"}${memoLabel}`,
+        { tag: `hikari-business-close-${me}-${selectedDate}` }
+      );
+    }
+    alert("✅ 就業報告を送りました。お疲れさまでした！");
+  };
+
+  // ===== 💬 コメント送信 =====
+  const handlePostComment = () => {
+    const text = newComment.trim();
+    if (!text) return;
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    const comment = {
+      id: Date.now(),
+      member: currentUser,
+      text,
+      createdAt: new Date().toISOString(),
+    };
+    setData(d => {
+      const rec = d.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
+      if (rec) {
+        return {
+          ...d,
+          approaches: d.approaches.map(a =>
+            a.id === rec.id
+              ? { ...a, comments: [...(a.comments || []), comment] }
+              : a
+          )
+        };
+      }
+      return {
+        ...d,
+        approaches: [...d.approaches, {
+          id: Date.now() + 1,
+          member: selectedMember, date: selectedDate,
+          values: inputValues, memo, mailDelivery, area, dailyGoals,
+          comments: [comment],
+        }]
+      };
+    });
+    // 通知：本人＋下田＋比嘉（送信者を除く）
+    const targets = Array.from(new Set([selectedMember, "下田", "比嘉"])).filter(t => t !== currentUser);
+    if (targets.length > 0) {
+      sendPushNotification(
+        targets,
+        `💬 ${currentUser}さんからコメント`,
+        `${selectedMember}さんの${selectedDate}の活動について\n${text}`,
+        { tag: `hikari-comment-${selectedMember}-${selectedDate}-${comment.id}` }
+      );
+    }
+    setNewComment("");
+  };
 
   const handleSave = () => {
     const entry = {
@@ -4067,7 +4162,7 @@ function ApproachPage({ data, setData }) {
           })()}
 
           {/* カウンター項目 */}
-          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 700 }}>📊 業者訪問カウンター（タップで＋1）</div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 700 }}>📞 営業活動カウンター（タップで＋1）</div>
           <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
             {APPROACH_ITEMS.map(item => {
               const goal = Number(dailyGoals[item]) || 0;
@@ -4246,6 +4341,42 @@ function ApproachPage({ data, setData }) {
                   APPROACH_ITEMS.forEach(item => { updated[item] = Number(dailyGoalForm[item]) || 0; });
                   setDailyGoals(updated);
                   setShowDailyGoalEdit(false);
+
+                  // 業務開始通知（既存に goalSetAt が無く、目標 > 0 の時のみ）
+                  const totalGoal = Object.values(updated).reduce((a, b) => a + b, 0);
+                  const me = selectedMember;
+                  const canNotify = (currentUser === me || isAdmin) && totalGoal > 0 && !existing?.goalSetAt;
+                  if (canNotify) {
+                    const goalLabel = APPROACH_ITEMS
+                      .filter(item => updated[item] > 0)
+                      .map(item => `${item}${updated[item]}`)
+                      .join(" / ");
+                    const targets = ["下田", "比嘉"].filter(t => t !== me);
+                    if (targets.length > 0) {
+                      sendPushNotification(
+                        targets,
+                        `📈 ${me}さんが業務開始`,
+                        `${selectedDate}の目標\n${goalLabel}`,
+                        { tag: `hikari-business-start-${me}-${selectedDate}` }
+                      );
+                    }
+                    // goalSetAt をマーク
+                    const now = new Date().toISOString();
+                    setData(d => {
+                      const rec = d.approaches.find(a => a.member === me && a.date === selectedDate);
+                      if (rec) {
+                        return {
+                          ...d,
+                          approaches: d.approaches.map(a =>
+                            a.id === rec.id
+                              ? { ...a, goalSetAt: now, goalNotifiedToManagers: true }
+                              : a
+                          )
+                        };
+                      }
+                      return d; // 新規は自動保存useEffectで保存される
+                    });
+                  }
                 }}>🎯 目標を保存</button>
               </div>
             </BottomSheet>
@@ -4273,6 +4404,150 @@ function ApproachPage({ data, setData }) {
           <Field label="📝 メモ">
             <textarea style={{ ...inp, height: 70, resize: "vertical" }} value={memo} onChange={e => setMemo(e.target.value)} placeholder="駅前は業者多め、A社が反応良かったなど" />
           </Field>
+
+          {/* 🏁 就業報告 */}
+          <div style={{
+            background: existing?.closedAt ? C.success + "11" : "#0d1422",
+            border: `2px solid ${existing?.closedAt ? C.success : C.warn + "66"}`,
+            borderRadius: 14, padding: 16, marginTop: 18, marginBottom: 14
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: existing?.closedAt ? C.success : C.warn, marginBottom: 8 }}>
+              {existing?.closedAt ? "✅ 本日の業務報告 完了" : "🏁 業務終了の報告"}
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 12, lineHeight: 1.6, whiteSpace: "pre-line" }}>
+              {existing?.closedAt
+                ? `${new Date(existing.closedAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} に報告済み`
+                : "カウンターを記録し、メモに振り返りを書いてから報告ボタンを押してください。\n下田さん・比嘉さんに通知が飛びます。"}
+            </div>
+            <button
+              onClick={handleCloseReport}
+              disabled={!!existing?.closedAt || (!isAdmin && currentUser !== selectedMember)}
+              style={{
+                width: "100%", padding: "14px",
+                background: existing?.closedAt ? "transparent" : C.warn,
+                color: existing?.closedAt ? C.success : "#000",
+                border: `2px solid ${existing?.closedAt ? C.success : C.warn}`,
+                borderRadius: 10,
+                cursor: (existing?.closedAt || (!isAdmin && currentUser !== selectedMember)) ? "default" : "pointer",
+                fontSize: 15, fontWeight: 800, fontFamily: "inherit",
+                opacity: existing?.closedAt ? 0.7 : (!isAdmin && currentUser !== selectedMember) ? 0.4 : 1,
+              }}>
+              {existing?.closedAt ? "✅ 報告済み" : "✅ 就業報告する"}
+            </button>
+          </div>
+
+          {/* 💬 コメント欄 */}
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginTop: 12, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 12 }}>
+              💬 コメント（{(existing?.comments || []).length}件）
+            </div>
+            {(existing?.comments || []).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(c => (
+              <div key={c.id} style={{
+                background: C.bg, borderLeft: `3px solid ${MEMBER_COLORS[c.member] || C.muted}`,
+                borderRadius: 6, padding: "10px 12px", marginBottom: 8
+              }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+                  <MemberTag name={c.member} />
+                  <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>
+                    {new Date(c.createdAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+                <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{c.text}</div>
+              </div>
+            ))}
+            {(existing?.comments || []).length === 0 && (
+              <div style={{ fontSize: 12, color: C.muted, textAlign: "center", padding: "12px 0" }}>まだコメントがありません</div>
+            )}
+            <div style={{ marginTop: 10 }}>
+              <textarea
+                value={newComment}
+                onChange={e => setNewComment(e.target.value)}
+                placeholder={`${selectedMember}さんの${selectedDate}の活動についてコメント...`}
+                style={{ ...inp, height: 60, resize: "vertical", marginBottom: 8 }}
+              />
+              <button
+                onClick={handlePostComment}
+                disabled={!newComment.trim() || !currentUser}
+                style={{
+                  ...btnStyle(), width: "100%", padding: "11px", fontSize: 13,
+                  opacity: (!newComment.trim() || !currentUser) ? 0.5 : 1
+                }}>
+                💬 コメントを送信
+              </button>
+            </div>
+          </div>
+
+          {/* 🏁 就業報告 */}
+          <div style={{
+            background: existing?.closedAt ? C.success + "11" : "#0d1422",
+            border: `2px solid ${existing?.closedAt ? C.success : C.warn + "66"}`,
+            borderRadius: 14, padding: 16, marginTop: 18, marginBottom: 14
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: existing?.closedAt ? C.success : C.warn, marginBottom: 8 }}>
+              {existing?.closedAt ? "✅ 本日の業務報告 完了" : "🏁 業務終了の報告"}
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 12, lineHeight: 1.6, whiteSpace: "pre-line" }}>
+              {existing?.closedAt
+                ? `${new Date(existing.closedAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} に報告済み`
+                : "カウンターを記録し、メモに振り返りを書いてから報告ボタンを押してください。\n下田さん・比嘉さんに通知が飛びます。"}
+            </div>
+            <button
+              onClick={handleCloseReport}
+              disabled={!!existing?.closedAt || (!isAdmin && currentUser !== selectedMember)}
+              style={{
+                width: "100%", padding: "14px",
+                background: existing?.closedAt ? "transparent" : C.warn,
+                color: existing?.closedAt ? C.success : "#000",
+                border: `2px solid ${existing?.closedAt ? C.success : C.warn}`,
+                borderRadius: 10,
+                cursor: (existing?.closedAt || (!isAdmin && currentUser !== selectedMember)) ? "default" : "pointer",
+                fontSize: 15, fontWeight: 800, fontFamily: "inherit",
+                opacity: existing?.closedAt ? 0.7 : (!isAdmin && currentUser !== selectedMember) ? 0.4 : 1,
+              }}>
+              {existing?.closedAt ? "✅ 報告済み" : "✅ 就業報告する"}
+            </button>
+          </div>
+
+          {/* 💬 コメント欄 */}
+          <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginTop: 12, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 12 }}>
+              💬 コメント（{(existing?.comments || []).length}件）
+            </div>
+            {(existing?.comments || []).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(c => (
+              <div key={c.id} style={{
+                background: C.bg, borderLeft: `3px solid ${MEMBER_COLORS[c.member] || C.muted}`,
+                borderRadius: 6, padding: "10px 12px", marginBottom: 8
+              }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+                  <MemberTag name={c.member} />
+                  <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>
+                    {new Date(c.createdAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+                <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{c.text}</div>
+              </div>
+            ))}
+            {(existing?.comments || []).length === 0 && (
+              <div style={{ fontSize: 12, color: C.muted, textAlign: "center", padding: "12px 0" }}>まだコメントがありません</div>
+            )}
+            <div style={{ marginTop: 10 }}>
+              <textarea
+                value={newComment}
+                onChange={e => setNewComment(e.target.value)}
+                placeholder={`${selectedMember}さんの${selectedDate}の活動についてコメント...`}
+                style={{ ...inp, height: 60, resize: "vertical", marginBottom: 8 }}
+              />
+              <button
+                onClick={handlePostComment}
+                disabled={!newComment.trim() || !currentUser}
+                style={{
+                  ...btnStyle(), width: "100%", padding: "11px", fontSize: 13,
+                  opacity: (!newComment.trim() || !currentUser) ? 0.5 : 1
+                }}>
+                💬 コメントを送信
+              </button>
+            </div>
+          </div>
 
           <button style={{ ...btnStyle("ghost"), width: "100%", marginTop: 4, padding: "12px", fontSize: 13 }} onClick={handleSave}>💾 念のため今すぐ保存（通常は不要）</button>
           <div style={{ marginTop: 10, padding: "12px 14px", borderRadius: 10, textAlign: "center", fontSize: 12, fontWeight: 700,
