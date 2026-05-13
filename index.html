@@ -99,10 +99,35 @@ window.__showHikariRecovery__ = function() {
 // PWA: Service Worker 登録
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function() {
-    navigator.serviceWorker.register('./sw.js').then(function(reg) {
+    // updateViaCache: 'none' で sw.js を毎回最新取得（HTTP キャッシュをバイパス）
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(function(reg) {
       console.log('[PWA] Service Worker 登録成功:', reg.scope);
+      // 起動するたびに最新の sw.js があるかチェック
+      reg.update().catch(function(){});
+
+      // 新しい sw.js が見つかったら、即座に切り替える
+      reg.addEventListener('updatefound', function() {
+        const newSW = reg.installing;
+        if (!newSW) return;
+        newSW.addEventListener('statechange', function() {
+          if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+            // 既に古い SW が動いている状態で、新しい SW が installed になった
+            console.log('[PWA] 新しい Service Worker を検出 → 切り替えます');
+            newSW.postMessage({ type: 'SKIP_WAITING' });
+          }
+        });
+      });
     }).catch(function(err) {
       console.warn('[PWA] Service Worker 登録失敗:', err);
+    });
+
+    // controller が変わったら（新SWがアクティブになったら）画面をリロード
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function() {
+      if (reloaded) return;
+      reloaded = true;
+      console.log('[PWA] Service Worker 切替完了 → リロード');
+      window.location.reload();
     });
   });
 }
@@ -7297,7 +7322,7 @@ function WebPushSection({ currentUser }) {
         let reg = await navigator.serviceWorker.getRegistration();
         if (!reg) {
           try {
-            reg = await navigator.serviceWorker.register('./sw.js');
+            reg = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
             console.log("[Web Push] SW を新規登録しました");
           } catch (err) {
             console.warn("[Web Push] SW 登録失敗:", err);
