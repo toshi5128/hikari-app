@@ -1,5 +1,5 @@
-// ひかり不動産 PWA Service Worker（Web Push + 通知タップ画面遷移 対応版）
-const CACHE_VERSION = 'hikari-app-v7-2026-05-13';
+// ひかり不動産 PWA Service Worker（Web Push + 通知タップ画面遷移 + タグfallback）
+const CACHE_VERSION = 'hikari-app-v8-2026-05-13';
 
 self.addEventListener('install', e => {
   self.skipWaiting();
@@ -17,7 +17,29 @@ self.addEventListener('activate', e => {
   })());
 });
 
-// payload から「飛び先情報」を取り出す共通関数（nested / flat / フォールバック対応）
+// 通知の tag 文字列から飛び先情報を抽出（Edge Function が data を落とした場合の保険）
+function parseTagToNav(tag) {
+  if (!tag || typeof tag !== 'string') return null;
+
+  // パターン①: hikari-business-start-<member>-<YYYY-MM-DD>
+  let m = tag.match(/^hikari-business-start-(.+)-(\d{4}-\d{2}-\d{2})$/);
+  if (m) {
+    return { tab: 'approach', sub: 'input', member: m[1], date: m[2] };
+  }
+  // パターン②: hikari-business-close-<member>-<YYYY-MM-DD>
+  m = tag.match(/^hikari-business-close-(.+)-(\d{4}-\d{2}-\d{2})$/);
+  if (m) {
+    return { tab: 'approach', sub: 'input', member: m[1], date: m[2] };
+  }
+  // パターン③: hikari-comment-<member>-<YYYY-MM-DD>-<commentId>
+  m = tag.match(/^hikari-comment-(.+)-(\d{4}-\d{2}-\d{2})-\d+$/);
+  if (m) {
+    return { tab: 'approach', sub: 'input', member: m[1], date: m[2], scrollTo: 'comments' };
+  }
+  return null;
+}
+
+// payload から「飛び先情報」を抽出（nested / flat / tag fallback の3段階）
 function extractNavData(payload) {
   if (!payload) return {};
   // ① nested: payload.data.tab
@@ -31,7 +53,16 @@ function extractNavData(payload) {
       sub: payload.sub,
       member: payload.member,
       date: payload.date,
+      scrollTo: payload.scrollTo,
     };
+  }
+  // ③ タグから推測（最後の保険）
+  if (payload.tag) {
+    const navFromTag = parseTagToNav(payload.tag);
+    if (navFromTag) {
+      console.log('[SW] tagから飛び先情報を復元:', JSON.stringify(navFromTag));
+      return navFromTag;
+    }
   }
   return {};
 }
@@ -39,9 +70,18 @@ function extractNavData(payload) {
 // 🔔 通知をクリック：既存タブにメッセージ送りつつフォーカス / 無ければクエリ付きで新規ウィンドウ
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const navData = e.notification.data || {};
+  let navData = e.notification.data || {};
 
-  console.log('[SW] notificationclick navData:', JSON.stringify(navData));
+  // notification.data が空でも tag から復元できないか試す
+  if ((!navData || Object.keys(navData).length === 0) && e.notification.tag) {
+    const fromTag = parseTagToNav(e.notification.tag);
+    if (fromTag) {
+      navData = fromTag;
+      console.log('[SW] notificationclick: tagから navData 復元:', JSON.stringify(navData));
+    }
+  }
+
+  console.log('[SW] notificationclick 最終 navData:', JSON.stringify(navData));
 
   const buildQuery = (d) => {
     const keys = Object.keys(d || {}).filter(k => d[k] != null && d[k] !== '');
@@ -91,7 +131,7 @@ self.addEventListener('push', event => {
 
   console.log('[SW] push received payload:', JSON.stringify(payload));
 
-  // 飛び先情報を柔軟に抽出（nested / flat 両対応）
+  // 飛び先情報を柔軟に抽出（nested / flat / tag fallback）
   const navData = extractNavData(payload);
 
   console.log('[SW] extracted navData:', JSON.stringify(navData));
@@ -118,7 +158,6 @@ self.addEventListener('pushsubscriptionchange', event => {
   );
 });
 
-// fetchはパススルー
 self.addEventListener('fetch', e => {
   // パススルー
 });
