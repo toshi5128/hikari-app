@@ -1,5 +1,5 @@
 // ひかり不動産 PWA Service Worker（Web Push 対応版）
-const CACHE_VERSION = 'hikari-app-v4-2026-05-12';
+const CACHE_VERSION = 'hikari-app-v5-2026-05-13';
 
 self.addEventListener('install', e => {
   // 新しい SW はすぐにアクティブにする
@@ -22,4 +22,65 @@ self.addEventListener('activate', e => {
 
 // 通知をクリックしたらアプリを開く
 self.addEventListener('notificationclick', e => {
-  e.notificati
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientsArr => {
+      const existingClient = clientsArr.find(c => c.url.includes('hikari-app'));
+      if (existingClient) return existingClient.focus();
+      return self.clients.openWindow('./');
+    })
+  );
+});
+
+// メインスレッドからのメッセージで通知を表示（アプリ開いてる時用）
+self.addEventListener('message', e => {
+  if (e.data && e.data.type === 'SHOW_NOTIFICATION') {
+    const { title, body, tag, icon } = e.data;
+    self.registration.showNotification(title, {
+      body,
+      tag: tag || 'hikari-event',
+      icon: icon || './icon-192.png',
+      badge: icon || './icon-192.png',
+      vibrate: [200, 100, 200],
+      requireInteraction: false,
+    });
+  }
+  if (e.data && e.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
+// ★ Web Push 受信（アプリ閉じてても届く！） ★
+self.addEventListener('push', event => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (e) {
+    data = { title: 'ひかり不動産', body: event.data ? event.data.text() : '新しい通知があります' };
+  }
+  const title = data.title || '📅 ひかり不動産';
+  const options = {
+    body: data.body || '',
+    tag: data.tag || ('hikari-push-' + Date.now()),
+    icon: data.icon || './icon-192.png',
+    badge: './icon-192.png',
+    vibrate: [200, 100, 200, 100, 200],
+    requireInteraction: data.requireInteraction || false,
+    data: data.data || {},
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// プッシュ通知の購読状態が変わったら（端末再起動など）再購読する
+self.addEventListener('pushsubscriptionchange', event => {
+  event.waitUntil(
+    self.clients.matchAll().then(clients => {
+      clients.forEach(c => c.postMessage({ type: 'RESUBSCRIBE_PUSH' }));
+    })
+  );
+});
+
+// fetchはパススルー（キャッシュしないでブラウザ標準にまかせる）
+self.addEventListener('fetch', e => {
+  // パススルー
+});
