@@ -3333,6 +3333,35 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
     // "__ALL__"（全員）の時は、各タブのデフォルトをキープ
   }, [casesMember]);
 
+  // 🆕 営業活動カウンター長押し連射用
+  const holdTimersRef = useRef({});
+  const startHold = (key, action) => {
+    action(); // 即発火（タップでも反応）
+    const timer = setTimeout(() => {
+      const interval = setInterval(action, 80); // 80msごとに連射
+      if (holdTimersRef.current[key]) {
+        holdTimersRef.current[key].interval = interval;
+      }
+    }, 400); // 400ms 押し続けてから連射開始
+    holdTimersRef.current[key] = { timer, interval: null };
+  };
+  const stopHold = (key) => {
+    const refs = holdTimersRef.current[key];
+    if (refs) {
+      if (refs.timer) clearTimeout(refs.timer);
+      if (refs.interval) clearInterval(refs.interval);
+      delete holdTimersRef.current[key];
+    }
+  };
+  // クリーンアップ
+  useEffect(() => () => {
+    Object.values(holdTimersRef.current).forEach(refs => {
+      if (refs.timer) clearTimeout(refs.timer);
+      if (refs.interval) clearInterval(refs.interval);
+    });
+    holdTimersRef.current = {};
+  }, []);
+
   // ===== コメント入力用 =====
   const [newComment, setNewComment] = useState("");
   // コメント編集モード用
@@ -4347,7 +4376,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
           })()}
 
           {/* カウンター項目 */}
-          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 700 }}>📞 営業活動カウンター（タップで＋1）</div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 700 }}>📞 営業活動カウンター（タップで＋1 / 長押しで連射）</div>
           <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
             {APPROACH_ITEMS.map(item => {
               const goal = Number(dailyGoals[item]) || 0;
@@ -4361,6 +4390,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                 pct >= 70 ? C.accent :
                 pct >= 30 ? C.warn : C.danger;
               const setVal = newVal => setInputValues(p => ({ ...p, [item]: Math.max(0, newVal) }));
+              // 🆕 関数型更新で長押し対応
+              const incVal = delta => setInputValues(p => ({ ...p, [item]: Math.max(0, (Number(p[item]) || 0) + delta) }));
 
               // セグメント区切り線（目標を10等分、ただし目標10未満ならその数）
               const segments = goal > 0 ? Math.min(goal, 10) : 0;
@@ -4413,20 +4444,33 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
 
                   {/* カウンター操作 */}
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: goal > 0 ? 10 : 0 }}>
-                    <button onClick={() => setVal(val - 1)}
-                      style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 8, width: 42, height: 42, cursor: "pointer", fontSize: 20, fontWeight: 800, fontFamily: "inherit" }}>−</button>
+                    <button
+                      onMouseDown={() => startHold(`${item}-dec`, () => incVal(-1))}
+                      onMouseUp={() => stopHold(`${item}-dec`)}
+                      onMouseLeave={() => stopHold(`${item}-dec`)}
+                      onTouchStart={(e) => { e.preventDefault(); startHold(`${item}-dec`, () => incVal(-1)); }}
+                      onTouchEnd={() => stopHold(`${item}-dec`)}
+                      onTouchCancel={() => stopHold(`${item}-dec`)}
+                      style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 8, width: 42, height: 42, cursor: "pointer", fontSize: 20, fontWeight: 800, fontFamily: "inherit", userSelect: "none", touchAction: "manipulation" }}>−</button>
                     <div style={{
                       flex: 1, textAlign: "center", fontSize: 28, fontWeight: 800,
                       color: overAchieved ? "#FCD34D" : C.text,
                       animation: overAchieved ? "hikariGoldNumber 2s ease-in-out infinite" : "none",
                     }}>{val}</div>
-                    <button onClick={() => setVal(val + 1)}
+                    <button
+                      onMouseDown={() => startHold(`${item}-inc`, () => incVal(1))}
+                      onMouseUp={() => stopHold(`${item}-inc`)}
+                      onMouseLeave={() => stopHold(`${item}-inc`)}
+                      onTouchStart={(e) => { e.preventDefault(); startHold(`${item}-inc`, () => incVal(1)); }}
+                      onTouchEnd={() => stopHold(`${item}-inc`)}
+                      onTouchCancel={() => stopHold(`${item}-inc`)}
                       style={{
                         background: overAchieved ? "linear-gradient(135deg, #FCD34D, #F59E0B)" : C.success + "22",
                         border: overAchieved ? "1.5px solid #F59E0B" : `1.5px solid ${C.success}`,
                         color: overAchieved ? "#451A03" : C.success,
                         borderRadius: 8, width: 42, height: 42, cursor: "pointer", fontSize: 20, fontWeight: 800, fontFamily: "inherit",
                         boxShadow: overAchieved ? "0 0 12px rgba(252,211,77,0.4)" : "none",
+                        userSelect: "none", touchAction: "manipulation",
                       }}>＋</button>
                     <button onClick={() => setVal(val + 5)}
                       style={{
@@ -8448,6 +8492,7 @@ const FEATURE_CATEGORIES = [
       { name: "セットバック要", risk: "mid" },
       { name: "既存不適格", risk: "high" },
       { name: "接道階段", risk: "mid" },
+      { name: "但し書道路", risk: "mid" },
     ],
   },
   {
@@ -8508,6 +8553,7 @@ const FEATURE_CATEGORIES = [
       { name: "下水道なし", risk: "mid" },
       { name: "プロパン", risk: "mid" },
       { name: "浄化槽", risk: "mid" },
+      { name: "都市ガス", risk: "good" },
     ],
   },
   {
