@@ -319,9 +319,9 @@ function stagnantInfo(buyDateStr) {
 const STOCK_STATUSES = ["見込", "仕入契約済", "リフォーム中", "リフォーム待ち", "売却契約準備中", "売却契約完了", "契約書作成中", "決済完了"];
 const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "断られた", "NG", "仕入れ完了"];
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
-const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入"];
+const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "地上初訪", "地上再訪", "新規地上"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
-const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "査定": 60, "仕入検討": 10, "仕入": 3 };
+const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "査定": 60, "仕入検討": 10, "仕入": 3, "地上初訪": 30, "地上再訪": 50, "新規地上": 10 };
 
 // 仕入検討積算表の判断ステータス（判断タブで使用）
 const JUDGMENTS = [
@@ -5923,6 +5923,8 @@ function JiagePage({ data, setData }) {
       address: j.address,
       assignee: j.assignee,
       createdAt: today,
+      source: "地上げ", // 🆕 出所を自動セット
+      vendorName: "", vendorPerson: "", vendorContactType: "", vendorContact: "",
       age: "", structure: "", layout: "", landArea: "", buildingArea: "", stationDist: "",
       buyPrice: "", brokerFeeIn: "", registration: "", acquisitionTax: "", stamp: "",
       leftover: "", reform: "", demolition: "", brokerFeeOut: "", other: "",
@@ -8364,6 +8366,12 @@ function YakushoPage({ data, setData, onBack }) {
 // ===================== SEKISAN PAGE (v2 - 利回り計算・根拠・判断タブ付き) =====================
 const SEKISAN_EMPTY = {
   address: "", assignee: MEMBERS[0], createdAt: new Date().toISOString().split("T")[0],
+  // 🆕 案件の出所
+  source: "", // "地上げ" | "チラシ" | "業者☎" | "業者✉" | "業者訪問"
+  vendorName: "",      // 業者名
+  vendorPerson: "",    // 業者担当者名
+  vendorContactType: "", // "携帯" | "メール"
+  vendorContact: "",   // 連絡先
   age: "", structure: "", layout: "", landArea: "", buildingArea: "", stationDist: "",
   buyPrice: "", brokerFeeIn: "", registration: "", acquisitionTax: "", stamp: "",
   leftover: "", reform: "", demolition: "", brokerFeeOut: "", other: "",
@@ -8378,6 +8386,9 @@ const SEKISAN_EMPTY = {
   judgment: "検討中", judgmentMemo: "",
   features: [], // 物件特徴（複数選択可）
 };
+
+const SEKISAN_SOURCES = ["地上げ", "チラシ", "業者☎", "業者✉", "業者訪問"];
+const SEKISAN_CONTACT_TYPES = ["携帯", "メール"];
 
 // 物件特徴のカテゴリ定義
 const FEATURE_CATEGORIES = [
@@ -8544,6 +8555,40 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
         <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: C.accent, marginBottom: 12 }}>📍 基本情報</div>
           <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+
+          {/* 🆕 案件の出所 */}
+          <Field label="案件の出所">
+            <select style={inp} value={form.source || ""} onChange={f("source")}>
+              <option value="">選択してください</option>
+              {SEKISAN_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </Field>
+
+          {/* 🆕 紹介元情報（地上げ以外で表示） */}
+          {form.source && form.source !== "地上げ" && (
+            <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, marginBottom: 10 }}>📇 紹介元の情報</div>
+              <Field label="業者名"><input style={inp} value={form.vendorName || ""} onChange={f("vendorName")} placeholder="例）〇〇不動産" /></Field>
+              <Field label="担当者名"><input style={inp} value={form.vendorPerson || ""} onChange={f("vendorPerson")} placeholder="例）山田 太郎" /></Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 10 }}>
+                <Field label="連絡先種別">
+                  <select style={inp} value={form.vendorContactType || ""} onChange={f("vendorContactType")}>
+                    <option value="">--</option>
+                    {SEKISAN_CONTACT_TYPES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </Field>
+                <Field label="連絡先">
+                  <input
+                    style={inp}
+                    value={form.vendorContact || ""}
+                    onChange={f("vendorContact")}
+                    placeholder={form.vendorContactType === "携帯" ? "090-1234-5678" : form.vendorContactType === "メール" ? "example@example.com" : "携帯番号またはメール"}
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
+
           <Field label="物件住所"><input style={inp} value={form.address} onChange={f("address")} placeholder="埼玉県熊谷市〇〇" /></Field>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="土地面積(㎡)"><SekisanNInp form={form} setForm={setForm} fkey="landArea" placeholder="100" suffix="㎡" /></Field>
@@ -9036,10 +9081,17 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
             <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
               <MemberTag name={s.assignee} />
               {s.judgment && <Tag label={`${jEmoji} ${s.judgment}`} color={jColor} />}
+              {s.source && <Tag label={`📥 ${s.source}`} color={C.purple} />}
               {isTransferred && <Tag label="✅ 在庫転記済" color={C.success} />}
               <span style={{ color: C.muted, fontSize: 12, marginLeft: "auto" }}>{s.createdAt}</span>
             </div>
             <div style={{ color: C.text, fontWeight: 700, fontSize: 15, marginBottom: 10 }}>{s.address || "住所未設定"}</div>
+            {/* 紹介元（業者情報がある場合のみ表示） */}
+            {s.vendorName && (
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, padding: "6px 10px", background: C.bg, borderRadius: 6, borderLeft: `2px solid ${C.purple}` }}>
+                📇 {s.vendorName}{s.vendorPerson ? `（${s.vendorPerson}）` : ""}{s.vendorContact ? ` / ${s.vendorContact}` : ""}
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
               {[
                 ["仕入額", nv(s.buyPrice) > 0 ? (nv(s.buyPrice) / 10000).toFixed(0) + "万" : "—", C.text],
