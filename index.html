@@ -506,6 +506,59 @@ function appendLog(d, action, target, description) {
   return { ...d, activityLog: log };
 }
 
+// 🆕 全アクション共通通知ヘルパー：appendLog + 下田・比嘉に Push 通知 + 該当箇所遷移
+function appendLogAndNotify(d, action, target, description, item = null, options = {}) {
+  const next = appendLog(d, action, target, description);
+
+  // skipPush: 専用通知が既に飛ぶ箇所では汎用通知をスキップ
+  if (options.skipPush) return next;
+
+  const me = (typeof getCurrentUser === "function" && getCurrentUser()) || "";
+  const targets = getNotifyTargets(d, me);
+  if (targets.length === 0) return next;
+
+  const targetInfo = {
+    stock: { icon: "🏠", tab: "stock", linkKey: "stockLinkId" },
+    jiage: { icon: "🚧", tab: "jiage", linkKey: "jiageLinkId" },
+    owner: { icon: "👤", tab: "owners", linkKey: "ownerLinkId" },
+    sekisan: { icon: "🧮", tab: "approach", sub: "cases", linkKey: "sekisanLinkId" },
+    yakusho: { icon: "🏛", tab: "dashboard", linkKey: "yakushoLinkId" },
+    event: { icon: "📅", tab: "dashboard", linkKey: "eventId" },
+  };
+  const actionLabels = {
+    add: "➕ 追加",
+    update: "✏️ 更新",
+    delete: "🗑️ 削除",
+    promote: "🚀 転記",
+    import: "📥 インポート",
+  };
+
+  const info = targetInfo[target] || { icon: "📋", tab: "dashboard" };
+  const actionLabel = actionLabels[action] || "📝 変更";
+  const navData = { tab: info.tab };
+  if (info.sub) navData.sub = info.sub;
+  if (item?.id && info.linkKey) navData[info.linkKey] = item.id;
+
+  const itemId = item?.id || Date.now();
+  const tag = `hikari-${target}-${action}-${itemId}`;
+
+  // 非同期で通知送信（setData の純粋性を保つため setTimeout で外に出す）
+  setTimeout(() => {
+    sendPushNotification(
+      targets,
+      `${info.icon} ${actionLabel}${me ? " by " + me + "さん" : ""}`,
+      description,
+      {
+        tag,
+        data: navData,
+        ...navData,
+      }
+    );
+  }, 0);
+
+  return next;
+}
+
 // Supabaseからデータを取得
 async function loadFromSupabase() {
   try {
@@ -882,12 +935,16 @@ function MainApp({ onLock, onSwitchUser }) {
           scrollTo: params.get('scrollTo'),
           stockLinkId: params.get('stockLinkId'),
           sekisanLinkId: params.get('sekisanLinkId'),
+          jiageLinkId: params.get('jiageLinkId'),
+          ownerLinkId: params.get('ownerLinkId'),
+          yakushoLinkId: params.get('yakushoLinkId'),
           eventId: params.get('eventId'),
         };
         if (tabParam === 'approach') setPage('approach');
         else if (tabParam === 'dashboard') setPage('dashboard');
         else if (tabParam === 'stock') setPage('stock');
         else if (tabParam === 'jiage') setPage('jiage');
+        else if (tabParam === 'owners') setPage('jiage'); // 所有者は地上げと統合
         setPendingNav(nav);
         // クエリを消して、リロード時に再遷移しないようにする
         window.history.replaceState({}, '', './');
@@ -902,6 +959,7 @@ function MainApp({ onLock, onSwitchUser }) {
         else if (nav.tab === 'dashboard') setPage('dashboard');
         else if (nav.tab === 'stock') setPage('stock');
         else if (nav.tab === 'jiage') setPage('jiage');
+        else if (nav.tab === 'owners') setPage('jiage');
         setPendingNav(nav);
       }
     };
@@ -1023,7 +1081,7 @@ function MainApp({ onLock, onSwitchUser }) {
         {page === "dashboard" && <Dashboard data={data} setData={setData} />}
         {page === "stock" && <StockPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
         {page === "approach" && <ApproachPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
-        {page === "jiage" && <JiagePage data={data} setData={setData} />}
+        {page === "jiage" && <JiagePage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
         {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} onSwitchUser={onSwitchUser} />}
       </div>
 
@@ -1419,7 +1477,7 @@ function Dashboard({ data, setData }) {
     };
     setData(d => {
       const next = { ...d, stocks: d.stocks.map(s => s.id === quickEditStock.id ? updated : s) };
-      return appendLog(next, "update", "stock", `${updated.name || "(無題)"}（${updated.status}）をホームから編集`);
+      return appendLogAndNotify(next, "update", "stock", `${updated.name || "(無題)"}（${updated.status}）をホームから編集`, updated);
     });
     setQuickEditStock(null);
     setQuickEditForm(null);
@@ -1435,7 +1493,7 @@ function Dashboard({ data, setData }) {
     const updated = { ...quickEditJiage, ...quickEditJiageForm };
     setData(d => {
       const next = { ...d, jiage: d.jiage.map(j => j.id === quickEditJiage.id ? updated : j) };
-      return appendLog(next, "update", "jiage", `${updated.address || "(無住所)"}（${updated.status}）をホームから編集`);
+      return appendLogAndNotify(next, "update", "jiage", `${updated.address || "(無住所)"}（${updated.status}）をホームから編集`, updated);
     });
     setQuickEditJiage(null);
     setQuickEditJiageForm(null);
@@ -1451,7 +1509,7 @@ function Dashboard({ data, setData }) {
     const updated = { ...quickEditOwner, ...quickEditOwnerForm };
     setData(d => {
       const next = { ...d, owners: d.owners.map(o => o.id === quickEditOwner.id ? updated : o) };
-      return appendLog(next, "update", "owner", `${updated.address || "(無住所)"}（${updated.status}）をホームから編集`);
+      return appendLogAndNotify(next, "update", "owner", `${updated.address || "(無住所)"}（${updated.status}）をホームから編集`, updated);
     });
     setQuickEditOwner(null);
     setQuickEditOwnerForm(null);
@@ -1529,7 +1587,7 @@ function Dashboard({ data, setData }) {
         ? (d.customEvents || []).map(e => e.id === editingEvent.id ? item : e)
         : [...(d.customEvents || []), item] };
       const assigneeLabel = item.assignees.length > 0 ? `（${item.assignees.join("・")}）` : "";
-      return appendLog(next, editingEvent ? "update" : "add", "event", `予定「${item.title}」${assigneeLabel}（${item.date}${item.time ? " " + item.time : ""}）`);
+      return appendLogAndNotify(next, editingEvent ? "update" : "add", "event", `予定「${item.title}」${assigneeLabel}（${item.date}${item.time ? " " + item.time : ""}）`, item, { skipPush: !editingEvent });
     });
     setShowEventForm(false);
     setEditingEvent(null);
@@ -1567,7 +1625,7 @@ function Dashboard({ data, setData }) {
     if (!window.confirm(`予定「${target.title}」を削除しますか？`)) return;
     setData(d => {
       const next = { ...d, customEvents: (d.customEvents || []).filter(e => e.id !== id) };
-      return appendLog(next, "delete", "event", `予定「${target.title}」を削除`);
+      return appendLogAndNotify(next, "delete", "event", `予定「${target.title}」を削除`, target);
     });
   };
 
@@ -2840,23 +2898,38 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     if (pendingNav && pendingNav.tab === 'stock' && pendingNav.stockLinkId) {
       const targetId = Number(pendingNav.stockLinkId);
       const target = data.stocks.find(s => s.id === targetId);
+      console.log('[StockPage] pendingNav 受信:', pendingNav, 'targetId:', targetId, 'target:', target);
       if (target) {
         // 決済完了なら表示モードを切り替え
         if (target.status === "決済完了") setViewMode("completed");
         else setViewMode("active");
-        // フィルター解除
+        // フィルター解除（確実に表示されるように）
         setFilterStatuses([]);
         setFilterMembers([]);
         setSearch("");
         // ハイライト
         setHighlightId(targetId);
-        // スクロール
-        setTimeout(() => {
+
+        // スクロール（DOM 描画が完了するまで最大10回リトライ）
+        let retries = 0;
+        const tryScroll = () => {
           const el = document.getElementById(`stock-item-${targetId}`);
-          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-        }, 200);
-        // 2.5秒後ハイライト解除
-        setTimeout(() => setHighlightId(null), 2500);
+          if (el) {
+            console.log('[StockPage] スクロール実行:', targetId);
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+          } else if (retries < 10) {
+            retries++;
+            setTimeout(tryScroll, 150); // 150ms ごとにリトライ
+          } else {
+            console.warn('[StockPage] 物件カードが見つかりません:', targetId);
+          }
+        };
+        setTimeout(tryScroll, 100);
+
+        // 3秒後ハイライト解除
+        setTimeout(() => setHighlightId(null), 3000);
+      } else {
+        console.warn('[StockPage] 該当物件が見つかりません. stockLinkId:', pendingNav.stockLinkId, 'stocks count:', data.stocks.length);
       }
       onConsumeNav && onConsumeNav();
     }
@@ -2976,7 +3049,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       });
 
       const next = { ...d, stocks: editItem ? d.stocks.map(s => s.id === editItem.id ? item : s) : [...d.stocks, item], customEvents: nextEvents };
-      return appendLog(next, editItem ? "update" : "add", "stock", `${item.name || "(無題)"}（${item.status}）`);
+      return appendLogAndNotify(next, editItem ? "update" : "add", "stock", `${item.name || "(無題)"}（${item.status}）`, item);
     });
 
     // 🆕 変更があった日付について下田・比嘉に通知（送信者除く）
@@ -3031,7 +3104,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         // 🆕 関連カレンダーイベント連動削除（仕入契約日・決済日など）
         customEvents: (d.customEvents || []).filter(e => !(e.stockLinkId && e.stockLinkId === id)),
       };
-      return appendLog(next, "delete", "stock", `${target?.name || "(無題)"}を削除`);
+      return appendLogAndNotify(next, "delete", "stock", `${target?.name || "(無題)"}を削除`, target);
     });
   };
 
@@ -3622,6 +3695,10 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
         setSelectedDate(pendingNav.date);
         setSelectedYM(pendingNav.date.slice(0, 7));
       }
+      // 🆕 sekisanLinkId が来てたら案件タブを開く
+      if (pendingNav.sekisanLinkId) {
+        setTab("cases");
+      }
       // 🆕 scrollTo: 'comments' ならコメント欄まで自動スクロール
       if (pendingNav.scrollTo === 'comments') {
         // データ読込・タブ切替を待ってからスクロール
@@ -4076,7 +4153,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
         <div>
           {/* ========== 仕入検討積算表（埋め込み） ========== */}
           <div style={{ background: "#0d1422", border: `1px solid ${C.warn}33`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
-            <SekisanPage data={data} setData={setData} embedded={true} defaultAssignee={casesMember === "__ALL__" ? null : casesMember} casesMember={casesMember} />
+            <SekisanPage data={data} setData={setData} embedded={true} defaultAssignee={casesMember === "__ALL__" ? null : casesMember} casesMember={casesMember} sekisanLinkId={pendingNav?.sekisanLinkId} onConsumeNav={onConsumeNav} />
           </div>
 
           {/* ========== 段1：パイプライン ========== */}
@@ -5688,12 +5765,53 @@ function inferAreaFromAddress(address) {
   return "";
 }
 
-function JiagePage({ data, setData }) {
+function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const today = new Date().toISOString().split("T")[0];
+  // 🆕 通知タップでハイライトする ID
+  const [highlightJiageId, setHighlightJiageId] = useState(null);
+  const [highlightOwnerId, setHighlightOwnerId] = useState(null);
+
+  // 🆕 pendingNav 受け取り：地上げ/所有者の該当アイテムにスクロール
+  useEffect(() => {
+    if (!pendingNav || pendingNav.tab !== 'jiage') return;
+    if (pendingNav.jiageLinkId) {
+      const targetId = Number(pendingNav.jiageLinkId);
+      setHighlightJiageId(targetId);
+      let retries = 0;
+      const tryScroll = () => {
+        const el = document.getElementById(`jiage-item-${targetId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        } else if (retries < 10) {
+          retries++;
+          setTimeout(tryScroll, 150);
+        }
+      };
+      setTimeout(tryScroll, 100);
+      setTimeout(() => setHighlightJiageId(null), 3000);
+      onConsumeNav && onConsumeNav();
+    } else if (pendingNav.ownerLinkId) {
+      const targetId = Number(pendingNav.ownerLinkId);
+      setHighlightOwnerId(targetId);
+      let retries = 0;
+      const tryScroll = () => {
+        const el = document.getElementById(`owner-item-${targetId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        } else if (retries < 10) {
+          retries++;
+          setTimeout(tryScroll, 150);
+        }
+      };
+      setTimeout(tryScroll, 100);
+      setTimeout(() => setHighlightOwnerId(null), 3000);
+      onConsumeNav && onConsumeNav();
+    }
+  }, [pendingNav]);
   const [viewMode, setViewMode] = useState("list");
   const [typeFilter, setTypeFilter] = useState("all");
   const [areaFilter, setAreaFilter] = useState("すべて");
@@ -5933,7 +6051,7 @@ function JiagePage({ data, setData }) {
     setData(d => {
       const next = { ...d, jiage: [...(d.jiage || []), ...allNewItems] };
       const sheetNames = targetSheets.map(s => s.name).join(", ");
-      return appendLog(next, "import", "jiage", `Excel(${sheetNames})から${allNewItems.length}件インポート`);
+      return appendLogAndNotify(next, "import", "jiage", `Excel(${sheetNames})から${allNewItems.length}件インポート`, null);
     });
     alert(`✅ ${allNewItems.length}件をインポートしました！\n（${targetSheets.length}シート分）`);
     setImportPreview(null);
@@ -6036,11 +6154,11 @@ function JiagePage({ data, setData }) {
     if (!window.confirm("削除しますか？")) return;
     if (item.type === "jiage") setData(d => {
       const next = { ...d, jiage: d.jiage.filter(j => j.id !== item.rawId) };
-      return appendLog(next, "delete", "jiage", `${item.address || "(無住所)"}を削除`);
+      return appendLogAndNotify(next, "delete", "jiage", `${item.address || "(無住所)"}を削除`, item);
     });
     else setData(d => {
       const next = { ...d, owners: d.owners.filter(o => o.id !== item.rawId) };
-      return appendLog(next, "delete", "owner", `${item.address || "(無住所)"}を削除`);
+      return appendLogAndNotify(next, "delete", "owner", `${item.address || "(無住所)"}を削除`, item);
     });
     setSelected(null);
   };
@@ -6238,7 +6356,7 @@ function JiagePage({ data, setData }) {
     };
     setData(d => {
       const next = { ...d, sekisan: [...(d.sekisan || []), newSekisan] };
-      return appendLog(next, "promote", "sekisan", `${j.address}を地上げ→積算に昇格`);
+      return appendLogAndNotify(next, "promote", "sekisan", `${j.address}を地上げ→積算に昇格`, j);
     });
     alert(`✅「${j.address}」の積算表を作成しました！\n「営業」タブから編集できます。`);
     setSelected(null);
@@ -6261,13 +6379,13 @@ function JiagePage({ data, setData }) {
       const item = { ...form, id: editItem?.rawId || Date.now() };
       setData(d => {
         const next = { ...d, jiage: editItem ? d.jiage.map(j => j.id === item.id ? item : j) : [...d.jiage, item] };
-        return appendLog(next, editItem ? "update" : "add", "jiage", `${item.address || "(無住所)"}（${item.status}）`);
+        return appendLogAndNotify(next, editItem ? "update" : "add", "jiage", `${item.address || "(無住所)"}（${item.status}）`, item);
       });
     } else {
       const item = { ...form, id: editItem?.rawId || Date.now() };
       setData(d => {
         const next = { ...d, owners: editItem ? d.owners.map(o => o.id === item.id ? item : o) : [...d.owners, item] };
-        return appendLog(next, editItem ? "update" : "add", "owner", `${item.address || "(無住所)"}（${item.status}）`);
+        return appendLogAndNotify(next, editItem ? "update" : "add", "owner", `${item.address || "(無住所)"}（${item.status}）`, item);
       });
     }
     setShowAdd(false); setEditItem(null);
@@ -6356,7 +6474,7 @@ function JiagePage({ data, setData }) {
                       return j;
                     })
                   };
-                  return appendLog(next, "update", "jiage", `エリアを${fixableCount}件自動補正`);
+                  return appendLogAndNotify(next, "update", "jiage", `エリアを${fixableCount}件自動補正`, null);
                 });
                 setTimeout(() => alert(`✅ ${fixableCount}件のエリアを補正しました！`), 100);
               }} style={{
@@ -6820,14 +6938,20 @@ function JiagePage({ data, setData }) {
           {filtered.map(item => {
             const overdue = isOverdue(item);
             const nogo = isNoGo(item);
+            const isHighlight = (item.type === "jiage" && highlightJiageId === item.rawId) || (item.type === "owner" && highlightOwnerId === item.rawId);
             return (
-              <div key={item.id} style={{
-                background: nogo ? "#3f0a0a" : "#0d1422",
-                border: `2px solid ${nogo ? C.danger : overdue ? C.danger + "66" : item.status === "見込" || item.status === "興味あり" ? C.success + "55" : "#1a2535"}`,
-                borderRadius: 16, marginBottom: 12, overflow: "hidden",
-                opacity: nogo ? 0.85 : 1,
-                position: "relative",
-              }}>
+              <div
+                key={item.id}
+                id={item.type === "jiage" ? `jiage-item-${item.rawId}` : `owner-item-${item.rawId}`}
+                style={{
+                  background: nogo ? "#3f0a0a" : isHighlight ? "linear-gradient(135deg, rgba(14,165,233,0.15), rgba(34,197,94,0.10))" : "#0d1422",
+                  border: isHighlight ? `2px solid ${C.accent}` : `2px solid ${nogo ? C.danger : overdue ? C.danger + "66" : item.status === "見込" || item.status === "興味あり" ? C.success + "55" : "#1a2535"}`,
+                  borderRadius: 16, marginBottom: 12, overflow: "hidden",
+                  opacity: nogo ? 0.85 : 1,
+                  position: "relative",
+                  boxShadow: isHighlight ? `0 0 24px ${C.accent}66` : "none",
+                  transition: "all 0.4s",
+                }}>
                 {nogo && (
                   <div style={{
                     position: "absolute", top: 0, left: 0, right: 0,
@@ -9623,10 +9747,33 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
   );
 }
 
-function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee = null, casesMember = null }) {
+function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee = null, casesMember = null, sekisanLinkId = null }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
+  const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
+  // 🆕 通知タップでハイライトする ID
+  const [highlightSekisanId, setHighlightSekisanId] = useState(null);
+
+  // 🆕 sekisanLinkId 受け取り：該当積算表にスクロール
+  useEffect(() => {
+    if (sekisanLinkId) {
+      const targetId = Number(sekisanLinkId);
+      setHighlightSekisanId(targetId);
+      let retries = 0;
+      const tryScroll = () => {
+        const el = document.getElementById(`sekisan-item-${targetId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        } else if (retries < 10) {
+          retries++;
+          setTimeout(tryScroll, 150);
+        }
+      };
+      setTimeout(tryScroll, 200);
+      setTimeout(() => setHighlightSekisanId(null), 3000);
+    }
+  }, [sekisanLinkId]);
   const [showForm, setShowForm] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
@@ -9678,7 +9825,7 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
         sekisan: editItem ? d.sekisan.map(s => s.id === editItem.id ? item : s) : [...d.sekisan, item],
         customEvents: nextEvents,
       };
-      return appendLog(next, editItem ? "update" : "add", "sekisan", `${item.address || "(無住所)"}（判定: ${item.judgment}）`);
+      return appendLogAndNotify(next, editItem ? "update" : "add", "sekisan", `${item.address || "(無住所)"}（判定: ${item.judgment}）`, item);
     });
 
     // 売主結果確認日が新規追加 or 更新された時、下田・比嘉に通知
@@ -9722,7 +9869,7 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
     };
     setData(d => {
       const next = { ...d, stocks: [...d.stocks, newStock] };
-      return appendLog(next, "promote", "stock", `${form.address}を積算→在庫に転記（仕入${Math.round(nv(form.buyPrice)/10000)}万）`);
+      return appendLogAndNotify(next, "promote", "stock", `${form.address}を積算→在庫に転記（仕入${Math.round(nv(form.buyPrice)/10000)}万）`, { id: stockItem.id });
     });
     setShowForm(false); setEditItem(null);
     alert(`✅「${form.address}」を在庫管理に転記しました！\nステータス：仕入契約済`);
@@ -9737,7 +9884,7 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
         // 🆕 関連カレンダーイベント連動削除（売主結果確認日など）
         customEvents: (d.customEvents || []).filter(e => !(e.sekisanLinkId && e.sekisanLinkId === id)),
       };
-      return appendLog(next, "delete", "sekisan", `${target?.address || "(無住所)"}を削除`);
+      return appendLogAndNotify(next, "delete", "sekisan", `${target?.address || "(無住所)"}を削除`, target);
     });
   };
   const nv = v => parseFloat(v) || 0;
@@ -9809,8 +9956,18 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
         const jEmoji = JEMOJI[s.judgment] || "";
         // この積算表から在庫管理に転記済みか確認
         const isTransferred = s.id && data.stocks.some(st => st.fromSekisanId === s.id);
+        const isHighlight = highlightSekisanId === s.id;
         return (
-          <div key={s.id} style={{ background: "#0d1422", border: `1px solid ${s.judgment === "熱い" ? C.danger + "55" : isTransferred ? C.success + "55" : "#1a2535"}`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
+          <div
+            key={s.id}
+            id={`sekisan-item-${s.id}`}
+            style={{
+              background: isHighlight ? "linear-gradient(135deg, rgba(14,165,233,0.15), rgba(34,197,94,0.10))" : "#0d1422",
+              border: isHighlight ? `2px solid ${C.accent}` : `1px solid ${s.judgment === "熱い" ? C.danger + "55" : isTransferred ? C.success + "55" : "#1a2535"}`,
+              borderRadius: 14, padding: 16, marginBottom: 10,
+              boxShadow: isHighlight ? `0 0 24px ${C.accent}66` : "none",
+              transition: "all 0.4s",
+            }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
               <MemberTag name={s.assignee} />
               {s.judgment && <Tag label={`${jEmoji} ${s.judgment}`} color={jColor} />}
