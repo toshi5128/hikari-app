@@ -7183,7 +7183,7 @@ function WebPushSection({ currentUser }) {
   const [busy, setBusy] = useState(false);
   const [lastError, setLastError] = useState("");
 
-  // 初期状態チェック（3秒タイムアウト＋SW再登録）
+  // 初期状態チェック（3秒タイムアウト＋SW再登録＋自動再購読）
   useEffect(() => {
     (async () => {
       if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
@@ -7211,7 +7211,28 @@ function WebPushSection({ currentUser }) {
         ]);
         const finalReg = await navigator.serviceWorker.ready;
         const sub = await finalReg.pushManager.getSubscription();
-        setPushStatus(sub ? "subscribed" : "unsubscribed");
+
+        if (sub) {
+          // 既に購読済み
+          setPushStatus("subscribed");
+          // 🛡️ 保険：Supabase 側に購読情報が落ちてた場合に備えて再登録
+          if (currentUser) {
+            try { await savePushSubscriptionToSupabase(currentUser, sub); } catch (_) {}
+          }
+        } else if (Notification.permission === "granted" && currentUser) {
+          // 🆕 通知許可済み + 未購読 → 自動で再購読（毎回設定し直す手間を省く）
+          console.log("[Web Push] 通知許可済みで未購読 → 自動再購読を試行");
+          setPushStatus("checking");
+          try {
+            await autoEnable();
+          } catch (err) {
+            console.warn("[Web Push] 自動再購読失敗:", err);
+            setPushStatus("unsubscribed");
+            setLastError("自動再購読失敗: " + (err.message || err));
+          }
+        } else {
+          setPushStatus("unsubscribed");
+        }
       } catch (e) {
         // タイムアウトでもエラーでも、とにかく「未購読」扱いにしてボタンを出す
         console.warn("[Web Push] 初期化エラー:", e);
@@ -7221,7 +7242,17 @@ function WebPushSection({ currentUser }) {
         }
       }
     })();
-  }, []);
+  }, [currentUser]);
+
+  // 通知許可済み + 未購読 のとき、ボタンを押さなくても勝手に購読する用の関数
+  const autoEnable = async () => {
+    if (!currentUser) return;
+    const sub = await ensurePushSubscription();
+    await savePushSubscriptionToSupabase(currentUser, sub);
+    setPushStatus("subscribed");
+    setLastError("");
+    console.log("[Web Push] 自動再購読 成功");
+  };
 
   const enable = async () => {
     if (!currentUser) {
