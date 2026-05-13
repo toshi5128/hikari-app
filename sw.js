@@ -1,31 +1,48 @@
 // ひかり不動産 PWA Service Worker（Web Push + 通知タップ画面遷移 対応版）
-const CACHE_VERSION = 'hikari-app-v6-2026-05-13';
+const CACHE_VERSION = 'hikari-app-v7-2026-05-13';
 
 self.addEventListener('install', e => {
-  // 新しい SW はすぐにアクティブにする
   self.skipWaiting();
 });
 
 self.addEventListener('activate', e => {
   e.waitUntil((async () => {
-    // 古いキャッシュを全削除
     const cacheNames = await caches.keys();
     await Promise.all(
       cacheNames
         .filter(name => name !== CACHE_VERSION)
         .map(name => caches.delete(name))
     );
-    // すべての開いているクライアントをこの SW の制御下に置く
     await self.clients.claim();
   })());
 });
 
-// 🔔 通知をクリックした時：既存タブがあれば NAVIGATE メッセージを送ってフォーカス、無ければクエリ付きで新規ウィンドウを開く
+// payload から「飛び先情報」を取り出す共通関数（nested / flat / フォールバック対応）
+function extractNavData(payload) {
+  if (!payload) return {};
+  // ① nested: payload.data.tab
+  if (payload.data && (payload.data.tab || payload.data.member)) {
+    return payload.data;
+  }
+  // ② flat: payload.tab
+  if (payload.tab || payload.member) {
+    return {
+      tab: payload.tab,
+      sub: payload.sub,
+      member: payload.member,
+      date: payload.date,
+    };
+  }
+  return {};
+}
+
+// 🔔 通知をクリック：既存タブにメッセージ送りつつフォーカス / 無ければクエリ付きで新規ウィンドウ
 self.addEventListener('notificationclick', e => {
   e.notification.close();
   const navData = e.notification.data || {};
 
-  // クエリ文字列を組み立て（新規ウィンドウ用）
+  console.log('[SW] notificationclick navData:', JSON.stringify(navData));
+
   const buildQuery = (d) => {
     const keys = Object.keys(d || {}).filter(k => d[k] != null && d[k] !== '');
     if (keys.length === 0) return '';
@@ -36,11 +53,9 @@ self.addEventListener('notificationclick', e => {
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientsArr => {
       const existingClient = clientsArr.find(c => c.url.includes('hikari-app'));
       if (existingClient) {
-        // 既存タブにメッセージを送って画面遷移を依頼 → タブをフォーカス
         try { existingClient.postMessage({ type: 'NAVIGATE', data: navData }); } catch (err) {}
         return existingClient.focus();
       }
-      // 新規ウィンドウをクエリ付きで開く
       return self.clients.openWindow('./' + buildQuery(navData));
     })
   );
@@ -65,28 +80,36 @@ self.addEventListener('message', e => {
   }
 });
 
-// ★ Web Push 受信（アプリ閉じてても届く！） ★
+// ★ Web Push 受信 ★
 self.addEventListener('push', event => {
-  let data = {};
+  let payload = {};
   try {
-    data = event.data ? event.data.json() : {};
+    payload = event.data ? event.data.json() : {};
   } catch (e) {
-    data = { title: 'ひかり不動産', body: event.data ? event.data.text() : '新しい通知があります' };
+    payload = { title: 'ひかり不動産', body: event.data ? event.data.text() : '新しい通知' };
   }
-  const title = data.title || '📅 ひかり不動産';
+
+  console.log('[SW] push received payload:', JSON.stringify(payload));
+
+  // 飛び先情報を柔軟に抽出（nested / flat 両対応）
+  const navData = extractNavData(payload);
+
+  console.log('[SW] extracted navData:', JSON.stringify(navData));
+
+  const title = payload.title || '📅 ひかり不動産';
   const options = {
-    body: data.body || '',
-    tag: data.tag || ('hikari-push-' + Date.now()),
-    icon: data.icon || './icon-192.png',
+    body: payload.body || '',
+    tag: payload.tag || ('hikari-push-' + Date.now()),
+    icon: payload.icon || './icon-192.png',
     badge: './icon-192.png',
     vibrate: [200, 100, 200, 100, 200],
-    requireInteraction: data.requireInteraction || false,
-    data: data.data || {}, // ← 通知タップ時に渡される飛び先情報
+    requireInteraction: payload.requireInteraction || false,
+    data: navData, // ← 通知タップ時に使われる飛び先情報
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
-// プッシュ通知の購読状態が変わったら（端末再起動など）再購読する
+// 購読状態変化時の再購読依頼
 self.addEventListener('pushsubscriptionchange', event => {
   event.waitUntil(
     self.clients.matchAll().then(clients => {
@@ -95,7 +118,7 @@ self.addEventListener('pushsubscriptionchange', event => {
   );
 });
 
-// fetchはパススルー（キャッシュしないでブラウザ標準にまかせる）
+// fetchはパススルー
 self.addEventListener('fetch', e => {
   // パススルー
 });
