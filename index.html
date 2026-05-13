@@ -810,6 +810,49 @@ function MainApp({ onLock, onSwitchUser }) {
   const [syncing, setSyncing] = useState(true);
   const [syncError, setSyncError] = useState(false);
 
+  // 🔔 通知タップ → 該当画面遷移用の state
+  const [pendingNav, setPendingNav] = useState(null);
+
+  // URL クエリ / SW message から遷移先を取得
+  useEffect(() => {
+    // ① URL クエリ（新規ウィンドウ起動時）
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get('tab');
+      if (tabParam) {
+        const nav = {
+          tab: tabParam,
+          sub: params.get('sub'),
+          member: params.get('member'),
+          date: params.get('date'),
+        };
+        if (tabParam === 'approach') setPage('approach');
+        else if (tabParam === 'dashboard') setPage('dashboard');
+        else if (tabParam === 'stock') setPage('stock');
+        else if (tabParam === 'jiage') setPage('jiage');
+        setPendingNav(nav);
+        // クエリを消して、リロード時に再遷移しないようにする
+        window.history.replaceState({}, '', './');
+      }
+    } catch (e) { console.warn('URL parse error:', e); }
+
+    // ② SW からの NAVIGATE メッセージ（既存タブのフォアグラウンド復帰時）
+    const onMsg = (event) => {
+      if (event.data?.type === 'NAVIGATE') {
+        const nav = event.data.data || {};
+        if (nav.tab === 'approach') setPage('approach');
+        else if (nav.tab === 'dashboard') setPage('dashboard');
+        else if (nav.tab === 'stock') setPage('stock');
+        else if (nav.tab === 'jiage') setPage('jiage');
+        setPendingNav(nav);
+      }
+    };
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener('message', onMsg);
+      return () => navigator.serviceWorker.removeEventListener('message', onMsg);
+    }
+  }, []);
+
   // 直近の自分の保存時刻（ポーリングで自分の更新を上書きしないため）
   const lastLocalSaveRef = useRef(0);
 
@@ -921,7 +964,7 @@ function MainApp({ onLock, onSwitchUser }) {
       <div style={{ padding: isMapPage ? "0" : "16px 16px 20px" }}>
         {page === "dashboard" && <Dashboard data={data} setData={setData} />}
         {page === "stock" && <StockPage data={data} setData={setData} />}
-        {page === "approach" && <ApproachPage data={data} setData={setData} />}
+        {page === "approach" && <ApproachPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
         {page === "jiage" && <JiagePage data={data} setData={setData} />}
         {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} onSwitchUser={onSwitchUser} />}
       </div>
@@ -3217,7 +3260,7 @@ function StockPage({ data, setData }) {
 }
 
 // ===================== APPROACH PAGE =====================
-function ApproachPage({ data, setData }) {
+function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   const today = new Date().toISOString().split("T")[0];
   const currentYM = today.slice(0, 7);
 
@@ -3291,6 +3334,19 @@ function ApproachPage({ data, setData }) {
     const t = setTimeout(() => setIsLoaded(true), 100);
     return () => clearTimeout(t);
   }, [selectedMember, selectedDate]);
+
+  // 🔔 通知タップから飛んできた時：sub-tab・メンバー・日付を切り替える
+  useEffect(() => {
+    if (pendingNav && pendingNav.tab === 'approach') {
+      if (pendingNav.sub) setTab(pendingNav.sub);
+      if (pendingNav.member) setSelectedMember(pendingNav.member);
+      if (pendingNav.date) {
+        setSelectedDate(pendingNav.date);
+        setSelectedYM(pendingNav.date.slice(0, 7));
+      }
+      if (onConsumeNav) onConsumeNav();
+    }
+  }, [pendingNav]);
 
   // ===== 自動保存：実際に変更があるときだけ保存（debounce 800ms） =====
   useEffect(() => {
@@ -3411,7 +3467,10 @@ function ApproachPage({ data, setData }) {
         targets,
         `🏁 ${me}さんが業務終了`,
         `${selectedDate}の実績\n${resultLabel || "(なし)"}${memoLabel}`,
-        { tag: `hikari-business-close-${me}-${selectedDate}` }
+        { 
+          tag: `hikari-business-close-${me}-${selectedDate}`,
+          data: { tab: 'approach', sub: 'input', member: me, date: selectedDate }
+        }
       );
     }
     alert("✅ 就業報告を送りました。お疲れさまでした！");
@@ -3457,7 +3516,10 @@ function ApproachPage({ data, setData }) {
         targets,
         `💬 ${currentUser}さんからコメント`,
         `${selectedMember}さんの${selectedDate}の活動について\n${text}`,
-        { tag: `hikari-comment-${selectedMember}-${selectedDate}-${comment.id}` }
+        { 
+          tag: `hikari-comment-${selectedMember}-${selectedDate}-${comment.id}`,
+          data: { tab: 'approach', sub: 'input', member: selectedMember, date: selectedDate }
+        }
       );
     }
     setNewComment("");
@@ -4378,7 +4440,10 @@ function ApproachPage({ data, setData }) {
                         targets,
                         `📈 ${me}さんが業務開始`,
                         `${selectedDate}の目標\n${goalLabel}`,
-                        { tag: `hikari-business-start-${me}-${selectedDate}` }
+                        { 
+                          tag: `hikari-business-start-${me}-${selectedDate}`,
+                          data: { tab: 'approach', sub: 'input', member: me, date: selectedDate }
+                        }
                       );
                     }
                     // goalSetAt をマーク
