@@ -2761,6 +2761,7 @@ function StockPage({ data, setData }) {
     year: new Date().getFullYear(),
     photos: [],
     viewings: [], // [{date, customer, note}]
+    keyBoxLocation: "", keyBoxNumber: "", // 🆕 キーボックス情報
   };
   const [form, setForm] = useState(empty);
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
@@ -2829,10 +2830,66 @@ function StockPage({ data, setData }) {
       photos: form.photos || [],
       viewings: form.viewings || [],
     };
+
+    // 🆕 日付変更を検知（前回と比べて変わったものだけ通知）
+    const dateFields = [
+      { key: "buyContractDate", label: "📝 仕入契約日", color: "#22c55e", tagKey: "buy-contract" },
+      { key: "buyDate", label: "🏠 仕入決済日", color: "#22c55e", tagKey: "buy-settle" },
+      { key: "sellContractDate", label: "📋 売却契約日", color: "#f59e0b", tagKey: "sell-contract" },
+      { key: "sellDate", label: "✅ 売却決済日", color: "#f59e0b", tagKey: "sell-settle" },
+    ];
+    const changedDates = [];
+    dateFields.forEach(info => {
+      const oldVal = editItem?.[info.key] || "";
+      const newVal = item[info.key] || "";
+      if (oldVal !== newVal && newVal) {
+        changedDates.push(info);
+      }
+    });
+
     setData(d => {
-      const next = { ...d, stocks: editItem ? d.stocks.map(s => s.id === editItem.id ? item : s) : [...d.stocks, item] };
+      // 既存の stockLinkId 関連イベントを全削除（再構築）
+      let nextEvents = (d.customEvents || []).filter(e => !(e.stockLinkId && e.stockLinkId === item.id));
+
+      // 4日付それぞれが入力されてればカレンダーに追加
+      dateFields.forEach((info, idx) => {
+        const dateVal = item[info.key];
+        if (dateVal) {
+          nextEvents.push({
+            id: Date.now() + idx + 10,
+            date: dateVal,
+            time: "10:00",
+            title: `${info.label}: ${item.name || "(無題)"}`,
+            assignees: ["下田", "比嘉"],
+            memo: `担当: ${item.assignee}${item.keyBoxLocation || item.keyBoxNumber ? `\n🔑 ${item.keyBoxLocation || ""}${item.keyBoxNumber ? ` 番号: ${item.keyBoxNumber}` : ""}` : ""}`,
+            stockLinkId: item.id, // 物件との紐付け
+            color: info.color,
+          });
+        }
+      });
+
+      const next = { ...d, stocks: editItem ? d.stocks.map(s => s.id === editItem.id ? item : s) : [...d.stocks, item], customEvents: nextEvents };
       return appendLog(next, editItem ? "update" : "add", "stock", `${item.name || "(無題)"}（${item.status}）`);
     });
+
+    // 🆕 変更があった日付について下田・比嘉に通知（送信者除く）
+    const me = currentUser || "";
+    const targets = ["下田", "比嘉"].filter(t => t !== me);
+    if (targets.length > 0) {
+      changedDates.forEach(info => {
+        sendPushNotification(
+          targets,
+          `${info.label}が登録されました`,
+          `${item.name || "(無題)"}\n📅 ${item[info.key]}\n担当: ${item.assignee}`,
+          {
+            tag: `hikari-stock-${info.tagKey}-${item.id}`,
+            data: { tab: 'stock' },
+            tab: 'stock',
+          }
+        );
+      });
+    }
+
     setShowAdd(false); setEditItem(null);
   };
   const handleDelete = id => {
@@ -2977,6 +3034,17 @@ function StockPage({ data, setData }) {
                 <input type="date" style={inp} value={form.sellDate || ""} onChange={f("sellDate")} />
               </Field>
             ); })()}
+          </div>
+
+          {/* 🆕 🔑 キーボックス情報 */}
+          <div style={{ background: C.bg, border: `1px solid #1a2535`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.purple, marginBottom: 10 }}>🔑 キーボックス情報</div>
+            <Field label="📍 設置場所">
+              <input style={inp} value={form.keyBoxLocation || ""} onChange={f("keyBoxLocation")} placeholder="例）玄関ポーチの右側" />
+            </Field>
+            <Field label="🔢 番号">
+              <input style={inp} value={form.keyBoxNumber || ""} onChange={f("keyBoxNumber")} placeholder="例）1234" />
+            </Field>
           </div>
 
           {/* 👀 反響（複数登録可・サマリー1行＋詳細展開式） */}
