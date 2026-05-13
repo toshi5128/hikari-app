@@ -7984,6 +7984,125 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
         </div>
       </div>
 
+      {/* 🆕 💾 ストレージ使用状況 */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>💾 ストレージ使用状況</div>
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        {(() => {
+          // データサイズを計算（JSON文字列のバイト数）
+          const dataStr = JSON.stringify(data);
+          const totalBytes = new Blob([dataStr]).size;
+          const totalMB = totalBytes / (1024 * 1024);
+          const LIMIT_MB = 500; // Supabase 無料プラン
+          const percent = (totalMB / LIMIT_MB) * 100;
+
+          // 内訳計算
+          const breakdown = {
+            stocks: new Blob([JSON.stringify(data.stocks || [])]).size,
+            sekisan: new Blob([JSON.stringify(data.sekisan || [])]).size,
+            jiage: new Blob([JSON.stringify(data.jiage || [])]).size,
+            owners: new Blob([JSON.stringify(data.owners || [])]).size,
+            approaches: new Blob([JSON.stringify(data.approaches || [])]).size,
+            customEvents: new Blob([JSON.stringify(data.customEvents || [])]).size,
+            memos: new Blob([JSON.stringify(data.memos || [])]).size,
+          };
+
+          // 写真の総バイト数を抽出
+          let photoBytes = 0;
+          (data.stocks || []).forEach(s => {
+            (s.photos || []).forEach(p => {
+              photoBytes += (typeof p === "string" ? p.length : 0);
+            });
+          });
+
+          // 件数
+          const counts = {
+            stocks: (data.stocks || []).length,
+            sekisan: (data.sekisan || []).length,
+            jiage: (data.jiage || []).length,
+            owners: (data.owners || []).length,
+            approaches: (data.approaches || []).length,
+            events: (data.customEvents || []).length,
+            memos: (data.memos || []).length,
+            photos: (data.stocks || []).reduce((acc, s) => acc + ((s.photos || []).length), 0),
+          };
+
+          // 色分け
+          const barColor = percent < 50 ? C.success : percent < 80 ? C.warn : C.danger;
+          const status = percent < 50 ? "✅ 余裕あり" : percent < 80 ? "⚠️ 注意" : "🚨 上限近い";
+
+          const fmtSize = bytes => bytes >= 1024 * 1024 ? (bytes / (1024 * 1024)).toFixed(2) + " MB" : (bytes / 1024).toFixed(1) + " KB";
+
+          return (
+            <>
+              {/* メイン使用率 */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: 13, color: C.muted }}>Supabase 無料プラン</span>
+                <span style={{ fontSize: 12, color: barColor, fontWeight: 700 }}>{status}</span>
+              </div>
+              <div style={{ background: "#0a0f1a", borderRadius: 10, height: 24, overflow: "hidden", border: `1px solid #1a2535`, position: "relative" }}>
+                <div style={{
+                  width: Math.min(percent, 100) + "%", height: "100%",
+                  background: `linear-gradient(90deg, ${barColor}, ${barColor}dd)`,
+                  transition: "width 0.4s",
+                }} />
+                <div style={{
+                  position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 13, fontWeight: 800, color: "#fff",
+                  textShadow: "0 1px 2px rgba(0,0,0,0.7)",
+                }}>
+                  {percent.toFixed(2)}%
+                </div>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 12 }}>
+                <span style={{ color: C.text, fontWeight: 700 }}>{totalMB.toFixed(2)} MB</span>
+                <span style={{ color: C.muted }}>/ {LIMIT_MB} MB</span>
+              </div>
+
+              {/* 内訳 */}
+              <div style={{ marginTop: 14, padding: 12, background: C.bg, borderRadius: 10, border: `1px solid #1a2535` }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 8, letterSpacing: "0.05em" }}>📊 内訳</div>
+                {[
+                  ["📸 物件写真", photoBytes, `${counts.photos}枚`],
+                  ["🏠 在庫物件（写真除く）", breakdown.stocks - photoBytes, `${counts.stocks}件`],
+                  ["🧮 仕入検討積算表", breakdown.sekisan, `${counts.sekisan}件`],
+                  ["🚧 地上げ", breakdown.jiage, `${counts.jiage}件`],
+                  ["👤 所有者アタック", breakdown.owners, `${counts.owners}件`],
+                  ["📞 営業活動", breakdown.approaches, `${counts.approaches}件`],
+                  ["📅 カレンダー", breakdown.customEvents, `${counts.events}件`],
+                  ["📝 メモ", breakdown.memos, `${counts.memos}件`],
+                ].map(([label, bytes, count]) => (
+                  <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid #1a2535`, fontSize: 12 }}>
+                    <span style={{ color: C.muted }}>{label}</span>
+                    <span style={{ color: C.text, fontWeight: 600 }}>
+                      <span style={{ color: C.muted, fontSize: 11, marginRight: 6 }}>{count}</span>
+                      {fmtSize(Math.max(0, bytes))}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* 警告メッセージ */}
+              {percent >= 80 && (
+                <div style={{ marginTop: 12, padding: 12, background: C.danger + "22", border: `1px solid ${C.danger}`, borderRadius: 10, fontSize: 12, color: C.danger, lineHeight: 1.6 }}>
+                  🚨 容量が上限に近づいています。古い決済完了物件の写真を削除するか、Supabase Pro プラン（8GB）への切り替えを検討してください。
+                </div>
+              )}
+              {percent >= 50 && percent < 80 && (
+                <div style={{ marginTop: 12, padding: 12, background: C.warn + "22", border: `1px solid ${C.warn}`, borderRadius: 10, fontSize: 12, color: C.warn, lineHeight: 1.6 }}>
+                  ⚠️ 半分以上使用中。今のペースが続く場合は、容量整理を視野に入れてください。
+                </div>
+              )}
+              {percent < 50 && (
+                <div style={{ marginTop: 12, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+                  💡 現状の使用ペースなら長期間使えます。Supabase ダッシュボードでも確認できます。
+                </div>
+              )}
+            </>
+          );
+        })()}
+      </div>
+
       {/* 🔄 強制更新（キャッシュクリア） */}
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🔄 アプリ更新</div>
       <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
