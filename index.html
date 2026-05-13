@@ -3799,7 +3799,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
 
           {/* ========== 仕入検討積算表（埋め込み） ========== */}
           <div style={{ background: "#0d1422", border: `1px solid ${C.warn}33`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
-            <SekisanPage data={data} setData={setData} embedded={true} defaultAssignee={casesMember === "__ALL__" ? null : casesMember} />
+            <SekisanPage data={data} setData={setData} embedded={true} defaultAssignee={casesMember === "__ALL__" ? null : casesMember} casesMember={casesMember} />
           </div>
 
           {/* ========== 段1：パイプライン ========== */}
@@ -9025,7 +9025,7 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
   );
 }
 
-function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee = null }) {
+function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee = null, casesMember = null }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const canEdit = (item) => canEditItem(item, currentUser, adminMember);
@@ -9035,15 +9035,20 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
   const [filterMember, setFilterMember] = useState("すべて");
   const [filterJudgment, setFilterJudgment] = useState(embedded ? "熱い" : "すべて");
 
+  // embedded で casesMember が来ていればそちらを優先（営業タブ上部の担当者選択に連動）
+  const effectiveMember = embedded
+    ? (casesMember === "__ALL__" || !casesMember ? "すべて" : casesMember)
+    : filterMember;
+
   const JCOLOR = { "熱い": C.danger, "検討中": C.warn, "普通": C.muted, "見送り": "#334155" };
   const JEMOJI = { "熱い": "🔥", "検討中": "🟡", "普通": "⚪", "見送り": "❌" };
 
   const filtered = useMemo(() => data.sekisan.filter(s => {
-    if (filterMember !== "すべて" && s.assignee !== filterMember) return false;
+    if (effectiveMember !== "すべて" && s.assignee !== effectiveMember) return false;
     if (filterJudgment !== "すべて" && s.judgment !== filterJudgment) return false;
     if (search && !(s.address || "").includes(search)) return false;
     return true;
-  }), [data.sekisan, filterMember, filterJudgment, search]);
+  }), [data.sekisan, effectiveMember, filterJudgment, search]);
 
   const handleSave = form => {
     const item = { ...form, id: editItem?.id || Date.now() };
@@ -9154,17 +9159,19 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
         </div>
       )}
       <SearchBar value={search} onChange={setSearch} placeholder="住所で検索..." />
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-        {["すべて", ...MEMBERS].map(m => (
-          <button key={m} onClick={() => setFilterMember(m)} style={{ padding: "6px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, background: filterMember === m ? C.accent : "#0d1422", color: filterMember === m ? "#fff" : C.muted, border: `1px solid ${filterMember === m ? C.accent : "#1a2535"}`, fontFamily: "inherit" }}>{m}</button>
-        ))}
-      </div>
+      {!embedded && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {["すべて", ...MEMBERS].map(m => (
+            <button key={m} onClick={() => setFilterMember(m)} style={{ padding: "6px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, background: filterMember === m ? C.accent : "#0d1422", color: filterMember === m ? "#fff" : C.muted, border: `1px solid ${filterMember === m ? C.accent : "#1a2535"}`, fontFamily: "inherit" }}>{m}</button>
+          ))}
+        </div>
+      )}
       {/* 判定別タブ（件数バッジ付き） */}
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10, background: "#0a0f1a", padding: 4, borderRadius: 10, border: `1px solid #1a2535` }}>
         {["熱い", "検討中", "普通", "見送り", "すべて"].map(j => {
           const count = j === "すべて" 
-            ? data.sekisan.filter(s => filterMember === "すべて" || s.assignee === filterMember).length
-            : data.sekisan.filter(s => (filterMember === "すべて" || s.assignee === filterMember) && s.judgment === j).length;
+            ? data.sekisan.filter(s => effectiveMember === "すべて" || s.assignee === effectiveMember).length
+            : data.sekisan.filter(s => (effectiveMember === "すべて" || s.assignee === effectiveMember) && s.judgment === j).length;
           const active = filterJudgment === j;
           const jcolor = JCOLOR[j] || C.accent;
           return (
