@@ -409,8 +409,19 @@ function getNotifyMembers(data) {
   }
   return ["下田", "比嘉"];
 }
-function getNotifyTargets(data, excludeUser) {
-  return getNotifyMembers(data).filter(m => m !== (excludeUser || ""));
+// item を渡すと、その関係者（担当者・作成者・割当者）も通知対象に含めて返す
+function getNotifyTargets(data, excludeUser, item = null) {
+  const targets = new Set(getNotifyMembers(data));
+  // 🆕 アイテムに関わるメンバーを追加（担当者・作成者・割当者）
+  if (item) {
+    if (item.assignee) targets.add(item.assignee);
+    if (Array.isArray(item.assignees)) item.assignees.forEach(a => targets.add(a));
+    if (item.member) targets.add(item.member);
+    if (item.createdBy) targets.add(item.createdBy);
+  }
+  // 送信者本人を除外（重複防止）
+  if (excludeUser) targets.delete(excludeUser);
+  return [...targets].filter(Boolean);
 }
 
 // 🆕 管理者メンバー取得（複数管理者対応：下田・比嘉）
@@ -514,7 +525,7 @@ function appendLogAndNotify(d, action, target, description, item = null, options
   if (options.skipPush) return next;
 
   const me = (typeof getCurrentUser === "function" && getCurrentUser()) || "";
-  const targets = getNotifyTargets(d, me);
+  const targets = getNotifyTargets(d, me, item); // 🆕 item の担当者も通知対象に
   if (targets.length === 0) return next;
 
   const targetInfo = {
@@ -4891,7 +4902,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                       .filter(item => updated[item] > 0)
                       .map(item => `${item}${updated[item]}`)
                       .join(" / ");
-                    const targets = getNotifyTargets(data, me);
+                    const targets = getNotifyTargets(data, me, { member: selectedMember }); // 対象メンバーも含める
                     if (targets.length > 0) {
                       sendPushNotification(
                         targets,
