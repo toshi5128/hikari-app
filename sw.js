@@ -1,5 +1,5 @@
-// ひかり不動産 PWA Service Worker（Web Push + 通知タップ画面遷移 + 全タグパターン対応 v10）
-const CACHE_VERSION = 'hikari-app-v10-2026-05-14';
+// ひかり不動産 PWA Service Worker（Web Push + 通知タップ画面遷移 + sekisan コメント対応 v11）
+const CACHE_VERSION = 'hikari-app-v11-2026-05-14';
 
 self.addEventListener('install', e => {
   self.skipWaiting();
@@ -36,6 +36,10 @@ function parseTagToNav(tag) {
   if (m) return { tab: 'stock', stockLinkId: m[1] };
 
   m = tag.match(/^hikari-sekisan-result-(\d+)$/);
+  if (m) return { tab: 'dashboard', sekisanLinkId: m[1] };
+
+  // 🆕 sekisan コメント通知
+  m = tag.match(/^hikari-sekisan-comment-(\d+)-\d+$/);
   if (m) return { tab: 'dashboard', sekisanLinkId: m[1] };
 
   m = tag.match(/^hikari-new-event-(\d+)$/);
