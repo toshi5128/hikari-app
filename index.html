@@ -1084,16 +1084,50 @@ function MainApp({ onLock, onSwitchUser }) {
     return merged;
   };
 
-  // 起動時にSupabaseから最新データを取得
+  // 🆕 起動時専用：リモート優先マージ（Supabase が真実、直前10秒のローカル変更のみ保護）
+  // これにより、アプリ起動時は他メンバーの最新状態が確実に反映される
+  const mergeRemoteOnStartup = (remote) => {
+    if (!remote) return null;
+    const local = loadFromCache();
+    const merged = mergeWithDefault(remote);
+    if (!local) return merged;
+    // 直近10秒以内に作成された未同期アイテムだけ保護（アプリ閉じる直前に作ったもの）
+    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "activityLog"];
+    const cutoffMs = Date.now() - 10_000;
+    arrayKeys.forEach(k => {
+      const localArr = Array.isArray(local[k]) ? local[k] : [];
+      const remoteArr = Array.isArray(merged[k]) ? merged[k] : [];
+      const remoteIds = new Set(remoteArr.map(item => item?.id).filter(id => id != null));
+      const protectedItems = localArr.filter(item => {
+        if (item?.id == null) return false;
+        if (remoteIds.has(item.id)) return false;
+        const idNum = Number(item.id);
+        if (Number.isFinite(idNum) && idNum > cutoffMs) return true;
+        return false;
+      });
+      if (protectedItems.length > 0) {
+        console.log(`[起動同期] ${k}: 直近10秒の${protectedItems.length}件のみ保護`);
+        merged[k] = [...remoteArr, ...protectedItems];
+      }
+    });
+    return merged;
+  };
+
+  // 起動時にSupabaseから最新データを取得（リモート優先）
   useEffect(() => {
+    console.log("[起動] Supabase から最新データを取得中...");
     loadFromSupabase().then(remote => {
-      const merged = mergeRemoteSafely(remote);
+      const merged = mergeRemoteOnStartup(remote);
       if (merged) {
         setDataRaw(merged);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
+        console.log("[起動] ✅ 最新データに同期完了");
+      } else {
+        console.log("[起動] ⚠️ Supabase からデータ取得失敗、ローカルキャッシュを使用");
       }
       setSyncing(false);
-    }).catch(() => {
+    }).catch((err) => {
+      console.error("[起動] Supabase 同期エラー:", err);
       setSyncing(false);
       setSyncError(true);
     });
@@ -1114,6 +1148,38 @@ function MainApp({ onLock, onSwitchUser }) {
       });
     }, 15000);
     return () => clearInterval(timer);
+  }, []);
+
+  // 🆕 画面が再表示された時（タブ復帰・PWA 復帰・スリープから復帰）に即座に最新取得
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        // 自分の保存直後（10秒以内）はスキップ
+        if (Date.now() - lastLocalSaveRef.current < 10000) return;
+        if (isUserEditing()) return;
+        console.log("[画面復帰] Supabase から最新データを再取得");
+        setSyncing(true);
+        loadFromSupabase().then(remote => {
+          const merged = mergeRemoteOnStartup(remote); // 起動時と同じリモート優先マージ
+          if (merged) {
+            setDataRaw(merged);
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
+            console.log("[画面復帰] ✅ 最新データに同期完了");
+          }
+          setSyncing(false);
+        }).catch(err => {
+          console.error("[画面復帰] 同期エラー:", err);
+          setSyncing(false);
+        });
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    // フォーカス時にも同期（PCブラウザ用）
+    window.addEventListener("focus", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleVisibilityChange);
+    };
   }, []);
 
   const setData = updater => {
