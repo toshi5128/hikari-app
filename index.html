@@ -4474,12 +4474,15 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
     // 選択月の集計（casesMonth に従う）
     const ym = casesMonth; // "2026-05"
     const newSekisan = filterByMember((data.sekisan || []).filter(s => (s.createdAt || "").startsWith(ym)));
+    const newBuyContract = filterByMember((data.stocks || []).filter(s => (s.buyContractDate || "").startsWith(ym)));
     const newPurchase = filterByMember((data.stocks || []).filter(s => (s.buyDate || "").startsWith(ym)));
+    const newSellContract = filterByMember((data.stocks || []).filter(s => (s.sellContractDate || "").startsWith(ym)));
     const newCompleted = filterByMember((data.stocks || []).filter(s =>
       s.status === "決済完了" && (s.sellDate || "").startsWith(ym)
     ));
+    const currentKentou = filterByMember((data.sekisan || []).filter(s => s.judgment === "仕入検討"));
     const currentHot = filterByMember((data.sekisan || []).filter(s => s.judgment === "熱い"));
-    return { newSekisan, newPurchase, newCompleted, currentHot };
+    return { newSekisan, newBuyContract, newPurchase, newSellContract, newCompleted, currentKentou, currentHot };
   }, [data.sekisan, data.stocks, casesMember, casesMonth]);
 
   // 過去12ヶ月の選択肢
@@ -4734,12 +4737,15 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               </div>
             </div>
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 12 }}>カードをタップで詳細</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
               {[
-                { key: "sekisan", label: "新規積算", count: weekActivity.newSekisan.length, color: C.warn, icon: "🧮" },
-                { key: "purchase", label: "仕入確定", count: weekActivity.newPurchase.length, color: C.accent, icon: "🏠" },
+                { key: "sekisan", label: "査定件数", count: weekActivity.newSekisan.length, color: C.warn, icon: "🧮" },
+                { key: "buyContract", label: "仕入契約", count: weekActivity.newBuyContract.length, color: "#a855f7", icon: "📝" },
+                { key: "purchase", label: "仕入決済", count: weekActivity.newPurchase.length, color: C.accent, icon: "🏠" },
+                { key: "sellContract", label: "売却契約", count: weekActivity.newSellContract.length, color: C.accent, icon: "📋" },
                 { key: "completed", label: "決済完了", count: weekActivity.newCompleted.length, color: C.success, icon: "✅" },
-                { key: "hot", label: "🔥熱い案件", count: weekActivity.currentHot.length, color: C.danger, icon: "🔥" },
+                { key: "kentou", label: "仕入検討", count: weekActivity.currentKentou.length, color: C.accent, icon: "📝" },
+                { key: "hot", label: "🔥熱い", count: weekActivity.currentHot.length, color: C.danger, icon: "🔥" },
               ].map(a => {
                 const isExpanded = casesExpanded === `month_${a.key}`;
                 const isClickable = a.count > 0;
@@ -4769,7 +4775,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               if (!casesExpanded || !casesExpanded.startsWith("month_")) return null;
               const key = casesExpanded.slice(6); // "month_xxx" -> "xxx"
               const config = {
-                sekisan: { items: weekActivity.newSekisan, color: C.warn, icon: "🧮", title: "新規積算",
+                sekisan: { items: weekActivity.newSekisan, color: C.warn, icon: "🧮", title: "査定件数",
                   render: (s) => {
                     const buyPriceYen = Number(s.buyPrice) || 0;
                     const sellPriceYen = Number(s.sellPrice) || 0;
@@ -4789,7 +4795,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                       rawSekisan: s,
                     };
                   }},
-                purchase: { items: weekActivity.newPurchase, color: C.accent, icon: "🏠", title: "仕入確定",
+                purchase: { items: weekActivity.newPurchase, color: C.accent, icon: "🏠", title: "仕入決済",
                   render: (s) => ({
                     title: s.name || "(無題)",
                     sub: `${s.status} · 仕入${Math.round((s.buyCost||0)/10000)}万 · 想定売却${Math.round((s.sellPrice||0)/10000)}万`,
@@ -4797,6 +4803,41 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                     badge: s.assignee,
                     stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo },
                   })},
+                buyContract: { items: weekActivity.newBuyContract, color: "#a855f7", icon: "📝", title: "仕入契約",
+                  render: (s) => ({
+                    title: s.name || "(無題)",
+                    sub: `${s.status} · 仕入${Math.round((s.buyCost||0)/10000)}万 · 仕入契約日 ${s.buyContractDate}`,
+                    date: s.buyContractDate,
+                    badge: s.assignee,
+                    stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo },
+                  })},
+                sellContract: { items: weekActivity.newSellContract, color: C.accent, icon: "📋", title: "売却契約",
+                  render: (s) => ({
+                    title: s.name || "(無題)",
+                    sub: `${s.status} · 売却${Math.round((s.sellPrice||0)/10000)}万 · 売却契約日 ${s.sellContractDate}`,
+                    date: s.sellContractDate,
+                    badge: s.assignee,
+                    stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo },
+                  })},
+                kentou: { items: weekActivity.currentKentou, color: C.accent, icon: "📝", title: "現在「仕入検討」",
+                  render: (s) => {
+                    const buyPriceYen = Number(s.buyPrice) || 0;
+                    const sellPriceYen = Number(s.sellPrice) || 0;
+                    const expensesYen = ["brokerFeeIn","registration","acquisitionTax","stamp","leftover","reform","demolition","brokerFeeOut","other","propertyTax","cleaning"].reduce((a, k) => a + (Number(s[k])||0), 0);
+                    const totalCostYen = buyPriceYen + expensesYen;
+                    const profitYen = sellPriceYen - totalCostYen;
+                    const buyMan = Math.round(buyPriceYen / 10000);
+                    const sellMan = Math.round(sellPriceYen / 10000);
+                    const profitMan = Math.round(profitYen / 10000);
+                    return {
+                      title: s.address || "(住所未設定)",
+                      sub: `仕入想定${buyMan}万 · 売却想定${sellMan}万${profitMan ? " · 利益" + profitMan + "万" : ""}`,
+                      date: s.createdAt,
+                      badge: s.assignee,
+                      sekisanDetail: { buyMan, sellMan, profitMan, totalCostMan: Math.round(totalCostYen/10000), expensesMan: Math.round(expensesYen/10000), memo: s.memo, judgmentMemo: s.judgmentMemo, layout: s.layout, landArea: s.landArea, buildingArea: s.buildingArea, age: s.age, structure: s.structure, stationDist: s.stationDist },
+                      rawSekisan: s,
+                    };
+                  }},
                 completed: { items: weekActivity.newCompleted, color: C.success, icon: "✅", title: "決済完了",
                   render: (s) => {
                     const profit = (s.sellPrice || 0) - (s.buyCost || 0);
@@ -4831,7 +4872,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               };
               const cfg = config[key];
               if (!cfg) return null;
-              const items = filterByMember(cfg.items, cfg.title === "新規積算" || cfg.title === "現在「熱い」" ? "assignee" : "assignee");
+              const items = filterByMember(cfg.items, "assignee");
               // 日付の新しい順にソート
               const sortedItems = [...items].sort((a, b) => {
                 const da = cfg.render(a).date || "";
@@ -10489,7 +10530,7 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
       )}
       {/* 判定別タブ（件数バッジ付き） */}
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10, background: C.panelBg, padding: 4, borderRadius: 10, border: `1px solid ${C.borderDim}` }}>
-        {["熱い", "検討中", "普通", "見送り", "すべて"].map(j => {
+        {["仕入", "仕入検討", "熱い", "検討中", "見送り", "すべて"].map(j => {
           const count = j === "すべて" 
             ? data.sekisan.filter(s => effectiveMember === "すべて" || s.assignee === effectiveMember).length
             : data.sekisan.filter(s => (effectiveMember === "すべて" || s.assignee === effectiveMember) && s.judgment === j).length;
