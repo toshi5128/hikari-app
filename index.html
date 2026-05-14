@@ -317,8 +317,7 @@ function stagnantInfo(buyDateStr) {
   return { days: d, color, level };
 }
 const STOCK_STATUSES = [
-  "見込",
-  // 仕入準備
+  // 仕入準備（在庫管理開始の最初のステータス）
   "仕入役調【未】", "仕入役調【完】",
   // 仕入契約
   "仕入契約書【未】", "仕入契約書【完】",
@@ -1087,11 +1086,13 @@ function MainApp({ onLock, onSwitchUser }) {
         }
       }
 
-      // 🆕 ② 旧ステータス値の自動マイグレーション（9段階 → 23段階）
-      // 古いステータスを新しい詳細なステータスに自動変換
+      // 🆕 ② 旧ステータス値の自動マイグレーション（9段階 → 22段階）
+      // 古いステータスを新しい詳細なステータスに自動変換（在庫に「見込」は不要）
       if (d.stocks && d.stocks.length > 0) {
         const statusMap = {
-          // 9段階版 → 23段階版
+          // 在庫管理開始時点で「見込」は不要 → 役所調査の前段階に
+          "見込": "仕入役調【未】",
+          // 9段階版 → 22段階版
           "仕入契約": "仕入契約書【完】",
           "仕入決済": "仕入決済完了",
           "売却契約": "売却契約書【完】",
@@ -1100,7 +1101,7 @@ function MainApp({ onLock, onSwitchUser }) {
           "仕入契約済": "仕入契約書【完】",
           "売却契約完了": "売却契約書【完】",
           "決済完了": "売却決済",
-          // 「リフォーム中」「リフォーム待ち」「売却契約準備中」「見込」「売却決済」はそのまま
+          // 「リフォーム中」「リフォーム待ち」「売却契約準備中」「売却決済」はそのまま
         };
         const migrated = d.stocks.map(s => {
           if (statusMap[s.status]) {
@@ -1110,7 +1111,7 @@ function MainApp({ onLock, onSwitchUser }) {
         });
         const migratedCount = migrated.filter((s, i) => s.status !== d.stocks[i].status).length;
         if (migratedCount > 0) {
-          console.log(`[Migration] ${migratedCount} 件の在庫ステータスを23段階版に変換`);
+          console.log(`[Migration] ${migratedCount} 件の在庫ステータスを22段階版に変換`);
           next.stocks = migrated;
           changed = true;
         }
@@ -1547,7 +1548,6 @@ function ManualPinMap({ address, onCancel, onSelect }) {
 
 function StatusTag({ status }) {
   const map = {
-    "見込": C.success,
     // 仕入準備
     "仕入役調【未】": C.warn, "仕入役調【完】": C.success,
     // 仕入契約
@@ -1566,7 +1566,8 @@ function StatusTag({ status }) {
     "売却契約準備中": "#06b6d4", "売却契約書作成【未】": C.warn, "売却契約書【完】": "#10b981",
     // 売却決済
     "売却手付金受領": C.purple, "売却決済": "#64748b",
-    // 旧ステータス（互換用）
+    // 旧ステータス（互換用 - マイグレーション前のデータが残ってた場合用）
+    "見込": C.success, // 在庫管理では廃止、所有者アタック・地上げ用に維持
     "仕入契約": C.accent, "仕入決済": "#0ea5e9", "売却契約": "#10b981", "契約書作成中": C.warn,
     "仕入契約済": C.accent, "売却契約完了": "#10b981", "決済完了": "#64748b",
     // 地上げ・所有者ステータス
@@ -3521,7 +3522,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     }
   }, [pendingNav, data.stocks]);
   const empty = {
-    assignee: currentUser || MEMBERS[0], name: "", status: "仕入契約",
+    assignee: currentUser || MEMBERS[0], name: "", status: "仕入役調【未】",
     buyContractDate: "", buyDate: "", sellContractDate: "", sellDate: "",
     buyCost: "", sellPrice: "", memo: "",
     year: new Date().getFullYear(),
@@ -3732,7 +3733,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       }
     } else if (item.buyContractDate) {
       // 仕入契約前の段階だけ自動更新（「仕入役調」段階は維持）
-      const upgradeFrom = ["見込", "仕入役調【未】", "仕入役調【完】", "仕入契約書【未】"];
+      const upgradeFrom = ["仕入役調【未】", "仕入役調【完】", "仕入契約書【未】"];
       if (upgradeFrom.includes(item.status) || !item.status) {
         item.status = "仕入契約書【完】";
       }
@@ -5068,8 +5069,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
           id: Date.now(),
           assignee: form.assignee,
           name: form.address,
-          status: "仕入契約",
-          buyDate: new Date().toISOString().split("T")[0],
+          status: "仕入役調【未】",
+          buyDate: "",
           buyCost: Number(form.buyPrice) || 0,
           sellPrice: Number(form.sellPrice) || 0,
           memo: `仕入検討積算表から転記\n判定: ${form.judgment}`,
@@ -11028,8 +11029,8 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
       id: Date.now(),
       assignee: form.assignee,
       name: form.address,
-      status: "仕入契約",
-      buyDate: new Date().toISOString().split("T")[0],
+      status: "仕入役調【未】",
+      buyDate: "",
       sellDate: "",
       buyCost: nv(form.buyPrice),
       sellPrice: nv(form.sellPrice),
