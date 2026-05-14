@@ -10392,6 +10392,12 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
   const [filterMember, setFilterMember] = useState("すべて");
   const [filterJudgment, setFilterJudgment] = useState(embedded ? "熱い" : "すべて");
 
+  // 💬 コメント関連 state
+  const [newSekisanComment, setNewSekisanComment] = useState({}); // {sekisanId: text}
+  const [sekisanCommentExpanded, setSekisanCommentExpanded] = useState({}); // {sekisanId: bool}
+  const [editingSekisanCommentId, setEditingSekisanCommentId] = useState(null);
+  const [editingSekisanCommentText, setEditingSekisanCommentText] = useState("");
+
   // embedded で casesMember が来ていればそちらを優先（営業タブ上部の担当者選択に連動）
   const effectiveMember = embedded
     ? (casesMember === "__ALL__" || !casesMember ? "すべて" : casesMember)
@@ -10535,6 +10541,95 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
     alert(`✅「${form.address}」を在庫管理に転記しました！\nステータス：仕入契約済`);
   };
 
+  // 💬 コメント投稿
+  const handlePostSekisanComment = (sekisanId) => {
+    const text = (newSekisanComment[sekisanId] || "").trim();
+    if (!text) return;
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    const comment = {
+      id: Date.now(),
+      member: currentUser,
+      text,
+      createdAt: new Date().toISOString(),
+    };
+    setData(d => ({
+      ...d,
+      sekisan: (d.sekisan || []).map(s =>
+        s.id === sekisanId
+          ? { ...s, comments: [...(s.comments || []), comment] }
+          : s
+      ),
+    }));
+    // 通知：担当者 + 通知メンバー + 過去にコメントした人（送信者除く）
+    const target = data.sekisan.find(s => s.id === sekisanId);
+    if (target) {
+      const pastCommenters = (target.comments || []).map(c => c.member);
+      const allTargets = new Set([
+        ...getNotifyMembers(data),
+        target.assignee,
+        ...pastCommenters,
+      ]);
+      allTargets.delete(currentUser);
+      const targets = [...allTargets].filter(Boolean);
+      if (targets.length > 0) {
+        sendPushNotification(
+          targets,
+          `💬 ${currentUser}さんがコメント`,
+          `${target.address || "(住所未設定)"}\n${text}`,
+          {
+            tag: `hikari-sekisan-comment-${sekisanId}-${comment.id}`,
+            data: { tab: 'approach', sub: 'cases', sekisanLinkId: sekisanId },
+            tab: 'approach', sub: 'cases', sekisanLinkId: sekisanId,
+          }
+        );
+      }
+    }
+    setNewSekisanComment(p => ({ ...p, [sekisanId]: "" }));
+  };
+
+  // ✏️ コメント編集開始
+  const handleStartEditSekisanComment = (c) => {
+    setEditingSekisanCommentId(c.id);
+    setEditingSekisanCommentText(c.text);
+  };
+  const handleCancelEditSekisanComment = () => {
+    setEditingSekisanCommentId(null);
+    setEditingSekisanCommentText("");
+  };
+  const handleSaveEditSekisanComment = (sekisanId, commentId) => {
+    const newText = editingSekisanCommentText.trim();
+    if (!newText) { alert("内容が空です"); return; }
+    setData(d => ({
+      ...d,
+      sekisan: (d.sekisan || []).map(s => {
+        if (s.id !== sekisanId) return s;
+        return {
+          ...s,
+          comments: (s.comments || []).map(c =>
+            c.id === commentId ? { ...c, text: newText, editedAt: new Date().toISOString() } : c
+          ),
+        };
+      }),
+    }));
+    setEditingSekisanCommentId(null);
+    setEditingSekisanCommentText("");
+  };
+
+  // 🗑️ コメント削除
+  const handleDeleteSekisanComment = (sekisanId, commentId) => {
+    if (!window.confirm("このコメントを削除しますか？")) return;
+    setData(d => ({
+      ...d,
+      sekisan: (d.sekisan || []).map(s => {
+        if (s.id !== sekisanId) return s;
+        return {
+          ...s,
+          comments: (s.comments || []).filter(c => c.id !== commentId),
+        };
+      }),
+    }));
+  };
+
   const handleDelete = id => {
     const target = data.sekisan.find(s => s.id === id);
     if (window.confirm("削除しますか？\n※ 関連するカレンダーイベントも削除されます")) setData(d => {
@@ -10664,6 +10759,92 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
                 {s.judgmentMemo.length > 80 ? s.judgmentMemo.slice(0, 80) + "…" : s.judgmentMemo}
               </div>
             )}
+            {/* 💬 コメント欄 */}
+            {(() => {
+              const comments = s.comments || [];
+              const expanded = !!sekisanCommentExpanded[s.id];
+              const visible = expanded ? comments : comments.slice(-3);
+              return (
+                <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: C.accent }}>💬 コメント ({comments.length}件)</span>
+                    {comments.length > 3 && (
+                      <button onClick={() => setSekisanCommentExpanded(p => ({ ...p, [s.id]: !expanded }))} style={{
+                        background: "transparent", border: "none", color: C.muted, fontSize: 11,
+                        cursor: "pointer", fontFamily: "inherit", padding: 0,
+                      }}>{expanded ? "▲ 直近3件のみ" : `▼ 全${comments.length}件を見る`}</button>
+                    )}
+                  </div>
+                  {comments.length === 0 ? (
+                    <div style={{ fontSize: 11, color: C.muted, textAlign: "center", padding: "4px 0" }}>まだコメントなし</div>
+                  ) : visible.map(c => (
+                    <div key={c.id} style={{
+                      background: C.cardBg, borderLeft: `3px solid ${MEMBER_COLORS[c.member] || C.muted}`,
+                      borderRadius: 4, padding: "8px 10px", marginBottom: 5,
+                    }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3 }}>
+                        <MemberTag name={c.member} />
+                        <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>
+                          {new Date(c.createdAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                          {c.editedAt && <span style={{ marginLeft: 4 }}>(編集済)</span>}
+                        </span>
+                      </div>
+                      {editingSekisanCommentId === c.id ? (
+                        <>
+                          <textarea
+                            value={editingSekisanCommentText}
+                            onChange={e => setEditingSekisanCommentText(e.target.value)}
+                            style={{ ...inp, height: 50, resize: "vertical", marginBottom: 5, fontSize: 13 }}
+                          />
+                          <div style={{ display: "flex", gap: 5 }}>
+                            <button onClick={() => handleSaveEditSekisanComment(s.id, c.id)}
+                              style={{ ...btnStyle(), flex: 1, padding: "6px", fontSize: 11 }}>💾 保存</button>
+                            <button onClick={handleCancelEditSekisanComment}
+                              style={{ ...btnStyle("ghost"), flex: 1, padding: "6px", fontSize: 11 }}>キャンセル</button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5, whiteSpace: "pre-wrap", marginBottom: c.member === currentUser ? 4 : 0 }}>{c.text}</div>
+                          {c.member === currentUser && (
+                            <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                              <button onClick={() => handleStartEditSekisanComment(c)} style={{
+                                background: "transparent", border: `1px solid ${C.muted}33`, color: C.muted,
+                                borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit",
+                              }}>✏️</button>
+                              <button onClick={() => handleDeleteSekisanComment(s.id, c.id)} style={{
+                                background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger,
+                                borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit",
+                              }}>🗑️</button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                    <textarea
+                      value={newSekisanComment[s.id] || ""}
+                      onChange={e => setNewSekisanComment(p => ({ ...p, [s.id]: e.target.value }))}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handlePostSekisanComment(s.id);
+                        }
+                      }}
+                      placeholder={currentUser ? `${currentUser}としてコメント... (Enterで送信)` : "ログインしてください"}
+                      style={{ ...inp, flex: 1, height: 40, resize: "vertical", fontSize: 12, padding: "8px 10px" }}
+                    />
+                    <button onClick={() => handlePostSekisanComment(s.id)}
+                      disabled={!(newSekisanComment[s.id] || "").trim() || !currentUser}
+                      style={{
+                        ...btnStyle(), padding: "8px 14px", fontSize: 12, flexShrink: 0,
+                        opacity: (!(newSekisanComment[s.id] || "").trim() || !currentUser) ? 0.5 : 1,
+                      }}>送信</button>
+                  </div>
+                </div>
+              );
+            })()}
             <div style={{ display: "flex", gap: 8 }}>
               <button style={{ ...btnStyle("ghost"), flex: 1, padding: "11px", fontSize: 14 }} onClick={() => { setEditItem(s); setShowForm(true); }}>編集・詳細</button>
               <button style={{ ...btnStyle("danger"), padding: "11px 14px", fontSize: 14 }} onClick={() => handleDelete(s.id)}>削除</button>
