@@ -1576,6 +1576,98 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     setShowEventForm(true);
   };
 
+  // 🆕 自動連動予定（地上げ・所有者・在庫の日付）をタップ時、その場で編集できる
+  const [linkedEditForm, setLinkedEditForm] = useState(null);
+  // { type, parentId, dateField, dateValue, parentName, dateLabel, source, icon, color }
+
+  const openLinkedEdit = (e) => {
+    const config = {
+      jiage: { dateField: "nextVisit", dateLabel: "次回訪問日", source: "jiage" },
+      owner: { dateField: "nextFollowDate", dateLabel: "次回フォロー日", source: "owners" },
+      buyContract: { dateField: "buyContractDate", dateLabel: "仕入契約日", source: "stocks" },
+      buy: { dateField: "buyDate", dateLabel: "仕入決済日", source: "stocks" },
+      sellContract: { dateField: "sellContractDate", dateLabel: "売却契約日", source: "stocks" },
+      sell: { dateField: "sellDate", dateLabel: "売却決済日", source: "stocks" },
+    };
+    const cfg = config[e.type];
+    if (!cfg) {
+      // viewing, sekisan などは画面に飛ぶ（複雑なため）
+      navigateToEvent(e);
+      return;
+    }
+    const parentList = data[cfg.source] || [];
+    const parent = parentList.find(p => p.id === e.rawId);
+    if (!parent) return;
+    if (!canEdit(parent)) {
+      alert(`⚠️ 編集権限がありません\n\nこの予定の担当者は「${parent.assignee || "不明"}」です。\n管理者または担当者本人のみ編集できます。`);
+      return;
+    }
+    setLinkedEditForm({
+      type: e.type,
+      parentId: e.rawId,
+      dateField: cfg.dateField,
+      dateValue: parent[cfg.dateField] || "",
+      parentName: parent.name || parent.address || "(無題)",
+      dateLabel: cfg.dateLabel,
+      source: cfg.source,
+      icon: e.icon,
+      color: e.color,
+      assignee: parent.assignee || "",
+    });
+  };
+
+  const saveLinkedEdit = () => {
+    if (!linkedEditForm) return;
+    const { source, parentId, dateField, dateValue, parentName, dateLabel } = linkedEditForm;
+    if (!dateValue) {
+      alert("⚠️ 日付を入力してください\n削除する場合は「🗑️ この日付をクリア」を押してください。");
+      return;
+    }
+    setData(d => ({
+      ...d,
+      [source]: (d[source] || []).map(p => p.id === parentId ? { ...p, [dateField]: dateValue } : p),
+    }));
+    setLinkedEditForm(null);
+  };
+
+  const clearLinkedDate = (e) => {
+    const config = {
+      jiage: { dateField: "nextVisit", dateLabel: "次回訪問日", source: "jiage" },
+      owner: { dateField: "nextFollowDate", dateLabel: "次回フォロー日", source: "owners" },
+      buyContract: { dateField: "buyContractDate", dateLabel: "仕入契約日", source: "stocks" },
+      buy: { dateField: "buyDate", dateLabel: "仕入決済日", source: "stocks" },
+      sellContract: { dateField: "sellContractDate", dateLabel: "売却契約日", source: "stocks" },
+      sell: { dateField: "sellDate", dateLabel: "売却決済日", source: "stocks" },
+    };
+    const cfg = config[e.type];
+    if (!cfg) return;
+    const parentList = data[cfg.source] || [];
+    const parent = parentList.find(p => p.id === e.rawId);
+    if (!parent) return;
+    if (!canEdit(parent)) {
+      alert("⚠️ 編集権限がありません");
+      return;
+    }
+    const parentName = parent.name || parent.address || "(無題)";
+    if (!window.confirm(`「${parentName}」の${cfg.dateLabel}をクリアしますか？\n(この予定がカレンダーから消えます)`)) return;
+    setData(d => ({
+      ...d,
+      [cfg.source]: (d[cfg.source] || []).map(p => p.id === e.rawId ? { ...p, [cfg.dateField]: "" } : p),
+    }));
+    setLinkedEditForm(null);
+  };
+
+  const clearLinkedFromModal = () => {
+    if (!linkedEditForm) return;
+    const { source, parentId, dateField, parentName, dateLabel } = linkedEditForm;
+    if (!window.confirm(`「${parentName}」の${dateLabel}をクリアしますか？\n(この予定がカレンダーから消えます)`)) return;
+    setData(d => ({
+      ...d,
+      [source]: (d[source] || []).map(p => p.id === parentId ? { ...p, [dateField]: "" } : p),
+    }));
+    setLinkedEditForm(null);
+  };
+
   // 🆕 自動連動予定（地上げ・所有者・在庫の日付・積算表）をタップ時、該当画面へナビゲート
   const navigateToEvent = (e) => {
     if (!setPage || !setPendingNav) return;
@@ -2172,7 +2264,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                           onClick={editable ? (clickEvt) => {
                             clickEvt.stopPropagation();
                             if (customEv) openEditEvent(customEv);
-                            else navigateToEvent(e);
+                            else openLinkedEdit(e);
                           } : undefined}
                           style={{
                             background: e.color + "33", borderLeft: `2px solid ${e.color}`,
@@ -2239,7 +2331,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                           onClick={editable ? (clickEvt) => {
                             clickEvt.stopPropagation();
                             if (customEv) openEditEvent(customEv);
-                            else navigateToEvent(e);
+                            else openLinkedEdit(e);
                           } : undefined}
                           style={{
                             background: e.color + "33", borderLeft: `2px solid ${e.color}`,
@@ -2285,7 +2377,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                 <div key={i} 
                   onClick={editable ? () => {
                     if (customEv) openEditEvent(customEv);
-                    else navigateToEvent(e);
+                    else openLinkedEdit(e);
                   } : undefined}
                   style={{
                   display: "flex", alignItems: "center", gap: 10,
@@ -2315,6 +2407,19 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                         <button onClick={(clickEvt) => { clickEvt.stopPropagation(); openEditEvent(customEv); }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "6px 9px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
                         <button onClick={(clickEvt) => { clickEvt.stopPropagation(); handleDeleteEvent(e.rawId); }} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "6px 9px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
+                      </div>
+                    );
+                  })()}
+                  {/* 🆕 自動連動予定にも編集/削除ボタン */}
+                  {!e.isCustom && ["jiage", "owner", "buyContract", "buy", "sellContract", "sell"].includes(e.type) && e.rawId && (() => {
+                    const sourceMap = { jiage: "jiage", owner: "owners", buyContract: "stocks", buy: "stocks", sellContract: "stocks", sell: "stocks" };
+                    const src = sourceMap[e.type];
+                    const parent = (data[src] || []).find(p => p.id === e.rawId);
+                    if (!parent || !canEdit(parent)) return null;
+                    return (
+                      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                        <button onClick={(clickEvt) => { clickEvt.stopPropagation(); openLinkedEdit(e); }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "6px 9px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
+                        <button onClick={(clickEvt) => { clickEvt.stopPropagation(); clearLinkedDate(e); }} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "6px 9px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
                       </div>
                     );
                   })()}
@@ -2411,6 +2516,44 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               }}
             >🗑️ この予定を削除</button>
           )}
+        </BottomSheet>
+      )}
+
+      {/* 🆕 自動連動予定（地上げ・所有者・在庫の日付）の編集 BottomSheet */}
+      {linkedEditForm && (
+        <BottomSheet title={`${linkedEditForm.icon} ${linkedEditForm.dateLabel}を編集`} onClose={() => setLinkedEditForm(null)}>
+          <div style={{ background: C.panelBg, borderRadius: 10, padding: "12px 14px", marginBottom: 14, borderLeft: `4px solid ${linkedEditForm.color}` }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 4, fontWeight: 700 }}>物件・案件</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{linkedEditForm.parentName}</div>
+            {linkedEditForm.assignee && (
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>担当: <MemberTag name={linkedEditForm.assignee} /></div>
+            )}
+          </div>
+          <Field label={linkedEditForm.dateLabel + " *"}>
+            <input
+              type="date"
+              style={inp}
+              value={linkedEditForm.dateValue}
+              onChange={e => setLinkedEditForm(p => ({ ...p, dateValue: e.target.value }))}
+              autoFocus
+            />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setLinkedEditForm(null)}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2, background: linkedEditForm.color, borderColor: linkedEditForm.color }} onClick={saveLinkedEdit}>更新する</button>
+          </div>
+          <button
+            onClick={clearLinkedFromModal}
+            style={{
+              width: "100%", marginTop: 10, padding: "12px",
+              background: C.danger + "22", border: `1.5px solid ${C.danger}`,
+              color: C.danger, borderRadius: 10, cursor: "pointer",
+              fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+            }}
+          >🗑️ この日付をクリア（カレンダーから削除）</button>
+          <div style={{ marginTop: 12, padding: "10px 12px", background: C.bgDark, borderRadius: 8, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+            💡 元データ（{linkedEditForm.source === "stocks" ? "在庫物件" : linkedEditForm.source === "jiage" ? "地上げ案件" : "所有者アタック"}）の他の項目も編集したい場合は、該当タブで物件・案件を開いてください。
+          </div>
         </BottomSheet>
       )}
 
