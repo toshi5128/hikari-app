@@ -1588,10 +1588,10 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       buy: { dateField: "buyDate", dateLabel: "仕入決済日", source: "stocks" },
       sellContract: { dateField: "sellContractDate", dateLabel: "売却契約日", source: "stocks" },
       sell: { dateField: "sellDate", dateLabel: "売却決済日", source: "stocks" },
+      viewing: { dateField: "visitDate", dateLabel: "案内予定日", source: "stocks", isViewing: true },
     };
     const cfg = config[e.type];
     if (!cfg) {
-      // viewing, sekisan などは画面に飛ぶ（複雑なため）
       navigateToEvent(e);
       return;
     }
@@ -1599,7 +1599,29 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     const parent = parentList.find(p => p.id === e.rawId);
     if (!parent) return;
     if (!canEdit(parent)) {
-      alert(`⚠️ 編集権限がありません\n\nこの予定の担当者は「${parent.assignee || "不明"}」です。\n管理者または担当者本人のみ編集できます。`);
+      alert(`⚠️ 編集権限がありません\n\nこの予定の担当者は「${parent.assignee || "不明"}"」です。\n管理者または担当者本人のみ編集できます。`);
+      return;
+    }
+    // 🆕 案内予定（viewing）の場合は viewings 配列内の特定要素
+    if (cfg.isViewing) {
+      const viewing = (parent.viewings || [])[e.viewingIdx];
+      if (!viewing) return;
+      setLinkedEditForm({
+        type: e.type,
+        parentId: e.rawId,
+        dateField: cfg.dateField,
+        dateValue: viewing.visitDate || "",
+        timeValue: viewing.visitTime || "",
+        parentName: parent.name || "(無題)",
+        dateLabel: cfg.dateLabel,
+        source: cfg.source,
+        icon: e.icon,
+        color: e.color,
+        assignee: parent.assignee || "",
+        isViewing: true,
+        viewingIdx: e.viewingIdx,
+        customer: viewing.customer || "顧客未設定",
+      });
       return;
     }
     setLinkedEditForm({
@@ -1618,9 +1640,26 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const saveLinkedEdit = () => {
     if (!linkedEditForm) return;
-    const { source, parentId, dateField, dateValue, parentName, dateLabel } = linkedEditForm;
+    const { source, parentId, dateField, dateValue, isViewing, viewingIdx, timeValue } = linkedEditForm;
     if (!dateValue) {
       alert("⚠️ 日付を入力してください\n削除する場合は「🗑️ この日付をクリア」を押してください。");
+      return;
+    }
+    // 🆕 案内予定の場合：viewings 配列の該当要素を更新
+    if (isViewing) {
+      setData(d => ({
+        ...d,
+        stocks: (d.stocks || []).map(p => {
+          if (p.id !== parentId) return p;
+          return {
+            ...p,
+            viewings: (p.viewings || []).map((v, idx) =>
+              idx === viewingIdx ? { ...v, visitDate: dateValue, visitTime: timeValue || v.visitTime || "" } : v
+            ),
+          };
+        }),
+      }));
+      setLinkedEditForm(null);
       return;
     }
     setData(d => ({
@@ -1638,6 +1677,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       buy: { dateField: "buyDate", dateLabel: "仕入決済日", source: "stocks" },
       sellContract: { dateField: "sellContractDate", dateLabel: "売却契約日", source: "stocks" },
       sell: { dateField: "sellDate", dateLabel: "売却決済日", source: "stocks" },
+      viewing: { dateField: "visitDate", dateLabel: "案内予定", source: "stocks", isViewing: true },
     };
     const cfg = config[e.type];
     if (!cfg) return;
@@ -1649,7 +1689,27 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       return;
     }
     const parentName = parent.name || parent.address || "(無題)";
-    if (!window.confirm(`「${parentName}」の${cfg.dateLabel}をクリアしますか？\n(この予定がカレンダーから消えます)`)) return;
+    // 🆕 案内予定の場合：visitDate と visitTime をクリア（反響データは残す）
+    if (cfg.isViewing) {
+      const viewing = (parent.viewings || [])[e.viewingIdx];
+      const customer = viewing?.customer || "顧客未設定";
+      if (!window.confirm(`「${parentName}」の案内予定（${customer}）をカレンダーから削除しますか？\n反響データ（顧客情報・予算など）は残ります。`)) return;
+      setData(d => ({
+        ...d,
+        stocks: (d.stocks || []).map(p => {
+          if (p.id !== e.rawId) return p;
+          return {
+            ...p,
+            viewings: (p.viewings || []).map((v, idx) =>
+              idx === e.viewingIdx ? { ...v, visitDate: "", visitTime: "" } : v
+            ),
+          };
+        }),
+      }));
+      setLinkedEditForm(null);
+      return;
+    }
+    if (!window.confirm(`「${parentName}」の${cfg.dateLabel}をクリアしますか?\n(この予定がカレンダーから消えます)`)) return;
     setData(d => ({
       ...d,
       [cfg.source]: (d[cfg.source] || []).map(p => p.id === e.rawId ? { ...p, [cfg.dateField]: "" } : p),
@@ -1659,7 +1719,25 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const clearLinkedFromModal = () => {
     if (!linkedEditForm) return;
-    const { source, parentId, dateField, parentName, dateLabel } = linkedEditForm;
+    const { source, parentId, dateField, parentName, dateLabel, isViewing, viewingIdx, customer } = linkedEditForm;
+    // 🆕 案内予定の場合：visitDate と visitTime をクリア（反響データは残す）
+    if (isViewing) {
+      if (!window.confirm(`「${parentName}」の案内予定（${customer || "顧客未設定"}）をカレンダーから削除しますか？\n反響データ（顧客情報・予算など）は残ります。`)) return;
+      setData(d => ({
+        ...d,
+        stocks: (d.stocks || []).map(p => {
+          if (p.id !== parentId) return p;
+          return {
+            ...p,
+            viewings: (p.viewings || []).map((v, idx) =>
+              idx === viewingIdx ? { ...v, visitDate: "", visitTime: "" } : v
+            ),
+          };
+        }),
+      }));
+      setLinkedEditForm(null);
+      return;
+    }
     if (!window.confirm(`「${parentName}」の${dateLabel}をクリアしますか？\n(この予定がカレンダーから消えます)`)) return;
     setData(d => ({
       ...d,
@@ -1912,14 +1990,15 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       if (o.nextFollowDate) list.push({ date: o.nextFollowDate, type: "owner", icon: "👤", color: C.accent, title: o.address || "(無住所)", sub: `所有者フォロー・${o.status}`, assignee: o.assignee, rawId: o.id });
     });
     (data.sekisan || []).forEach(s => {
-      if (s.createdAt) list.push({ date: s.createdAt, type: "sekisan", icon: "🧮", color: C.danger, title: s.address || "(無住所)", sub: `仕入検討・${s.judgment}`, assignee: s.assignee, rawId: s.id });
+      // 🆕 査定したものはカレンダーに連動しない（売主結果確認日のみ customEvents 経由で連動）
+      // if (s.createdAt) list.push({ date: s.createdAt, type: "sekisan", icon: "🧮", color: C.danger, title: s.address || "(無住所)", sub: `仕入検討・${s.judgment}`, assignee: s.assignee, rawId: s.id });
     });
     (data.stocks || []).forEach(s => {
       if (s.buyContractDate) list.push({ date: s.buyContractDate, type: "buyContract", icon: "📝", color: "#a855f7", title: s.name || "(無題)", sub: "仕入契約", assignee: s.assignee, rawId: s.id });
       if (s.buyDate) list.push({ date: s.buyDate, type: "buy", icon: "🏠", color: C.success, title: s.name || "(無題)", sub: "仕入決済", assignee: s.assignee, rawId: s.id });
       if (s.sellContractDate) list.push({ date: s.sellContractDate, type: "sellContract", icon: "📋", color: C.accent, title: s.name || "(無題)", sub: "売却契約", assignee: s.assignee, rawId: s.id });
       if (s.sellDate) list.push({ date: s.sellDate, type: "sell", icon: "✅", color: C.warn, title: s.name || "(無題)", sub: "売却決済", assignee: s.assignee, rawId: s.id });
-      (s.viewings || []).forEach(v => {
+      (s.viewings || []).forEach((v, idx) => {
         const eventDate = v.visitDate || "";
         if (eventDate) {
           const tags = [];
@@ -1937,7 +2016,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
             assignee: s.assignee,
             assignees,
             time: v.visitTime || "",
-            rawId: s.id,  // 🆕 在庫物件の id
+            rawId: s.id,
+            viewingIdx: idx, // 🆕 viewings 配列内のインデックス（編集・削除用）
           });
         }
       });
@@ -2411,8 +2491,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                     );
                   })()}
                   {/* 🆕 自動連動予定にも編集/削除ボタン */}
-                  {!e.isCustom && ["jiage", "owner", "buyContract", "buy", "sellContract", "sell"].includes(e.type) && e.rawId && (() => {
-                    const sourceMap = { jiage: "jiage", owner: "owners", buyContract: "stocks", buy: "stocks", sellContract: "stocks", sell: "stocks" };
+                  {!e.isCustom && ["jiage", "owner", "buyContract", "buy", "sellContract", "sell", "viewing"].includes(e.type) && e.rawId && (() => {
+                    const sourceMap = { jiage: "jiage", owner: "owners", buyContract: "stocks", buy: "stocks", sellContract: "stocks", sell: "stocks", viewing: "stocks" };
                     const src = sourceMap[e.type];
                     const parent = (data[src] || []).find(p => p.id === e.rawId);
                     if (!parent || !canEdit(parent)) return null;
@@ -2525,19 +2605,44 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           <div style={{ background: C.panelBg, borderRadius: 10, padding: "12px 14px", marginBottom: 14, borderLeft: `4px solid ${linkedEditForm.color}` }}>
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 4, fontWeight: 700 }}>物件・案件</div>
             <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{linkedEditForm.parentName}</div>
+            {linkedEditForm.isViewing && linkedEditForm.customer && (
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>顧客: <b style={{ color: C.text }}>{linkedEditForm.customer}</b></div>
+            )}
             {linkedEditForm.assignee && (
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>担当: <MemberTag name={linkedEditForm.assignee} /></div>
             )}
           </div>
-          <Field label={linkedEditForm.dateLabel + " *"}>
-            <input
-              type="date"
-              style={inp}
-              value={linkedEditForm.dateValue}
-              onChange={e => setLinkedEditForm(p => ({ ...p, dateValue: e.target.value }))}
-              autoFocus
-            />
-          </Field>
+          {linkedEditForm.isViewing ? (
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
+              <Field label="案内予定日 *">
+                <input
+                  type="date"
+                  style={inp}
+                  value={linkedEditForm.dateValue}
+                  onChange={e => setLinkedEditForm(p => ({ ...p, dateValue: e.target.value }))}
+                  autoFocus
+                />
+              </Field>
+              <Field label="案内時間">
+                <input
+                  type="time"
+                  style={inp}
+                  value={linkedEditForm.timeValue || ""}
+                  onChange={e => setLinkedEditForm(p => ({ ...p, timeValue: e.target.value }))}
+                />
+              </Field>
+            </div>
+          ) : (
+            <Field label={linkedEditForm.dateLabel + " *"}>
+              <input
+                type="date"
+                style={inp}
+                value={linkedEditForm.dateValue}
+                onChange={e => setLinkedEditForm(p => ({ ...p, dateValue: e.target.value }))}
+                autoFocus
+              />
+            </Field>
+          )}
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setLinkedEditForm(null)}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2, background: linkedEditForm.color, borderColor: linkedEditForm.color }} onClick={saveLinkedEdit}>更新する</button>
@@ -2550,9 +2655,9 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               color: C.danger, borderRadius: 10, cursor: "pointer",
               fontSize: 14, fontWeight: 700, fontFamily: "inherit",
             }}
-          >🗑️ この日付をクリア（カレンダーから削除）</button>
+          >🗑️ {linkedEditForm.isViewing ? "この案内予定をカレンダーから削除" : "この日付をクリア（カレンダーから削除）"}</button>
           <div style={{ marginTop: 12, padding: "10px 12px", background: C.bgDark, borderRadius: 8, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
-            💡 元データ（{linkedEditForm.source === "stocks" ? "在庫物件" : linkedEditForm.source === "jiage" ? "地上げ案件" : "所有者アタック"}）の他の項目も編集したい場合は、該当タブで物件・案件を開いてください。
+            💡 元データ（{linkedEditForm.source === "stocks" ? (linkedEditForm.isViewing ? "案内予定の詳細（顧客情報・予算など）" : "在庫物件") : linkedEditForm.source === "jiage" ? "地上げ案件" : "所有者アタック"}）の他の項目も編集したい場合は、該当タブで物件・案件を開いてください。
           </div>
         </BottomSheet>
       )}
