@@ -520,6 +520,11 @@ function appendLog(d, action, target, description) {
 
 // 🆕 全アクション共通通知ヘルパー：appendLog + 下田・比嘉に Push 通知 + 該当箇所遷移
 function appendLogAndNotify(d, action, target, description, item = null, options = {}) {
+  // 🆕 削除アクションなら、削除IDを追跡（他端末のキャッシュからの復活を防ぐ）
+  if (action === "delete" && item?.id != null) {
+    recordDeletion(target, item.id);
+  }
+
   const next = appendLog(d, action, target, description);
 
   // skipPush: 専用通知が既に飛ぶ箇所では汎用通知をスキップ
@@ -643,6 +648,62 @@ function loadFromCache() {
 function mergeWithDefault(remote) {
   if (!remote) return null;
   return { ...DEFAULT_DATA, ...remote };
+}
+
+// ============== 🆕 削除アイテムID追跡 ==============
+// 複数端末で同期する際、ローカルで削除したアイテムが
+// 他端末の古いキャッシュから「復活」するのを防ぐ
+// localStorageに「削除済みID」を7日間保持
+const DELETED_IDS_KEY = "hikari_deleted_ids";
+const DELETED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7日間
+
+function _getDeletedIdsRaw() {
+  try { return JSON.parse(localStorage.getItem(DELETED_IDS_KEY) || "{}"); }
+  catch { return {}; }
+}
+
+function recordDeletion(target, id) {
+  if (id == null) return;
+  try {
+    const data = _getDeletedIdsRaw();
+    if (!data[target]) data[target] = {};
+    data[target][String(id)] = Date.now();
+    localStorage.setItem(DELETED_IDS_KEY, JSON.stringify(data));
+  } catch {}
+}
+
+function getDeletedIdSet(target) {
+  const data = _getDeletedIdsRaw();
+  const map = data[target] || {};
+  const cutoff = Date.now() - DELETED_RETENTION_MS;
+  const result = new Set();
+  Object.entries(map).forEach(([id, ts]) => {
+    if (ts > cutoff) {
+      // ID は数値の場合と文字列の場合があるので両方
+      result.add(id);
+      const numId = Number(id);
+      if (!isNaN(numId)) result.add(numId);
+    }
+  });
+  return result;
+}
+
+function cleanupOldDeletions() {
+  try {
+    const data = _getDeletedIdsRaw();
+    const cutoff = Date.now() - DELETED_RETENTION_MS;
+    let changed = false;
+    Object.keys(data).forEach(target => {
+      const map = data[target] || {};
+      Object.keys(map).forEach(id => {
+        if (map[id] < cutoff) {
+          delete map[id];
+          changed = true;
+        }
+      });
+    });
+    if (changed) localStorage.setItem(DELETED_IDS_KEY, JSON.stringify(data));
+  } catch {}
 }
 
 // フォーム入力中かどうか判定（input/textarea/selectにフォーカスがあれば編集中とみなす）
@@ -1032,41 +1093,51 @@ function MainApp({ onLock, onSwitchUser }) {
   const lastLocalSaveRef = useRef(0);
 
   // ローカル(キャッシュ)とリモートを賢くマージする関数
-  // 🔧 削除済みアイテム復活防止：直近30秒以内に自分が保存した場合のみローカル保護
-  // それ以外はリモートを信じる（古いキャッシュの削除済みアイテムが復活する問題対策）
+  // 🔧 削除IDトラッキング方式：
+  //   - 自分が削除したID は別途追跡（7日間）→ 他端末から復活させない
+  //   - ローカル限定アイテム（自分が新規追加）は常に保護 → 並行編集でも消失しない
+  //   - 両立により「削除復活」「データ消失」両方を防ぐ
   const mergeRemoteSafely = (remote) => {
     if (!remote) return null;
     const local = loadFromCache();
     const merged = mergeWithDefault(remote);
     if (!local) return merged;
 
-    // 🔧 直近30秒以内に自分が保存していたら、ローカル限定アイテムを保護（save失敗対策）
-    // 30秒以上経過してたら、リモートを信じる（削除アイテムが復活するのを防ぐ）
-    const recentlySaved = Date.now() - lastLocalSaveRef.current < 30000;
-    if (!recentlySaved) {
-      console.log(`[Sync] 直近の自分保存が30秒以上前 → リモートを信じる（削除アイテム復活防止）`);
-      return merged;
-    }
-
-    // 配列フィールドで「リモートが空 or 少ない」「ローカルが多い」場合、ローカルを優先
-    // これによりSupabase保存失敗時のデータ消失を防ぐ
     const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "activityLog"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
       const remoteArr = Array.isArray(merged[k]) ? merged[k] : [];
-      // ローカルにあってリモートにないIDのアイテムを保護
-      const remoteIds = new Set(remoteArr.map(item => item?.id).filter(id => id != null));
-      const protectedItems = localArr.filter(item => item?.id != null && !remoteIds.has(item.id));
-      if (protectedItems.length > 0) {
-        console.log(`[Sync] ${k}: ローカル限定の${protectedItems.length}件を保護してマージ（直近30秒以内の保存ガード）`);
-        merged[k] = [...remoteArr, ...protectedItems];
+
+      // ① 自分のローカルで削除したID（7日以内）を取得
+      const deletedIds = getDeletedIdSet(k);
+
+      // ② リモートから「削除済みID」のアイテムを除外（復活を防ぐ）
+      const cleanRemote = deletedIds.size > 0
+        ? remoteArr.filter(item => !deletedIds.has(item?.id))
+        : remoteArr;
+
+      // ③ ローカル限定アイテム（自分が新規追加したけど削除済みでないもの）を保護
+      const remoteIds = new Set(cleanRemote.map(item => item?.id).filter(id => id != null));
+      const protectedItems = localArr.filter(item =>
+        item?.id != null &&
+        !remoteIds.has(item.id) &&
+        !deletedIds.has(item.id)
+      );
+
+      const removedCount = remoteArr.length - cleanRemote.length;
+      if (removedCount > 0 || protectedItems.length > 0) {
+        console.log(`[Sync] ${k}: リモート${remoteArr.length}件 → 削除済み${removedCount}件除外 + ローカル限定${protectedItems.length}件保護`);
       }
+
+      merged[k] = [...cleanRemote, ...protectedItems];
     });
     return merged;
   };
 
   // 起動時にSupabaseから最新データを取得
   useEffect(() => {
+    // 🆕 古い削除レコード（7日以上前）を掃除
+    cleanupOldDeletions();
     loadFromSupabase().then(remote => {
       const merged = mergeRemoteSafely(remote);
       if (merged) {
