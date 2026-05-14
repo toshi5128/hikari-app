@@ -1185,9 +1185,6 @@ function MainApp({ onLock, onSwitchUser }) {
     const merged = mergeWithDefault(remote);
     if (!local) return merged;
 
-    // 🆕 直近5分以内に自分が編集したか（ネストデータ・コメント・反響等の並行編集保護）
-    const recentlyEdited = (Date.now() - lastLocalSaveRef.current) < 5 * 60 * 1000;
-
     const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "activityLog"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
@@ -1201,38 +1198,51 @@ function MainApp({ onLock, onSwitchUser }) {
         ? remoteArr.filter(item => !deletedIds.has(item?.id))
         : remoteArr;
 
-      let finalArr;
-      if (recentlyEdited) {
-        // 🆕 直近5分の自分の編集を保護：ローカル優先
-        // ローカルにあるアイテムはローカル版を採用（ネスト編集内容を保護）
-        // ローカルに無くてリモートにのみあるアイテムは追加（他端末の新規分）
-        const localMap = new Map();
-        localArr.forEach(item => {
-          if (item?.id != null && !deletedIds.has(item.id)) {
-            localMap.set(item.id, item);
+      // 🆕 アイテム単位の updatedAt 比較でマージ（最強の競合解決）
+      const localMap = new Map();
+      localArr.forEach(item => {
+        if (item?.id != null && !deletedIds.has(item.id)) {
+          localMap.set(item.id, item);
+        }
+      });
+      const remoteMap = new Map();
+      cleanRemote.forEach(item => {
+        if (item?.id != null) remoteMap.set(item.id, item);
+      });
+
+      const allIds = new Set([...localMap.keys(), ...remoteMap.keys()]);
+      const finalArr = [];
+      let localWins = 0, remoteWins = 0;
+      allIds.forEach(id => {
+        const localItem = localMap.get(id);
+        const remoteItem = remoteMap.get(id);
+        if (!localItem) {
+          // ローカルに無い → リモートを採用
+          finalArr.push(remoteItem);
+        } else if (!remoteItem) {
+          // リモートに無い → ローカルを採用（自分が追加した未同期分）
+          finalArr.push(localItem);
+          localWins++;
+        } else {
+          // 両方にある → updatedAt が新しい方を採用
+          const localTime = Number(localItem.updatedAt) || 0;
+          const remoteTime = Number(remoteItem.updatedAt) || 0;
+          if (localTime > remoteTime) {
+            finalArr.push(localItem);
+            localWins++;
+          } else if (remoteTime > localTime) {
+            finalArr.push(remoteItem);
+            remoteWins++;
+          } else {
+            // 同じか両方0（既存データ）→ リモート優先（安全側）
+            finalArr.push(remoteItem);
           }
-        });
-        const remoteOnly = cleanRemote.filter(item =>
-          item?.id != null && !localMap.has(item.id)
-        );
-        finalArr = [...localMap.values(), ...remoteOnly];
-        const removedCount = remoteArr.length - cleanRemote.length;
-        if (removedCount > 0 || localMap.size > 0) {
-          console.log(`[Sync 直近編集中] ${k}: ローカル${localMap.size}件保護 + リモートのみ${remoteOnly.length}件追加 + 削除済み${removedCount}件除外`);
         }
-      } else {
-        // 通常時：リモート優先 + ローカル限定アイテム保護
-        const remoteIds = new Set(cleanRemote.map(item => item?.id).filter(id => id != null));
-        const protectedItems = localArr.filter(item =>
-          item?.id != null &&
-          !remoteIds.has(item.id) &&
-          !deletedIds.has(item.id)
-        );
-        finalArr = [...cleanRemote, ...protectedItems];
-        const removedCount = remoteArr.length - cleanRemote.length;
-        if (removedCount > 0 || protectedItems.length > 0) {
-          console.log(`[Sync] ${k}: リモート${remoteArr.length}件 → 削除済み${removedCount}件除外 + ローカル限定${protectedItems.length}件保護`);
-        }
+      });
+
+      const removedCount = remoteArr.length - cleanRemote.length;
+      if (removedCount > 0 || localWins > 0) {
+        console.log(`[Sync] ${k}: ローカル勝ち${localWins}件 / リモート勝ち${remoteWins}件 / 削除除外${removedCount}件`);
       }
 
       merged[k] = finalArr;
@@ -1277,8 +1287,29 @@ function MainApp({ onLock, onSwitchUser }) {
   const setData = updater => {
     setDataRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      // 自分の保存時刻を記録（ポーリング上書き防止用）
       const now = Date.now();
+
+      // 🆕 変更されたアイテムに updatedAt をセット（マージ時の競合解決用）
+      const trackedKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan"];
+      trackedKeys.forEach(k => {
+        const prevArr = Array.isArray(prev[k]) ? prev[k] : [];
+        const nextArr = Array.isArray(next[k]) ? next[k] : [];
+        const prevMap = new Map();
+        prevArr.forEach(item => { if (item?.id != null) prevMap.set(item.id, item); });
+
+        const updated = nextArr.map(item => {
+          if (!item || item.id == null) return item;
+          const prevItem = prevMap.get(item.id);
+          // 新規 or 参照が変わった（編集された）アイテム → updatedAt 更新
+          if (!prevItem || prevItem !== item) {
+            return { ...item, updatedAt: now };
+          }
+          return item;
+        });
+        next[k] = updated;
+      });
+
+      // 自分の保存時刻を記録（ポーリング上書き防止用）
       lastLocalSaveRef.current = now;
       // 🆕 強制更新後も5分ガードが効くように localStorage に永続化
       try { localStorage.setItem(LAST_SAVE_KEY, String(now)); } catch {}
