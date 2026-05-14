@@ -1024,6 +1024,25 @@ function MainApp({ onLock, onSwitchUser }) {
         }
       }
 
+      // 🆕 ③ 自動アーカイブ：半年以上前の売却決済物件に archived フラグを付与
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+      const sixMonthsAgoStr = sixMonthsAgo.toISOString().slice(0, 10);
+      const stocksForArchive = next.stocks || d.stocks || [];
+      const archivedStocks = stocksForArchive.map(s => {
+        if (s.archived) return s;
+        if (s.status === "売却決済" && s.sellDate && s.sellDate < sixMonthsAgoStr) {
+          return { ...s, archived: true };
+        }
+        return s;
+      });
+      const archiveCount = archivedStocks.filter((s, i) => s.archived && !stocksForArchive[i].archived).length;
+      if (archiveCount > 0) {
+        console.log(`[Archive] ${archiveCount} 件を自動アーカイブ`);
+        next.stocks = archivedStocks;
+        changed = true;
+      }
+
       return changed ? next : d;
     });
   }, []);
@@ -1977,11 +1996,48 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           }));
         }
       });
+
+      // 🆕 案内予定（viewing）の前日リマインド：9時に通知
+      const tomorrow = new Date(now);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+      // 9時〜9時5分の間に1回だけ通知
+      if (now.getHours() === 9 && now.getMinutes() < 5) {
+        (data.stocks || []).forEach(s => {
+          (s.viewings || []).forEach((v, idx) => {
+            if (v.visitDate !== tomorrowStr) return;
+            const reminderKey = `viewing-reminder-${s.id}-${idx}-${tomorrowStr}`;
+            if (v.dayBeforeNotified === tomorrowStr) return; // 重複防止
+            const me = getCurrentUser();
+            if (!me || (s.assignee && s.assignee !== me && me !== "下田" && me !== "比嘉")) return;
+            const title = `📅 明日の案内予定`;
+            const body = `${v.visitTime || "時刻未定"} ${s.name || "(無題)"}\n顧客: ${v.customer || "(顧客名なし)"}`;
+            if (navigator.serviceWorker?.controller) {
+              navigator.serviceWorker.controller.postMessage({
+                type: 'SHOW_NOTIFICATION', title, body, tag: reminderKey,
+              });
+            }
+            // 通知済みフラグを立てる
+            setData(d => ({
+              ...d,
+              stocks: (d.stocks || []).map(p => {
+                if (p.id !== s.id) return p;
+                return {
+                  ...p,
+                  viewings: (p.viewings || []).map((vw, i) =>
+                    i === idx ? { ...vw, dayBeforeNotified: tomorrowStr } : vw
+                  ),
+                };
+              }),
+            }));
+          });
+        });
+      }
     };
     check();
     const timer = setInterval(check, 60000);
     return () => clearInterval(timer);
-  }, [data.customEvents]);
+  }, [data.customEvents, data.stocks]);
 
   // ===== 新規予定の即時通知：data.customEventsが変化するたびに、自分宛の未通知予定をチェック =====
   // 別端末で作成された予定 → 自分の端末が30秒ポーリングで取得 → 即通知される仕組み
@@ -2735,6 +2791,182 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
         </div>
       </div>
 
+      {/* 🆕 🔥 熱い・仕入検討 優先表示 */}
+      {(() => {
+        const hotList = (data.sekisan || []).filter(s => s.judgment === "熱い");
+        const kentouList = (data.sekisan || []).filter(s => s.judgment === "仕入検討");
+        if (hotList.length === 0 && kentouList.length === 0) return null;
+        return (
+          <div style={{ background: C.cardBg, border: `1px solid ${C.danger}55`, borderRadius: 14, padding: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.danger, marginBottom: 10 }}>🔥 優先対応案件</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, color: C.danger, fontWeight: 700, marginBottom: 6 }}>🔥 熱い ({hotList.length}件)</div>
+                {hotList.length === 0 ? (
+                  <div style={{ fontSize: 11, color: C.muted, padding: 6 }}>なし</div>
+                ) : (
+                  <div style={{ maxHeight: 180, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                    {hotList.slice(0, 10).map(s => (
+                      <div key={s.id} style={{ background: C.danger + "11", border: `1px solid ${C.danger}33`, borderRadius: 6, padding: "6px 8px", fontSize: 11 }}>
+                        <div style={{ color: C.text, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.address || "(無住所)"}</div>
+                        <div style={{ color: C.muted, fontSize: 10 }}>{s.assignee}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: C.accent, fontWeight: 700, marginBottom: 6 }}>📝 仕入検討 ({kentouList.length}件)</div>
+                {kentouList.length === 0 ? (
+                  <div style={{ fontSize: 11, color: C.muted, padding: 6 }}>なし</div>
+                ) : (
+                  <div style={{ maxHeight: 180, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                    {kentouList.slice(0, 10).map(s => (
+                      <div key={s.id} style={{ background: C.accent + "11", border: `1px solid ${C.accent}33`, borderRadius: 6, padding: "6px 8px", fontSize: 11 }}>
+                        <div style={{ color: C.text, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.address || "(無住所)"}</div>
+                        <div style={{ color: C.muted, fontSize: 10 }}>{s.assignee}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 🆕 📊 メンバー別 持ち件数サマリー */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 10 }}>📊 メンバー別 持ち件数</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse", minWidth: 500 }}>
+            <thead>
+              <tr style={{ borderBottom: `2px solid ${C.borderDim}` }}>
+                <th style={{ textAlign: "left", padding: "6px 8px", color: C.muted, fontWeight: 700 }}>メンバー</th>
+                <th style={{ textAlign: "right", padding: "6px 6px", color: "#a855f7", fontWeight: 700 }}>📝契約</th>
+                <th style={{ textAlign: "right", padding: "6px 6px", color: C.accent, fontWeight: 700 }}>🏠決済</th>
+                <th style={{ textAlign: "right", padding: "6px 6px", color: C.success, fontWeight: 700 }}>📋売却契約</th>
+                <th style={{ textAlign: "right", padding: "6px 6px", color: C.muted, fontWeight: 700 }}>✅売却決済</th>
+                <th style={{ textAlign: "right", padding: "6px 6px", color: C.danger, fontWeight: 700 }}>🔥熱い</th>
+                <th style={{ textAlign: "right", padding: "6px 6px", color: C.accent, fontWeight: 700 }}>📝検討</th>
+              </tr>
+            </thead>
+            <tbody>
+              {MEMBERS.map(m => {
+                const myStocks = (data.stocks || []).filter(s => s.assignee === m);
+                const mySekisan = (data.sekisan || []).filter(s => s.assignee === m);
+                const buyContract = myStocks.filter(s => s.status === "仕入契約").length;
+                const buyDone = myStocks.filter(s => s.status === "仕入決済").length;
+                const sellContract = myStocks.filter(s => s.status === "売却契約").length;
+                const sellDone = myStocks.filter(s => s.status === "売却決済").length;
+                const hot = mySekisan.filter(s => s.judgment === "熱い").length;
+                const kentou = mySekisan.filter(s => s.judgment === "仕入検討").length;
+                const total = buyContract + buyDone + sellContract + sellDone + hot + kentou;
+                if (total === 0) return null;
+                return (
+                  <tr key={m} style={{ borderBottom: `1px solid ${C.borderDim}` }}>
+                    <td style={{ padding: "8px", color: MEMBER_COLORS[m] || C.text, fontWeight: 700 }}>{m}</td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", color: buyContract > 0 ? "#a855f7" : C.muted, fontWeight: buyContract > 0 ? 700 : 400 }}>{buyContract}</td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", color: buyDone > 0 ? C.accent : C.muted, fontWeight: buyDone > 0 ? 700 : 400 }}>{buyDone}</td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", color: sellContract > 0 ? C.success : C.muted, fontWeight: sellContract > 0 ? 700 : 400 }}>{sellContract}</td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", color: sellDone > 0 ? C.text : C.muted, fontWeight: sellDone > 0 ? 700 : 400 }}>{sellDone}</td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", color: hot > 0 ? C.danger : C.muted, fontWeight: hot > 0 ? 700 : 400 }}>{hot}</td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", color: kentou > 0 ? C.accent : C.muted, fontWeight: kentou > 0 ? 700 : 400 }}>{kentou}</td>
+                  </tr>
+                );
+              }).filter(Boolean)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 🆕 📈 ステージ別平均日数（過去6ヶ月の決済完了物件で計算） */}
+      {(() => {
+        const sixMonthAgo = new Date();
+        sixMonthAgo.setMonth(sixMonthAgo.getMonth() - 6);
+        const sixMonthAgoStr = sixMonthAgo.toISOString().slice(0, 10);
+        const completedStocks = (data.stocks || []).filter(s =>
+          s.status === "売却決済" && s.sellDate && s.sellDate >= sixMonthAgoStr
+        );
+        if (completedStocks.length === 0) return null;
+        const daysBetween = (a, b) => {
+          if (!a || !b) return null;
+          const d1 = new Date(a), d2 = new Date(b);
+          return Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
+        };
+        const stages = [
+          { label: "📝→🏠 仕入契約 → 仕入決済", from: "buyContractDate", to: "buyDate" },
+          { label: "🏠→📋 仕入決済 → 売却契約", from: "buyDate", to: "sellContractDate" },
+          { label: "📋→✅ 売却契約 → 売却決済", from: "sellContractDate", to: "sellDate" },
+          { label: "🏠→✅ 仕入決済 → 売却決済（全体）", from: "buyDate", to: "sellDate" },
+        ];
+        const avgs = stages.map(stg => {
+          const days = completedStocks.map(s => daysBetween(s[stg.from], s[stg.to])).filter(d => d !== null && d >= 0);
+          return { ...stg, avg: days.length > 0 ? Math.round(days.reduce((a, b) => a + b, 0) / days.length) : null, count: days.length };
+        });
+        return (
+          <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 4 }}>📈 ステージ別 平均日数</div>
+            <div style={{ fontSize: 10, color: C.muted, marginBottom: 10 }}>過去6ヶ月の売却決済 {completedStocks.length}件で集計</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {avgs.map((a, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: C.panelBg, borderRadius: 8, borderLeft: `3px solid ${C.accent}` }}>
+                  <span style={{ fontSize: 11, color: C.text }}>{a.label}</span>
+                  <span style={{ fontSize: 14, fontWeight: 800, color: a.avg !== null ? C.accent : C.muted }}>
+                    {a.avg !== null ? `${a.avg}日` : "—"}
+                    {a.count > 0 && <span style={{ fontSize: 10, color: C.muted, fontWeight: 400, marginLeft: 4 }}>({a.count}件)</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 🆕 📊 今月のサマリー（全体KPI） */}
+      {(() => {
+        const ym = today.slice(0, 7);
+        const newSekisanThis = (data.sekisan || []).filter(s => (s.createdAt || "").startsWith(ym));
+        const buyContractThis = (data.stocks || []).filter(s => (s.buyContractDate || "").startsWith(ym));
+        const buyDoneThis = (data.stocks || []).filter(s => (s.buyDate || "").startsWith(ym));
+        const sellContractThis = (data.stocks || []).filter(s => (s.sellContractDate || "").startsWith(ym));
+        const sellDoneThis = (data.stocks || []).filter(s => s.status === "売却決済" && (s.sellDate || "").startsWith(ym));
+        const profitThis = sellDoneThis.reduce((a, s) => a + ((s.sellPrice || 0) - (s.buyCost || 0)), 0);
+        return (
+          <div style={{ background: "linear-gradient(135deg, " + C.accent + "11, " + C.success + "0a)", border: `1px solid ${C.accent}55`, borderRadius: 14, padding: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 10 }}>📊 今月のサマリー ({ym})</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+              <div style={{ background: C.cardBg, padding: "10px 8px", borderRadius: 8, textAlign: "center", border: `1px solid ${C.warn}33` }}>
+                <div style={{ fontSize: 10, color: C.muted }}>🧮 査定</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: C.warn }}>{newSekisanThis.length}</div>
+              </div>
+              <div style={{ background: C.cardBg, padding: "10px 8px", borderRadius: 8, textAlign: "center", border: `1px solid #a855f733` }}>
+                <div style={{ fontSize: 10, color: C.muted }}>📝 仕入契約</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: "#a855f7" }}>{buyContractThis.length}</div>
+              </div>
+              <div style={{ background: C.cardBg, padding: "10px 8px", borderRadius: 8, textAlign: "center", border: `1px solid ${C.accent}33` }}>
+                <div style={{ fontSize: 10, color: C.muted }}>🏠 仕入決済</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: C.accent }}>{buyDoneThis.length}</div>
+              </div>
+              <div style={{ background: C.cardBg, padding: "10px 8px", borderRadius: 8, textAlign: "center", border: `1px solid ${C.success}33` }}>
+                <div style={{ fontSize: 10, color: C.muted }}>📋 売却契約</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: C.success }}>{sellContractThis.length}</div>
+              </div>
+              <div style={{ background: C.cardBg, padding: "10px 8px", borderRadius: 8, textAlign: "center", border: `1px solid ${C.muted}33` }}>
+                <div style={{ fontSize: 10, color: C.muted }}>✅ 売却決済</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>{sellDoneThis.length}</div>
+              </div>
+              <div style={{ background: C.cardBg, padding: "10px 8px", borderRadius: 8, textAlign: "center", border: `1px solid ${C.success}55` }}>
+                <div style={{ fontSize: 10, color: C.muted }}>💰 利益</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: profitThis > 0 ? C.success : profitThis < 0 ? C.danger : C.muted }}>
+                  {profitThis === 0 ? "—" : `${profitThis > 0 ? "+" : ""}${Math.round(profitThis / 10000)}万`}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* 🆕 📜 直近のアクション フィード */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 12 }}>📜 直近のアクション（最新15件）</div>
@@ -3324,6 +3556,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [filterStatuses, setFilterStatuses] = useState([]);
   const [filterMembers, setFilterMembers] = useState([]);
   const [viewMode, setViewMode] = useState("active"); // "active" | "completed" | "all"
+  const [showArchive, setShowArchive] = useState(false); // 🆕 アーカイブ表示トグル
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [expandedViewings, setExpandedViewings] = useState({}); // {index: true/false}
@@ -3413,6 +3646,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   }), [data.stocks]);
 
   const filtered = useMemo(() => data.stocks.filter(s => {
+    // 🆕 アーカイブフィルター（売却決済から半年以上経過した物件で archived フラグあり）
+    if (!showArchive && s.archived) return false;
     // viewMode（現在の在庫 / 決済完了 / 全て）
     if (viewMode === "active" && s.status === "売却決済") return false;
     if (viewMode === "completed" && s.status !== "売却決済") return false;
@@ -3420,7 +3655,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     if (filterMembers.length && !filterMembers.includes(s.assignee)) return false;
     if (search && !s.name.includes(search) && !s.assignee.includes(search)) return false;
     return true;
-  }), [data.stocks, filterStatuses, filterMembers, search, viewMode]);
+  }), [data.stocks, filterStatuses, filterMembers, search, viewMode, showArchive]);
 
   const openEdit = s => {
     if (!canEdit(s)) { alert(`⚠️ 編集権限がありません\n\n担当者: ${s.assignee || "(不明)"}`); return; }
@@ -3485,6 +3720,13 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       }
     });
 
+    // 🆕 ステータス変化検知（仕入契約/仕入決済/売却契約/売却決済への移行を通知）
+    const oldStatus = editItem?.status || "";
+    const newStatus = item.status || "";
+    const importantStatuses = ["仕入契約", "仕入決済", "売却契約", "売却決済"];
+    const statusChanged = oldStatus !== newStatus && importantStatuses.includes(newStatus);
+    const statusEmoji = { "仕入契約": "📝", "仕入決済": "🏠", "売却契約": "📋", "売却決済": "✅" };
+
     setData(d => {
       // 既存の stockLinkId 関連イベントを全削除（再構築）
       let nextEvents = (d.customEvents || []).filter(e => !(e.stockLinkId && e.stockLinkId === item.id));
@@ -3529,6 +3771,20 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
           }
         );
       });
+
+      // 🆕 ステータス移行通知（仕入契約/仕入決済/売却契約/売却決済への変化）
+      if (statusChanged) {
+        sendPushNotification(
+          targets,
+          `${statusEmoji[newStatus]} ${newStatus}になりました`,
+          `${item.name || "(無題)"}\n${oldStatus || "(なし)"} → ${newStatus}\n担当: ${item.assignee}`,
+          {
+            tag: `hikari-stock-status-${item.id}-${Date.now()}`,
+            data: { tab: 'stock', stockLinkId: item.id },
+            tab: 'stock', stockLinkId: item.id,
+          }
+        );
+      }
     }
 
     // 🆕 反響（viewings）が増えてたら下田・比嘉に通知
@@ -3577,7 +3833,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       <div style={{ display: "flex", gap: 6, marginBottom: 12, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 4 }}>
         {[
           { key: "active", label: "📦 現在の在庫", count: counts.active, color: C.accent },
-          { key: "completed", label: "✅ 決済完了", count: counts.completed, color: C.success },
+          { key: "completed", label: "✅ 売却決済", count: counts.completed, color: C.success },
           { key: "all", label: "すべて", count: counts.all, color: C.muted },
         ].map(m => {
           const active = viewMode === m.key;
@@ -3600,6 +3856,16 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       <FilterChips options={MEMBERS} value={filterMembers} onChange={setFilterMembers} multi />
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>ステータス</div>
       <FilterChips options={viewMode === "active" ? STOCK_STATUSES.filter(s => s !== "売却決済") : viewMode === "completed" ? ["売却決済"] : STOCK_STATUSES} value={filterStatuses} onChange={setFilterStatuses} multi />
+      {/* 🆕 アーカイブ表示トグル */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: C.panelBg, borderRadius: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 11, color: C.muted }}>📦 アーカイブ物件（半年以上前の売却決済）</span>
+        <button onClick={() => setShowArchive(v => !v)} style={{
+          background: showArchive ? C.accent : C.cardBg,
+          border: `1px solid ${showArchive ? C.accent : C.borderDim}`,
+          color: showArchive ? "#fff" : C.muted,
+          padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+        }}>{showArchive ? "表示中" : "非表示"}</button>
+      </div>
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
       {filtered.map(s => {
         const profit = s.sellPrice - s.buyCost;
@@ -4624,7 +4890,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
             <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 12 }}>
               📊 {casesMember === "__ALL__" ? "全員" : casesMember} の案件パイプライン
               {pipeline.selectedYear !== String(new Date().getFullYear()) && (
-                <span style={{ color: C.warn, marginLeft: 8, fontSize: 11 }}>（決済完了は{pipeline.selectedYear}年）</span>
+                <span style={{ color: C.warn, marginLeft: 8, fontSize: 11 }}>（売却決済は{pipeline.selectedYear}年）</span>
               )}
             </div>
             {[
@@ -9034,7 +9300,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
               {/* 警告メッセージ */}
               {percent >= 80 && (
                 <div style={{ marginTop: 12, padding: 12, background: C.danger + "22", border: `1px solid ${C.danger}`, borderRadius: 10, fontSize: 12, color: C.danger, lineHeight: 1.6 }}>
-                  🚨 容量が上限に近づいています。古い決済完了物件の写真を削除するか、Supabase Pro プラン（8GB）への切り替えを検討してください。
+                  🚨 容量が上限に近づいています。古い売却決済物件の写真を削除するか、Supabase Pro プラン（8GB）への切り替えを検討してください。
                 </div>
               )}
               {percent >= 50 && percent < 80 && (
@@ -9198,6 +9464,110 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       {/* 🚀 Web Push（アプリ閉じてても届くリアルタイム通知） */}
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🚀 Web Push（アプリ閉じててもOK）</div>
       <WebPushSection currentUser={currentUser} data={data} />
+
+      {/* 🆕 🔍 全文検索 */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🔍 全文検索</div>
+      <GlobalSearch data={data} />
+
+      {/* 🆕 📤 データエクスポート */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>📤 データエクスポート</div>
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, marginBottom: 10 }}>
+          📦 全データのバックアップや、表計算ソフトでの分析用にダウンロードできます。
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          {/* 全データ JSON */}
+          <button onClick={() => {
+            const exportData = { ...data, exportedAt: new Date().toISOString(), version: "1.0" };
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `hikari-backup-${new Date().toISOString().slice(0,10)}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert("✅ 全データをエクスポートしました");
+          }} style={{
+            background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent,
+            padding: "10px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+          }}>📦 全データ JSON</button>
+
+          {/* stocks CSV */}
+          <button onClick={() => {
+            const rows = [
+              ["ID","担当","物件名","ステータス","仕入契約日","仕入決済日","売却契約日","売却決済日","仕入価格","売却価格","利益","メモ"],
+              ...(data.stocks || []).map(s => [
+                s.id, s.assignee, s.name, s.status,
+                s.buyContractDate || "", s.buyDate || "", s.sellContractDate || "", s.sellDate || "",
+                s.buyCost, s.sellPrice, (s.sellPrice || 0) - (s.buyCost || 0),
+                (s.memo || "").replace(/[\r\n,]/g, " "),
+              ])
+            ];
+            const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+            const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `hikari-stocks-${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert("✅ 在庫CSVをエクスポートしました");
+          }} style={{
+            background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success,
+            padding: "10px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+          }}>📊 在庫 CSV</button>
+
+          {/* sekisan CSV */}
+          <button onClick={() => {
+            const rows = [
+              ["ID","担当","住所","判定","出所","業者名","仕入価格","売却価格","作成日","メモ"],
+              ...(data.sekisan || []).map(s => [
+                s.id, s.assignee, s.address, s.judgment, s.source, s.vendorName || "",
+                s.buyPrice, s.sellPrice, s.createdAt || "",
+                (s.memo || "").replace(/[\r\n,]/g, " "),
+              ])
+            ];
+            const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+            const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `hikari-sekisan-${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert("✅ 仕入検討積算表CSVをエクスポートしました");
+          }} style={{
+            background: C.warn + "22", border: `1.5px solid ${C.warn}`, color: C.warn,
+            padding: "10px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+          }}>🧮 仕入検討 CSV</button>
+
+          {/* 行動管理 CSV */}
+          <button onClick={() => {
+            const allKeys = APPROACH_ITEMS;
+            const rows = [
+              ["ID","メンバー","日付", ...allKeys, "メモ","エリア"],
+              ...(data.approaches || []).map(a => [
+                a.id, a.member, a.date,
+                ...allKeys.map(k => (a.values || {})[k] || 0),
+                (a.memo || "").replace(/[\r\n,]/g, " "),
+                a.area || "",
+              ])
+            ];
+            const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+            const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `hikari-approaches-${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert("✅ 行動管理CSVをエクスポートしました");
+          }} style={{
+            background: "#a855f7" + "22", border: `1.5px solid #a855f7`, color: "#a855f7",
+            padding: "10px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+          }}>📅 行動管理 CSV</button>
+        </div>
+      </div>
 
       {/* 📋 操作履歴 */}
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>📋 操作履歴</div>
@@ -10532,7 +10902,7 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
       return appendLogAndNotify(next, "promote", "stock", `${form.address}を積算→在庫に転記（仕入${Math.round(nv(form.buyPrice)/10000)}万）`, newStock);
     });
     setShowForm(false); setEditItem(null);
-    alert(`✅「${form.address}」を在庫管理に転記しました！\nステータス：仕入契約済`);
+    alert(`✅「${form.address}」を在庫管理に転記しました！\nステータス：仕入契約`);
   };
 
   const handleDelete = id => {
@@ -10671,6 +11041,131 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// 🆕 ===================== 全文検索 =====================
+function GlobalSearch({ data }) {
+  const [query, setQuery] = useState("");
+  const results = useMemo(() => {
+    if (!query || query.length < 2) return null;
+    const q = query.toLowerCase();
+    const matches = [];
+
+    // stocks 検索
+    (data.stocks || []).forEach(s => {
+      const text = `${s.name || ""} ${s.assignee || ""} ${s.status || ""} ${s.memo || ""}`.toLowerCase();
+      if (text.includes(q)) {
+        matches.push({
+          type: "在庫", icon: "🏠", color: "#10b981",
+          title: s.name || "(無題)",
+          sub: `${s.status} · ${s.assignee} · 仕入${Math.round((s.buyCost||0)/10000)}万`,
+          id: s.id,
+        });
+      }
+      // 反響も検索対象
+      (s.viewings || []).forEach((v, idx) => {
+        const vtext = `${v.customer || ""} ${v.note || ""} ${v.prospect || ""}`.toLowerCase();
+        if (vtext.includes(q)) {
+          matches.push({
+            type: "反響", icon: "👀", color: "#06b6d4",
+            title: `${v.customer || "顧客不明"} (${s.name || "(無題)"})`,
+            sub: `${v.visitDate || "予定なし"} · ${v.prospect || ""} ${v.note || ""}`.slice(0, 60),
+            id: `${s.id}-${idx}`,
+          });
+        }
+      });
+    });
+
+    // sekisan 検索
+    (data.sekisan || []).forEach(s => {
+      const text = `${s.address || ""} ${s.assignee || ""} ${s.judgment || ""} ${s.memo || ""} ${s.judgmentMemo || ""} ${s.vendorName || ""}`.toLowerCase();
+      if (text.includes(q)) {
+        matches.push({
+          type: "仕入検討", icon: "🧮", color: "#f59e0b",
+          title: s.address || "(無住所)",
+          sub: `${s.judgment || "判断未"} · ${s.assignee} · ${s.source || ""}`,
+          id: s.id,
+        });
+      }
+    });
+
+    // jiage 検索
+    (data.jiage || []).forEach(j => {
+      const text = `${j.name || ""} ${j.address || ""} ${j.assignee || ""} ${j.status || ""} ${j.memo || ""}`.toLowerCase();
+      if (text.includes(q)) {
+        matches.push({
+          type: "地上げ", icon: "🗺️", color: "#a855f7",
+          title: j.name || j.address || "(無題)",
+          sub: `${j.status || ""} · ${j.assignee}`,
+          id: j.id,
+        });
+      }
+    });
+
+    // owners 検索
+    (data.owners || []).forEach(o => {
+      const text = `${o.name || ""} ${o.address || ""} ${o.assignee || ""} ${o.memo || ""}`.toLowerCase();
+      if (text.includes(q)) {
+        matches.push({
+          type: "所有者", icon: "👤", color: "#3b82f6",
+          title: o.name || o.address || "(無題)",
+          sub: `${o.status || ""} · ${o.assignee}`,
+          id: o.id,
+        });
+      }
+    });
+
+    // customEvents 検索
+    (data.customEvents || []).forEach(e => {
+      const text = `${e.title || ""} ${e.memo || ""} ${e.location || ""}`.toLowerCase();
+      if (text.includes(q)) {
+        matches.push({
+          type: "予定", icon: "📌", color: "#ef4444",
+          title: e.title || "(無題)",
+          sub: `${e.date || ""} ${e.time || ""} ${e.location || ""}`,
+          id: e.id,
+        });
+      }
+    });
+
+    return matches.slice(0, 50); // 最大50件
+  }, [query, data]);
+
+  return (
+    <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+      <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, marginBottom: 10 }}>
+        💡 物件名・住所・顧客名・メモなど、全データから検索できます（2文字以上）
+      </div>
+      <input
+        type="text"
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        placeholder="🔍 例: 川越市 / 投資家 / 比嘉 / ..."
+        style={{ ...inp, fontSize: 14, padding: "10px 12px" }}
+      />
+      {results !== null && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
+            {results.length === 0 ? "該当なし" : `${results.length}件ヒット${results.length === 50 ? "（最大50件）" : ""}`}
+          </div>
+          {results.length > 0 && (
+            <div style={{ maxHeight: 400, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+              {results.map((r, i) => (
+                <div key={i} style={{ background: C.panelBg, border: `1px solid ${r.color}33`, borderLeft: `3px solid ${r.color}`, borderRadius: 6, padding: "8px 10px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                    <span style={{ fontSize: 14 }}>{r.icon}</span>
+                    <span style={{ fontSize: 10, color: r.color, fontWeight: 700, background: r.color + "22", padding: "2px 6px", borderRadius: 4 }}>{r.type}</span>
+                    <span style={{ fontSize: 13, color: C.text, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{r.title}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.muted, marginLeft: 24 }}>{r.sub}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
