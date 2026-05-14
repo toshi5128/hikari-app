@@ -10021,6 +10021,7 @@ const SEKISAN_EMPTY = {
   yieldBase: "", yieldMemo: "",
   judgment: "検討中", judgmentMemo: "",
   features: [], // 物件特徴（複数選択可）
+  comments: [], // 🆕 コメント（メンバー間のやり取り）
 };
 
 const SEKISAN_SOURCES = ["地上げ", "チラシ", "業者☎", "業者✉", "業者訪問", "レインズ架電", "アットホーム架電", "SUUMO架電"];
@@ -10736,6 +10737,66 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   // 🆕 通知タップでハイライトする ID
   const [highlightSekisanId, setHighlightSekisanId] = useState(null);
+  // 🆕 コメント入力用 state（カード単位）
+  const [commentInputs, setCommentInputs] = useState({}); // { [sekisanId]: "入力中のテキスト" }
+  const [showAllComments, setShowAllComments] = useState({}); // { [sekisanId]: true } → 全件表示
+  // 🆕 コメント送信
+  const submitSekisanComment = (sekisanId) => {
+    const text = (commentInputs[sekisanId] || "").trim();
+    if (!text) return;
+    if (!currentUser) {
+      alert("⚠️ 「その他」→「現在のユーザー」を設定してください");
+      return;
+    }
+    const newComment = {
+      id: Date.now() + Math.random(),
+      user: currentUser,
+      text,
+      createdAt: new Date().toISOString(),
+    };
+    const target = (data.sekisan || []).find(s => s.id === sekisanId);
+    setData(d => ({
+      ...d,
+      sekisan: (d.sekisan || []).map(s =>
+        s.id === sekisanId
+          ? { ...s, comments: [...(s.comments || []), newComment] }
+          : s
+      ),
+    }));
+    setCommentInputs(p => ({ ...p, [sekisanId]: "" }));
+    // 🆕 通知：担当者・管理者・過去のコメント投稿者
+    if (target) {
+      const prevCommenters = new Set((target.comments || []).map(c => c.user));
+      const targets = getNotifyTargets(data, currentUser, target);
+      prevCommenters.forEach(u => {
+        if (u !== currentUser && !targets.includes(u)) targets.push(u);
+      });
+      if (targets.length > 0) {
+        sendPushNotification(
+          targets,
+          `💬 ${currentUser} がコメント`,
+          `${target.address || "(無住所)"}\n「${text.length > 60 ? text.slice(0, 60) + "…" : text}」`,
+          {
+            tag: `hikari-sekisan-comment-${sekisanId}-${Date.now()}`,
+            data: { tab: 'dashboard', sekisanLinkId: sekisanId },
+            tab: 'dashboard', sekisanLinkId: sekisanId,
+          }
+        );
+      }
+    }
+  };
+  // 🆕 コメント削除
+  const deleteSekisanComment = (sekisanId, commentId) => {
+    if (!window.confirm("このコメントを削除しますか？")) return;
+    setData(d => ({
+      ...d,
+      sekisan: (d.sekisan || []).map(s =>
+        s.id === sekisanId
+          ? { ...s, comments: (s.comments || []).filter(c => c.id !== commentId) }
+          : s
+      ),
+    }));
+  };
 
   // 🆕 sekisanLinkId 受け取り：該当積算表にスクロール
   useEffect(() => {
@@ -11034,6 +11095,77 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
                 {s.judgmentMemo.length > 80 ? s.judgmentMemo.slice(0, 80) + "…" : s.judgmentMemo}
               </div>
             )}
+
+            {/* 🆕 💬 コメントセクション */}
+            {(() => {
+              const comments = s.comments || [];
+              const isExpanded = !!showAllComments[s.id];
+              const shown = isExpanded ? comments : comments.slice(-3);
+              return (
+                <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontSize: 11, color: C.accent, fontWeight: 700 }}>💬 コメント ({comments.length}件)</span>
+                    {comments.length > 3 && (
+                      <button
+                        onClick={() => setShowAllComments(p => ({ ...p, [s.id]: !isExpanded }))}
+                        style={{ background: "transparent", border: "none", color: C.accent, fontSize: 10, cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}
+                      >{isExpanded ? "▲ 折りたたむ" : `▼ 全${comments.length}件を見る`}</button>
+                    )}
+                  </div>
+                  {comments.length === 0 ? (
+                    <div style={{ fontSize: 11, color: C.muted, padding: "4px 0" }}>まだコメントはありません</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
+                      {shown.map(c => {
+                        const ts = new Date(c.createdAt);
+                        const timeStr = ts.toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+                        const isMine = c.user === currentUser;
+                        const userColor = MEMBER_COLORS[c.user] || C.accent;
+                        return (
+                          <div key={c.id} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `3px solid ${userColor}`, borderRadius: 6, padding: "6px 8px" }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
+                              <span style={{ fontSize: 10, color: userColor, fontWeight: 700 }}>{c.user}</span>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <span style={{ fontSize: 9, color: C.muted }}>{timeStr}</span>
+                                {isMine && (
+                                  <button
+                                    onClick={() => deleteSekisanComment(s.id, c.id)}
+                                    style={{ background: "transparent", border: "none", color: C.danger, fontSize: 10, cursor: "pointer", fontFamily: "inherit", padding: 0 }}
+                                  >🗑</button>
+                                )}
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 12, color: C.text, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{c.text}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input
+                      type="text"
+                      value={commentInputs[s.id] || ""}
+                      onChange={e => setCommentInputs(p => ({ ...p, [s.id]: e.target.value }))}
+                      onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitSekisanComment(s.id); } }}
+                      placeholder={currentUser ? `${currentUser} としてコメント...` : "「その他」でユーザー設定が必要"}
+                      disabled={!currentUser}
+                      style={{ ...inp, flex: 1, padding: "8px 10px", fontSize: 12 }}
+                    />
+                    <button
+                      onClick={() => submitSekisanComment(s.id)}
+                      disabled={!currentUser || !(commentInputs[s.id] || "").trim()}
+                      style={{
+                        background: !currentUser || !(commentInputs[s.id] || "").trim() ? C.borderDim : C.accent,
+                        border: "none", color: "#fff", padding: "8px 14px",
+                        borderRadius: 6, cursor: !currentUser || !(commentInputs[s.id] || "").trim() ? "default" : "pointer",
+                        fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                      }}
+                    >送信</button>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div style={{ display: "flex", gap: 8 }}>
               <button style={{ ...btnStyle("ghost"), flex: 1, padding: "11px", fontSize: 14 }} onClick={() => { setEditItem(s); setShowForm(true); }}>編集・詳細</button>
               <button style={{ ...btnStyle("danger"), padding: "11px 14px", fontSize: 14 }} onClick={() => handleDelete(s.id)}>削除</button>
