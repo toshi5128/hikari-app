@@ -22,7 +22,7 @@
 <!-- Leaflet for in-app map -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#04080f;color:#e2e8f0;font-family:'Noto Sans JP',sans-serif}input,select,textarea,button{font-family:inherit}
+<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#04080f;color:#e2e8f0;font-family:'Noto Sans JP',sans-serif}body.light-mode{background:#f1f5f9 !important;color:#0f172a !important}body.light-mode [style*="background: #0d1422"],body.light-mode [style*="background:#0d1422"]{background:#ffffff !important}body.light-mode [style*="background: #04080f"]{background:#f1f5f9 !important}body.light-mode [style*="background: #0a0f1a"]{background:#f8fafc !important}body.light-mode [style*="border: 1px solid #1a2535"]{border-color:#cbd5e1 !important}body.light-mode input,body.light-mode select,body.light-mode textarea{background:#ffffff !important;color:#0f172a !important;border-color:#cbd5e1 !important}body.light-mode option{background:#ffffff !important;color:#0f172a !important}input,select,textarea,button{font-family:inherit}
 input[type="date"],input[type="time"]{color-scheme:dark}
 input[type="date"]::-webkit-calendar-picker-indicator,input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(0.7) sepia(1) saturate(5) hue-rotate(175deg) brightness(1.2);cursor:pointer;opacity:1;padding:4px;border-radius:4px}
 input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::-webkit-calendar-picker-indicator:hover{background:rgba(14,165,233,0.2)}</style>
@@ -1114,7 +1114,21 @@ function MainApp({ onLock, onSwitchUser }) {
     </div>
   );
 }
-const C = {
+// 🆕 ライトモード設定（外でも見やすい明るい背景）
+const isLightMode = (typeof localStorage !== 'undefined' && localStorage.getItem('hikari_light_mode') === 'true') || false;
+
+// ライトモード CSS クラスを body に適用
+if (typeof document !== 'undefined' && isLightMode) {
+  document.body.classList.add('light-mode');
+}
+
+const C = isLightMode ? {
+  // ☀️ ライトモード（外でも視認性高い）
+  bg: "#f1f5f9", surface: "#ffffff", border: "#cbd5e1", text: "#0f172a",
+  muted: "#475569", accent: "#0284c7", accentDim: "#bae6fd",
+  success: "#16a34a", warn: "#d97706", danger: "#dc2626", purple: "#7c3aed",
+} : {
+  // 🌙 ダークモード（夜間用）
   bg: "#04080f", surface: "#0a0f1a", border: "#0f1929", text: "#e2e8f0",
   muted: "#475569", accent: "#0ea5e9", accentDim: "#0c4a6e",
   success: "#10b981", warn: "#f59e0b", danger: "#ef4444", purple: "#8b5cf6",
@@ -3631,6 +3645,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
 
   // 🆕 営業活動カウンター長押し連射用
   const holdTimersRef = useRef({});
+  // 🆕 モバイルで touchstart の後に mousedown が自動発火するのを防ぐためのフラグ
+  const lastTouchTimeRef = useRef(0);
   const startHold = (key, action) => {
     action(); // 即発火（タップでも反応）
     const timer = setTimeout(() => {
@@ -4767,10 +4783,14 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                   {/* カウンター操作 */}
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: goal > 0 ? 10 : 0 }}>
                     <button
-                      onMouseDown={() => startHold(`${item}-dec`, () => incVal(-1))}
+                      onMouseDown={() => {
+                        // モバイルで直前にタッチイベントがあれば無視（重複発火防止）
+                        if (Date.now() - lastTouchTimeRef.current < 500) return;
+                        startHold(`${item}-dec`, () => incVal(-1));
+                      }}
                       onMouseUp={() => stopHold(`${item}-dec`)}
                       onMouseLeave={() => stopHold(`${item}-dec`)}
-                      onTouchStart={(e) => { e.preventDefault(); startHold(`${item}-dec`, () => incVal(-1)); }}
+                      onTouchStart={(e) => { lastTouchTimeRef.current = Date.now(); e.preventDefault(); startHold(`${item}-dec`, () => incVal(-1)); }}
                       onTouchEnd={() => stopHold(`${item}-dec`)}
                       onTouchCancel={() => stopHold(`${item}-dec`)}
                       style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 8, width: 42, height: 42, cursor: "pointer", fontSize: 20, fontWeight: 800, fontFamily: "inherit", userSelect: "none", touchAction: "manipulation" }}>−</button>
@@ -4780,10 +4800,13 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                       animation: overAchieved ? "hikariGoldNumber 2s ease-in-out infinite" : "none",
                     }}>{val}</div>
                     <button
-                      onMouseDown={() => startHold(`${item}-inc`, () => incVal(1))}
+                      onMouseDown={() => {
+                        if (Date.now() - lastTouchTimeRef.current < 500) return;
+                        startHold(`${item}-inc`, () => incVal(1));
+                      }}
                       onMouseUp={() => stopHold(`${item}-inc`)}
                       onMouseLeave={() => stopHold(`${item}-inc`)}
-                      onTouchStart={(e) => { e.preventDefault(); startHold(`${item}-inc`, () => incVal(1)); }}
+                      onTouchStart={(e) => { lastTouchTimeRef.current = Date.now(); e.preventDefault(); startHold(`${item}-inc`, () => incVal(1)); }}
                       onTouchEnd={() => stopHold(`${item}-inc`)}
                       onTouchCancel={() => stopHold(`${item}-inc`)}
                       style={{
@@ -8529,6 +8552,29 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
           color: C.warn, borderRadius: 10, padding: "14px", cursor: "pointer",
           fontSize: 15, fontFamily: "inherit", fontWeight: 800,
         }}>🔄 強制更新（キャッシュクリア＆最新版取得）</button>
+      </div>
+
+      {/* 🆕 ☀️ ライト/ダークモード切替 */}
+      <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🎨 画面の明るさ</div>
+      <div style={{ background: "#0d1422", border: `1px solid #1a2535`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.6 }}>
+          外で日差しが強くて画面が見えづらい時は <b style={{ color: C.warn }}>☀️ ライトモード</b> がおすすめ。<br />
+          現在: <b style={{ color: C.accent }}>{isLightMode ? "☀️ ライトモード" : "🌙 ダークモード"}</b>
+        </div>
+        <button onClick={() => {
+          const currentLight = localStorage.getItem('hikari_light_mode') === 'true';
+          const next = !currentLight;
+          localStorage.setItem('hikari_light_mode', next ? 'true' : 'false');
+          alert(`${next ? "☀️ ライトモード" : "🌙 ダークモード"} に切り替えます。\nアプリをリロードします。`);
+          window.location.reload();
+        }} style={{
+          width: "100%",
+          background: isLightMode ? C.purple + "22" : C.warn + "22",
+          border: `2px solid ${isLightMode ? C.purple : C.warn}`,
+          color: isLightMode ? C.purple : C.warn,
+          borderRadius: 10, padding: "14px", cursor: "pointer",
+          fontSize: 15, fontFamily: "inherit", fontWeight: 800,
+        }}>{isLightMode ? "🌙 ダークモードに切替（夜・室内向け）" : "☀️ ライトモードに切替（屋外向け）"}</button>
       </div>
 
       {/* 🔔 プッシュ通知設定（PWA） */}
