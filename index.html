@@ -1170,7 +1170,9 @@ function MainApp({ onLock, onSwitchUser }) {
   }, []);
 
   // 直近の自分の保存時刻（ポーリングで自分の更新を上書きしないため）
-  const lastLocalSaveRef = useRef(0);
+  // 🆕 直近の自分保存時刻を localStorage で永続化（強制更新後も5分ガードが効くように）
+  const LAST_SAVE_KEY = "hikari_last_save";
+  const lastLocalSaveRef = useRef(Number(localStorage.getItem(LAST_SAVE_KEY) || 0));
 
   // ローカル(キャッシュ)とリモートを賢くマージする関数
   // 🔧 削除IDトラッキング方式：
@@ -1276,7 +1278,10 @@ function MainApp({ onLock, onSwitchUser }) {
     setDataRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       // 自分の保存時刻を記録（ポーリング上書き防止用）
-      lastLocalSaveRef.current = Date.now();
+      const now = Date.now();
+      lastLocalSaveRef.current = now;
+      // 🆕 強制更新後も5分ガードが効くように localStorage に永続化
+      try { localStorage.setItem(LAST_SAVE_KEY, String(now)); } catch {}
       // Supabaseに保存（非同期）
       saveToSupabase(next).then(ok => {
         if (ok) {
