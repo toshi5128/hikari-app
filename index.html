@@ -1183,6 +1183,9 @@ function MainApp({ onLock, onSwitchUser }) {
     const merged = mergeWithDefault(remote);
     if (!local) return merged;
 
+    // 🆕 直近5分以内に自分が編集したか（ネストデータ・コメント・反響等の並行編集保護）
+    const recentlyEdited = (Date.now() - lastLocalSaveRef.current) < 5 * 60 * 1000;
+
     const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "activityLog"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
@@ -1196,20 +1199,41 @@ function MainApp({ onLock, onSwitchUser }) {
         ? remoteArr.filter(item => !deletedIds.has(item?.id))
         : remoteArr;
 
-      // ③ ローカル限定アイテム（自分が新規追加したけど削除済みでないもの）を保護
-      const remoteIds = new Set(cleanRemote.map(item => item?.id).filter(id => id != null));
-      const protectedItems = localArr.filter(item =>
-        item?.id != null &&
-        !remoteIds.has(item.id) &&
-        !deletedIds.has(item.id)
-      );
-
-      const removedCount = remoteArr.length - cleanRemote.length;
-      if (removedCount > 0 || protectedItems.length > 0) {
-        console.log(`[Sync] ${k}: リモート${remoteArr.length}件 → 削除済み${removedCount}件除外 + ローカル限定${protectedItems.length}件保護`);
+      let finalArr;
+      if (recentlyEdited) {
+        // 🆕 直近5分の自分の編集を保護：ローカル優先
+        // ローカルにあるアイテムはローカル版を採用（ネスト編集内容を保護）
+        // ローカルに無くてリモートにのみあるアイテムは追加（他端末の新規分）
+        const localMap = new Map();
+        localArr.forEach(item => {
+          if (item?.id != null && !deletedIds.has(item.id)) {
+            localMap.set(item.id, item);
+          }
+        });
+        const remoteOnly = cleanRemote.filter(item =>
+          item?.id != null && !localMap.has(item.id)
+        );
+        finalArr = [...localMap.values(), ...remoteOnly];
+        const removedCount = remoteArr.length - cleanRemote.length;
+        if (removedCount > 0 || localMap.size > 0) {
+          console.log(`[Sync 直近編集中] ${k}: ローカル${localMap.size}件保護 + リモートのみ${remoteOnly.length}件追加 + 削除済み${removedCount}件除外`);
+        }
+      } else {
+        // 通常時：リモート優先 + ローカル限定アイテム保護
+        const remoteIds = new Set(cleanRemote.map(item => item?.id).filter(id => id != null));
+        const protectedItems = localArr.filter(item =>
+          item?.id != null &&
+          !remoteIds.has(item.id) &&
+          !deletedIds.has(item.id)
+        );
+        finalArr = [...cleanRemote, ...protectedItems];
+        const removedCount = remoteArr.length - cleanRemote.length;
+        if (removedCount > 0 || protectedItems.length > 0) {
+          console.log(`[Sync] ${k}: リモート${remoteArr.length}件 → 削除済み${removedCount}件除外 + ローカル限定${protectedItems.length}件保護`);
+        }
       }
 
-      merged[k] = [...cleanRemote, ...protectedItems];
+      merged[k] = finalArr;
     });
     return merged;
   };
@@ -4112,6 +4136,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     // 保険：削除時の権限チェック
     if (target && !canEdit(target)) { alert("⚠️ 削除権限がありません"); return; }
     if (window.confirm("削除しますか？\n※ 関連するカレンダーイベントも削除されます")) setData(d => {
+      // 🆕 カスケード削除されるカレンダーイベントの ID も追跡（他端末からの復活防止）
+      const relatedEvents = (d.customEvents || []).filter(e => e.stockLinkId && e.stockLinkId === id);
+      relatedEvents.forEach(ev => recordDeletion("event", ev.id));
       const next = {
         ...d,
         stocks: d.stocks.filter(s => s.id !== id),
@@ -10444,7 +10471,10 @@ function YakushoPage({ data, setData, onBack }) {
   const handleDelete = id => {
     const target = data.yakusho.find(y => y.id === id);
     if (target && !canEdit(target)) { alert("⚠️ 削除権限がありません"); return; }
-    if (window.confirm("削除しますか？")) setData(d => ({ ...d, yakusho: d.yakusho.filter(y => y.id !== id) }));
+    if (window.confirm("削除しますか？")) setData(d => {
+      const next = { ...d, yakusho: d.yakusho.filter(y => y.id !== id) };
+      return appendLogAndNotify(next, "delete", "yakusho", `${target?.address || target?.name || "(無題)"}を削除`, target);
+    });
   };
 
   return (
@@ -11563,6 +11593,9 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
   const handleDelete = id => {
     const target = data.sekisan.find(s => s.id === id);
     if (window.confirm("削除しますか？\n※ 関連するカレンダーイベントも削除されます")) setData(d => {
+      // 🆕 カスケード削除されるカレンダーイベントの ID も追跡（他端末からの復活防止）
+      const relatedEvents = (d.customEvents || []).filter(e => e.sekisanLinkId && e.sekisanLinkId === id);
+      relatedEvents.forEach(ev => recordDeletion("event", ev.id));
       const next = {
         ...d,
         sekisan: d.sekisan.filter(s => s.id !== id),
