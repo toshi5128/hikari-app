@@ -3686,13 +3686,28 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const handleSave = () => {
     // 保険：編集時の権限チェック
     if (editItem && !canEdit(editItem)) { alert("⚠️ 編集権限がありません"); setShowAdd(false); setEditItem(null); return; }
+
+    // 🆕 反響のコメントを最新データとマージ（編集中に他メンバーが追加したコメントを保護）
+    const latestStock = editItem ? (data.stocks || []).find(s => s.id === editItem.id) : null;
+    const mergedViewings = (form.viewings || []).map((v, i) => {
+      const latestV = (latestStock?.viewings || [])[i];
+      if (!latestV) return v;
+      const formC = v.comments || [];
+      const latestC = latestV.comments || [];
+      const map = new Map();
+      formC.forEach(c => { if (c.id) map.set(c.id, c); });
+      latestC.forEach(c => { if (c.id) map.set(c.id, c); });
+      const merged = Array.from(map.values()).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+      return { ...v, comments: merged };
+    });
+
     const item = {
       ...form,
       id: editItem?.id || Date.now(),
       buyCost: Number(form.buyCost),
       sellPrice: Number(form.sellPrice),
       photos: form.photos || [],
-      viewings: form.viewings || [],
+      viewings: mergedViewings,
     };
 
     // 🆕 日付入力でステータス自動連動（最も進んだ日付に合わせて）
@@ -10980,7 +10995,16 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
   }), [data.sekisan, effectiveMember, filterJudgment, search]);
 
   const handleSave = form => {
-    const item = { ...form, id: editItem?.id || Date.now() };
+    // 🆕 最新のコメントを取得してマージ（編集中に他メンバーが追加したコメントを保護）
+    const latestSekisan = editItem ? (data.sekisan || []).find(s => s.id === editItem.id) : null;
+    const latestComments = latestSekisan?.comments || [];
+    const formComments = form.comments || [];
+    // ID ベースで重複除去してマージ
+    const commentMap = new Map();
+    formComments.forEach(c => { if (c.id) commentMap.set(c.id, c); });
+    latestComments.forEach(c => { if (c.id) commentMap.set(c.id, c); });
+    const mergedComments = Array.from(commentMap.values()).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+    const item = { ...form, comments: mergedComments, id: editItem?.id || Date.now() };
 
     // 売主結果確認日のカレンダー連動判定
     const nowIsResult = item.caseStatus === "売主結果確認日" && item.caseStatusAt;
