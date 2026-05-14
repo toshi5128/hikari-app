@@ -139,6 +139,8 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
+const APP_VERSION = "2026-05-15-v3-sync-fix";
+console.log(`[ひかり不動産] ✅ バージョン: ${APP_VERSION}`);
 const {useState,useMemo,useEffect,useRef}=React;
 
 // RechartsがCDN環境で読み込めない端末でもアプリ全体が止まらないように、
@@ -620,8 +622,10 @@ async function loadFromSupabase() {
 
 // Supabaseにデータを保存
 async function saveToSupabase(data, retries = 3) {
+  // 🆕 バージョン情報を含める（自動更新通知用）
+  const dataWithVersion = { ...data, __appVersion: APP_VERSION };
   // ローカルキャッシュは先に保存（Supabase失敗してもローカルには確実に残す）
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) { console.warn("localStorage save failed:", e); }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataWithVersion)); } catch (e) { console.warn("localStorage save failed:", e); }
 
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
@@ -643,7 +647,7 @@ async function saveToSupabase(data, retries = 3) {
           "Content-Type": "application/json",
           "Prefer": "return=minimal",
         },
-        body: JSON.stringify({ id: DATA_ID, data, updated_at: new Date().toISOString() }),
+        body: JSON.stringify({ id: DATA_ID, data: dataWithVersion, updated_at: new Date().toISOString() }),
       });
       if (!res.ok) throw new Error(`Save failed: ${res.status} ${await res.text()}`);
       // 保存成功！カレンダー予定数も含めてログ出力（デバッグ用）
@@ -1185,6 +1189,9 @@ function MainApp({ onLock, onSwitchUser }) {
     const merged = mergeWithDefault(remote);
     if (!local) return merged;
 
+    // 🆕 直近5分以内に自分が編集したか（updatedAt が無い既存データの保護）
+    const recentlyEdited = (Date.now() - lastLocalSaveRef.current) < 5 * 60 * 1000;
+
     const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "activityLog"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
@@ -1198,7 +1205,7 @@ function MainApp({ onLock, onSwitchUser }) {
         ? remoteArr.filter(item => !deletedIds.has(item?.id))
         : remoteArr;
 
-      // 🆕 アイテム単位の updatedAt 比較でマージ（最強の競合解決）
+      // 🆕 アイテム単位の updatedAt 比較でマージ
       const localMap = new Map();
       localArr.forEach(item => {
         if (item?.id != null && !deletedIds.has(item.id)) {
@@ -1217,14 +1224,13 @@ function MainApp({ onLock, onSwitchUser }) {
         const localItem = localMap.get(id);
         const remoteItem = remoteMap.get(id);
         if (!localItem) {
-          // ローカルに無い → リモートを採用
           finalArr.push(remoteItem);
         } else if (!remoteItem) {
-          // リモートに無い → ローカルを採用（自分が追加した未同期分）
+          // ローカル限定（自分が追加してまだ同期されてない）
           finalArr.push(localItem);
           localWins++;
         } else {
-          // 両方にある → updatedAt が新しい方を採用
+          // 両方にある → タイムスタンプ比較
           const localTime = Number(localItem.updatedAt) || 0;
           const remoteTime = Number(remoteItem.updatedAt) || 0;
           if (localTime > remoteTime) {
@@ -1234,8 +1240,14 @@ function MainApp({ onLock, onSwitchUser }) {
             finalArr.push(remoteItem);
             remoteWins++;
           } else {
-            // 同じか両方0（既存データ）→ リモート優先（安全側）
-            finalArr.push(remoteItem);
+            // updatedAt が同じ or 両方0（updatedAt なし既存データ）
+            if (localTime === 0 && remoteTime === 0 && recentlyEdited) {
+              // 🆕 既存データで直近5分編集中 → ローカル優先（古いデータの保護）
+              finalArr.push(localItem);
+              localWins++;
+            } else {
+              finalArr.push(remoteItem);
+            }
           }
         }
       });
@@ -1255,6 +1267,22 @@ function MainApp({ onLock, onSwitchUser }) {
     // 🆕 古い削除レコード（7日以上前）を掃除
     cleanupOldDeletions();
     loadFromSupabase().then(remote => {
+      // 🆕 バージョンチェック：誰かが新版で保存してたら自動更新を促す
+      if (remote?.__appVersion && remote.__appVersion !== APP_VERSION) {
+        console.warn(`[ひかり不動産] ⚠ 古いバージョンを検出`);
+        console.warn(`  あなたの端末: ${APP_VERSION}`);
+        console.warn(`  最新: ${remote.__appVersion}`);
+        const msg = `🔔 アプリの新しいバージョンがあります\n\n` +
+                    `あなたの端末: ${APP_VERSION}\n` +
+                    `最新版: ${remote.__appVersion}\n\n` +
+                    `今すぐ更新してください（古いままだと編集が消える可能性があります）。\n` +
+                    `OKを押すとアプリを最新版に更新します。`;
+        if (window.confirm(msg)) {
+          // ブラウザキャッシュをバイパスして強制リロード
+          window.location.href = window.location.pathname + "?v=" + Date.now();
+          return;
+        }
+      }
       const merged = mergeRemoteSafely(remote);
       if (merged) {
         setDataRaw(merged);
