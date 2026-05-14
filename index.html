@@ -3570,6 +3570,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [expandedViewings, setExpandedViewings] = useState({}); // {index: true/false}
+  const [expandedViewingComments, setExpandedViewingComments] = useState({}); // 🆕 反響ごとのコメント単独展開
+  const [viewingCommentInputs, setViewingCommentInputs] = useState({}); // 🆕 反響コメント入力 {viewing_0: "text", ...}
   // 🆕 通知タップでハイライトする物件ID
   const [highlightId, setHighlightId] = useState(null);
 
@@ -4021,10 +4023,113 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
             )}
             {(form.viewings || []).map((v, i) => {
               const isExpanded = !!expandedViewings[i];
+              const isCmtExpanded = !!expandedViewingComments[i];
               const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val } : vv) }));
               const prospect = PROSPECT_INFO[v.prospect];
               const result = RESULT_INFO[v.result];
               const dow = dayOfWeekLabel(v.date);
+
+              // 🆕 コメントブロック（詳細展開とコメント単独展開の両方で再利用）
+              const commentSection = (() => {
+                const currentUser = getCurrentUser();
+                const comments = v.comments || [];
+                const inputKey = `viewing_${i}`;
+                const submitComment = () => {
+                  const text = (viewingCommentInputs[inputKey] || "").trim();
+                  if (!text) return;
+                  if (!currentUser) {
+                    alert("⚠️ 「その他」→「現在のユーザー」を設定してください");
+                    return;
+                  }
+                  const newComment = {
+                    id: Date.now() + Math.random(),
+                    user: currentUser,
+                    text,
+                    createdAt: new Date().toISOString(),
+                  };
+                  updateV("comments", [...comments, newComment]);
+                  setViewingCommentInputs(p => ({ ...p, [inputKey]: "" }));
+                  // 通知
+                  const prevCommenters = new Set(comments.map(c => c.user));
+                  const targets = getNotifyTargets(data, currentUser, form);
+                  prevCommenters.forEach(u => {
+                    if (u !== currentUser && !targets.includes(u)) targets.push(u);
+                  });
+                  if (targets.length > 0 && editItem) {
+                    sendPushNotification(
+                      targets,
+                      `💬 ${currentUser} が反響にコメント`,
+                      `${form.name || "(無題)"} / 反響: ${v.customer || "顧客未設定"}\n「${text.length > 60 ? text.slice(0, 60) + "…" : text}」`,
+                      {
+                        tag: `hikari-stock-viewing-comment-${editItem.id}-${i}-${Date.now()}`,
+                        data: { tab: 'stock', stockLinkId: editItem.id },
+                        tab: 'stock', stockLinkId: editItem.id,
+                      }
+                    );
+                  }
+                };
+                return (
+                  <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: 10 }}>
+                    <div style={{ fontSize: 11, color: "#06b6d4", fontWeight: 700, marginBottom: 6 }}>💬 反響のコメント ({comments.length}件)</div>
+                    {comments.length === 0 ? (
+                      <div style={{ fontSize: 11, color: C.muted, padding: "4px 0" }}>まだコメントはありません</div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8, maxHeight: 200, overflowY: "auto" }}>
+                        {comments.map(c => {
+                          const ts = new Date(c.createdAt);
+                          const timeStr = ts.toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+                          const isMine = c.user === currentUser;
+                          const userColor = MEMBER_COLORS[c.user] || C.accent;
+                          return (
+                            <div key={c.id} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `3px solid ${userColor}`, borderRadius: 6, padding: "6px 8px" }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
+                                <span style={{ fontSize: 10, color: userColor, fontWeight: 700 }}>{c.user}</span>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  <span style={{ fontSize: 9, color: C.muted }}>{timeStr}</span>
+                                  {isMine && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (window.confirm("このコメントを削除しますか？")) {
+                                          updateV("comments", comments.filter(cc => cc.id !== c.id));
+                                        }
+                                      }}
+                                      style={{ background: "transparent", border: "none", color: C.danger, fontSize: 10, cursor: "pointer", fontFamily: "inherit", padding: 0 }}
+                                    >🗑</button>
+                                  )}
+                                </div>
+                              </div>
+                              <div style={{ fontSize: 12, color: C.text, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{c.text}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        type="text"
+                        value={viewingCommentInputs[inputKey] || ""}
+                        onChange={e => setViewingCommentInputs(p => ({ ...p, [inputKey]: e.target.value }))}
+                        onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitComment(); } }}
+                        placeholder={currentUser ? `${currentUser} としてコメント...` : "「その他」でユーザー設定が必要"}
+                        disabled={!currentUser}
+                        style={{ ...inp, flex: 1, padding: "8px 10px", fontSize: 12 }}
+                      />
+                      <button
+                        type="button"
+                        onClick={submitComment}
+                        disabled={!currentUser || !(viewingCommentInputs[inputKey] || "").trim()}
+                        style={{
+                          background: !currentUser || !(viewingCommentInputs[inputKey] || "").trim() ? C.borderDim : "#06b6d4",
+                          border: "none", color: "#fff", padding: "8px 14px",
+                          borderRadius: 6, cursor: !currentUser || !(viewingCommentInputs[inputKey] || "").trim() ? "default" : "pointer",
+                          fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                        }}
+                      >送信</button>
+                    </div>
+                  </div>
+                );
+              })();
               return (
                 <div key={i} style={{ background: C.cardBg, borderRadius: 8, padding: 10, marginBottom: 8, border: `1px solid ${C.borderDim}` }}>
                   {/* ===== サマリー行（常時表示） ===== */}
@@ -4069,6 +4174,23 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                         )}
                       </div>
                     </div>
+                    {/* 🆕 💬 コメント単独展開ボタン（コメント数バッジ付き） */}
+                    {(() => {
+                      const commentCount = (v.comments || []).length;
+                      const isCmtExpanded = !!expandedViewingComments[i];
+                      return (
+                        <button onClick={() => setExpandedViewingComments(p => ({ ...p, [i]: !isCmtExpanded }))}
+                          style={{
+                            background: isCmtExpanded ? "#06b6d4" : (commentCount > 0 ? "#06b6d422" : C.cardBg),
+                            border: `1.5px solid ${commentCount > 0 ? "#06b6d4" : C.borderDim}`,
+                            color: isCmtExpanded ? "#fff" : (commentCount > 0 ? "#06b6d4" : C.muted),
+                            borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0,
+                            display: "flex", alignItems: "center", gap: 3,
+                          }}>
+                          💬{commentCount > 0 ? commentCount : ""}
+                        </button>
+                      );
+                    })()}
                     <button onClick={() => setExpandedViewings(p => ({ ...p, [i]: !isExpanded }))}
                       style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
                       {isExpanded ? "▲ 閉じる" : "▼ 詳細"}
@@ -4234,6 +4356,15 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                       <Field label="📝 メモ">
                         <textarea style={{ ...inp, height: 70, resize: "vertical" }} value={v.note || ""} onChange={e => updateV("note", e.target.value)} placeholder="10:00 単独内見・駅から徒歩同行など" />
                       </Field>
+
+                      {/* 🆕 詳細展開時にもコメント表示 */}
+                      {commentSection}
+                    </div>
+                  )}
+                  {/* 🆕 コメント単独展開（詳細は閉じたまま、コメントだけ表示） */}
+                  {!isExpanded && isCmtExpanded && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.borderDim}` }}>
+                      {commentSection}
                     </div>
                   )}
                 </div>
