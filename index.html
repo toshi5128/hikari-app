@@ -346,9 +346,12 @@ const STATUS_GROUPS = [
 ];
 const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "断られた", "NG", "仕入れ完了"];
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
-const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "地上初訪", "地上再訪", "新規地上"];
+const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
 const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "査定": 60, "仕入検討": 10, "仕入": 3, "地上初訪": 30, "地上再訪": 50, "新規地上": 10 };
+// 🆕 目標対象外の項目（KPIには入れない、振り返り用 - エリア・曜日傾向分析）
+const NON_GOAL_ITEMS = new Set(["不在", "断り", "閉店"]);
+const APPROACH_GOAL_ITEMS = APPROACH_ITEMS.filter(item => !NON_GOAL_ITEMS.has(item));
 
 // 仕入検討積算表の判断ステータス（判断タブで使用）
 const JUDGMENTS = [
@@ -5333,7 +5336,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
     }
     setGoalEditMember(member);
     const current = {};
-    APPROACH_ITEMS.forEach(item => { current[item] = String(getGoal(member, item)); });
+    APPROACH_GOAL_ITEMS.forEach(item => { current[item] = String(getGoal(member, item)); });
     setGoalForm(current);
     setShowGoalEdit(true);
   };
@@ -5346,7 +5349,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
       return;
     }
     const updated = {};
-    APPROACH_ITEMS.forEach(item => { updated[item] = Number(goalForm[item]) || 0; });
+    APPROACH_GOAL_ITEMS.forEach(item => { updated[item] = Number(goalForm[item]) || 0; });
     setData(d => ({ ...d, memberGoals: { ...(d.memberGoals || {}), [goalEditMember]: updated } }));
 
     // 🆕 下田・比嘉 + 目標対象者に通知（送信者除外）
@@ -6011,8 +6014,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
 
           {/* 今日の目標サマリー */}
           {(() => {
-            const totalGoal = APPROACH_ITEMS.reduce((a, item) => a + (Number(dailyGoals[item]) || 0), 0);
-            const totalDone = APPROACH_ITEMS.reduce((a, item) => a + (Number(inputValues[item]) || 0), 0);
+            // 🆕 目標対象項目のみで合計を計算（不在・断り・閉店は除外）
+            const totalGoal = APPROACH_GOAL_ITEMS.reduce((a, item) => a + (Number(dailyGoals[item]) || 0), 0);
+            const totalDone = APPROACH_GOAL_ITEMS.reduce((a, item) => a + (Number(inputValues[item]) || 0), 0);
             const totalPct = totalGoal > 0 ? Math.min(totalDone / totalGoal * 100, 100) : 0;
             const isGoalSet = totalGoal > 0;
             const allAchieved = isGoalSet && totalDone >= totalGoal;
@@ -6065,7 +6069,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                   </div>
                   <button onClick={() => {
                     const f = {};
-                    APPROACH_ITEMS.forEach(item => { f[item] = String(dailyGoals[item] || ""); });
+                    APPROACH_GOAL_ITEMS.forEach(item => { f[item] = String(dailyGoals[item] || ""); });
                     setDailyGoalForm(f);
                     setShowDailyGoalEdit(true);
                   }} style={{
@@ -6266,7 +6270,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                 空欄または0なら未設定扱いになります。
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                {APPROACH_ITEMS.map(item => (
+                {APPROACH_GOAL_ITEMS.map(item => (
                   <Field key={item} label={`🎯 ${item}`}>
                     <input
                       type="text" inputMode="numeric"
@@ -6281,7 +6285,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               {/* 月間目標から自動セット */}
               <button onClick={() => {
                 const f = {};
-                APPROACH_ITEMS.forEach(item => {
+                APPROACH_GOAL_ITEMS.forEach(item => {
                   const monthly = getGoal(selectedMember, item);
                   // 月の営業日を約22日として日割り
                   f[item] = String(Math.round(monthly / 22));
@@ -6294,7 +6298,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                 <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setShowDailyGoalEdit(false)}>キャンセル</button>
                 <button style={{ ...btnStyle(), flex: 2 }} onClick={() => {
                   const updated = {};
-                  APPROACH_ITEMS.forEach(item => { updated[item] = Number(dailyGoalForm[item]) || 0; });
+                  APPROACH_GOAL_ITEMS.forEach(item => { updated[item] = Number(dailyGoalForm[item]) || 0; });
                   setDailyGoals(updated);
                   setShowDailyGoalEdit(false);
 
@@ -6869,7 +6873,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
         <BottomSheet title={`${goalEditMember} の月間目標設定`} onClose={() => setShowGoalEdit(false)}>
           <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>各項目の月間目標値を入力してください</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {APPROACH_ITEMS.map(item => (
+            {APPROACH_GOAL_ITEMS.map(item => (
               <Field key={item} label={item}>
                 <input
                   type="text" inputMode="numeric"
