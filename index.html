@@ -4034,7 +4034,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       ].filter(Boolean).join("\n"),
       comments: [],
     };
-    const targetName = (data.stocks || []).find(s => s.id === importTargetStockId)?.name || "物件";
+    const targetStock = (data.stocks || []).find(s => s.id === importTargetStockId);
+    const targetName = targetStock?.name || "物件";
     setData(d => {
       const next = {
         ...d,
@@ -4044,16 +4045,46 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
             : s
         ),
       };
-      const target = (d.stocks || []).find(s => s.id === importTargetStockId);
+      // skipPush:true で汎用通知をスキップ → 専用通知を別途送信
       return appendLogAndNotify(
         next,
         "viewing",
         "stock",
-        `👀 ${target?.name || "(無題)"} に反響取り込み: ${importParsed.customer || "(名前不明)"} (${importParsed.channel})`,
-        target,
-        { skipPush: false }
+        `👀 ${targetStock?.name || "(無題)"} に反響取り込み: ${importParsed.customer || "(名前不明)"} (${importParsed.channel})`,
+        targetStock,
+        { skipPush: true }
       );
     });
+    // 🆕 専用通知：担当者 + 管理者（下田・比嘉）に Push（送信者除く）
+    if (targetStock) {
+      const allTargets = new Set([
+        ...getNotifyMembers(data),
+        targetStock.assignee,
+      ]);
+      allTargets.delete(currentUser);
+      const targets = [...allTargets].filter(Boolean);
+      if (targets.length > 0) {
+        const titleBody = `📥 ${currentUser}さんが反響取り込み`;
+        const contactLine = importParsed.contact ? `📞 ${importParsed.contact}` : "";
+        const emailLine = importParsed.email ? `📧 ${importParsed.email}` : "";
+        const bodyLines = [
+          targetStock.name || "(無題)",
+          `👤 ${importParsed.customer || "(名前不明)"} (${importParsed.channel})`,
+          contactLine,
+          emailLine,
+        ].filter(Boolean);
+        sendPushNotification(
+          targets,
+          titleBody,
+          bodyLines.join("\n"),
+          {
+            tag: `hikari-stock-import-${importTargetStockId}-${Date.now()}`,
+            data: { tab: 'stock', stockLinkId: importTargetStockId },
+            tab: 'stock', stockLinkId: importTargetStockId,
+          }
+        );
+      }
+    }
     // リセット
     setShowImport(false);
     setImportText("");
