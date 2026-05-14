@@ -317,25 +317,32 @@ function stagnantInfo(buyDateStr) {
   return { days: d, color, level };
 }
 const STOCK_STATUSES = [
+  // 仕入
   "仕入役調中",
-  "仕入契約済み",
-  "仕入決済完了",
-  "登記・残置物処理中",
+  "仕契準備中",
+  "仕契完了",
+  "仕決完了",
+  // 登記
+  "登記依頼完了",
+  // 残置物・リフォーム
+  "残置物処理中",
   "リフォーム待ち",
   "リフォーム中",
   "リフォーム完了",
+  // 販売・売却
   "販売中",
-  "売却契約済み",
-  "売却決済"
+  "売契準備中",
+  "売却役調中",
+  "売契完了",
+  "売決完了"
 ];
 
 // 🆕 ステータスのグループ分け（UI表示用）
 const STATUS_GROUPS = [
-  { label: "🟡 仕入準備", color: "#f59e0b", statuses: ["仕入役調中"] },
-  { label: "🟢 仕入契約", color: "#22c55e", statuses: ["仕入契約済み"] },
-  { label: "🔵 仕入決済・登記", color: "#0ea5e9", statuses: ["仕入決済完了", "登記・残置物処理中"] },
-  { label: "🟣 リフォーム", color: "#a855f7", statuses: ["リフォーム待ち", "リフォーム中", "リフォーム完了"] },
-  { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売却契約済み", "売却決済"] },
+  { label: "🟡 仕入", color: "#f59e0b", statuses: ["仕入役調中", "仕契準備中", "仕契完了", "仕決完了"] },
+  { label: "🔵 登記", color: "#0ea5e9", statuses: ["登記依頼完了"] },
+  { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
+  { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
 const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "断られた", "NG", "仕入れ完了"];
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
@@ -491,10 +498,10 @@ const DEFAULT_DATA = {
     { id: 2, assignee: "長島", name: "日高市武蔵台", status: "売却契約", buyDate: "2026-02-05", sellDate: "", buyCost: 1118609, sellPrice: 3310000, memo: "", year: 2026 },
     { id: 3, assignee: "下田", name: "大宮区天沼", status: "契約書作成中", buyDate: "2026-02-20", sellDate: "", buyCost: 4999000, sellPrice: 7500000, memo: "", year: 2026 },
     { id: 4, assignee: "松村", name: "富士見市水谷東", status: "売却契約準備中", buyDate: "2026-03-01", sellDate: "", buyCost: 1130000, sellPrice: 3830000, memo: "", year: 2026 },
-    { id: 5, assignee: "たっくん", name: "羽生市北荻島", status: "売却決済", buyDate: "2026-02-06", sellDate: "2026-03-14", buyCost: 50000, sellPrice: 2980000, memo: "", year: 2026 },
-    { id: 6, assignee: "長島", name: "川越市下広谷", status: "売却決済", buyDate: "2026-02-13", sellDate: "2026-04-02", buyCost: 1127162, sellPrice: 2800000, memo: "", year: 2026 },
-    { id: 7, assignee: "下田", name: "八街市東吉田", status: "売却決済", buyDate: "2025-12-01", sellDate: "2026-01-24", buyCost: 1008774, sellPrice: 5500000, memo: "", year: 2026 },
-    { id: 8, assignee: "たっくん", name: "越生町越生", status: "売却決済", buyDate: "2026-03-07", sellDate: "2026-03-21", buyCost: 233024, sellPrice: 2150000, memo: "", year: 2026 },
+    { id: 5, assignee: "たっくん", name: "羽生市北荻島", status: "売決完了", buyDate: "2026-02-06", sellDate: "2026-03-14", buyCost: 50000, sellPrice: 2980000, memo: "", year: 2026 },
+    { id: 6, assignee: "長島", name: "川越市下広谷", status: "売決完了", buyDate: "2026-02-13", sellDate: "2026-04-02", buyCost: 1127162, sellPrice: 2800000, memo: "", year: 2026 },
+    { id: 7, assignee: "下田", name: "八街市東吉田", status: "売決完了", buyDate: "2025-12-01", sellDate: "2026-01-24", buyCost: 1008774, sellPrice: 5500000, memo: "", year: 2026 },
+    { id: 8, assignee: "たっくん", name: "越生町越生", status: "売決完了", buyDate: "2026-03-07", sellDate: "2026-03-21", buyCost: 233024, sellPrice: 2150000, memo: "", year: 2026 },
   ],
   approaches: [],
   jiage: [
@@ -1087,40 +1094,48 @@ function MainApp({ onLock, onSwitchUser }) {
         }
       }
 
-      // 🆕 ② 旧ステータス値の自動マイグレーション（22段階以上 → 10段階）
-      // 詳細ステータスをシンプルな10段階に集約
+      // 🆕 ② 旧ステータス値の自動マイグレーション（旧版すべて → 14段階）
+      // 詳細ステータスをシンプルな14段階に集約
       if (d.stocks && d.stocks.length > 0) {
         const statusMap = {
           // 在庫の見込は廃止 → 仕入役調中に
           "見込": "仕入役調中",
-          // 22段階版 → 10段階版
+          // 22段階版 → 14段階版
           "仕入役調【未】": "仕入役調中",
           "仕入役調【完】": "仕入役調中",
-          "仕入契約書【未】": "仕入役調中",
-          "仕入契約書【完】": "仕入契約済み",
-          "司法書士連絡済み": "登記・残置物処理中",
-          "相続登記待ち": "登記・残置物処理中",
-          "残置物処理待ち": "登記・残置物処理中",
+          "仕入契約書【未】": "仕契準備中",
+          "仕入契約書【完】": "仕契完了",
+          "司法書士連絡済み": "登記依頼完了",
+          "相続登記待ち": "登記依頼完了",
+          "残置物処理待ち": "残置物処理中",
           "残置物処理完了": "リフォーム待ち",
           "入稿【未】": "リフォーム完了",
           "入稿【完】": "販売中",
-          "未入稿【残置物待】": "登記・残置物処理中",
+          "未入稿【残置物待】": "残置物処理中",
           "販売中・内覧対応中": "販売中",
           "買付受付中": "販売中",
-          "売却契約準備中": "販売中",
-          "売却契約書作成【未】": "販売中",
-          "売却契約書【完】": "売却契約済み",
-          "売却手付金受領": "売却契約済み",
-          // 9段階版 → 10段階版
-          "仕入契約": "仕入契約済み",
-          "仕入決済": "仕入決済完了",
-          "売却契約": "売却契約済み",
-          "契約書作成中": "売却契約済み",
+          "売却契約準備中": "売契準備中",
+          "売却契約書作成【未】": "売契準備中",
+          "売却契約書【完】": "売契完了",
+          "売却手付金受領": "売契完了",
+          // 13段階版 → 14段階版（リネーム + 統合 + 分割）
+          "仕契完成": "仕契完了",           // 統合
+          "仕入決済完了": "仕決完了",       // リネーム
+          "登記・残置物処理中": "登記依頼完了", // 分割（早い段階に割り当て）
+          // 10段階版 → 14段階版
+          "仕入契約済み": "仕契完了",
+          "売却契約済み": "売契完了",
+          "売却決済": "売決完了",
+          // 9段階版
+          "仕入契約": "仕契完了",
+          "仕入決済": "仕決完了",
+          "売却契約": "売契完了",
+          "契約書作成中": "売契準備中",
           // 最古データ用
-          "仕入契約済": "仕入契約済み",
-          "売却契約完了": "売却契約済み",
-          "決済完了": "売却決済",
-          // 「仕入決済完了」「リフォーム待ち」「リフォーム中」「リフォーム完了」「販売中」「売却決済」はそのまま
+          "仕入契約済": "仕契完了",
+          "売却契約完了": "売契完了",
+          "決済完了": "売決完了",
+          // 「仕入役調中」「仕契準備中」「リフォーム待ち」「リフォーム中」「リフォーム完了」「販売中」「売契準備中」「売契完了」「売決完了」「仕契完了」はそのまま
         };
         const migrated = d.stocks.map(s => {
           if (statusMap[s.status]) {
@@ -1130,7 +1145,7 @@ function MainApp({ onLock, onSwitchUser }) {
         });
         const migratedCount = migrated.filter((s, i) => s.status !== d.stocks[i].status).length;
         if (migratedCount > 0) {
-          console.log(`[Migration] ${migratedCount} 件の在庫ステータスを10段階版に変換`);
+          console.log(`[Migration] ${migratedCount} 件の在庫ステータスを14段階版に変換`);
           next.stocks = migrated;
           changed = true;
         }
@@ -1567,18 +1582,18 @@ function ManualPinMap({ address, onCancel, onSelect }) {
 
 function StatusTag({ status }) {
   const map = {
-    // 仕入準備
-    "仕入役調中": "#f59e0b",
-    // 仕入契約
-    "仕入契約済み": "#22c55e",
-    // 仕入決済・登記
-    "仕入決済完了": "#0ea5e9", "登記・残置物処理中": "#06b6d4",
-    // リフォーム
-    "リフォーム待ち": C.warn, "リフォーム中": C.purple, "リフォーム完了": C.success,
+    // 仕入
+    "仕入役調中": "#f59e0b", "仕契準備中": "#fbbf24", "仕契完了": "#22c55e", "仕決完了": "#10b981",
+    // 登記
+    "登記依頼完了": "#0ea5e9",
+    // 残置物・リフォーム
+    "残置物処理中": "#06b6d4", "リフォーム待ち": C.warn, "リフォーム中": C.purple, "リフォーム完了": C.success,
     // 販売・売却
-    "販売中": "#22c55e", "売却契約済み": "#f97316", "売却決済": "#64748b",
+    "販売中": "#22c55e", "売契準備中": "#fb923c", "売却役調中": "#fdba74", "売契完了": "#f97316", "売決完了": "#64748b",
     // 旧ステータス（互換用 - マイグレーション前のデータが残ってた場合用）
     "見込": C.success, // 在庫管理では廃止、所有者アタック・地上げ用に維持
+    "仕契完成": "#22c55e", "仕入決済完了": "#0ea5e9", "登記・残置物処理中": "#06b6d4",
+    "仕入契約済み": "#22c55e", "売却契約済み": "#f97316", "売却決済": "#64748b",
     "仕入役調【未】": C.warn, "仕入役調【完】": C.success,
     "仕入契約書【未】": C.warn, "仕入契約書【完】": C.accent,
     "司法書士連絡済み": "#06b6d4", "相続登記待ち": C.warn,
@@ -2208,7 +2223,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       if (s.buyContractDate) list.push({ date: s.buyContractDate, type: "buyContract", icon: "📝", color: "#a855f7", title: s.name || "(無題)", sub: "仕入契約", assignee: s.assignee, rawId: s.id });
       if (s.buyDate) list.push({ date: s.buyDate, type: "buy", icon: "🏠", color: C.success, title: s.name || "(無題)", sub: "仕入決済", assignee: s.assignee, rawId: s.id });
       if (s.sellContractDate) list.push({ date: s.sellContractDate, type: "sellContract", icon: "📋", color: C.accent, title: s.name || "(無題)", sub: "売却契約", assignee: s.assignee, rawId: s.id });
-      if (s.sellDate) list.push({ date: s.sellDate, type: "sell", icon: "✅", color: C.warn, title: s.name || "(無題)", sub: "売却決済", assignee: s.assignee, rawId: s.id });
+      if (s.sellDate) list.push({ date: s.sellDate, type: "sell", icon: "✅", color: C.warn, title: s.name || "(無題)", sub: "売決完了", assignee: s.assignee, rawId: s.id });
       (s.viewings || []).forEach((v, idx) => {
         const eventDate = v.visitDate || "";
         if (eventDate) {
@@ -2311,14 +2326,14 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const nv = v => parseFloat(String(v || "").replace(/,/g, "")) || 0;
 
   const yearCompleted = useMemo(() =>
-    data.stocks.filter(s => s.status === "売却決済" && (s.sellDate || "").startsWith(String(selectedYear))),
+    data.stocks.filter(s => s.status === "売決完了" && (s.sellDate || "").startsWith(String(selectedYear))),
     [data.stocks, selectedYear]);
 
   const yearBought = useMemo(() =>
     data.stocks.filter(s => (s.buyDate || "").startsWith(String(selectedYear))),
     [data.stocks, selectedYear]);
 
-  const active = data.stocks.filter(s => s.status !== "売却決済");
+  const active = data.stocks.filter(s => s.status !== "売決完了");
   const jiageToday = (data.jiage || []).filter(j => j.nextVisit === today);
   const ownerToday = (data.owners || []).filter(o => o.nextFollowDate === today);
 
@@ -2359,7 +2374,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
         month: m + "月",
         sell: sold.reduce((a, s) => a + nv(s.sellPrice), 0) / 10000,
         profit: sold.reduce((a, s) => a + (nv(s.sellPrice) - nv(s.buyCost)), 0) / 10000,
-        sellCount: sold.filter(s => s.status === "売却決済").length,
+        sellCount: sold.filter(s => s.status === "売決完了").length,
         buyCount: bought.length,
       };
     });
@@ -3511,7 +3526,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       console.log('[StockPage] pendingNav 受信:', pendingNav, 'targetId:', targetId, 'target:', target);
       if (target) {
         // 決済完了なら表示モードを切り替え
-        if (target.status === "売却決済") setViewMode("completed");
+        if (target.status === "売決完了") setViewMode("completed");
         else setViewMode("active");
         // フィルター解除（確実に表示されるように）
         setFilterStatuses([]);
@@ -3580,15 +3595,15 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
   // viewMode別の件数
   const counts = useMemo(() => ({
-    active: data.stocks.filter(s => s.status !== "売却決済").length,
-    completed: data.stocks.filter(s => s.status === "売却決済").length,
+    active: data.stocks.filter(s => s.status !== "売決完了").length,
+    completed: data.stocks.filter(s => s.status === "売決完了").length,
     all: data.stocks.length,
   }), [data.stocks]);
 
   const filtered = useMemo(() => data.stocks.filter(s => {
     // viewMode（現在の在庫 / 決済完了 / 全て）
-    if (viewMode === "active" && s.status === "売却決済") return false;
-    if (viewMode === "completed" && s.status !== "売却決済") return false;
+    if (viewMode === "active" && s.status === "売決完了") return false;
+    if (viewMode === "completed" && s.status !== "売決完了") return false;
     if (filterStatuses.length && !filterStatuses.includes(s.status)) return false;
     if (filterMembers.length && !filterMembers.includes(s.assignee)) return false;
     if (search && !s.name.includes(search) && !s.assignee.includes(search)) return false;
@@ -3727,31 +3742,32 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       viewings: form.viewings || [],
     };
 
-    // 🆕 日付入力でステータス自動連動（最も進んだ日付に合わせて、10段階版）
-    // 売却決済日あり → 売却決済
-    // 売却契約日あり → 売却契約済み
-    // 仕入決済日あり → 仕入決済完了
-    // 仕入契約日あり → 仕入契約済み
-    // ※ 中間ステータス（リフォーム、登記、販売中など）を手動で設定してる場合は維持
+    // 🆕 日付入力でステータス自動連動（最も進んだ日付に合わせて、14段階版）
+    // 売却決済日あり → 売決完了
+    // 売却契約日あり → 売契完了
+    // 仕入決済日あり → 仕決完了
+    // 仕入契約日あり → 仕契完了
+    // ※ 中間ステータス（登記、残置物、リフォーム、販売中、売契準備中、売却役調中など）を手動で設定してる場合は維持
     if (item.sellDate) {
-      item.status = "売却決済";
+      item.status = "売決完了";
     } else if (item.sellContractDate) {
-      item.status = "売却契約済み";
+      item.status = "売契完了";
     } else if (item.buyDate) {
       // 仕入決済以降の中間ステータスは維持
       const keepStatuses = [
-        "登記・残置物処理中",
+        "登記依頼完了",
+        "残置物処理中",
         "リフォーム待ち", "リフォーム中", "リフォーム完了",
-        "販売中",
+        "販売中", "売契準備中", "売却役調中",
       ];
       if (!keepStatuses.includes(item.status)) {
-        item.status = "仕入決済完了";
+        item.status = "仕決完了";
       }
     } else if (item.buyContractDate) {
-      // 仕入契約前の段階だけ自動更新（「仕入役調中」のみ対象）
-      const upgradeFrom = ["仕入役調中"];
+      // 仕入契約前の段階だけ自動更新（「仕入役調中」「仕契準備中」が対象）
+      const upgradeFrom = ["仕入役調中", "仕契準備中"];
       if (upgradeFrom.includes(item.status) || !item.status) {
-        item.status = "仕入契約済み";
+        item.status = "仕契完了";
       }
     }
 
@@ -3907,8 +3923,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
             {STATUS_GROUPS.map(grp => {
               // viewModeでフィルター
               const visibleStatuses = grp.statuses.filter(st => {
-                if (viewMode === "active" && st === "売却決済") return false;
-                if (viewMode === "completed" && st !== "売却決済") return false;
+                if (viewMode === "active" && st === "売決完了") return false;
+                if (viewMode === "completed" && st !== "売決完了") return false;
                 return true;
               });
               if (visibleStatuses.length === 0) return null;
@@ -3953,7 +3969,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
       {filtered.map(s => {
         const profit = s.sellPrice - s.buyCost;
-        const sinfo = s.status !== "売却決済" ? stagnantInfo(s.buyDate) : null;
+        const sinfo = s.status !== "売決完了" ? stagnantInfo(s.buyDate) : null;
         const isHighlight = highlightId === s.id;
         return (
           <div
@@ -5048,11 +5064,11 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
     const sekisanActive = filterByMember((data.sekisan || []).filter(s => s.judgment !== "見送り"));
     const sekisanHot = sekisanActive.filter(s => s.judgment === "熱い");
     const sekisanCheck = sekisanActive.filter(s => s.judgment === "検討中");
-    const stocksActive = filterByMember((data.stocks || []).filter(s => s.status !== "売却決済"));
+    const stocksActive = filterByMember((data.stocks || []).filter(s => s.status !== "売決完了"));
     // 「決済完了」は選択月の年（casesMonthの年）に決済完了したもの
     const selectedYear = casesMonth.slice(0, 4);
     const stocksCompleted = filterByMember((data.stocks || []).filter(s =>
-      s.status === "売却決済" && (s.sellDate || "").startsWith(selectedYear)
+      s.status === "売決完了" && (s.sellDate || "").startsWith(selectedYear)
     ));
     return { jiageActive, ownersActive, sekisanActive, sekisanHot, sekisanCheck, stocksActive, stocksCompleted, selectedYear };
   }, [data.jiage, data.owners, data.sekisan, data.stocks, casesMember, casesMonth]);
@@ -5065,12 +5081,12 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
       o.nextFollowDate && o.nextFollowDate < today && !["NG", "断られた", "仕入れ完了"].includes(o.status)
     ));
     const stagnant90 = filterByMember((data.stocks || []).filter(s => {
-      if (s.status === "売却決済") return false;
+      if (s.status === "売決完了") return false;
       const d = daysSinceBuy(s.buyDate);
       return d != null && d >= 90 && d < 180;
     }));
     const stagnant180 = filterByMember((data.stocks || []).filter(s => {
-      if (s.status === "売却決済") return false;
+      if (s.status === "売決完了") return false;
       const d = daysSinceBuy(s.buyDate);
       return d != null && d >= 180;
     }));
@@ -5090,7 +5106,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
     const newPurchase = filterByMember((data.stocks || []).filter(s => (s.buyDate || "").startsWith(ym)));
     const newSellContract = filterByMember((data.stocks || []).filter(s => (s.sellContractDate || "").startsWith(ym)));
     const newCompleted = filterByMember((data.stocks || []).filter(s =>
-      s.status === "売却決済" && (s.sellDate || "").startsWith(ym)
+      s.status === "売決完了" && (s.sellDate || "").startsWith(ym)
     ));
     const currentKentou = filterByMember((data.sekisan || []).filter(s => s.judgment === "仕入検討"));
     const currentHot = filterByMember((data.sekisan || []).filter(s => s.judgment === "熱い"));
