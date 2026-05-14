@@ -1302,6 +1302,21 @@ function MainApp({ onLock, onSwitchUser }) {
       if (Date.now() - lastLocalSaveRef.current < 30000) return; // 直近の自分の保存はスキップ
       if (isUserEditing()) return; // 入力中はスキップ
       loadFromSupabase().then(remote => {
+        // 🆕 ポーリング時もバージョンチェック（開きっぱなしのアプリにも更新通知）
+        if (remote?.__appVersion && remote.__appVersion !== APP_VERSION) {
+          console.warn(`[ひかり不動産] ⚠ ポーリング中に新バージョン検出: ${remote.__appVersion}`);
+          const msg = `🔔 アプリの新しいバージョンがあります！\n\n` +
+                      `あなたの端末: ${APP_VERSION}\n` +
+                      `最新版: ${remote.__appVersion}\n\n` +
+                      `今すぐ更新してください。\n` +
+                      `OKを押すとアプリを最新版に更新します。`;
+          if (window.confirm(msg)) {
+            window.location.href = window.location.pathname + "?v=" + Date.now();
+            return;
+          }
+          // キャンセルされたら、次回ポーリングまで通知を抑制（5分後にまた問い合わせ）
+          lastLocalSaveRef.current = Date.now() + 5 * 60 * 1000 - 30 * 1000;
+        }
         const merged = mergeRemoteSafely(remote);
         if (merged) {
           setDataRaw(merged);
