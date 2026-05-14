@@ -1032,12 +1032,21 @@ function MainApp({ onLock, onSwitchUser }) {
   const lastLocalSaveRef = useRef(0);
 
   // ローカル(キャッシュ)とリモートを賢くマージする関数
-  // リモートに該当キーが空配列で、ローカルには中身がある場合、ローカルを優先（データ消失防止）
+  // 🔧 削除済みアイテム復活防止：直近30秒以内に自分が保存した場合のみローカル保護
+  // それ以外はリモートを信じる（古いキャッシュの削除済みアイテムが復活する問題対策）
   const mergeRemoteSafely = (remote) => {
     if (!remote) return null;
     const local = loadFromCache();
     const merged = mergeWithDefault(remote);
     if (!local) return merged;
+
+    // 🔧 直近30秒以内に自分が保存していたら、ローカル限定アイテムを保護（save失敗対策）
+    // 30秒以上経過してたら、リモートを信じる（削除アイテムが復活するのを防ぐ）
+    const recentlySaved = Date.now() - lastLocalSaveRef.current < 30000;
+    if (!recentlySaved) {
+      console.log(`[Sync] 直近の自分保存が30秒以上前 → リモートを信じる（削除アイテム復活防止）`);
+      return merged;
+    }
 
     // 配列フィールドで「リモートが空 or 少ない」「ローカルが多い」場合、ローカルを優先
     // これによりSupabase保存失敗時のデータ消失を防ぐ
@@ -1049,7 +1058,7 @@ function MainApp({ onLock, onSwitchUser }) {
       const remoteIds = new Set(remoteArr.map(item => item?.id).filter(id => id != null));
       const protectedItems = localArr.filter(item => item?.id != null && !remoteIds.has(item.id));
       if (protectedItems.length > 0) {
-        console.log(`[Sync] ${k}: ローカル限定の${protectedItems.length}件を保護してマージ`);
+        console.log(`[Sync] ${k}: ローカル限定の${protectedItems.length}件を保護してマージ（直近30秒以内の保存ガード）`);
         merged[k] = [...remoteArr, ...protectedItems];
       }
     });
