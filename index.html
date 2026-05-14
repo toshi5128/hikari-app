@@ -980,6 +980,26 @@ function MainApp({ onLock, onSwitchUser }) {
     }
   }, []);
 
+  // 🆕 起動時に「古い sekisan 連動 customEvents」を掃除
+  // - sekisanLinkId 付きの customEvent は、元の sekisan が「売主結果確認日」じゃないなら不要
+  useEffect(() => {
+    setData(d => {
+      if (!d.customEvents || d.customEvents.length === 0) return d;
+      const sekisanIdsWithResult = new Set(
+        (d.sekisan || [])
+          .filter(s => s.caseStatus === "売主結果確認日" && s.caseStatusAt)
+          .map(s => s.id)
+      );
+      const cleaned = (d.customEvents || []).filter(e => {
+        if (!e.sekisanLinkId) return true; // 通常のカスタム予定は保持
+        return sekisanIdsWithResult.has(e.sekisanLinkId); // 売主結果確認日のもののみ保持
+      });
+      if (cleaned.length === d.customEvents.length) return d; // 変化なし
+      console.log(`[Cleanup] 古い sekisan 連動 customEvents を ${d.customEvents.length - cleaned.length} 件削除`);
+      return { ...d, customEvents: cleaned };
+    });
+  }, []);
+
   // 直近の自分の保存時刻（ポーリングで自分の更新を上書きしないため）
   const lastLocalSaveRef = useRef(0);
 
@@ -1864,9 +1884,20 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       alert(`⚠️ 削除権限がありません\n\nこの予定の担当者/作成者は「${assigneeLabel}」です。\n管理者（${adminMember}）または担当者本人のみ削除できます。`);
       return;
     }
-    if (!window.confirm(`予定「${target.title}」を削除しますか？`)) return;
+    // 🆕 sekisanLinkId 付きの場合、元の sekisan の進捗もクリアする旨を確認
+    const isSekisanLinked = !!target.sekisanLinkId;
+    const confirmMsg = isSekisanLinked
+      ? `予定「${target.title}」を削除しますか？\n\n仕入検討積算表の進捗（売主結果確認日）も同時にクリアされます。\nこれをやらないと、次回 sekisan 編集時にカレンダーに復活します。`
+      : `予定「${target.title}」を削除しますか？`;
+    if (!window.confirm(confirmMsg)) return;
     setData(d => {
-      const next = { ...d, customEvents: (d.customEvents || []).filter(e => e.id !== id) };
+      let next = { ...d, customEvents: (d.customEvents || []).filter(e => e.id !== id) };
+      // 🆕 sekisan 連動なら、元データの進捗もクリア
+      if (isSekisanLinked) {
+        next.sekisan = (d.sekisan || []).map(s =>
+          s.id === target.sekisanLinkId ? { ...s, caseStatus: "", caseStatusAt: "" } : s
+        );
+      }
       return appendLogAndNotify(next, "delete", "event", `予定「${target.title}」を削除`, target);
     });
   };
@@ -8318,6 +8349,87 @@ function WebPushSection({ currentUser, data }) {
           }}>🛑 Web Push を解除</button>
         </>
       )}
+
+      {/* 🆕 詳細診断ボタン（誰でも押せる） */}
+      <button onClick={async () => {
+        const lines = ["🔍 Web Push 診断結果\n"];
+        // 1. ブラウザ・OS
+        const ua = navigator.userAgent;
+        let osType = "不明";
+        if (/iPhone|iPad|iPod/.test(ua)) osType = "iOS";
+        else if (/Android/.test(ua)) osType = "Android";
+        else if (/Windows/.test(ua)) osType = "Windows";
+        else if (/Mac/.test(ua)) osType = "Mac";
+        lines.push(`📱 OS: ${osType}`);
+        // iOS バージョン
+        if (osType === "iOS") {
+          const m = ua.match(/OS (\d+)_(\d+)/);
+          if (m) {
+            const ver = `${m[1]}.${m[2]}`;
+            const okIos = parseFloat(ver) >= 16.4;
+            lines.push(`📱 iOS バージョン: ${ver} ${okIos ? "✅ OK" : "❌ 16.4以降が必要"}`);
+          }
+        }
+        // 2. PWA インストール状態
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+        lines.push(`📦 PWA: ${isStandalone ? "✅ ホーム画面起動" : "❌ ブラウザ起動（iOS は PWA 必須）"}`);
+        // 3. Service Worker API
+        lines.push(`⚙️ Service Worker API: ${"serviceWorker" in navigator ? "✅" : "❌ 非対応"}`);
+        // 4. PushManager API
+        lines.push(`📨 Push API: ${"PushManager" in window ? "✅" : "❌ 非対応"}`);
+        // 5. Notification 許可
+        if ("Notification" in window) {
+          const perm = Notification.permission;
+          const okPerm = perm === "granted";
+          lines.push(`🔔 通知許可: ${perm} ${okPerm ? "✅" : (perm === "denied" ? "❌ ブロック中（端末設定で許可に）" : "⚠️ 未許可")}`);
+        }
+        // 6. SW 登録状態
+        if ("serviceWorker" in navigator) {
+          const reg = await navigator.serviceWorker.getRegistration();
+          lines.push(`⚙️ SW 登録: ${reg ? "✅ あり" : "❌ なし"}`);
+          if (reg) {
+            const sub = await reg.pushManager.getSubscription();
+            lines.push(`📬 購読: ${sub ? "✅ 登録済み" : "❌ なし"}`);
+            if (sub) {
+              lines.push(`   endpoint: ${sub.endpoint.slice(0, 50)}...`);
+            }
+          }
+        }
+        // 7. HTTPS
+        lines.push(`🔒 HTTPS: ${location.protocol === "https:" || location.hostname === "localhost" ? "✅" : "❌ Web Push は HTTPS 必須"}`);
+        // 8. ネットワーク
+        lines.push(`🌐 オンライン: ${navigator.onLine ? "✅" : "❌ オフライン"}`);
+        // 9. ブラウザ
+        const browser = /Chrome/.test(ua) && !/Edge/.test(ua) ? "Chrome" :
+                        /Safari/.test(ua) && !/Chrome/.test(ua) ? "Safari" :
+                        /Firefox/.test(ua) ? "Firefox" :
+                        /Edge/.test(ua) ? "Edge" : "その他";
+        lines.push(`🌐 ブラウザ: ${browser}`);
+        // 10. 直近のエラー
+        if (lastError) {
+          lines.push(`\n⚠️ 直近のエラー:\n${lastError}`);
+        }
+        // 11. 推奨アクション
+        lines.push("\n💡 推奨対応:");
+        if (osType === "iOS" && !isStandalone) {
+          lines.push("• Safari の共有ボタンから「ホーム画面に追加」→ ホームのアイコンから開く");
+        }
+        if (Notification.permission === "denied") {
+          lines.push("• 端末設定 → アプリ → 通知 → 許可に変更");
+        }
+        if (osType === "Android" && browser !== "Chrome") {
+          lines.push("• Chrome ブラウザで開いてみる");
+        }
+        lines.push("• VPN を切ってみる（FCM/APNs が遮断される可能性）");
+        lines.push("• Wi-Fi → 4G/5G に切替えてみる");
+        lines.push("• ブラウザのキャッシュをクリア");
+
+        alert(lines.join("\n"));
+      }} style={{
+        width: "100%", marginTop: 10, padding: "10px", fontSize: 12,
+        background: C.accent + "11", border: `1px solid ${C.accent}55`,
+        color: C.accent, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+      }}>🔍 詳細診断（通知が来ない原因を調べる）</button>
 
       {!currentUser && (
         <div style={{ marginTop: 10, padding: 10, background: C.warn + "22", border: `1px solid ${C.warn}55`, borderRadius: 8, fontSize: 11, color: C.warn }}>
