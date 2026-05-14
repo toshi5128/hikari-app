@@ -3347,6 +3347,13 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   // 🆕 通知タップでハイライトする物件ID
   const [highlightId, setHighlightId] = useState(null);
 
+  // 🆕 反響セクション折りたたみ（在庫カード単位）
+  const [viewingsExpandedByStock, setViewingsExpandedByStock] = useState({}); // {stockId: bool}
+  // 🆕 反響ごとのコメント機能
+  const [newViewingComment, setNewViewingComment] = useState({}); // {`${stockId}_${vi}`: text}
+  const [editingViewingCommentKey, setEditingViewingCommentKey] = useState(null); // `${stockId}_${vi}_${commentId}`
+  const [editingViewingCommentText, setEditingViewingCommentText] = useState("");
+
   // 🆕 pendingNav 受け取り：該当物件にスクロール + ハイライト
   useEffect(() => {
     if (pendingNav && pendingNav.tab === 'stock' && pendingNav.stockLinkId) {
@@ -3438,6 +3445,112 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     if (search && !s.name.includes(search) && !s.assignee.includes(search)) return false;
     return true;
   }), [data.stocks, filterStatuses, filterMembers, search, viewMode]);
+
+  // 💬 反響コメント投稿
+  const handlePostViewingComment = (stockId, viewingIdx) => {
+    const key = `${stockId}_${viewingIdx}`;
+    const text = (newViewingComment[key] || "").trim();
+    if (!text) return;
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    const comment = {
+      id: Date.now(),
+      member: currentUser,
+      text,
+      createdAt: new Date().toISOString(),
+    };
+    setData(d => ({
+      ...d,
+      stocks: (d.stocks || []).map(s => {
+        if (s.id !== stockId) return s;
+        return {
+          ...s,
+          viewings: (s.viewings || []).map((v, idx) =>
+            idx === viewingIdx
+              ? { ...v, comments: [...(v.comments || []), comment] }
+              : v
+          ),
+        };
+      }),
+    }));
+    // 通知：担当者 + 通知メンバー + 過去にコメントした人（送信者除く）
+    const target = data.stocks.find(s => s.id === stockId);
+    if (target) {
+      const viewing = (target.viewings || [])[viewingIdx];
+      const pastCommenters = (viewing?.comments || []).map(c => c.member);
+      const allTargets = new Set([
+        ...getNotifyMembers(data),
+        target.assignee,
+        ...pastCommenters,
+      ]);
+      allTargets.delete(currentUser);
+      const targets = [...allTargets].filter(Boolean);
+      if (targets.length > 0) {
+        sendPushNotification(
+          targets,
+          `💬 ${currentUser}さんが反響にコメント`,
+          `${target.name || "(無題)"}\n顧客: ${viewing?.customer || "(未設定)"}\n${text}`,
+          {
+            tag: `hikari-viewing-comment-${stockId}-${viewingIdx}-${comment.id}`,
+            data: { tab: 'stock', stockLinkId: stockId },
+            tab: 'stock', stockLinkId: stockId,
+          }
+        );
+      }
+    }
+    setNewViewingComment(p => ({ ...p, [key]: "" }));
+  };
+
+  const handleStartEditViewingComment = (stockId, vi, commentId, currentText) => {
+    setEditingViewingCommentKey(`${stockId}_${vi}_${commentId}`);
+    setEditingViewingCommentText(currentText);
+  };
+  const handleCancelEditViewingComment = () => {
+    setEditingViewingCommentKey(null);
+    setEditingViewingCommentText("");
+  };
+  const handleSaveEditViewingComment = (stockId, vi, commentId) => {
+    const newText = editingViewingCommentText.trim();
+    if (!newText) { alert("内容が空です"); return; }
+    setData(d => ({
+      ...d,
+      stocks: (d.stocks || []).map(s => {
+        if (s.id !== stockId) return s;
+        return {
+          ...s,
+          viewings: (s.viewings || []).map((v, idx) => {
+            if (idx !== vi) return v;
+            return {
+              ...v,
+              comments: (v.comments || []).map(c =>
+                c.id === commentId ? { ...c, text: newText, editedAt: new Date().toISOString() } : c
+              ),
+            };
+          }),
+        };
+      }),
+    }));
+    setEditingViewingCommentKey(null);
+    setEditingViewingCommentText("");
+  };
+  const handleDeleteViewingComment = (stockId, vi, commentId) => {
+    if (!window.confirm("このコメントを削除しますか？")) return;
+    setData(d => ({
+      ...d,
+      stocks: (d.stocks || []).map(s => {
+        if (s.id !== stockId) return s;
+        return {
+          ...s,
+          viewings: (s.viewings || []).map((v, idx) => {
+            if (idx !== vi) return v;
+            return {
+              ...v,
+              comments: (v.comments || []).filter(c => c.id !== commentId),
+            };
+          }),
+        };
+      }),
+    }));
+  };
 
   const openEdit = s => {
     if (!canEdit(s)) { alert(`⚠️ 編集権限がありません\n\n担当者: ${s.assignee || "(不明)"}`); return; }
@@ -3665,11 +3778,209 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               </div>
             )}
             {(s.viewings || []).length > 0 && (() => {
-              const all = s.viewings.length;
-              const withVisit = s.viewings.filter(v => v.visitDate).length;
+              const viewings = s.viewings || [];
+              const expanded = !!viewingsExpandedByStock[s.id];
+              const all = viewings.length;
+              const withVisit = viewings.filter(v => v.visitDate).length;
+              const hotCount = viewings.filter(v => v.prospect === "熱い").length;
+              const kentouCount = viewings.filter(v => v.prospect === "検討中").length;
+              const totalComments = viewings.reduce((a, v) => a + ((v.comments || []).length), 0);
               return (
-                <div style={{ fontSize: 11, color: "#06b6d4", marginBottom: 6 }}>
-                  👀 反響 {all}件{withVisit > 0 && <span style={{ marginLeft: 6 }}>📅 案内予定 {withVisit}件</span>}
+                <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                  <button
+                    onClick={() => setViewingsExpandedByStock(p => ({ ...p, [s.id]: !expanded }))}
+                    style={{
+                      width: "100%", background: "none", border: "none",
+                      display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
+                      cursor: "pointer", fontFamily: "inherit", padding: 0,
+                    }}>
+                    <span style={{ color: "#06b6d4", fontSize: 12, fontWeight: 700 }}>
+                      👀 反響 {all}件
+                    </span>
+                    {hotCount > 0 && (
+                      <span style={{ background: "#ef444433", color: "#ef4444", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                        🔥{hotCount}
+                      </span>
+                    )}
+                    {kentouCount > 0 && (
+                      <span style={{ background: "#f59e0b33", color: "#f59e0b", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                        🟡{kentouCount}
+                      </span>
+                    )}
+                    {withVisit > 0 && (
+                      <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                        📅{withVisit}
+                      </span>
+                    )}
+                    {totalComments > 0 && (
+                      <span style={{ background: C.accent + "33", color: C.accent, padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                        💬{totalComments}
+                      </span>
+                    )}
+                    <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11, fontWeight: 700 }}>{expanded ? "▲ 閉じる" : "▼ 詳細"}</span>
+                  </button>
+
+                  {expanded && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}`, display: "grid", gap: 8 }}>
+                      {viewings.map((v, vi) => {
+                        const prospect = PROSPECT_INFO[v.prospect];
+                        const result = RESULT_INFO[v.result];
+                        const dow = dayOfWeekLabel(v.date);
+                        const visitDow = dayOfWeekLabel(v.visitDate);
+                        const comments = v.comments || [];
+                        const cmtKey = `${s.id}_${vi}`;
+                        return (
+                          <div key={vi} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "10px 12px" }}>
+                            {/* 顧客情報 */}
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 5 }}>
+                              <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
+                              {prospect && (
+                                <span style={{ background: prospect.color + "33", color: prospect.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                                  {prospect.icon}{v.prospect}
+                                </span>
+                              )}
+                              {result && v.result !== "未実施" && (
+                                <span style={{ background: result.color + "33", color: result.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                                  {result.icon}{v.result}
+                                </span>
+                              )}
+                              {v.nextAction && (
+                                <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                                  🔁{v.nextAction}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* 日付・案内 */}
+                            <div style={{ fontSize: 11, color: C.muted, marginBottom: 5, lineHeight: 1.6 }}>
+                              📅 反響:{v.date || "—"}
+                              {dow && <span style={{ color: dow.color, marginLeft: 2 }}>({dow.label})</span>}
+                              {v.visitDate && (
+                                <span style={{ color: "#06b6d4", marginLeft: 8, fontWeight: 700 }}>
+                                  → 案内:{v.visitDate}
+                                  {visitDow && <span style={{ color: visitDow.color, marginLeft: 2 }}>({visitDow.label})</span>}
+                                  {v.visitTime ? " " + v.visitTime : ""}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* 連絡先・予算など */}
+                            {(v.contact || v.email || v.budget || v.funding || v.purpose) && (
+                              <div style={{ fontSize: 11, color: C.muted, marginBottom: 5, lineHeight: 1.6 }}>
+                                {v.funding && <span style={{ marginRight: 8 }}>💰{v.funding}</span>}
+                                {v.purpose && <span style={{ marginRight: 8 }}>🎯{v.purpose}</span>}
+                                {v.budget && <span style={{ marginRight: 8 }}>💵{v.budget}</span>}
+                              </div>
+                            )}
+
+                            {/* 電話・メール発信ボタン */}
+                            {(v.contact || v.email) && (
+                              <div style={{ display: "flex", gap: 5, marginBottom: 8 }}>
+                                {v.contact && (
+                                  <a href={`tel:${v.contact}`} onClick={(e) => e.stopPropagation()}
+                                    style={{ flex: 1, textDecoration: "none", background: C.success + "22", border: `1px solid ${C.success}55`, color: C.success, borderRadius: 6, padding: "5px 10px", textAlign: "center", fontSize: 11, fontWeight: 700 }}>
+                                    📞 {v.contact}
+                                  </a>
+                                )}
+                                {v.email && (
+                                  <a href={`mailto:${v.email}`} onClick={(e) => e.stopPropagation()}
+                                    style={{ flex: 1, textDecoration: "none", background: C.accent + "22", border: `1px solid ${C.accent}55`, color: C.accent, borderRadius: 6, padding: "5px 10px", textAlign: "center", fontSize: 11, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    📧 メール
+                                  </a>
+                                )}
+                              </div>
+                            )}
+
+                            {/* メモ */}
+                            {v.note && (
+                              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, padding: "6px 8px", background: C.bg, borderRadius: 4, lineHeight: 1.5 }}>
+                                📝 {v.note}
+                              </div>
+                            )}
+
+                            {/* 💬 コメント欄（やり取り） */}
+                            <div style={{ background: C.bg, borderRadius: 6, padding: "8px 10px", marginTop: 8 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, marginBottom: 6 }}>
+                                💬 やり取り ({comments.length}件)
+                              </div>
+                              {comments.length === 0 ? (
+                                <div style={{ fontSize: 10, color: C.muted, textAlign: "center", padding: "3px 0" }}>まだコメントなし</div>
+                              ) : comments.map(c => {
+                                const editKey = `${s.id}_${vi}_${c.id}`;
+                                const isEditing = editingViewingCommentKey === editKey;
+                                return (
+                                  <div key={c.id} style={{
+                                    background: C.cardBg, borderLeft: `3px solid ${MEMBER_COLORS[c.member] || C.muted}`,
+                                    borderRadius: 4, padding: "6px 8px", marginBottom: 4,
+                                  }}>
+                                    <div style={{ display: "flex", gap: 5, alignItems: "center", marginBottom: 2 }}>
+                                      <MemberTag name={c.member} />
+                                      <span style={{ fontSize: 9, color: C.muted, marginLeft: "auto" }}>
+                                        {new Date(c.createdAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                                        {c.editedAt && <span style={{ marginLeft: 3 }}>(編集済)</span>}
+                                      </span>
+                                    </div>
+                                    {isEditing ? (
+                                      <>
+                                        <textarea
+                                          value={editingViewingCommentText}
+                                          onChange={e => setEditingViewingCommentText(e.target.value)}
+                                          style={{ ...inp, height: 45, resize: "vertical", marginBottom: 4, fontSize: 12 }}
+                                        />
+                                        <div style={{ display: "flex", gap: 4 }}>
+                                          <button onClick={() => handleSaveEditViewingComment(s.id, vi, c.id)}
+                                            style={{ ...btnStyle(), flex: 1, padding: "5px", fontSize: 10 }}>💾 保存</button>
+                                          <button onClick={handleCancelEditViewingComment}
+                                            style={{ ...btnStyle("ghost"), flex: 1, padding: "5px", fontSize: 10 }}>キャンセル</button>
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <div style={{ fontSize: 11, color: C.text, lineHeight: 1.5, whiteSpace: "pre-wrap", marginBottom: c.member === currentUser ? 3 : 0 }}>{c.text}</div>
+                                        {c.member === currentUser && (
+                                          <div style={{ display: "flex", gap: 3, justifyContent: "flex-end" }}>
+                                            <button onClick={() => handleStartEditViewingComment(s.id, vi, c.id, c.text)} style={{
+                                              background: "transparent", border: `1px solid ${C.muted}33`, color: C.muted,
+                                              borderRadius: 3, padding: "1px 6px", fontSize: 9, cursor: "pointer", fontFamily: "inherit",
+                                            }}>✏️</button>
+                                            <button onClick={() => handleDeleteViewingComment(s.id, vi, c.id)} style={{
+                                              background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger,
+                                              borderRadius: 3, padding: "1px 6px", fontSize: 9, cursor: "pointer", fontFamily: "inherit",
+                                            }}>🗑️</button>
+                                          </div>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {/* 入力欄 */}
+                              <div style={{ display: "flex", gap: 5, marginTop: 6 }}>
+                                <textarea
+                                  value={newViewingComment[cmtKey] || ""}
+                                  onChange={e => setNewViewingComment(p => ({ ...p, [cmtKey]: e.target.value }))}
+                                  onKeyDown={e => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                      e.preventDefault();
+                                      handlePostViewingComment(s.id, vi);
+                                    }
+                                  }}
+                                  placeholder={currentUser ? `${currentUser}としてコメント (Enter送信)` : "ログインしてください"}
+                                  style={{ ...inp, flex: 1, height: 36, resize: "vertical", fontSize: 11, padding: "6px 8px" }}
+                                />
+                                <button onClick={() => handlePostViewingComment(s.id, vi)}
+                                  disabled={!(newViewingComment[cmtKey] || "").trim() || !currentUser}
+                                  style={{
+                                    ...btnStyle(), padding: "6px 10px", fontSize: 11, flexShrink: 0,
+                                    opacity: (!(newViewingComment[cmtKey] || "").trim() || !currentUser) ? 0.5 : 1,
+                                  }}>送信</button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })()}
