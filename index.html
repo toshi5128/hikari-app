@@ -3491,6 +3491,138 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 }
 
 
+// ===================== 📥 SUUMO/アットホーム反響取り込み =====================
+// メール本文を解析して反響情報を抽出するパース関数
+function parseInquiryEmail(text) {
+  if (!text || typeof text !== "string") return null;
+  // SUUMO判定（特徴的なキーワード）
+  if (text.includes("お客様プロフィール") || text.includes("問合せ物件")) {
+    return parseSUUMO(text);
+  }
+  // アットホーム判定
+  if (text.includes("お問合せされた物件") || text.includes("お客様のプロフィール") || text.includes("at home 物件番号") || text.includes("athome.co.jp")) {
+    return parseAtHome(text);
+  }
+  return null;
+}
+
+// SUUMO 形式パース（ラベル[空白/タブ]値）
+function parseSUUMO(text) {
+  const result = { channel: "SUUMO" };
+  const grab = (label) => {
+    // 「ラベル　値」「ラベル\t値」「ラベル　　値」など空白/タブを許容
+    const re = new RegExp(label + "\\s*[\\t\\s　]+([^\\n\\r]+)");
+    const m = text.match(re);
+    return m ? m[1].trim() : "";
+  };
+  const customer = grab("氏名（漢字）") || grab("氏名（カナ）");
+  if (customer) result.customer = customer;
+  const phone = grab("電話番号");
+  if (phone) result.contact = phone;
+  const email = grab("メールアドレス");
+  if (email) result.email = email.replace(/^\[([^\]]+)\].*$/, "$1");
+  const address = grab("住所");
+  if (address) result.customerAddress = address;
+  const propertyName = grab("物件名");
+  if (propertyName) result.propertyName = propertyName;
+  const propertyAddress = grab("所在地");
+  if (propertyAddress) result.propertyAddress = propertyAddress;
+  const price = grab("価格");
+  if (price) result.propertyPrice = price;
+  const urlMatch = text.match(/物件詳細画面\s*[\t\s　]+(https?:\/\/[^\s\n\r]+)/);
+  if (urlMatch) result.propertyUrl = urlMatch[1].trim();
+  return result;
+}
+
+// アットホーム形式パース（改行なし形式にも対応、複数フォーマット対応）
+function parseAtHome(text) {
+  const result = { channel: "アットホーム" };
+  // アットホームのラベルリスト（次のラベルが現れるまでを値とする境界判定用）
+  const AT_HOME_LABELS = [
+    "お問合わせ日時", "お問合せ日時",
+    "物件種目", "建物名", "交通", "駅名", "徒歩", "バス停名",
+    "バス乗車分", "バス停歩分", "所在地", "賃料", "価格",
+    "間取り", "専有・建物面積", "専有面積", "建物面積", "土地面積",
+    "at home 物件番号", "貴社物件管理番号", "詳しい物件情報",
+    "お名前\\(漢字\\)", "お名前（漢字）", "お名前\\(カナ\\)", "お名前（カナ）",
+    "お名前", "希望連絡方法", "メールアドレス", "郵便番号",
+    "住所", "電話番号", "連絡希望の時間帯", "ＦＡＸ",
+    "その他の連絡方法", "性別", "年齢", "入居希望時期",
+  ];
+  const grab = (label) => {
+    // 「：」の後、次のラベル名 or 区切り線（━─—-）or ＜ が現れるまでを値として取る
+    const stopLabels = AT_HOME_LABELS.filter(l => l !== label).join("|");
+    const re = new RegExp(
+      label + "[\\t\\s　]*[:：][\\t\\s　]*([\\s\\S]*?)(?=(?:" + stopLabels + ")[\\t\\s　]*[:：]|[━─—\\-]{3,}|＜|$)"
+    );
+    const m = text.match(re);
+    return m ? m[1].trim() : "";
+  };
+  // 顧客名：複数パターン対応
+  const customer = grab("お名前\\(漢字\\)") || grab("お名前（漢字）") || grab("お名前\\(カナ\\)") || grab("お名前（カナ）") || grab("お名前");
+  if (customer) result.customer = customer;
+  const phone = grab("電話番号");
+  if (phone) result.contact = phone;
+  let email = grab("メールアドレス");
+  if (email) {
+    // 「[email](mailto:email)」形式の場合は中身だけ抜く
+    email = email.replace(/^\[([^\]]+)\].*$/, "$1");
+    // 残った余分な空白除去
+    email = email.replace(/\s+/g, "").trim();
+    result.email = email;
+  }
+  const customerAddr = grab("住所");
+  if (customerAddr) result.customerAddress = customerAddr;
+  const buildingName = grab("建物名");
+  if (buildingName) result.propertyName = buildingName;
+  const propertyAddress = grab("所在地");
+  if (propertyAddress) result.propertyAddress = propertyAddress;
+  const rent = grab("賃料") || grab("価格");
+  if (rent) result.propertyPrice = rent;
+  // お問合せ日時：両表記対応
+  const dateMatch = text.match(/お問合わ?せ日時[\t\s　]*[:：][\t\s　]*(\S+)/);
+  if (dateMatch) result.inquiryDate = dateMatch[1].trim();
+  // 問い合わせ内容（複数区切り線パターン対応）
+  const noteMatch = text.match(/＜物件に関するお問合わ?せ内容＞([\s\S]*?)(?:[━─—\-]{3,}|＜|$)/);
+  if (noteMatch) {
+    result.note = noteMatch[1].trim().replace(/\s+/g, " ").slice(0, 500);
+  }
+  return result;
+}
+
+// 物件名から在庫物件をマッチング（部分一致でスコアリング）
+function findMatchingStock(parsed, stocks) {
+  if (!parsed || !stocks || stocks.length === 0) return null;
+  const candidates = [];
+  const searchTerms = [parsed.propertyName, parsed.propertyAddress].filter(Boolean);
+  if (searchTerms.length === 0) return null;
+
+  for (const stock of stocks) {
+    const stockName = (stock.name || "").trim();
+    if (!stockName) continue;
+    let score = 0;
+    for (const term of searchTerms) {
+      // 完全一致
+      if (stockName === term) score += 100;
+      // 部分一致（どちらかが含む）
+      if (stockName.includes(term) || term.includes(stockName)) score += 50;
+      // 単語ベース一致（3文字以上の単語が含まれてる）
+      const tokens = stockName.split(/[\s　・\-_\u3000]/).filter(t => t.length >= 3);
+      for (const tok of tokens) {
+        if (term.includes(tok)) score += 20;
+      }
+      // 数字パターン一致（地番など）
+      const numbers = stockName.match(/\d+/g) || [];
+      for (const num of numbers) {
+        if (num.length >= 2 && term.includes(num)) score += 10;
+      }
+    }
+    if (score > 0) candidates.push({ stock, score });
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.length > 0 ? candidates[0].stock : null;
+}
+
 // ===================== STOCK PAGE =====================
 function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const currentUser = getCurrentUser();
@@ -3517,6 +3649,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [newViewingComment, setNewViewingComment] = useState({}); // {`${stockId}_${vi}`: text}
   const [editingViewingCommentKey, setEditingViewingCommentKey] = useState(null); // `${stockId}_${vi}_${commentId}`
   const [editingViewingCommentText, setEditingViewingCommentText] = useState("");
+
+  // 🆕 SUUMO/アットホーム反響取り込み state
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importParsed, setImportParsed] = useState(null);
+  const [importTargetStockId, setImportTargetStockId] = useState(null);
 
   // 🆕 pendingNav 受け取り：該当物件にスクロール + ハイライト
   useEffect(() => {
@@ -3853,6 +3991,77 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
     setShowAdd(false); setEditItem(null);
   };
+
+  // 🆕 SUUMO/アットホーム反響取り込み：解析実行
+  const handleParseImport = () => {
+    const parsed = parseInquiryEmail(importText);
+    if (!parsed) {
+      alert("⚠️ メール本文の形式を認識できませんでした\n\nSUUMO・アットホームのお問合せメールをそのまま貼り付けてください。");
+      return;
+    }
+    setImportParsed(parsed);
+    // 自動マッチング
+    const matched = findMatchingStock(parsed, data.stocks || []);
+    setImportTargetStockId(matched ? matched.id : null);
+  };
+
+  // 🆕 解析結果を反響として登録
+  const handleConfirmImport = () => {
+    if (!importParsed) return;
+    if (!importTargetStockId) {
+      alert("⚠️ 物件を選択してください");
+      return;
+    }
+    const today = new Date().toISOString().split("T")[0];
+    const newViewing = {
+      date: today,
+      visitDate: "", visitTime: "",
+      customer: importParsed.customer || "",
+      contact: importParsed.contact || "",
+      email: importParsed.email || "",
+      funding: "",
+      purpose: "",
+      budget: importParsed.propertyPrice || "",
+      people: "",
+      channel: importParsed.channel || "",
+      prospect: "",
+      result: "未実施",
+      nextAction: "",
+      note: [
+        importParsed.note,
+        importParsed.customerAddress ? `📍 顧客住所: ${importParsed.customerAddress}` : "",
+        importParsed.propertyUrl ? `🔗 ${importParsed.propertyUrl}` : "",
+      ].filter(Boolean).join("\n"),
+      comments: [],
+    };
+    const targetName = (data.stocks || []).find(s => s.id === importTargetStockId)?.name || "物件";
+    setData(d => {
+      const next = {
+        ...d,
+        stocks: (d.stocks || []).map(s =>
+          s.id === importTargetStockId
+            ? { ...s, viewings: [newViewing, ...(s.viewings || [])] }
+            : s
+        ),
+      };
+      const target = (d.stocks || []).find(s => s.id === importTargetStockId);
+      return appendLogAndNotify(
+        next,
+        "viewing",
+        "stock",
+        `👀 ${target?.name || "(無題)"} に反響取り込み: ${importParsed.customer || "(名前不明)"} (${importParsed.channel})`,
+        target,
+        { skipPush: false }
+      );
+    });
+    // リセット
+    setShowImport(false);
+    setImportText("");
+    setImportParsed(null);
+    setImportTargetStockId(null);
+    alert(`✅ 反響を「${targetName}」に追加しました`);
+  };
+
   const handleDelete = id => {
     const target = data.stocks.find(s => s.id === id);
     // 保険：削除時の権限チェック
@@ -3870,9 +4079,16 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 8, flexWrap: "wrap" }}>
         <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>🏠 在庫・案件管理</div>
-        <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm(empty); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button style={{
+            background: "#06b6d422", border: `1.5px solid #06b6d4`, color: "#06b6d4",
+            borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontSize: 13,
+            fontFamily: "inherit", fontWeight: 700,
+          }} onClick={() => { setShowImport(true); setImportText(""); setImportParsed(null); setImportTargetStockId(null); }}>📥 反響取込</button>
+          <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm(empty); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
+        </div>
       </div>
 
       {/* ====== 表示モード切替（現在の在庫 / 決済完了 / すべて） ====== */}
@@ -4238,6 +4454,87 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
           </div>
         );
       })}
+      {/* 🆕 SUUMO/アットホーム反響取り込み BottomSheet */}
+      {showImport && (
+        <BottomSheet title="📥 SUUMO/アットホーム反響取り込み" onClose={() => { setShowImport(false); setImportText(""); setImportParsed(null); setImportTargetStockId(null); }}>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>
+              SUUMO / アットホーム のお問合せメール本文を貼り付け
+            </div>
+            <textarea
+              value={importText}
+              onChange={e => setImportText(e.target.value)}
+              placeholder={"メール本文をそのまま貼り付け…\n\n例: SUUMO\n■お客様プロフィール\n氏名（漢字）  ◯◯\n電話番号  090-XXXX-XXXX\n...\n\n例: アットホーム\nお問合せ日時：2026年XX月XX日XX時XX分\n建物名 ：◯◯\nお名前(漢字) ：◯◯\n..."}
+              style={{ ...inp, minHeight: 200, resize: "vertical", fontFamily: "monospace", fontSize: 12 }}
+            />
+            <button
+              onClick={handleParseImport}
+              disabled={!importText.trim()}
+              style={{
+                ...btnStyle(),
+                width: "100%", marginTop: 8, padding: "12px", fontSize: 14,
+                opacity: importText.trim() ? 1 : 0.5,
+              }}>🔍 解析する</button>
+          </div>
+
+          {/* 解析結果 */}
+          {importParsed && (
+            <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 10 }}>
+                ✅ 解析結果（{importParsed.channel}）
+              </div>
+              <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                {importParsed.customer && <div><span style={{ color: C.muted }}>👤 顧客:</span> <span style={{ color: C.text, fontWeight: 700 }}>{importParsed.customer}</span></div>}
+                {importParsed.contact && <div><span style={{ color: C.muted }}>📞 電話:</span> <span style={{ color: C.text }}>{importParsed.contact}</span></div>}
+                {importParsed.email && <div><span style={{ color: C.muted }}>📧 メール:</span> <span style={{ color: C.text }}>{importParsed.email}</span></div>}
+                {importParsed.customerAddress && <div><span style={{ color: C.muted }}>📍 顧客住所:</span> <span style={{ color: C.text }}>{importParsed.customerAddress}</span></div>}
+                {importParsed.propertyName && <div><span style={{ color: C.muted }}>🏠 物件名:</span> <span style={{ color: C.text, fontWeight: 700 }}>{importParsed.propertyName}</span></div>}
+                {importParsed.propertyAddress && <div><span style={{ color: C.muted }}>📍 物件住所:</span> <span style={{ color: C.text }}>{importParsed.propertyAddress}</span></div>}
+                {importParsed.propertyPrice && <div><span style={{ color: C.muted }}>💰 価格:</span> <span style={{ color: C.text }}>{importParsed.propertyPrice}</span></div>}
+                {importParsed.note && <div style={{ marginTop: 4 }}><span style={{ color: C.muted }}>📝 メモ:</span><br /><span style={{ color: C.text, fontSize: 11, lineHeight: 1.5 }}>{importParsed.note}</span></div>}
+              </div>
+
+              {/* 物件マッチング */}
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.borderDim}` }}>
+                <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>どの物件の反響？</div>
+                {importTargetStockId && (() => {
+                  const matched = (data.stocks || []).find(s => s.id === importTargetStockId);
+                  return matched ? (
+                    <div style={{ background: C.success + "22", border: `1.5px solid ${C.success}`, borderRadius: 8, padding: "8px 12px", marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, color: C.success, fontWeight: 700, marginBottom: 3 }}>✅ 自動マッチング</div>
+                      <div style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{matched.name}</div>
+                      <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>担当: {matched.assignee} / {matched.status}</div>
+                    </div>
+                  ) : null;
+                })()}
+                <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
+                  {importTargetStockId ? "違う物件に変更する場合：" : "手動で物件を選択："}
+                </div>
+                <select
+                  value={importTargetStockId || ""}
+                  onChange={e => setImportTargetStockId(e.target.value ? Number(e.target.value) : null)}
+                  style={{ ...inp, fontSize: 12 }}>
+                  <option value="">-- 物件を選択 --</option>
+                  {(data.stocks || []).filter(s => s.status !== "売決完了").map(s => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.assignee} / {s.status})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+
+          {importParsed && (
+            <button
+              onClick={handleConfirmImport}
+              disabled={!importTargetStockId}
+              style={{
+                ...btnStyle("success"),
+                width: "100%", padding: "13px", fontSize: 15, fontWeight: 700,
+                opacity: importTargetStockId ? 1 : 0.5,
+              }}>＋ 反響として追加</button>
+          )}
+        </BottomSheet>
+      )}
       {showAdd && (
         <BottomSheet title={editItem ? "物件編集" : "新規物件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}>          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
           <Field label="物件名"><input style={inp} value={form.name} onChange={f("name")} placeholder="川越市木野目" /></Field>
