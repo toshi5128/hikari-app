@@ -2718,6 +2718,7 @@ function StockPage({ data, setData }) {
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
   const [filterStatuses, setFilterStatuses] = useState([]);
+  const [stockStatusExpanded, setStockStatusExpanded] = useState(false); // ステータス絞り込み折りたたみ
   const [filterMembers, setFilterMembers] = useState([]);
   const [viewMode, setViewMode] = useState("active"); // "active" | "completed" | "all"
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
@@ -2846,8 +2847,87 @@ function StockPage({ data, setData }) {
       <SearchBar value={search} onChange={setSearch} placeholder="物件名・担当者で検索..." />
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>担当者</div>
       <FilterChips options={MEMBERS} value={filterMembers} onChange={setFilterMembers} multi />
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>ステータス</div>
-      <FilterChips options={viewMode === "active" ? STOCK_STATUSES.filter(s => s !== "決済完了") : viewMode === "completed" ? ["決済完了"] : STOCK_STATUSES} value={filterStatuses} onChange={setFilterStatuses} multi />
+
+      {/* 🚦 ステータス絞り込み（折りたたみ式） */}
+      {(() => {
+        const statusOpts = viewMode === "active" ? STOCK_STATUSES.filter(s => s !== "決済完了") : viewMode === "completed" ? ["決済完了"] : STOCK_STATUSES;
+        const stColor = (st) => {
+          if (st.includes("【未】") || st.includes("待ち") || st.includes("【残置物待】")) return C.warn;
+          if (st.includes("【完】") || st === "リフォーム完了" || st === "残置物処理完了" || st === "販売中・内覧対応中") return C.success;
+          if (st === "仕入決済完了" || st === "リフォーム中" || st === "売却手付金受領") return C.purple;
+          if (st === "決済完了") return "#64748b";
+          if (st === "売却契約準備中") return "#06b6d4";
+          if (st === "司法書士連絡済み" || st === "買付受付中") return C.accent;
+          return C.muted;
+        };
+        const hasSelection = filterStatuses.length > 0;
+        
+        return (
+          <div style={{ background: "#0d1422", border: `1px solid ${hasSelection ? C.accent + "55" : "#1a2535"}`, borderRadius: 10, marginTop: 8, marginBottom: 8, overflow: "hidden" }}>
+            <button onClick={() => setStockStatusExpanded(v => !v)} style={{
+              width: "100%", padding: "9px 12px", background: "transparent", border: "none",
+              color: hasSelection ? C.accent : C.muted,
+              fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+            }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                🚦 ステータスで絞り込み
+                {hasSelection && !stockStatusExpanded && (
+                  <span style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                    {filterStatuses.map(st => (
+                      <span key={st} style={{ background: stColor(st), color: "#fff", padding: "2px 7px", borderRadius: 6, fontSize: 10, fontWeight: 700 }}>
+                        {st}
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </span>
+              <span style={{ fontSize: 14, color: C.muted, flexShrink: 0 }}>{stockStatusExpanded ? "▲" : "▼"}</span>
+            </button>
+
+            {stockStatusExpanded && (
+              <div style={{ padding: "0 10px 10px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {statusOpts.map(st => {
+                    const isActive = filterStatuses.includes(st);
+                    const count = (data.stocks || []).filter(s => s.status === st).length;
+                    const color = stColor(st);
+                    return (
+                      <button key={st} onClick={() => {
+                        setFilterStatuses(prev => prev.includes(st) ? prev.filter(s => s !== st) : [...prev, st]);
+                      }} style={{
+                        padding: "5px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+                        background: isActive ? color : C.bg,
+                        color: isActive ? "#fff" : (count > 0 ? color : C.muted),
+                        border: `1.5px solid ${isActive ? color : (count > 0 ? color + "55" : "#1a2535")}`,
+                        fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: isActive ? 700 : 400,
+                      }}>
+                        {isActive ? "✓ " : ""}{st} <span style={{ opacity: 0.7, fontSize: 10 }}>{count}</span>
+                      </button>
+                    );
+                  })}
+                  {filterStatuses.length > 0 && (
+                    <button onClick={() => setFilterStatuses([])} style={{
+                      padding: "5px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+                      background: "transparent", color: C.muted, border: `1.5px solid #1a2535`,
+                      fontFamily: "inherit",
+                    }}>✕ 解除</button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!stockStatusExpanded && hasSelection && (
+              <div style={{ padding: "0 12px 8px" }}>
+                <button onClick={() => setFilterStatuses([])} style={{
+                  background: "transparent", border: "none", color: C.muted,
+                  fontSize: 10, cursor: "pointer", padding: 0, fontFamily: "inherit",
+                }}>✕ ステータス絞り込みを解除</button>
+              </div>
+            )}
+          </div>
+        );
+      })()}
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
       {filtered.map(s => {
         const profit = s.sellPrice - s.buyCost;
