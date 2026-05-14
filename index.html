@@ -1058,17 +1058,26 @@ function MainApp({ onLock, onSwitchUser }) {
     const merged = mergeWithDefault(remote);
     if (!local) return merged;
 
-    // 配列フィールドで「リモートが空 or 少ない」「ローカルが多い」場合、ローカルを優先
-    // これによりSupabase保存失敗時のデータ消失を防ぐ
+    // 🛡️ 配列フィールドで「ローカル限定アイテム」を保護するが、
+    // 「最近60秒以内に作成された ID」だけに限定する（古いアイテムの復活防止）
+    // ID は通常 Date.now() で生成されるので、最近のものだけ保護対象
     const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "activityLog"];
+    const cutoffMs = Date.now() - 60_000; // 60秒以内に作成されたものだけ保護
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
       const remoteArr = Array.isArray(merged[k]) ? merged[k] : [];
-      // ローカルにあってリモートにないIDのアイテムを保護
       const remoteIds = new Set(remoteArr.map(item => item?.id).filter(id => id != null));
-      const protectedItems = localArr.filter(item => item?.id != null && !remoteIds.has(item.id));
+      // 🆕 「ローカルにあってリモートにない」かつ「最近作成された ID」のみ保護
+      const protectedItems = localArr.filter(item => {
+        if (item?.id == null) return false;
+        if (remoteIds.has(item.id)) return false;
+        const idNum = Number(item.id);
+        // ID が timestamp (Date.now()) っぽい数値で、最近のもののみ保護
+        if (Number.isFinite(idNum) && idNum > cutoffMs) return true;
+        return false; // 古いアイテムは「削除済み」とみなしてリモートに従う
+      });
       if (protectedItems.length > 0) {
-        console.log(`[Sync] ${k}: ローカル限定の${protectedItems.length}件を保護してマージ`);
+        console.log(`[Sync] ${k}: 最近の${protectedItems.length}件を保護してマージ（古い未同期アイテムは削除）`);
         merged[k] = [...remoteArr, ...protectedItems];
       }
     });
