@@ -1089,7 +1089,7 @@ function MainApp({ onLock, onSwitchUser }) {
 
       {/* Content */}
       <div style={{ padding: isMapPage ? "0" : "16px 16px 20px" }}>
-        {page === "dashboard" && <Dashboard data={data} setData={setData} />}
+        {page === "dashboard" && <Dashboard data={data} setData={setData} setPage={setPage} setPendingNav={setPendingNav} />}
         {page === "stock" && <StockPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
         {page === "approach" && <ApproachPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
         {page === "jiage" && <JiagePage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
@@ -1471,7 +1471,7 @@ function FilterChips({ options, value, onChange, multi = false }) {
 }
 
 // ===================== DASHBOARD =====================
-function Dashboard({ data, setData }) {
+function Dashboard({ data, setData, setPage, setPendingNav }) {
   const today = new Date().toISOString().split("T")[0];
   const currentYear = new Date().getFullYear();
   // 権限制御用
@@ -1574,6 +1574,35 @@ function Dashboard({ data, setData }) {
     setEventForm({ ...eventEmpty, date: dateStr || calSelectedDate });
     setEditingEvent(null);
     setShowEventForm(true);
+  };
+
+  // 🆕 自動連動予定（地上げ・所有者・在庫の日付・積算表）をタップ時、該当画面へナビゲート
+  const navigateToEvent = (e) => {
+    if (!setPage || !setPendingNav) return;
+    switch (e.type) {
+      case "jiage":
+        setPendingNav({ tab: "jiage", jiageLinkId: e.rawId });
+        setPage("jiage");
+        break;
+      case "owner":
+        setPendingNav({ tab: "jiage", ownerLinkId: e.rawId });
+        setPage("jiage");
+        break;
+      case "sekisan":
+        setPendingNav({ tab: "approach", sub: "cases", sekisanLinkId: e.rawId });
+        setPage("approach");
+        break;
+      case "buyContract":
+      case "buy":
+      case "sellContract":
+      case "sell":
+      case "viewing":
+        setPendingNav({ tab: "stock", stockLinkId: e.rawId });
+        setPage("stock");
+        break;
+      default:
+        break;
+    }
   };
 
   const openEditEvent = (ev) => {
@@ -1785,21 +1814,20 @@ function Dashboard({ data, setData }) {
   const calEvents = useMemo(() => {
     const list = [];
     (data.jiage || []).forEach(j => {
-      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `訪問予定・${j.status}`, assignee: j.assignee });
+      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `訪問予定・${j.status}`, assignee: j.assignee, rawId: j.id });
     });
     (data.owners || []).forEach(o => {
-      if (o.nextFollowDate) list.push({ date: o.nextFollowDate, type: "owner", icon: "👤", color: C.accent, title: o.address || "(無住所)", sub: `所有者フォロー・${o.status}`, assignee: o.assignee });
+      if (o.nextFollowDate) list.push({ date: o.nextFollowDate, type: "owner", icon: "👤", color: C.accent, title: o.address || "(無住所)", sub: `所有者フォロー・${o.status}`, assignee: o.assignee, rawId: o.id });
     });
     (data.sekisan || []).forEach(s => {
-      if (s.createdAt) list.push({ date: s.createdAt, type: "sekisan", icon: "🧮", color: C.danger, title: s.address || "(無住所)", sub: `仕入検討・${s.judgment}`, assignee: s.assignee });
+      if (s.createdAt) list.push({ date: s.createdAt, type: "sekisan", icon: "🧮", color: C.danger, title: s.address || "(無住所)", sub: `仕入検討・${s.judgment}`, assignee: s.assignee, rawId: s.id });
     });
     (data.stocks || []).forEach(s => {
-      if (s.buyContractDate) list.push({ date: s.buyContractDate, type: "buyContract", icon: "📝", color: "#a855f7", title: s.name || "(無題)", sub: "仕入契約", assignee: s.assignee });
-      if (s.buyDate) list.push({ date: s.buyDate, type: "buy", icon: "🏠", color: C.success, title: s.name || "(無題)", sub: "仕入決済", assignee: s.assignee });
-      if (s.sellContractDate) list.push({ date: s.sellContractDate, type: "sellContract", icon: "📋", color: C.accent, title: s.name || "(無題)", sub: "売却契約", assignee: s.assignee });
-      if (s.sellDate) list.push({ date: s.sellDate, type: "sell", icon: "✅", color: C.warn, title: s.name || "(無題)", sub: "売却決済", assignee: s.assignee });
+      if (s.buyContractDate) list.push({ date: s.buyContractDate, type: "buyContract", icon: "📝", color: "#a855f7", title: s.name || "(無題)", sub: "仕入契約", assignee: s.assignee, rawId: s.id });
+      if (s.buyDate) list.push({ date: s.buyDate, type: "buy", icon: "🏠", color: C.success, title: s.name || "(無題)", sub: "仕入決済", assignee: s.assignee, rawId: s.id });
+      if (s.sellContractDate) list.push({ date: s.sellContractDate, type: "sellContract", icon: "📋", color: C.accent, title: s.name || "(無題)", sub: "売却契約", assignee: s.assignee, rawId: s.id });
+      if (s.sellDate) list.push({ date: s.sellDate, type: "sell", icon: "✅", color: C.warn, title: s.name || "(無題)", sub: "売却決済", assignee: s.assignee, rawId: s.id });
       (s.viewings || []).forEach(v => {
-        // 案内日があれば案内日でカレンダー表示、なければ反響日（任意）でなくスキップ
         const eventDate = v.visitDate || "";
         if (eventDate) {
           const tags = [];
@@ -1807,17 +1835,17 @@ function Dashboard({ data, setData }) {
           if (v.purpose) tags.push(`🎯${v.purpose}`);
           if (v.funding) tags.push(`💰${v.funding}`);
           const timePrefix = v.visitTime ? `${v.visitTime} ` : "";
-          // 案内予定の担当者：物件担当者＋「比嘉・下田」（重複除く）
           const assignees = [];
           if (s.assignee) assignees.push(s.assignee);
           if (!assignees.includes("比嘉・下田")) assignees.push("比嘉・下田");
           list.push({
             date: eventDate, type: "viewing", icon: "👀", color: "#06b6d4",
             title: `${timePrefix}${s.name || "(無題)"}`,
-            sub: `案内・${v.customer || "顧客未設定"}${tags.length ? "（" + tags.join(" ") + "）" : ""}${v.note ? " | " + v.note : ""}`,
+            sub: `案内・${v.customer || "顧客未設定"}${tags.length ? "(" + tags.join(" ") + ")" : ""}${v.note ? " | " + v.note : ""}`,
             assignee: s.assignee,
             assignees,
             time: v.visitTime || "",
+            rawId: s.id,  // 🆕 在庫物件の id
           });
         }
       });
@@ -2133,17 +2161,18 @@ function Dashboard({ data, setData }) {
                       fontSize: 11, fontWeight: isToday ? 800 : 600,
                     }}>{d.getDate()}</span>
                   </div>
-                  {/* 予定タイトル（最大2件）- タップで編集 */}
+                  {/* 予定タイトル（最大2件）- タップで編集 or 該当画面へ */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 1, overflow: "hidden" }}>
                     {events.slice(0, 2).map((e, j) => {
                       const customEv = e.isCustom ? (data.customEvents || []).find(ev => ev.id === e.rawId) : null;
-                      const editable = customEv && canEdit(customEv);
+                      const editable = (customEv && canEdit(customEv)) || (!e.isCustom && e.rawId);
                       return (
                         <div
                           key={j}
                           onClick={editable ? (clickEvt) => {
                             clickEvt.stopPropagation();
-                            openEditEvent(customEv);
+                            if (customEv) openEditEvent(customEv);
+                            else navigateToEvent(e);
                           } : undefined}
                           style={{
                             background: e.color + "33", borderLeft: `2px solid ${e.color}`,
@@ -2203,13 +2232,14 @@ function Dashboard({ data, setData }) {
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, overflow: "hidden" }}>
                     {events.slice(0, 6).map((e, j) => {
                       const customEv = e.isCustom ? (data.customEvents || []).find(ev => ev.id === e.rawId) : null;
-                      const editable = customEv && canEdit(customEv);
+                      const editable = (customEv && canEdit(customEv)) || (!e.isCustom && e.rawId);
                       return (
                         <div
                           key={j}
                           onClick={editable ? (clickEvt) => {
                             clickEvt.stopPropagation();
-                            openEditEvent(customEv);
+                            if (customEv) openEditEvent(customEv);
+                            else navigateToEvent(e);
                           } : undefined}
                           style={{
                             background: e.color + "33", borderLeft: `2px solid ${e.color}`,
@@ -2250,10 +2280,13 @@ function Dashboard({ data, setData }) {
             <div style={{ display: "grid", gap: 6 }}>
               {selectedEvents.map((e, i) => {
                 const customEv = e.isCustom ? (data.customEvents || []).find(ev => ev.id === e.rawId) : null;
-                const editable = customEv && canEdit(customEv);
+                const editable = (customEv && canEdit(customEv)) || (!e.isCustom && e.rawId);
                 return (
                 <div key={i} 
-                  onClick={editable ? () => openEditEvent(customEv) : undefined}
+                  onClick={editable ? () => {
+                    if (customEv) openEditEvent(customEv);
+                    else navigateToEvent(e);
+                  } : undefined}
                   style={{
                   display: "flex", alignItems: "center", gap: 10,
                   background: C.bg, borderLeft: `4px solid ${e.color}`,
