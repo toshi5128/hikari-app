@@ -316,7 +316,27 @@ function stagnantInfo(buyDateStr) {
   else { color = "#10b981"; level = "🟢"; }
   return { days: d, color, level };
 }
-const STOCK_STATUSES = ["見込", "仕入契約", "仕入決済", "リフォーム中", "リフォーム待ち", "売却契約準備中", "売却契約", "契約書作成中", "売却決済"];
+const STOCK_STATUSES = [
+  "見込",
+  // 仕入準備
+  "仕入役調【未】", "仕入役調【完】",
+  // 仕入契約
+  "仕入契約書【未】", "仕入契約書【完】",
+  // 仕入決済・登記
+  "仕入決済完了", "司法書士連絡済み", "相続登記待ち",
+  // 残置物処理
+  "残置物処理待ち", "残置物処理完了",
+  // リフォーム
+  "リフォーム待ち", "リフォーム中", "リフォーム完了",
+  // 販売準備（入稿）
+  "入稿【未】", "入稿【完】", "未入稿【残置物待】",
+  // 販売中
+  "販売中・内覧対応中", "買付受付中",
+  // 売却契約
+  "売却契約準備中", "売却契約書作成【未】", "売却契約書【完】",
+  // 売却決済
+  "売却手付金受領", "売却決済"
+];
 const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "断られた", "NG", "仕入れ完了"];
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
 const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "地上初訪", "地上再訪", "新規地上"];
@@ -1067,10 +1087,21 @@ function MainApp({ onLock, onSwitchUser }) {
         }
       }
 
-      // 🆕 ② 旧ステータス値の自動マイグレーション
-      // 仕入契約済 → 仕入契約 / 売却契約完了 → 売却契約 / 決済完了 → 売却決済
+      // 🆕 ② 旧ステータス値の自動マイグレーション（9段階 → 23段階）
+      // 古いステータスを新しい詳細なステータスに自動変換
       if (d.stocks && d.stocks.length > 0) {
-        const statusMap = { "仕入契約済": "仕入契約", "売却契約完了": "売却契約", "決済完了": "売却決済" };
+        const statusMap = {
+          // 9段階版 → 23段階版
+          "仕入契約": "仕入契約書【完】",
+          "仕入決済": "仕入決済完了",
+          "売却契約": "売却契約書【完】",
+          "契約書作成中": "売却契約書作成【未】",
+          // 旧名称（最古データ用）
+          "仕入契約済": "仕入契約書【完】",
+          "売却契約完了": "売却契約書【完】",
+          "決済完了": "売却決済",
+          // 「リフォーム中」「リフォーム待ち」「売却契約準備中」「見込」「売却決済」はそのまま
+        };
         const migrated = d.stocks.map(s => {
           if (statusMap[s.status]) {
             return { ...s, status: statusMap[s.status] };
@@ -1079,7 +1110,7 @@ function MainApp({ onLock, onSwitchUser }) {
         });
         const migratedCount = migrated.filter((s, i) => s.status !== d.stocks[i].status).length;
         if (migratedCount > 0) {
-          console.log(`[Migration] ${migratedCount} 件の在庫ステータスを新名称に変換`);
+          console.log(`[Migration] ${migratedCount} 件の在庫ステータスを23段階版に変換`);
           next.stocks = migrated;
           changed = true;
         }
@@ -1516,8 +1547,29 @@ function ManualPinMap({ address, onCancel, onSelect }) {
 
 function StatusTag({ status }) {
   const map = {
-    "見込": C.success, "仕入契約": C.accent, "仕入決済": "#0ea5e9", "リフォーム中": C.purple, "リフォーム待ち": C.warn,
-    "売却契約準備中": "#06b6d4", "売却契約": "#10b981", "契約書作成中": C.warn, "売却決済": "#64748b",
+    "見込": C.success,
+    // 仕入準備
+    "仕入役調【未】": C.warn, "仕入役調【完】": C.success,
+    // 仕入契約
+    "仕入契約書【未】": C.warn, "仕入契約書【完】": C.accent,
+    // 仕入決済・登記
+    "仕入決済完了": "#0ea5e9", "司法書士連絡済み": "#06b6d4", "相続登記待ち": C.warn,
+    // 残置物処理
+    "残置物処理待ち": C.warn, "残置物処理完了": C.success,
+    // リフォーム
+    "リフォーム待ち": C.warn, "リフォーム中": C.purple, "リフォーム完了": C.success,
+    // 販売準備（入稿）
+    "入稿【未】": C.warn, "入稿【完】": C.success, "未入稿【残置物待】": C.warn,
+    // 販売中
+    "販売中・内覧対応中": C.success, "買付受付中": C.accent,
+    // 売却契約
+    "売却契約準備中": "#06b6d4", "売却契約書作成【未】": C.warn, "売却契約書【完】": "#10b981",
+    // 売却決済
+    "売却手付金受領": C.purple, "売却決済": "#64748b",
+    // 旧ステータス（互換用）
+    "仕入契約": C.accent, "仕入決済": "#0ea5e9", "売却契約": "#10b981", "契約書作成中": C.warn,
+    "仕入契約済": C.accent, "売却契約完了": "#10b981", "決済完了": "#64748b",
+    // 地上げ・所有者ステータス
     "未訪問": C.muted, "訪問済": C.accent, "不在": C.warn, "NG": C.danger, "居住している": "#64748b",
     "検討中": C.warn, "興味あり": C.success, "断られた": C.danger, "交渉中": C.purple, "仕入れ完了": C.success,
     "価格交渉中": C.accent, "見送り": C.danger, "成約": C.success,
@@ -3410,6 +3462,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState("");
   const [filterStatuses, setFilterStatuses] = useState([]);
+  // 🆕 ステータスフィルターの折りたたみ（23段階で長いのでデフォルト閉じる）
+  const [statusFilterExpanded, setStatusFilterExpanded] = useState(false);
   const [filterMembers, setFilterMembers] = useState([]);
   const [viewMode, setViewMode] = useState("active"); // "active" | "completed" | "all"
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
@@ -3649,24 +3703,38 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       viewings: form.viewings || [],
     };
 
-    // 🆕 日付入力でステータス自動連動（最も進んだ日付に合わせて）
+    // 🆕 日付入力でステータス自動連動（最も進んだ日付に合わせて、23段階版）
     // 売却決済日あり → 売却決済
-    // 売却契約日あり → 売却契約
-    // 仕入決済日あり → 仕入決済
-    // 仕入契約日あり → 仕入契約
+    // 売却契約日あり → 売却契約書【完】
+    // 仕入決済日あり → 仕入決済完了
+    // 仕入契約日あり → 仕入契約書【完】
+    // ※ 中間ステータス（リフォーム中・待ち、入稿、販売中など）を手動設定してる場合は維持
     if (item.sellDate) {
       item.status = "売却決済";
     } else if (item.sellContractDate) {
-      item.status = "売却契約";
+      // 売却決済前の中間ステータスは維持
+      const keepStatusesAfterSellContract = ["売却手付金受領"];
+      if (!keepStatusesAfterSellContract.includes(item.status)) {
+        item.status = "売却契約書【完】";
+      }
     } else if (item.buyDate) {
-      // 既に「リフォーム中」「リフォーム待ち」「売却契約準備中」「契約書作成中」の場合は維持
-      const keepStatuses = ["リフォーム中", "リフォーム待ち", "売却契約準備中", "契約書作成中"];
+      // 仕入決済以降の中間ステータスは維持
+      const keepStatuses = [
+        "司法書士連絡済み", "相続登記待ち",
+        "残置物処理待ち", "残置物処理完了",
+        "リフォーム待ち", "リフォーム中", "リフォーム完了",
+        "入稿【未】", "入稿【完】", "未入稿【残置物待】",
+        "販売中・内覧対応中", "買付受付中",
+        "売却契約準備中", "売却契約書作成【未】",
+      ];
       if (!keepStatuses.includes(item.status)) {
-        item.status = "仕入決済";
+        item.status = "仕入決済完了";
       }
     } else if (item.buyContractDate) {
-      if (item.status === "見込" || !item.status) {
-        item.status = "仕入契約";
+      // 仕入契約前の段階だけ自動更新（「仕入役調」段階は維持）
+      const upgradeFrom = ["見込", "仕入役調【未】", "仕入役調【完】", "仕入契約書【未】"];
+      if (upgradeFrom.includes(item.status) || !item.status) {
+        item.status = "仕入契約書【完】";
       }
     }
 
@@ -3799,8 +3867,38 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       <SearchBar value={search} onChange={setSearch} placeholder="物件名・担当者で検索..." />
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>担当者</div>
       <FilterChips options={MEMBERS} value={filterMembers} onChange={setFilterMembers} multi />
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>ステータス</div>
-      <FilterChips options={viewMode === "active" ? STOCK_STATUSES.filter(s => s !== "売却決済") : viewMode === "completed" ? ["売却決済"] : STOCK_STATUSES} value={filterStatuses} onChange={setFilterStatuses} multi />
+      {/* 🆕 ステータスフィルター（折りたたみ式） */}
+      <div style={{ marginBottom: 8 }}>
+        <button
+          onClick={() => setStatusFilterExpanded(p => !p)}
+          style={{
+            width: "100%", background: "none", border: "none",
+            display: "flex", alignItems: "center", gap: 6,
+            cursor: "pointer", fontFamily: "inherit", padding: "4px 0",
+          }}>
+          <span style={{ fontSize: 12, color: C.muted }}>ステータス</span>
+          {filterStatuses.length > 0 && (
+            <span style={{ background: C.accent + "33", color: C.accent, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+              {filterStatuses.length}個選択中
+            </span>
+          )}
+          <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11, fontWeight: 700 }}>{statusFilterExpanded ? "▲ 閉じる" : "▼ 開く"}</span>
+        </button>
+        {statusFilterExpanded && (
+          <div style={{ marginTop: 6 }}>
+            <FilterChips options={viewMode === "active" ? STOCK_STATUSES.filter(s => s !== "売却決済") : viewMode === "completed" ? ["売却決済"] : STOCK_STATUSES} value={filterStatuses} onChange={setFilterStatuses} multi />
+            {filterStatuses.length > 0 && (
+              <button
+                onClick={() => setFilterStatuses([])}
+                style={{
+                  background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger,
+                  borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer",
+                  fontFamily: "inherit", marginTop: 4,
+                }}>✕ クリア</button>
+            )}
+          </div>
+        )}
+      </div>
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
       {filtered.map(s => {
         const profit = s.sellPrice - s.buyCost;
