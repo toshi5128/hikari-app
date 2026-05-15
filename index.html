@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v7-mediation";
+const APP_VERSION = "2026-05-16-v8-dashboard";
 console.log(`[ひかり不動産] ✅ バージョン: ${APP_VERSION}`);
 const {useState,useMemo,useEffect,useRef}=React;
 
@@ -465,6 +465,56 @@ function getNotifyMembers(data) {
   }
   return ["下田", "比嘉"];
 }
+
+// 🆕 メンバー本人向けの「毎日のアラート」集計
+//   ・自分が担当の：期限切れフォロー（地上げ・所有者）／滞留在庫／DM未送付／媒介更新期限／媒介滞留
+//   ・アプリ起動時 or 日付が変わったタイミングで1日1回プッシュ通知する
+function computeMyDailyAlerts(data, member, todayStr) {
+  if (!member || !data) return null;
+  const isMine = (assignee) => assignee === member;
+  const overdueJiage = (data.jiage || []).filter(j =>
+    j.assignee && isMine(j.assignee) &&
+    j.nextVisit && j.nextVisit < todayStr &&
+    !["NG", "断られた", "仕入れ完了", "媒介"].includes(j.status)
+  );
+  const overdueOwner = (data.owners || []).filter(o =>
+    o.assignee && isMine(o.assignee) &&
+    o.nextFollowDate && o.nextFollowDate < todayStr &&
+    !["NG", "断られた", "仕入れ完了"].includes(o.status)
+  );
+  const stagnant180 = (data.stocks || []).filter(s => {
+    if (!isMine(s.assignee) || s.status === "売決完了") return false;
+    if (!s.buyDate) return false;
+    const days = Math.floor((new Date(todayStr) - new Date(s.buyDate + "T00:00:00")) / 86400000);
+    return days >= 180;
+  });
+  const stagnant90 = (data.stocks || []).filter(s => {
+    if (!isMine(s.assignee) || s.status === "売決完了") return false;
+    if (!s.buyDate) return false;
+    const days = Math.floor((new Date(todayStr) - new Date(s.buyDate + "T00:00:00")) / 86400000);
+    return days >= 90 && days < 180;
+  });
+  const dmUn = (data.jiage || []).filter(j => isMine(j.assignee) && j.dm === "未");
+  const mediationStagnant = (data.mediations || []).filter(m => {
+    if (!isMine(m.assignee)) return false;
+    if (!["売出中", "媒介契約"].includes(m.status)) return false;
+    if (!m.contractDate) return false;
+    const days = Math.floor((new Date(todayStr) - new Date(m.contractDate + "T00:00:00")) / 86400000);
+    return days >= 90;
+  });
+  const mediationRenewSoon = (data.mediations || []).filter(m => {
+    if (!isMine(m.assignee)) return false;
+    if (!m.contractDate) return false;
+    if (m.saleContractDate) return false;
+    if (!["専属専任", "専任"].includes(m.mediationType)) return false;
+    const expiry = new Date(m.contractDate + "T00:00:00");
+    expiry.setMonth(expiry.getMonth() + 3);
+    const days = Math.floor((expiry - new Date(todayStr)) / 86400000);
+    return days <= 14;
+  });
+  const total = overdueJiage.length + overdueOwner.length + stagnant180.length + stagnant90.length + dmUn.length + mediationStagnant.length + mediationRenewSoon.length;
+  return { overdueJiage, overdueOwner, stagnant180, stagnant90, dmUn, mediationStagnant, mediationRenewSoon, total };
+}
 // item を渡すと、その関係者（担当者・作成者・割当者）も通知対象に含めて返す
 function getNotifyTargets(data, excludeUser, item = null) {
   const targets = new Set(getNotifyMembers(data));
@@ -541,7 +591,7 @@ const DEFAULT_DATA = {
   sekisan: [],
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
   memberGoals: {},
-  annualGoals: { sell: 30000, profit: 6000, buyCount: 30 }, // 売上3億万、利益6000万、仕入30件
+  annualGoals: { sell: 30000, profit: 6000, buyCount: 30, brokerFee: 1500 }, // 売上3億万、利益6000万、仕入30件、仲介手数料1500万
   activityLog: [], // 操作履歴（最新200件保持）
   customEvents: [], // カスタム予定（自由入力）
   adminMember: "下田", // 管理者メンバー（全員のパスワード変更可能）
@@ -1550,6 +1600,43 @@ function MainApp({ onLock, onSwitchUser }) {
     return () => clearInterval(timer);
   }, []);
 
+  // 🆕 毎日のアラート通知：当日まだ未送信なら、ログインユーザー本人の担当アラートをまとめてプッシュ
+  //   ・期限切れフォロー／滞留在庫／DM未／媒介更新期限／媒介滞留 を本人のみに通知
+  //   ・1日1回のみ（localStorage で当日マーカーを保持）
+  useEffect(() => {
+    const me = getCurrentUser();
+    if (!me) return;
+    const todayStr = new Date().toISOString().split("T")[0];
+    const markerKey = `hikari_daily_alert_${me}_${todayStr}`;
+    if (localStorage.getItem(markerKey)) return; // 当日すでに通知済み
+    // 起動直後の連打を避け、データ初期ロード後少し遅らせて実行
+    const timer = setTimeout(() => {
+      const cur = data;
+      if (!cur || !Array.isArray(cur.jiage)) return;
+      const alerts = computeMyDailyAlerts(cur, me, todayStr);
+      if (!alerts || alerts.total === 0) {
+        // アラート無しでも当日マーカーを立てる（その日に何度も再評価しないため）
+        try { localStorage.setItem(markerKey, "1"); } catch {}
+        return;
+      }
+      const parts = [];
+      if (alerts.overdueJiage.length + alerts.overdueOwner.length > 0) parts.push(`⚠️ 期限切れフォロー ${alerts.overdueJiage.length + alerts.overdueOwner.length}件`);
+      if (alerts.stagnant180.length > 0) parts.push(`🔴 180日超滞留 ${alerts.stagnant180.length}件`);
+      if (alerts.stagnant90.length > 0) parts.push(`🟡 90日超滞留 ${alerts.stagnant90.length}件`);
+      if (alerts.dmUn.length > 0) parts.push(`📩 DM未送付 ${alerts.dmUn.length}件`);
+      if (alerts.mediationRenewSoon.length > 0) parts.push(`🔄 媒介更新期限14日以内 ${alerts.mediationRenewSoon.length}件`);
+      if (alerts.mediationStagnant.length > 0) parts.push(`🐢 仲介滞留90日超 ${alerts.mediationStagnant.length}件`);
+      sendPushNotification(
+        [me],
+        `🔔 今日の要対応アラート（${alerts.total}件）`,
+        parts.join("\n"),
+        { tag: `hikari-daily-alert-${me}-${todayStr}`, data: { tab: 'cases' }, tab: 'cases' }
+      );
+      try { localStorage.setItem(markerKey, "1"); } catch {}
+    }, 8000); // 8秒：データロード＆マージ完了を待つ
+    return () => clearTimeout(timer);
+  }, [data]);
+
   const setData = updater => {
     setDataRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
@@ -2162,6 +2249,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     sell: String((data.annualGoals?.sell) ?? 30000),
     profit: String((data.annualGoals?.profit) ?? 6000),
     buyCount: String((data.annualGoals?.buyCount) ?? 30),
+    brokerFee: String((data.annualGoals?.brokerFee) ?? 1500),
   });
 
   // ===== クイック編集用 state =====
@@ -2819,6 +2907,11 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const yearSell = yearCompleted.reduce((a, s) => a + nv(s.sellPrice), 0);
   const yearProfit = yearCompleted.reduce((a, s) => a + (nv(s.sellPrice) - nv(s.buyCost)), 0);
+  // 🆕 年間 仲介手数料：仲介案件のうち今年中に決済（settleDate）された案件の brokerFee 合計
+  const yearMediationsSettled = (data.mediations || []).filter(m =>
+    m.settleDate && m.settleDate.startsWith(String(selectedYear))
+  );
+  const yearBrokerFee = yearMediationsSettled.reduce((a, m) => a + nv(m.brokerFee), 0);
   const avgProfit = yearCompleted.length > 0 ? yearProfit / yearCompleted.length : 0;
   const avgProfitRate = yearCompleted.length > 0
     ? yearCompleted.reduce((a, s) => {
@@ -2832,15 +2925,17 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       const ym = `${selectedYear}-${String(m).padStart(2, "0")}`;
       const sold = data.stocks.filter(s => (s.sellDate || "").startsWith(ym));
       const bought = data.stocks.filter(s => (s.buyDate || "").startsWith(ym));
+      const medSettled = (data.mediations || []).filter(med => (med.settleDate || "").startsWith(ym));
       return {
         month: m + "月",
         sell: sold.reduce((a, s) => a + nv(s.sellPrice), 0) / 10000,
         profit: sold.reduce((a, s) => a + (nv(s.sellPrice) - nv(s.buyCost)), 0) / 10000,
+        brokerFee: medSettled.reduce((a, med) => a + nv(med.brokerFee), 0) / 10000,
         sellCount: sold.filter(s => s.status === "売決完了").length,
         buyCount: bought.length,
       };
     });
-  }, [data.stocks, selectedYear]);
+  }, [data.stocks, data.mediations, selectedYear]);
 
   const memberData = useMemo(() => {
     return MEMBERS.map(m => {
@@ -2850,9 +2945,14 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       const sell = done.reduce((a, s) => a + nv(s.sellPrice), 0);
       const profitRate = done.length > 0
         ? done.reduce((a, s) => { const sp = nv(s.sellPrice); const bc = nv(s.buyCost); return a + (sp > 0 ? (sp - bc) / sp * 100 : 0); }, 0) / done.length : 0;
-      return { name: m, 売上万: Math.round(sell / 10000), 利益万: Math.round(profit / 10000), 仕入件数: bought.length, 売却件数: done.length, 利益率: Math.round(profitRate * 10) / 10 };
-    }).filter(m => m.仕入件数 > 0 || m.売却件数 > 0);
-  }, [data.stocks, selectedYear]);
+      // 🆕 仲介手数料（決済済み仲介案件）
+      const myMedSettled = yearMediationsSettled.filter(med => med.assignee === m);
+      const brokerFee = myMedSettled.reduce((a, med) => a + nv(med.brokerFee), 0);
+      const total = profit + brokerFee; // ランキング用：利益 + 仲介手数料
+      return { name: m, 売上万: Math.round(sell / 10000), 利益万: Math.round(profit / 10000), 仲介手数料万: Math.round(brokerFee / 10000), 仕入件数: bought.length, 売却件数: done.length, 仲介決済件数: myMedSettled.length, 利益率: Math.round(profitRate * 10) / 10, _total: total };
+    }).filter(m => m.仕入件数 > 0 || m.売却件数 > 0 || m.仲介決済件数 > 0)
+      .sort((a, b) => b._total - a._total); // 🆕 利益+仲介手数料の合計でランキング
+  }, [data.stocks, data.mediations, selectedYear]);
 
   const statusData = useMemo(() => {
     const map = {};
@@ -3479,19 +3579,23 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           <StatCard icon="✅" label="売却件数" value={yearCompleted.length + "件"} color={C.success} />
           <StatCard icon="📦" label="在庫" value={active.length + "件"} color={C.muted} />
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
           <StatCard icon="💡" label="平均利益" value={(avgProfit / 10000).toFixed(0) + "万"} color={C.purple} sub="1件あたり" />
           <StatCard icon="📊" label="平均利益率" value={avgProfitRate.toFixed(1) + "%"} color={avgProfitRate > 20 ? C.success : C.warn} sub="売却完了分" />
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
+          <StatCard icon="🤝" label="年間 仲介手数料" value={(yearBrokerFee / 10000).toFixed(0) + "万"} color={C.purple} sub={`決済${yearMediationsSettled.length}件`} />
         </div>
       </div>
 
       {/* 年間目標達成率ゲージ */}
       {selectedYear === currentYear && (() => {
-        const goals = data.annualGoals || { sell: 30000, profit: 6000, buyCount: 30 };
+        const goals = { sell: 30000, profit: 6000, buyCount: 30, brokerFee: 1500, ...(data.annualGoals || {}) };
         const monthsPassed = new Date().getMonth() + 1; // 1-12
         const items = [
           { label: "売上", current: Math.round(yearSell / 10000), goal: goals.sell, unit: "万", color: C.warn, icon: "💰" },
           { label: "利益", current: Math.round(yearProfit / 10000), goal: goals.profit, unit: "万", color: C.success, icon: "📈" },
+          { label: "仲介手数料", current: Math.round(yearBrokerFee / 10000), goal: goals.brokerFee, unit: "万", color: C.purple, icon: "🤝" },
           { label: "仕入件数", current: yearBought.length, goal: goals.buyCount, unit: "件", color: C.accent, icon: "🏠" },
         ];
         return (
@@ -3499,7 +3603,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>🎯 年間目標達成率（{currentYear}年）</div>
               {isAdmin ? (
-                <button onClick={() => { setGoalForm({ sell: String(goals.sell), profit: String(goals.profit), buyCount: String(goals.buyCount) }); setShowGoalEdit(true); }} style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11 }}>目標編集</button>
+                <button onClick={() => { setGoalForm({ sell: String(goals.sell), profit: String(goals.profit), buyCount: String(goals.buyCount), brokerFee: String(goals.brokerFee) }); setShowGoalEdit(true); }} style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11 }}>目標編集</button>
               ) : (
                 <span style={{ color: C.muted, fontSize: 10 }}>👑管理者のみ編集可</span>
               )}
@@ -3546,11 +3650,14 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           <Field label="年間仕入件数目標（件）">
             <input type="text" inputMode="numeric" style={inp} value={goalForm.buyCount} onChange={e => setGoalForm(p => ({ ...p, buyCount: e.target.value.replace(/[^0-9]/g, "") }))} placeholder="30" />
           </Field>
+          <Field label="年間仲介手数料目標（万円）">
+            <input type="text" inputMode="numeric" style={inp} value={goalForm.brokerFee || ""} onChange={e => setGoalForm(p => ({ ...p, brokerFee: e.target.value.replace(/[^0-9]/g, "") }))} placeholder="1500" />
+          </Field>
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setShowGoalEdit(false)}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2 }} onClick={() => {
               if (!isAdmin) { alert("⚠️ 年間目標の編集は管理者のみ可能です"); setShowGoalEdit(false); return; }
-              setData(d => ({ ...d, annualGoals: { sell: Number(goalForm.sell) || 0, profit: Number(goalForm.profit) || 0, buyCount: Number(goalForm.buyCount) || 0 } }));
+              setData(d => ({ ...d, annualGoals: { sell: Number(goalForm.sell) || 0, profit: Number(goalForm.profit) || 0, buyCount: Number(goalForm.buyCount) || 0, brokerFee: Number(goalForm.brokerFee) || 0 } }));
               setShowGoalEdit(false);
             }}>保存する</button>
           </div>
@@ -3569,10 +3676,11 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
             <Tooltip contentStyle={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12 }} formatter={(v) => v.toFixed(0) + "万"} />
             <Bar dataKey="sell" name="売上" fill={C.accent} radius={[3, 3, 0, 0]} opacity={0.7} />
             <Bar dataKey="profit" name="利益" fill={C.success} radius={[3, 3, 0, 0]} />
+            <Bar dataKey="brokerFee" name="仲介手数料" fill={C.purple} radius={[3, 3, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
         <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 6 }}>
-          {[["売上", C.accent, 0.7], ["利益", C.success, 1]].map(([l, c, o]) => (
+          {[["売上", C.accent, 0.7], ["利益", C.success, 1], ["仲介手数料", C.purple, 1]].map(([l, c, o]) => (
             <div key={l} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: C.muted }}>
               <div style={{ width: 10, height: 10, borderRadius: 2, background: c, opacity: o }} />{l}
             </div>
@@ -3616,14 +3724,19 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
             </BarChart>
           </ResponsiveContainer>
           <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
-            {memberData.map(m => (
+            {memberData.map((m, idx) => {
+              const rankIcon = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `${idx + 1}位`;
+              return (
               <div key={m.name} style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: "12px 14px" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                  <MemberTag name={m.name} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: idx < 3 ? C.warn : C.muted, minWidth: 30 }}>{rankIcon}</span>
+                    <MemberTag name={m.name} />
+                  </div>
                   <span style={{ color: m.利益率 > 20 ? C.success : C.warn, fontSize: 12, fontWeight: 700 }}>利益率 {m.利益率}%</span>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6 }}>
-                  {[["売上", m.売上万 + "万", C.warn], ["利益", m.利益万 + "万", C.success], ["仕入", m.仕入件数 + "件", C.accent], ["売却", m.売却件数 + "件", C.success]].map(([l, v, c]) => (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 6 }}>
+                  {[["売上", m.売上万 + "万", C.warn], ["利益", m.利益万 + "万", C.success], ["仲介手数料", m.仲介手数料万 + "万", C.purple], ["仕入", m.仕入件数 + "件", C.accent], ["売却", m.売却件数 + "件", C.success]].map(([l, v, c]) => (
                     <div key={l} style={{ background: C.cardBg, borderRadius: 8, padding: "6px", textAlign: "center" }}>
                       <div style={{ color: C.muted, fontSize: 10 }}>{l}</div>
                       <div style={{ color: c, fontWeight: 700, fontSize: 13 }}>{v}</div>
@@ -3631,7 +3744,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                   ))}
                 </div>
               </div>
-            ))}
+            );})}
           </div>
         </div>
       )}
@@ -4090,6 +4203,23 @@ function MediationView({ data, setData, dealType, setDealType }) {
           memo: `${item.mediationType}媒介（${isSenzoku ? "1週間に1回以上" : "2週間に1回以上"}・宅建業法）\n担当: ${item.assignee}\n売主: ${item.seller || "—"}`,
           mediationLinkId: item.id,
           color: "#f59e0b",
+        });
+      }
+      // 🆕 媒介契約更新期限（契約日+3ヶ月）。売買契約日が未入力の時だけ表示。
+      //   ・宅建業法上、専属専任・専任媒介契約の有効期間は3ヶ月以内。
+      //   ・期限を過ぎても自動更新はされず、再契約が必要。
+      if (!item.saleContractDate) {
+        const expiryD = new Date(ct + "T00:00:00");
+        expiryD.setMonth(expiryD.getMonth() + 3);
+        evts.push({
+          id: Date.now() + 999,
+          date: expiryD.toISOString().split("T")[0],
+          time: "10:00",
+          title: `🔄 媒介契約更新期限: ${item.name || "(無題)"}`,
+          assignees: notifyAssignees,
+          memo: `${item.mediationType}媒介の3ヶ月期限（宅建業法）\n担当: ${item.assignee}\n売主: ${item.seller || "—"}\n更新する場合は新たに媒介契約を締結する必要があります。`,
+          mediationLinkId: item.id,
+          color: "#ef4444",
         });
       }
       return evts;
@@ -6652,8 +6782,25 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
       if (s.judgment !== "熱い") return false;
       return !(data.stocks || []).some(st => st.fromSekisanId === s.id);
     }));
-    return { overdueJiage, overdueOwner, stagnant90, stagnant180, dmUn, hotNotPurchased };
-  }, [data.jiage, data.owners, data.stocks, data.sekisan, casesMember, today]);
+    // 🆕 仲介案件の滞留：売出中のまま媒介契約日から90日超
+    const mediationStagnant = filterByMember((data.mediations || []).filter(m => {
+      if (!["売出中", "媒介契約"].includes(m.status)) return false;
+      if (!m.contractDate) return false;
+      const days = Math.floor((new Date(today) - new Date(m.contractDate + "T00:00:00")) / 86400000);
+      return days >= 90;
+    }));
+    // 🆕 媒介契約更新期限（契約日+3ヶ月）が14日以内 or 過ぎている案件
+    const mediationRenewSoon = filterByMember((data.mediations || []).filter(m => {
+      if (!m.contractDate) return false;
+      if (m.saleContractDate) return false;
+      if (!["専属専任", "専任"].includes(m.mediationType)) return false;
+      const expiry = new Date(m.contractDate + "T00:00:00");
+      expiry.setMonth(expiry.getMonth() + 3);
+      const days = Math.floor((expiry - new Date(today)) / 86400000);
+      return days <= 14;
+    }));
+    return { overdueJiage, overdueOwner, stagnant90, stagnant180, dmUn, hotNotPurchased, mediationStagnant, mediationRenewSoon };
+  }, [data.jiage, data.owners, data.stocks, data.sekisan, data.mediations, casesMember, today]);
 
   const weekActivity = useMemo(() => {
     // 選択月の集計（casesMonth に従う）
@@ -6670,6 +6817,40 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
     const currentMediation = filterByMember((data.jiage || []).filter(j => j.status === "媒介"));
     return { newSekisan, newBuyContract, newPurchase, newSellContract, newCompleted, currentKentou, currentHot, currentMediation };
   }, [data.sekisan, data.stocks, data.jiage, casesMember, casesMonth]);
+
+  // 🆕 反響ファネル分析：選択月の反響を集計（反響→案内→好印象→成約）＋媒体別成績
+  const viewingsFunnel = useMemo(() => {
+    const ym = casesMonth;
+    const allViewings = [];
+    (data.stocks || []).forEach(s => {
+      (s.viewings || []).forEach(v => allViewings.push({ ...v, _parentAssignee: s.assignee, _parentSold: s.status === "売決完了" }));
+    });
+    (data.mediations || []).forEach(m => {
+      (m.viewings || []).forEach(v => allViewings.push({ ...v, _parentAssignee: m.assignee, _parentSold: m.status === "決済完了" }));
+    });
+    let scoped = allViewings.filter(v => (v.date || "").startsWith(ym));
+    if (casesMember !== "__ALL__") scoped = scoped.filter(v => v._parentAssignee === casesMember);
+    const classify = (ch) => {
+      const c = ch || "";
+      if (c.includes("SUUMO")) return "SUUMO";
+      if (c.includes("アットホーム")) return "アットホーム";
+      if (c === "直接") return "直接";
+      if (c === "紹介") return "紹介";
+      if (c.includes("HOME") || c === "その他ポータル" || c === "仲介業者経由") return "その他ポータル";
+      return "未設定";
+    };
+    const buckets = {};
+    const overall = { total: 0, visit: 0, good: 0, deal: 0 };
+    scoped.forEach(v => {
+      const ch = classify(v.channel);
+      if (!buckets[ch]) buckets[ch] = { total: 0, visit: 0, good: 0, deal: 0 };
+      buckets[ch].total++; overall.total++;
+      if (v.visitDate) { buckets[ch].visit++; overall.visit++; }
+      if (v.result === "好印象") { buckets[ch].good++; overall.good++; }
+      if (v._parentSold) { buckets[ch].deal++; overall.deal++; }
+    });
+    return { overall, buckets };
+  }, [data.stocks, data.mediations, casesMonth, casesMember]);
 
   // 過去12ヶ月の選択肢
   const casesMonthOptions = useMemo(() => {
@@ -6860,6 +7041,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                 { label: "90〜180日滞留在庫", count: alerts.stagnant90.length, color: C.warn, icon: "🟡", desc: "販売促進を検討" },
                 { label: "DM未送付の地上げ", count: alerts.dmUn.length, color: C.warn, icon: "📩", desc: "1次アタックがまだの案件" },
                 { label: "「熱い」判定で仕入未確定", count: alerts.hotNotPurchased.length, color: C.danger, icon: "🔥", desc: "積算は終わってるが在庫転記してない" },
+                { label: "媒介契約更新期限14日以内", count: alerts.mediationRenewSoon.length, color: C.danger, icon: "🔄", desc: "専属専任・専任は3ヶ月以内。更新可否を判断" },
+                { label: "売出中・媒介契約のまま90日超", count: alerts.mediationStagnant.length, color: C.warn, icon: "🐢", desc: "価格・販売戦略の見直しを検討" },
               ];
               const total = alertList.reduce((a, b) => a + b.count, 0);
               if (total === 0) {
@@ -7178,6 +7361,75 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               <div style={{ marginTop: 10, fontSize: 11, color: C.muted, textAlign: "center" }}>
                 ※ 全メンバー合算。担当者を選ぶと個別の動きが見えます。
               </div>
+            )}
+          </div>
+
+          {/* ========== 段4：反響ファネル分析 ========== */}
+          <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 6 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.purple }}>👀 反響ファネル分析（{casesMonth.replace("-", "年")}月）</div>
+              <span style={{ fontSize: 10, color: C.muted }}>反響 → 案内 → 好印象 → 成約</span>
+            </div>
+            {viewingsFunnel.overall.total === 0 ? (
+              <div style={{ background: C.bg, borderRadius: 10, padding: 16, textAlign: "center", color: C.muted, fontSize: 12 }}>この月の反響はまだありません</div>
+            ) : (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 14 }}>
+                  {[
+                    { l: "反響", v: viewingsFunnel.overall.total, c: "#06b6d4", icon: "👀" },
+                    { l: "案内", v: viewingsFunnel.overall.visit, c: C.warn, icon: "📅" },
+                    { l: "好印象", v: viewingsFunnel.overall.good, c: C.success, icon: "😊" },
+                    { l: "成約", v: viewingsFunnel.overall.deal, c: C.purple, icon: "✅" },
+                  ].map((it, i) => {
+                    const base = viewingsFunnel.overall.total;
+                    const rate = base > 0 ? Math.round(it.v / base * 100) : null;
+                    return (
+                      <div key={it.l} style={{ background: C.bg, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}>
+                        <div style={{ fontSize: 16, marginBottom: 2 }}>{it.icon}</div>
+                        <div style={{ color: it.c, fontWeight: 800, fontSize: 22, lineHeight: 1 }}>{it.v}</div>
+                        <div style={{ color: C.muted, fontSize: 10, marginTop: 4 }}>{it.l}</div>
+                        {i > 0 && rate !== null && <div style={{ color: it.c, fontSize: 9, marginTop: 2 }}>{rate}%</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 6 }}>📊 媒体別の成績</div>
+                <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", background: C.bg, borderRadius: 10, border: `1px solid ${C.borderDim}` }}>
+                  <table style={{ width: "100%", fontSize: 12, color: C.text, borderCollapse: "collapse", minWidth: 380 }}>
+                    <thead>
+                      <tr style={{ background: C.accentBg }}>
+                        <th style={{ padding: "8px 10px", textAlign: "left", color: "#fff", fontSize: 11 }}>媒体</th>
+                        <th style={{ padding: "8px 6px", textAlign: "center", color: "#fff", fontSize: 11 }}>反響</th>
+                        <th style={{ padding: "8px 6px", textAlign: "center", color: "#fff", fontSize: 11 }}>案内</th>
+                        <th style={{ padding: "8px 6px", textAlign: "center", color: "#fff", fontSize: 11 }}>好印象</th>
+                        <th style={{ padding: "8px 6px", textAlign: "center", color: "#fff", fontSize: 11 }}>成約</th>
+                        <th style={{ padding: "8px 6px", textAlign: "center", color: "#fff", fontSize: 11 }}>案内率</th>
+                        <th style={{ padding: "8px 6px", textAlign: "center", color: "#fff", fontSize: 11 }}>成約率</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(viewingsFunnel.buckets).sort((a, b) => b[1].total - a[1].total).map(([ch, b]) => {
+                        const visitRate = b.total > 0 ? Math.round(b.visit / b.total * 100) : 0;
+                        const dealRate = b.total > 0 ? Math.round(b.deal / b.total * 100) : 0;
+                        return (
+                          <tr key={ch} style={{ borderTop: `1px solid ${C.borderDim}` }}>
+                            <td style={{ padding: "8px 10px", color: C.text, fontWeight: 700 }}>{ch}</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center" }}>{b.total}</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: C.warn }}>{b.visit}</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: C.success }}>{b.good}</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: C.purple, fontWeight: 700 }}>{b.deal}</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: visitRate >= 30 ? C.success : C.muted }}>{visitRate}%</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: dealRate >= 5 ? C.success : C.muted }}>{dealRate}%</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                  ※ 反響日が選択月の反響を集計。成約＝親物件が「売決完了」（仕入在庫）または「決済完了」（仲介案件）になっているもの。
+                </div>
+              </>
             )}
           </div>
         </div>
