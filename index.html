@@ -7768,39 +7768,65 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       return;
     }
 
-    // 🆕 重複スキップ：既存の地上げ住所 ＋ 今回のExcel内での重複 を除外（住所で照合・既存は上書きしない）
+    // 🆕 重複マージ：物件住所＋所有者名で照合
+    //   ・既存と一致 → DM・住確だけExcelの値で更新（訪問状況/備考/初訪/メモ等はアプリの値を維持）
+    //   ・新規 → そのまま追加　・Excel内の重複 → スキップ
     const normAddr = (a) => String(a || "")
       .replace(/[！-～]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
       .replace(/[\s　]/g, "")
       .replace(/[ー－−‐―—]/g, "-")
       .toLowerCase();
-    const existingAddrs = new Set((data.jiage || []).map(j => normAddr(j.address)));
+    const existingByKey = new Map();
+    (data.jiage || []).forEach(j => {
+      const a = normAddr(j.address);
+      if (!a) return;
+      const k = a + "|" + normAddr(j.owner);
+      if (!existingByKey.has(k)) existingByKey.set(k, j);
+    });
     const seenInBatch = new Set();
-    let dupExisting = 0, dupInBatch = 0;
-    const dedupedItems = [];
+    const claimedExisting = new Set();
+    let dupInBatch = 0;
+    const newItems = [];
+    const updates = [];
     allNewItems.forEach(item => {
-      const na = normAddr(item.address);
-      if (!na) { dedupedItems.push(item); return; }
-      if (existingAddrs.has(na)) { dupExisting++; return; }
-      if (seenInBatch.has(na)) { dupInBatch++; return; }
-      seenInBatch.add(na);
-      dedupedItems.push(item);
+      const addr = normAddr(item.address);
+      if (!addr) { newItems.push(item); return; }
+      const key = addr + "|" + normAddr(item.owner);
+      const ex = existingByKey.get(key);
+      if (ex) {
+        if (claimedExisting.has(ex.id)) { dupInBatch++; return; }
+        claimedExisting.add(ex.id);
+        updates.push({ id: ex.id, dm: item.dm, visit: item.visit });
+        return;
+      }
+      if (seenInBatch.has(key)) { dupInBatch++; return; }
+      seenInBatch.add(key);
+      newItems.push(item);
     });
 
-    if (dedupedItems.length === 0) {
-      alert(`新規データはありませんでした。\n${dupExisting + dupInBatch}件はすべて重複だったためスキップしました。`);
+    if (newItems.length === 0 && updates.length === 0) {
+      alert(`取り込める新規データも更新対象もありませんでした。\n（Excel内の重複 ${dupInBatch}件をスキップ）`);
       setImportPreview(null);
       return;
     }
 
     setData(d => {
-      const next = { ...d, jiage: [...(d.jiage || []), ...dedupedItems] };
+      // 既存に当たった行 → DM・住確だけ更新（他項目はアプリのまま）
+      const updateMap = new Map(updates.map(u => [u.id, u]));
+      const mergedJiage = (d.jiage || []).map(j => {
+        const u = updateMap.get(j.id);
+        if (!u) return j;
+        if (j.dm === u.dm && j.visit === u.visit) return j;
+        return { ...j, dm: u.dm, visit: u.visit };
+      });
+      const next = { ...d, jiage: [...mergedJiage, ...newItems] };
       const sheetNames = targetSheets.map(s => s.name).join(", ");
-      return appendLogAndNotify(next, "import", "jiage", `Excel(${sheetNames})から${dedupedItems.length}件インポート（重複${dupExisting + dupInBatch}件スキップ）`, null);
+      return appendLogAndNotify(next, "import", "jiage", `Excel(${sheetNames})から 新規${newItems.length}件追加・既存${updates.length}件のDM/住確を更新`, null);
     });
-    let importMsg = `✅ ${dedupedItems.length}件を新規インポートしました！（${targetSheets.length}シート分）`;
-    if (dupExisting > 0) importMsg += `\n⏭ 既存と重複: ${dupExisting}件をスキップ`;
-    if (dupInBatch > 0) importMsg += `\n⏭ Excel内の重複: ${dupInBatch}件をスキップ`;
+    let importMsg = `✅ インポート完了（${targetSheets.length}シート分）`;
+    importMsg += `\n・新規追加: ${newItems.length}件`;
+    importMsg += `\n・既存を更新（DM・住確のみ）: ${updates.length}件`;
+    if (dupInBatch > 0) importMsg += `\n・Excel内の重複スキップ: ${dupInBatch}件`;
     alert(importMsg);
     setImportPreview(null);
   };
