@@ -9133,22 +9133,27 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     setData(d => {
       if (targetType === "jiage") {
         // 🆕 地上げの訪問記録を保存したら、営業活動カウンターを自動連動
-        //   ・1回目の訪問 → 地上初訪 +1
-        //   ・2回目以降   → 地上再訪 +1
+        //   ・1回目の訪問 → 地上初訪 +1 ／ 2回目以降 → 地上再訪 +1
+        //   ・居留守 or 不在 → さらに「不在」+1
+        //   ・NG          → さらに「断り」+1
         //   ・担当者は visitForm.assignee 優先、無ければ案件の担当者、それも無ければ現在のユーザー
         const target = d.jiage.find(j => j.id === targetId);
         const prevVisitCount = (target && Array.isArray(target.visitLog)) ? target.visitLog.length : 0;
-        const counterItem = prevVisitCount === 0 ? "地上初訪" : "地上再訪";
         const bumpMember = visitForm.assignee || (target && target.assignee) || getCurrentUser() || "";
+        const bumpItems = [prevVisitCount === 0 ? "地上初訪" : "地上再訪"];
+        if (visitForm.result === "ignore" || visitForm.result === "absent") bumpItems.push("不在");
+        if (visitForm.result === "rejected") bumpItems.push("断り");
         let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
         if (bumpMember) {
           const todayStr = new Date().toISOString().split("T")[0];
-          const idx = appr.findIndex(a => a.member === bumpMember && a.date === todayStr);
-          if (idx >= 0) {
-            appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), [counterItem]: ((appr[idx].values || {})[counterItem] || 0) + 1 } };
-          } else {
-            appr.push({ id: Date.now() + Math.floor(Math.random() * 100000), member: bumpMember, date: todayStr, values: { [counterItem]: 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
-          }
+          bumpItems.forEach((counterItem, i) => {
+            const idx = appr.findIndex(a => a.member === bumpMember && a.date === todayStr);
+            if (idx >= 0) {
+              appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), [counterItem]: ((appr[idx].values || {})[counterItem] || 0) + 1 } };
+            } else {
+              appr.push({ id: Date.now() + Math.floor(Math.random() * 100000) + i, member: bumpMember, date: todayStr, values: { [counterItem]: 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
+            }
+          });
         }
         return {
           ...d,
