@@ -350,6 +350,14 @@ const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している
 // 🆕 仲介案件：媒介の種類とフェーズ
 const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
 const MEDIATION_STATUSES = ["媒介契約", "売出中", "買付あり", "売買契約", "決済完了"];
+const MEDIATION_SIDES = ["片手", "両手"];
+// 🆕 仲介手数料の自動計算：800万以下は一律33万円、超える分は (価格×3%+6万)×1.1。両手は2倍。
+function calcBrokerFee(price, side) {
+  const p = Number(String(price || "").replace(/,/g, "")) || 0;
+  if (p <= 0) return 0;
+  const oneSide = p <= 8000000 ? 330000 : Math.round((p * 0.03 + 60000) * 1.1);
+  return side === "両手" ? oneSide * 2 : oneSide;
+}
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
 const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
@@ -3977,7 +3985,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const empty = {
     name: "", assignee: currentUser || MEMBERS[0], seller: "",
     mediationType: MEDIATION_TYPES[0], status: MEDIATION_STATUSES[0],
-    listPrice: "", closePrice: "", brokerFee: "",
+    brokerSide: "片手", listPrice: "", closePrice: "", brokerFee: "",
     contractDate: "", settleDate: "", memo: "",
   };
   const [form, setForm] = useState(empty);
@@ -3993,7 +4001,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const statusColor = (st) => ({ "媒介契約": C.accent, "売出中": C.warn, "買付あり": C.purple, "売買契約": "#f97316", "決済完了": C.success }[st] || C.muted);
 
   const openEdit = (m) => {
-    setForm({ ...m, listPrice: String(m.listPrice || ""), closePrice: String(m.closePrice || ""), brokerFee: String(m.brokerFee || "") });
+    setForm({ ...m, brokerSide: m.brokerSide || "片手", listPrice: String(m.listPrice || ""), closePrice: String(m.closePrice || ""), brokerFee: String(m.brokerFee || "") });
     setEditItem(m);
     setShowForm(true);
   };
@@ -4067,6 +4075,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
             <Tag label={m.status} color={statusColor(m.status)} />
             <MemberTag name={m.assignee} />
             {m.mediationType && <Tag label={m.mediationType} color={C.purple} />}
+            {m.brokerSide && <Tag label={m.brokerSide === "両手" ? "両手仲介" : "片手仲介"} color={m.brokerSide === "両手" ? C.success : C.muted} />}
           </div>
           <div style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 6 }}>{m.name}</div>
           {m.seller && <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>売主: {m.seller}</div>}
@@ -4106,11 +4115,20 @@ function MediationView({ data, setData, dealType, setDealType }) {
             <Field label="媒介の種類"><select style={inp} value={form.mediationType} onChange={e => setForm(p => ({ ...p, mediationType: e.target.value }))}>{MEDIATION_TYPES.map(t => <option key={t}>{t}</option>)}</select></Field>
             <Field label="フェーズ"><select style={inp} value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>{MEDIATION_STATUSES.map(st => <option key={st}>{st}</option>)}</select></Field>
           </div>
+          <Field label="仲介の形態">
+            <div style={{ display: "flex", gap: 6 }}>
+              {MEDIATION_SIDES.map(s => (
+                <button key={s} type="button" onClick={() => setForm(p => ({ ...p, brokerSide: s, brokerFee: String(calcBrokerFee((Number(String(p.closePrice).replace(/,/g, "")) > 0 ? p.closePrice : p.listPrice), s) || "") }))} style={{ flex: 1, padding: "10px 4px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: form.brokerSide === s ? 700 : 500, background: form.brokerSide === s ? C.purple : C.cardBg, color: form.brokerSide === s ? "#fff" : C.muted, border: `1px solid ${form.brokerSide === s ? C.purple : C.borderDim}` }}>
+                  {s === "両手" ? "両手仲介（売主＋買主）" : "片手仲介"}
+                </button>
+              ))}
+            </div>
+          </Field>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Field label="売出価格（円）"><MoneyInput value={form.listPrice} onChange={v => setForm(p => ({ ...p, listPrice: v }))} placeholder="5,000,000" /></Field>
-            <Field label="成約価格（円）"><MoneyInput value={form.closePrice} onChange={v => setForm(p => ({ ...p, closePrice: v }))} placeholder="4,800,000" /></Field>
+            <Field label="売出価格（円）"><MoneyInput value={form.listPrice} onChange={v => setForm(p => ({ ...p, listPrice: v, brokerFee: String(calcBrokerFee((Number(String(p.closePrice).replace(/,/g, "")) > 0 ? p.closePrice : v), p.brokerSide) || "") }))} placeholder="5,000,000" /></Field>
+            <Field label="成約価格（円）"><MoneyInput value={form.closePrice} onChange={v => setForm(p => ({ ...p, closePrice: v, brokerFee: String(calcBrokerFee((Number(String(v).replace(/,/g, "")) > 0 ? v : p.listPrice), p.brokerSide) || "") }))} placeholder="4,800,000" /></Field>
           </div>
-          <Field label="仲介手数料（円）"><MoneyInput value={form.brokerFee} onChange={v => setForm(p => ({ ...p, brokerFee: v }))} placeholder="200,000" /></Field>
+          <Field label="仲介手数料（円）　※価格から自動計算（手入力で修正も可）"><MoneyInput value={form.brokerFee} onChange={v => setForm(p => ({ ...p, brokerFee: v }))} placeholder="自動計算されます" /></Field>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="媒介契約日"><input type="date" style={inp} value={form.contractDate || ""} onChange={e => setForm(p => ({ ...p, contractDate: e.target.value }))} /></Field>
             <Field label="決済日"><input type="date" style={inp} value={form.settleDate || ""} onChange={e => setForm(p => ({ ...p, settleDate: e.target.value }))} /></Field>
