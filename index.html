@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-15-v5-tombstone-sync";
+const APP_VERSION = "2026-05-15-v6-field-merge";
 console.log(`[ひかり不動産] ✅ バージョン: ${APP_VERSION}`);
 const {useState,useMemo,useEffect,useRef}=React;
 
@@ -683,6 +683,129 @@ function loadFromCache() {
 function mergeWithDefault(remote) {
   if (!remote) return null;
   return { ...DEFAULT_DATA, ...remote };
+}
+
+// ============== 🆕 v6: 項目ごとマージ（編集の取り合いを防ぐ）==============
+// 「物件まるごと最後の勝ち」だと、2人が別の項目を編集しても片方が丸ごと負ける。
+// 項目ごとに更新時刻を持たせ、項目単位で新しい方を採用する。反響・写真・コメント等のリストは「上書き」でなく「合算」する。
+const MERGEABLE_ARRAY_FIELDS = new Set(["viewings", "photos", "comments", "visitLog", "history"]);
+
+function v6ValuesEqual(a, b) {
+  if (a === b) return true;
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    try { return JSON.stringify(a) === JSON.stringify(b); } catch (e) { return false; }
+  }
+  return false;
+}
+
+// 配列フィールドをマージ（要素が消えないように結合）
+function mergeArrayField(localArr, remoteArr) {
+  const L = Array.isArray(localArr) ? localArr : [];
+  const R = Array.isArray(remoteArr) ? remoteArr : [];
+  if (L.length === 0) return R;
+  if (R.length === 0) return L;
+  if ([...L, ...R].every(x => typeof x === "string")) {
+    const seen = new Set(); const out = [];
+    [...L, ...R].forEach(s => { if (!seen.has(s)) { seen.add(s); out.push(s); } });
+    return out;
+  }
+  const byId = new Map(); const idOrder = []; const noId = []; const noIdSeen = new Set();
+  R.forEach(el => {
+    if (el && el.id != null) {
+      if (!byId.has(el.id)) { byId.set(el.id, el); idOrder.push(el.id); }
+    } else if (el) {
+      const sig = JSON.stringify(el);
+      if (!noIdSeen.has(sig)) { noIdSeen.add(sig); noId.push(el); }
+    }
+  });
+  L.forEach(el => {
+    if (el && el.id != null) {
+      if (!byId.has(el.id)) { byId.set(el.id, el); idOrder.push(el.id); }
+      else {
+        const r = byId.get(el.id);
+        const m = { ...r, ...el };
+        Object.keys(m).forEach(kk => {
+          if (MERGEABLE_ARRAY_FIELDS.has(kk) && (Array.isArray(el[kk]) || Array.isArray(r[kk]))) {
+            m[kk] = mergeArrayField(el[kk], r[kk]);
+          }
+        });
+        byId.set(el.id, m);
+      }
+    } else if (el) {
+      const sig = JSON.stringify(el);
+      if (!noIdSeen.has(sig)) { noIdSeen.add(sig); noId.push(el); }
+    }
+  });
+  return [...idOrder.map(id => byId.get(id)), ...noId];
+}
+
+// 同じidのアイテムを項目ごとにマージ
+function mergeItems(localItem, remoteItem) {
+  if (!localItem) return remoteItem;
+  if (!remoteItem) return localItem;
+  const lu = Number(localItem.updatedAt) || 0;
+  const ru = Number(remoteItem.updatedAt) || 0;
+  if (!localItem._fieldUpdatedAt && !remoteItem._fieldUpdatedAt) {
+    return ru > lu ? remoteItem : localItem;
+  }
+  const lf = localItem._fieldUpdatedAt || {};
+  const rf = remoteItem._fieldUpdatedAt || {};
+  const result = {};
+  const mergedF = {};
+  const allKeys = new Set([...Object.keys(localItem), ...Object.keys(remoteItem)]);
+  allKeys.forEach(key => {
+    if (key === "_fieldUpdatedAt" || key === "updatedAt") return;
+    const hasL = Object.prototype.hasOwnProperty.call(localItem, key);
+    const hasR = Object.prototype.hasOwnProperty.call(remoteItem, key);
+    const lv = localItem[key], rv = remoteItem[key];
+    if (MERGEABLE_ARRAY_FIELDS.has(key) && (Array.isArray(lv) || Array.isArray(rv))) {
+      result[key] = mergeArrayField(Array.isArray(lv) ? lv : [], Array.isArray(rv) ? rv : []);
+      mergedF[key] = Math.max(Number(lf[key]) || lu, Number(rf[key]) || ru);
+      return;
+    }
+    if (hasL && !hasR) { result[key] = lv; mergedF[key] = Number(lf[key]) || lu; return; }
+    if (hasR && !hasL) { result[key] = rv; mergedF[key] = Number(rf[key]) || ru; return; }
+    const lt = Number(lf[key]) || lu;
+    const rt = Number(rf[key]) || ru;
+    if (lt >= rt) { result[key] = lv; mergedF[key] = lt; }
+    else { result[key] = rv; mergedF[key] = rt; }
+  });
+  result.updatedAt = Math.max(lu, ru);
+  result._fieldUpdatedAt = mergedF;
+  return result;
+}
+
+// 編集時：項目ごとの更新時刻オブジェクトを作る
+function buildFieldTimes(prevItem, nextItem, now) {
+  const prevTimes = (prevItem && prevItem._fieldUpdatedAt) || {};
+  const prevUA = Number(prevItem && prevItem.updatedAt) || 0;
+  const result = {};
+  Object.keys(nextItem).forEach(key => {
+    if (key === "_fieldUpdatedAt" || key === "updatedAt") return;
+    const changed = !prevItem || !v6ValuesEqual(prevItem[key], nextItem[key]);
+    result[key] = changed ? now : (Number(prevTimes[key]) || prevUA || now);
+  });
+  return result;
+}
+
+// 編集時：id の無いネスト配列要素（反響・履歴など）に id を付与
+function ensureNestedIds(item) {
+  let changed = false;
+  const copy = { ...item };
+  ["viewings", "history"].forEach(k => {
+    if (Array.isArray(copy[k])) {
+      let arrChanged = false;
+      const arr = copy[k].map(el => {
+        if (el && typeof el === "object" && el.id == null) {
+          arrChanged = true;
+          return { ...el, id: "n" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) };
+        }
+        return el;
+      });
+      if (arrChanged) { copy[k] = arr; changed = true; }
+    }
+  });
+  return changed ? copy : item;
 }
 
 // ============== 🆕 削除アイテムID追跡 ==============
@@ -1290,7 +1413,7 @@ function MainApp({ onLock, onSwitchUser }) {
 
       const allIds = new Set([...localMap.keys(), ...remoteMap.keys()]);
       const finalArr = [];
-      let localWins = 0, remoteWins = 0, tombRemoved = 0;
+      let localWins = 0, remoteWins = 0, tombRemoved = 0, mergedCount = 0;
       allIds.forEach(id => {
         const localItem = localMap.get(id);
         const remoteItem = remoteMap.get(id);
@@ -1313,28 +1436,19 @@ function MainApp({ onLock, onSwitchUser }) {
           finalArr.push(localItem);
           localWins++;
         } else {
-          // 両方にある → タイムスタンプ比較
-          if (localTime > remoteTime) {
-            finalArr.push(localItem);
-            localWins++;
-          } else if (remoteTime > localTime) {
-            finalArr.push(remoteItem);
-            remoteWins++;
+          // 🆕 v6: 両方にある → 項目ごとにマージ（双方の編集を両立させる）
+          if (k === "activityLog") {
+            // ログは編集されない → 従来どおり新しい方
+            finalArr.push(remoteTime > localTime ? remoteItem : localItem);
           } else {
-            // updatedAt が同じ or 両方0（updatedAt なし既存データ）
-            if (localTime === 0 && remoteTime === 0 && recentlyEdited) {
-              // 既存データで直近5分編集中 → ローカル優先（古いデータの保護）
-              finalArr.push(localItem);
-              localWins++;
-            } else {
-              finalArr.push(remoteItem);
-            }
+            finalArr.push(mergeItems(localItem, remoteItem));
+            mergedCount++;
           }
         }
       });
 
-      if (localWins > 0 || remoteWins > 0 || tombRemoved > 0) {
-        console.log(`[Sync] ${k}: ローカル勝ち${localWins}件 / リモート勝ち${remoteWins}件 / 削除除外${tombRemoved}件`);
+      if (localWins > 0 || mergedCount > 0 || tombRemoved > 0) {
+        console.log(`[Sync] ${k}: ローカルのみ${localWins}件 / 項目マージ${mergedCount}件 / 削除除外${tombRemoved}件`);
       }
 
       merged[k] = finalArr;
@@ -1437,12 +1551,17 @@ function MainApp({ onLock, onSwitchUser }) {
         const updated = nextArr.map(item => {
           if (!item || item.id == null) return item;
           const prevItem = prevMap.get(item.id);
-          // 新規 or 参照が変わった（編集された）アイテム → updatedAt 更新
+          // 新規 or 参照が変わった（編集された）アイテム
           if (!prevItem || prevItem !== item) {
             hasActualChange = true;
-            // 🆕 updatedAt は必ず「編集元より新しい値」にする（端末の時計ズレ対策）
+            // 🆕 v6: id の無いネスト配列要素（反響など）に id を付与
+            const normItem = ensureNestedIds(item);
+            // updatedAt は必ず「編集元より新しい値」にする（端末の時計ズレ対策）
             const prevUA = Number(prevItem && prevItem.updatedAt) || 0;
-            return { ...item, updatedAt: Math.max(now, prevUA + 1) };
+            const newUA = Math.max(now, prevUA + 1);
+            // 🆕 v6: 項目ごとの更新時刻を記録（編集の取り合いを防ぐ）
+            const fieldTimes = buildFieldTimes(prevItem, normItem, newUA);
+            return { ...normItem, updatedAt: newUA, _fieldUpdatedAt: fieldTimes };
           }
           return item;
         });
