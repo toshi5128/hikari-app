@@ -358,6 +358,18 @@ function calcBrokerFee(price, side) {
   const oneSide = p <= 8000000 ? 330000 : Math.round((p * 0.03 + 60000) * 1.1);
   return side === "両手" ? oneSide * 2 : oneSide;
 }
+// 🆕 dateStr の翌日から起算して n 営業日後（土日を休業日として除外）を YYYY-MM-DD で返す
+function addBusinessDays(dateStr, n) {
+  if (!dateStr) return "";
+  const d = new Date(dateStr + "T00:00:00");
+  let added = 0;
+  while (added < n) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) added++;
+  }
+  return d.toISOString().split("T")[0];
+}
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
 const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
@@ -3986,7 +3998,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
     name: "", assignee: currentUser || MEMBERS[0], seller: "",
     mediationType: MEDIATION_TYPES[0], status: MEDIATION_STATUSES[0],
     brokerSide: "片手", listPrice: "", closePrice: "", brokerFee: "",
-    contractDate: "", settleDate: "", memo: "", viewings: [],
+    contractDate: "", saleContractDate: "", settleDate: "", memo: "", viewings: [],
   };
   const [form, setForm] = useState(empty);
   // 🆕 反響（viewings）関連の state
@@ -4026,8 +4038,69 @@ function MediationView({ data, setData, dealType, setDealType }) {
       brokerFee: Number(form.brokerFee) || 0,
       viewings: form.viewings || [],
     };
+    // 🆕 媒介契約日から、宅建業法に基づくレインズ登録期限・売主への業務報告予定をカレンダーに自動生成
+    //   ・専属専任媒介：レインズ5営業日以内 / 売主報告 1週間ごと
+    //   ・専任媒介：レインズ7営業日以内 / 売主報告 2週間ごと
+    //   ・一般媒介：登録・報告義務なし → 何も生成しない
+    //   ・売主報告は「売買契約日」まで（未入力なら媒介契約日+3ヶ月＝媒介契約期間の上限）
+    const buildMediationEvents = () => {
+      const evts = [];
+      const ct = item.contractDate;
+      if (!ct) return evts;
+      const isSenzoku = item.mediationType === "専属専任";
+      const isSennin = item.mediationType === "専任";
+      if (!isSenzoku && !isSennin) return evts;
+      const notifyAssignees = [...new Set([...getNotifyMembers(data), item.assignee].filter(Boolean))];
+      // レインズ登録期限
+      const reinsDays = isSenzoku ? 5 : 7;
+      evts.push({
+        id: Date.now() + 1,
+        date: addBusinessDays(ct, reinsDays),
+        time: "10:00",
+        title: `📡 レインズ登録期限: ${item.name || "(無題)"}`,
+        assignees: notifyAssignees,
+        memo: `${item.mediationType}媒介（${reinsDays}営業日以内・宅建業法）\n担当: ${item.assignee}\n売主: ${item.seller || "—"}`,
+        mediationLinkId: item.id,
+        color: "#06b6d4",
+      });
+      // 売主への業務報告
+      const intervalDays = isSenzoku ? 7 : 14;
+      let endD;
+      if (item.saleContractDate) {
+        endD = new Date(item.saleContractDate + "T00:00:00");
+      } else {
+        endD = new Date(ct + "T00:00:00");
+        endD.setMonth(endD.getMonth() + 3);
+      }
+      const cur = new Date(ct + "T00:00:00");
+      let n = 0;
+      while (n < 30) {
+        cur.setDate(cur.getDate() + intervalDays);
+        if (cur > endD) break;
+        n++;
+        evts.push({
+          id: Date.now() + 100 + n,
+          date: cur.toISOString().split("T")[0],
+          time: "10:00",
+          title: `📞 売主へ業務報告: ${item.name || "(無題)"}`,
+          assignees: notifyAssignees,
+          memo: `${item.mediationType}媒介（${isSenzoku ? "1週間に1回以上" : "2週間に1回以上"}・宅建業法）\n担当: ${item.assignee}\n売主: ${item.seller || "—"}`,
+          mediationLinkId: item.id,
+          color: "#f59e0b",
+        });
+      }
+      return evts;
+    };
+    const mediationEvents = buildMediationEvents();
+    // 媒介契約日が新規セット or 変更されたか（通知判定用）
+    const contractDateChanged = (editItem?.contractDate || "") !== (item.contractDate || "") && !!item.contractDate;
     setData(d => {
-      const next = { ...d, mediations: editItem
+      // この仲介案件に紐づく既存カレンダー予定を全削除して作り直す
+      const nextEvents = [
+        ...(d.customEvents || []).filter(e => !(e.mediationLinkId && e.mediationLinkId === item.id)),
+        ...mediationEvents,
+      ];
+      const next = { ...d, customEvents: nextEvents, mediations: editItem
         ? (d.mediations || []).map(m => m.id === editItem.id ? item : m)
         : [...(d.mediations || []), item] };
       return appendLogAndNotify(next, editItem ? "update" : "add", "mediation", `仲介案件「${item.name || "(無題)"}」（${item.status}）`, item);
@@ -4050,14 +4123,37 @@ function MediationView({ data, setData, dealType, setDealType }) {
         );
       }
     }
+    // 🆕 媒介契約日がセット/変更されたら、担当者＋通知メンバー（下田・比嘉）に通知
+    if (contractDateChanged && mediationEvents.length > 0) {
+      const allTargets = new Set([...getNotifyMembers(data), item.assignee]);
+      allTargets.delete(currentUser);
+      const targets = [...allTargets].filter(Boolean);
+      if (targets.length > 0) {
+        const reinsEvt = mediationEvents.find(e => e.title.indexOf("レインズ") >= 0);
+        const reportCount = mediationEvents.filter(e => e.title.indexOf("業務報告") >= 0).length;
+        sendPushNotification(
+          targets,
+          `📋 媒介契約が登録されました（${item.mediationType}媒介）`,
+          `${item.name || "(無題)"}\n📡 レインズ登録期限: ${reinsEvt ? reinsEvt.date : "—"}\n📞 売主への業務報告: ${reportCount}件をカレンダーに登録\n担当: ${item.assignee}`,
+          { tag: `hikari-mediation-contract-${item.id}-${Date.now()}`, data: { tab: 'dashboard' }, tab: 'dashboard' }
+        );
+      }
+    }
     setShowForm(false); setEditItem(null);
   };
   const handleDelete = (id) => {
     const target = mediations.find(m => m.id === id);
     if (target && !canEdit(target)) { alert("⚠️ 削除権限がありません"); return; }
-    if (!window.confirm("この仲介案件を削除しますか？")) return;
+    if (!window.confirm("この仲介案件を削除しますか？\n※ 関連するカレンダー予定（レインズ登録期限・売主報告）も削除されます")) return;
     setData(d => {
-      const next = { ...d, mediations: (d.mediations || []).filter(m => m.id !== id) };
+      // 連動カレンダー予定も削除（他端末からの復活防止のため tombstone 記録）
+      const relatedEvents = (d.customEvents || []).filter(e => e.mediationLinkId && e.mediationLinkId === id);
+      relatedEvents.forEach(ev => recordDeletion("event", ev.id));
+      const next = {
+        ...d,
+        mediations: (d.mediations || []).filter(m => m.id !== id),
+        customEvents: (d.customEvents || []).filter(e => !(e.mediationLinkId && e.mediationLinkId === id)),
+      };
       return appendLogAndNotify(next, "delete", "mediation", `仲介案件「${target?.name || "(無題)"}」を削除`, target);
     });
   };
@@ -4231,9 +4327,10 @@ function MediationView({ data, setData, dealType, setDealType }) {
               </div>
             ))}
           </div>
-          {(m.contractDate || m.settleDate) && (
+          {(m.contractDate || m.saleContractDate || m.settleDate) && (
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
               {m.contractDate && <span>📝 媒介契約 {m.contractDate}　</span>}
+              {m.saleContractDate && <span>📋 売買契約 {m.saleContractDate}　</span>}
               {m.settleDate && <span>✅ 決済 {m.settleDate}</span>}
             </div>
           )}
@@ -4432,10 +4529,16 @@ function MediationView({ data, setData, dealType, setDealType }) {
             <Field label="成約価格（円）"><MoneyInput value={form.closePrice} onChange={v => setForm(p => ({ ...p, closePrice: v, brokerFee: String(calcBrokerFee((Number(String(v).replace(/,/g, "")) > 0 ? v : p.listPrice), p.brokerSide) || "") }))} placeholder="4,800,000" /></Field>
           </div>
           <Field label="仲介手数料（円）　※価格から自動計算（手入力で修正も可）"><MoneyInput value={form.brokerFee} onChange={v => setForm(p => ({ ...p, brokerFee: v }))} placeholder="自動計算されます" /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
             <Field label="媒介契約日"><input type="date" style={inp} value={form.contractDate || ""} onChange={e => setForm(p => ({ ...p, contractDate: e.target.value }))} /></Field>
+            <Field label="売買契約日"><input type="date" style={inp} value={form.saleContractDate || ""} onChange={e => setForm(p => ({ ...p, saleContractDate: e.target.value }))} /></Field>
             <Field label="決済日"><input type="date" style={inp} value={form.settleDate || ""} onChange={e => setForm(p => ({ ...p, settleDate: e.target.value }))} /></Field>
           </div>
+          {form.contractDate && (form.mediationType === "専属専任" || form.mediationType === "専任") && (
+            <div style={{ fontSize: 11, color: "#06b6d4", background: "#06b6d411", border: `1px solid #06b6d433`, borderRadius: 8, padding: "8px 10px", marginBottom: 12, lineHeight: 1.6 }}>
+              📡 レインズ登録期限・📞 売主への業務報告予定が、保存時に自動でカレンダーに登録されます（{form.mediationType}媒介・宅建業法準拠／報告は売買契約日まで・未入力なら3ヶ月分）
+            </div>
+          )}
           {/* 👀 反響（複数登録可・サマリー1行＋詳細展開式） */}
           <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
