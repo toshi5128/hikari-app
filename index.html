@@ -346,7 +346,7 @@ const STATUS_GROUPS = [
   { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
-const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "断られた", "NG", "仕入れ完了"];
+const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "媒介", "断られた", "NG", "仕入れ完了"];
 // 🆕 仲介案件：媒介の種類とフェーズ
 const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
 const MEDIATION_STATUSES = ["媒介契約", "売出中", "買付あり", "売買契約", "決済完了"];
@@ -1562,34 +1562,36 @@ function MainApp({ onLock, onSwitchUser }) {
 
       const now = Date.now();
 
-      // 🆕 地上げが「仕入れ完了」に変わったぶん、営業タブの「仕入」カウンターを +1 する
-      //   ・transition（前は仕入れ完了でない → 今は仕入れ完了）のときだけ加算
-      //   ・新規追加・Excelインポート（前バージョンが無い／statusを変更しない）では発火しない
+      // 🆕 地上げのステータス変化を、営業タブのカウンターに連動させる
+      //   ・「仕入れ完了」になった → 「仕入」+1
+      //   ・「媒介」になった → 「仲介受託」+1
+      //   ・transition（前と違うステータスになった）ときだけ加算
+      //   ・新規追加・Excelインポート（前バージョンが無い）では発火しない
       //   ・カウントは その地上げの担当者 に付く
       {
         const prevJ = Array.isArray(prev.jiage) ? prev.jiage : [];
         const nextJ = Array.isArray(next.jiage) ? next.jiage : [];
         const prevJMap = new Map();
         prevJ.forEach(j => { if (j && j.id != null) prevJMap.set(j.id, j); });
-        const shiireBumps = [];
+        const statusBumps = []; // [{ member, item }]
         nextJ.forEach(j => {
           if (!j || j.id == null) return;
           const pj = prevJMap.get(j.id);
-          if (pj && pj.status !== "仕入れ完了" && j.status === "仕入れ完了") {
-            shiireBumps.push(j.assignee);
-          }
+          if (!pj) return;
+          if (pj.status !== "仕入れ完了" && j.status === "仕入れ完了") statusBumps.push({ member: j.assignee, item: "仕入" });
+          if (pj.status !== "媒介" && j.status === "媒介") statusBumps.push({ member: j.assignee, item: "仲介受託" });
         });
-        if (shiireBumps.length > 0) {
+        if (statusBumps.length > 0) {
           const todayStr = new Date(now).toISOString().split("T")[0];
           let appr = Array.isArray(next.approaches) ? [...next.approaches] : [];
-          shiireBumps.forEach(member => {
+          statusBumps.forEach(({ member, item }) => {
             const m = member || getCurrentUser() || "";
             if (!m) return;
             const idx = appr.findIndex(a => a.member === m && a.date === todayStr);
             if (idx >= 0) {
-              appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), "仕入": ((appr[idx].values || {})["仕入"] || 0) + 1 } };
+              appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), [item]: ((appr[idx].values || {})[item] || 0) + 1 } };
             } else {
-              appr.push({ id: now + Math.floor(Math.random() * 100000), member: m, date: todayStr, values: { "仕入": 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
+              appr.push({ id: now + Math.floor(Math.random() * 100000), member: m, date: todayStr, values: { [item]: 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
             }
           });
           next.approaches = appr;
@@ -1940,6 +1942,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480 }) 
       if (status === "訪問済") return "#3b82f6";
       if (status === "居住している") return "#64748b";
       if (status === "仕入れ完了") return "#06b6d4";
+      if (status === "媒介") return "#a855f7";
       return "#94a3b8";
     };
     validItems.forEach(it => {
@@ -2065,7 +2068,7 @@ function StatusTag({ status }) {
     "仕入契約済": C.accent, "売却契約完了": "#10b981", "決済完了": "#64748b",
     // 地上げ・所有者ステータス
     "未訪問": C.muted, "訪問済": C.accent, "不在": C.warn, "NG": C.danger, "居住している": "#64748b",
-    "検討中": C.warn, "興味あり": C.success, "断られた": C.danger, "交渉中": C.purple, "仕入れ完了": C.success,
+    "検討中": C.warn, "興味あり": C.success, "断られた": C.danger, "交渉中": C.purple, "仕入れ完了": C.success, "媒介": "#a855f7",
     "価格交渉中": C.accent, "見送り": C.danger, "成約": C.success,
   };
   return <Tag label={status} color={map[status] || C.muted} />;
@@ -6611,23 +6614,25 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   };
 
   const pipeline = useMemo(() => {
-    const jiageActive = filterByMember((data.jiage || []).filter(j => !["NG", "仕入れ完了"].includes(j.status)));
+    const jiageActive = filterByMember((data.jiage || []).filter(j => !["NG", "仕入れ完了", "媒介"].includes(j.status)));
+    const jiageMediation = filterByMember((data.jiage || []).filter(j => j.status === "媒介"));
     const ownersActive = filterByMember((data.owners || []).filter(o => !["断られた", "仕入れ完了", "NG"].includes(o.status)));
     const sekisanActive = filterByMember((data.sekisan || []).filter(s => s.judgment !== "見送り"));
     const sekisanHot = sekisanActive.filter(s => s.judgment === "熱い");
     const sekisanCheck = sekisanActive.filter(s => s.judgment === "検討中");
     const stocksActive = filterByMember((data.stocks || []).filter(s => s.status !== "売決完了"));
+    const mediationsActive = filterByMember((data.mediations || []).filter(m => m.status !== "決済完了"));
     // 「決済完了」は選択月の年（casesMonthの年）に決済完了したもの
     const selectedYear = casesMonth.slice(0, 4);
     const stocksCompleted = filterByMember((data.stocks || []).filter(s =>
       s.status === "売決完了" && (s.sellDate || "").startsWith(selectedYear)
     ));
-    return { jiageActive, ownersActive, sekisanActive, sekisanHot, sekisanCheck, stocksActive, stocksCompleted, selectedYear };
-  }, [data.jiage, data.owners, data.sekisan, data.stocks, casesMember, casesMonth]);
+    return { jiageActive, jiageMediation, ownersActive, sekisanActive, sekisanHot, sekisanCheck, stocksActive, mediationsActive, stocksCompleted, selectedYear };
+  }, [data.jiage, data.owners, data.sekisan, data.stocks, data.mediations, casesMember, casesMonth]);
 
   const alerts = useMemo(() => {
     const overdueJiage = filterByMember((data.jiage || []).filter(j =>
-      j.nextVisit && j.nextVisit < today && !["NG", "断られた", "仕入れ完了"].includes(j.status)
+      j.nextVisit && j.nextVisit < today && !["NG", "断られた", "仕入れ完了", "媒介"].includes(j.status)
     ));
     const overdueOwner = filterByMember((data.owners || []).filter(o =>
       o.nextFollowDate && o.nextFollowDate < today && !["NG", "断られた", "仕入れ完了"].includes(o.status)
@@ -6662,8 +6667,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
     ));
     const currentKentou = filterByMember((data.sekisan || []).filter(s => s.judgment === "仕入検討"));
     const currentHot = filterByMember((data.sekisan || []).filter(s => s.judgment === "熱い"));
-    return { newSekisan, newBuyContract, newPurchase, newSellContract, newCompleted, currentKentou, currentHot };
-  }, [data.sekisan, data.stocks, casesMember, casesMonth]);
+    const currentMediation = filterByMember((data.jiage || []).filter(j => j.status === "媒介"));
+    return { newSekisan, newBuyContract, newPurchase, newSellContract, newCompleted, currentKentou, currentHot, currentMediation };
+  }, [data.sekisan, data.stocks, data.jiage, casesMember, casesMonth]);
 
   // 過去12ヶ月の選択肢
   const casesMonthOptions = useMemo(() => {
@@ -6763,15 +6769,22 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               { key: "jiage", icon: "🗺️", label: "地上げ・交渉", count: pipeline.jiageActive.length, color: C.purple, sub: "訪問・DM・交渉", items: pipeline.jiageActive,
                 type: "jiage",
                 renderItem: (j) => ({ title: j.address, sub: `${j.status} · ${j.owner || "所有者不明"}`, badge: j.assignee, raw: j }) },
+              { key: "mediation", icon: "🤝", label: "媒介", count: pipeline.jiageMediation.length, color: "#a855f7", sub: "地上げ→媒介ステータス", items: pipeline.jiageMediation,
+                type: "jiage",
+                renderItem: (j) => ({ title: j.address, sub: `媒介 · ${j.owner || "所有者不明"}`, badge: j.assignee, raw: j }) },
               { key: "sekisan", icon: "🧮", label: "積算検討", count: pipeline.sekisanActive.length, color: C.warn,
                 sub: `🔥熱い${pipeline.sekisanHot.length} / 🟡検討中${pipeline.sekisanCheck.length}`,
                 items: pipeline.sekisanActive,
                 type: "sekisan",
                 renderItem: (s) => ({ title: s.address || "住所未設定", sub: `${s.judgment} · 仕入想定${s.buyPrice ? Math.round(Number(s.buyPrice)/10000)+"万" : "未"}`, badge: s.assignee, raw: s }) },
-              { key: "stocks", icon: "🏠", label: "在庫", count: pipeline.stocksActive.length, color: C.success,
+              { key: "stocks", icon: "🏠", label: "仕入在庫", count: pipeline.stocksActive.length, color: C.success,
                 sub: "リフォーム中・売却準備など", items: pipeline.stocksActive,
                 type: "stock",
                 renderItem: (s) => { const si = stagnantInfo(s.buyDate); return { title: s.name, sub: `${s.status}${si ? ` · ${si.level}仕入${si.days}日経過` : ""}`, badge: s.assignee, raw: s }; } },
+              { key: "mediationStock", icon: "🤝", label: "仲介在庫", count: pipeline.mediationsActive.length, color: "#a855f7",
+                sub: "媒介契約〜売出中・売買契約など", items: pipeline.mediationsActive,
+                type: "mediation",
+                renderItem: (m) => ({ title: m.name, sub: `${m.status}${m.mediationType ? " · " + m.mediationType : ""}`, badge: m.assignee, raw: null }) },
               { key: "completed", icon: "✅", label: "売却決済", count: pipeline.stocksCompleted.length, color: C.muted,
                 sub: `${pipeline.selectedYear}年実績`, items: pipeline.stocksCompleted,
                 type: "stock",
@@ -6926,6 +6939,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                 { key: "completed", label: "売却決済", count: weekActivity.newCompleted.length, color: C.success, icon: "✅" },
                 { key: "kentou", label: "仕入検討", count: weekActivity.currentKentou.length, color: C.accent, icon: "📝" },
                 { key: "hot", label: "🔥熱い", count: weekActivity.currentHot.length, color: C.danger, icon: "🔥" },
+                { key: "mediation", label: "媒介", count: weekActivity.currentMediation.length, color: "#a855f7", icon: "🤝" },
               ].map(a => {
                 const isExpanded = casesExpanded === `month_${a.key}`;
                 const isClickable = a.count > 0;
@@ -7049,6 +7063,13 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                       rawSekisan: s,
                     };
                   }},
+                mediation: { items: weekActivity.currentMediation, color: "#a855f7", icon: "🤝", title: "現在「媒介」",
+                  render: (j) => ({
+                    title: j.address || "(住所未設定)",
+                    sub: `媒介 · ${j.owner || "所有者不明"}${j.dm ? " · DM" + j.dm : ""}`,
+                    date: j.date,
+                    badge: j.assignee,
+                  })},
               };
               const cfg = config[key];
               if (!cfg) return null;
@@ -9321,6 +9342,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             : st === "NG" || st === "断られた" ? C.danger
             : st === "見込" || st === "興味あり" || st === "検討中" || st === "交渉中" ? C.accent
             : st === "仕入れ完了" ? "#06b6d4"
+            : st === "媒介" ? "#a855f7"
             : st === "居住している" ? "#64748b"
             : C.muted;
           const hasSelection = filterStatuses.length > 0;
@@ -9565,6 +9587,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           { c: "#f59e0b", l: "不在" },
                           { c: "#10b981", l: "見込・興味あり" },
                           { c: "#06b6d4", l: "仕入れ完了" },
+                          { c: "#a855f7", l: "媒介" },
                           { c: "#64748b", l: "居住" },
                           { c: "#ef4444", l: "NG" },
                         ].map(it => (
