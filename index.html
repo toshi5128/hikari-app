@@ -3369,28 +3369,6 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           </div>
         )}
 
-        {/* 役所調査リマインダー */}
-        {needYakusho.length > 0 && (
-          <div style={{ marginTop: (stagnant90.length + stagnant180.length) > 0 ? 8 : 0, background: C.accentBg, border: `1px solid ${C.accent}55`, borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ fontSize: 12, color: C.accent, fontWeight: 700, marginBottom: 6 }}>🏛 役所調査未実施 {needYakusho.length}件 — シート作成しよう</div>
-            {needYakusho.slice(0, 3).map(s => (
-              <button key={s.id} onClick={() => openQuickEdit(s)} style={{
-                display: "flex", gap: 8, alignItems: "center", marginBottom: 4,
-                width: "100%", background: "rgba(255,255,255,0.03)", border: `1px solid ${C.accent}33`,
-                cursor: "pointer", padding: "7px 9px", borderRadius: 7,
-                fontFamily: "inherit", fontSize: 12, textAlign: "left",
-                touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
-              }}>
-                <StatusTag status={s.status} />
-                <span style={{ color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
-                <MemberTag name={s.assignee} />
-                <span style={{ color: C.accent, fontSize: 12, flexShrink: 0 }}>✏</span>
-              </button>
-            ))}
-            {needYakusho.length > 3 && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>他 {needYakusho.length - 3}件</div>}
-          </div>
-        )}
-
         {/* 全部問題なし */}
         {jiageToday.length === 0 && ownerToday.length === 0 && stagnant90.length === 0 && stagnant180.length === 0 && needYakusho.length === 0 && (
           <div style={{ fontSize: 12, color: C.success, marginTop: 4 }}>✅ 滞留在庫なし。在庫回転は良好。</div>
@@ -3929,7 +3907,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [filterStatuses, setFilterStatuses] = useState([]);
   // 🆕 ステータスフィルターの折りたたみ（23段階で長いのでデフォルト閉じる）
   const [statusFilterExpanded, setStatusFilterExpanded] = useState(false);
-  const [filterMembers, setFilterMembers] = useState([]);
+  const [filterMember, setFilterMember] = useState("__ALL__"); // 営業tabに合わせた単一選択
   const [viewMode, setViewMode] = useState("active"); // "active" | "completed" | "all"
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -3962,7 +3940,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         else setViewMode("active");
         // フィルター解除（確実に表示されるように）
         setFilterStatuses([]);
-        setFilterMembers([]);
+        setFilterMember("__ALL__");
         setSearch("");
         // ハイライト
         setHighlightId(targetId);
@@ -4037,10 +4015,10 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     if (viewMode === "active" && s.status === "売決完了") return false;
     if (viewMode === "completed" && s.status !== "売決完了") return false;
     if (filterStatuses.length && !filterStatuses.includes(s.status)) return false;
-    if (filterMembers.length && !filterMembers.includes(s.assignee)) return false;
+    if (filterMember !== "__ALL__" && !isAssignedTo([s.assignee], filterMember)) return false;
     if (search && !s.name.includes(search) && !s.assignee.includes(search)) return false;
     return true;
-  }), [data.stocks, filterStatuses, filterMembers, search, viewMode]);
+  }), [data.stocks, filterStatuses, filterMember, search, viewMode]);
 
   // 💬 反響コメント投稿
   const handlePostViewingComment = (stockId, viewingIdx) => {
@@ -4442,8 +4420,17 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       </div>
 
       <SearchBar value={search} onChange={setSearch} placeholder="物件名・担当者で検索..." />
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>担当者</div>
-      <FilterChips options={MEMBERS} value={filterMembers} onChange={setFilterMembers} multi />
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>👤 表示する担当者{filterMember === "__ALL__" ? "（全員）" : ""}</div>
+        <select
+          style={{ ...inp, marginBottom: 0 }}
+          value={filterMember}
+          onChange={e => setFilterMember(e.target.value)}
+        >
+          <option value="__ALL__">全メンバー</option>
+          {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      </div>
       {/* 🆕 ステータスフィルター（折りたたみ式） */}
       <div style={{ marginBottom: 8 }}>
         <button
