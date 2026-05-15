@@ -347,8 +347,11 @@ const STATUS_GROUPS = [
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
 const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "断られた", "NG", "仕入れ完了"];
+// 🆕 仲介案件：媒介の種類とフェーズ
+const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
+const MEDIATION_STATUSES = ["媒介契約", "売出中", "買付あり", "売買契約", "決済完了"];
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
-const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店"];
+const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "メール", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
 const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "査定": 60, "仕入検討": 10, "仕入": 3, "地上初訪": 30, "地上再訪": 50, "新規地上": 10 };
 // 🆕 目標対象外の項目（KPIには入れない、振り返り用 - エリア・曜日傾向分析）
@@ -516,6 +519,7 @@ const DEFAULT_DATA = {
   owners: [],
   yakusho: [],
   sekisan: [],
+  mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
   memberGoals: {},
   annualGoals: { sell: 30000, profit: 6000, buyCount: 30 }, // 売上3億万、利益6000万、仕入30件
   activityLog: [], // 操作履歴（最新200件保持）
@@ -574,6 +578,7 @@ function appendLogAndNotify(d, action, target, description, item = null, options
     sekisan: { icon: "🧮", tab: "approach", sub: "cases", linkKey: "sekisanLinkId" },
     yakusho: { icon: "🏛", tab: "dashboard", linkKey: "yakushoLinkId" },
     event: { icon: "📅", tab: "dashboard", linkKey: "eventId" },
+    mediation: { icon: "🤝", tab: "stock" },
   };
   const actionLabels = {
     add: "➕ 追加",
@@ -833,6 +838,7 @@ function recordDeletion(target, id) {
     "jiage": "jiage",
     "yakusho": "yakusho",
     "approach": "approaches",
+    "mediation": "mediations",
   };
   const arrayKey = targetToArrayKey[target] || target;
   try {
@@ -1387,7 +1393,7 @@ function MainApp({ onLock, onSwitchUser }) {
       });
     });
 
-    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "activityLog"];
+    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "activityLog"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
       const remoteArr = Array.isArray(merged[k]) ? merged[k] : [];
@@ -1570,8 +1576,37 @@ function MainApp({ onLock, onSwitchUser }) {
         }
       }
 
+      // 🆕 仲介案件を新規受託したら、営業タブの「仲介受託」カウンターを担当者に +1 する
+      //   ・前バージョンに無い id の mediation が現れたとき（＝新規作成）だけ加算
+      //   ・編集・削除では発火しない
+      {
+        const prevM = Array.isArray(prev.mediations) ? prev.mediations : [];
+        const nextM = Array.isArray(next.mediations) ? next.mediations : [];
+        const prevMIds = new Set(prevM.map(m => m && m.id).filter(x => x != null));
+        const chukaiBumps = [];
+        nextM.forEach(m => {
+          if (!m || m.id == null) return;
+          if (!prevMIds.has(m.id)) chukaiBumps.push(m.assignee);
+        });
+        if (chukaiBumps.length > 0) {
+          const todayStr = new Date(now).toISOString().split("T")[0];
+          let appr = Array.isArray(next.approaches) ? [...next.approaches] : [];
+          chukaiBumps.forEach(member => {
+            const mm = member || getCurrentUser() || "";
+            if (!mm) return;
+            const idx = appr.findIndex(a => a.member === mm && a.date === todayStr);
+            if (idx >= 0) {
+              appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), "仲介受託": ((appr[idx].values || {})["仲介受託"] || 0) + 1 } };
+            } else {
+              appr.push({ id: now + Math.floor(Math.random() * 100000), member: mm, date: todayStr, values: { "仲介受託": 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
+            }
+          });
+          next.approaches = appr;
+        }
+      }
+
       // 🆕 変更されたアイテムに updatedAt をセット（マージ時の競合解決用）
-      const trackedKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan"];
+      const trackedKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations"];
       let hasActualChange = false; // 実質的な変更があったか
       // 🆕 共有tombstone（削除済みID）を更新するための作業コピー
       let nextTomb = { ...(next.tombstones || prev.tombstones || {}) };
@@ -3930,6 +3965,173 @@ function findMatchingStock(parsed, stocks) {
 }
 
 // ===================== STOCK PAGE =====================
+// ===================== 仲介案件ビュー（在庫タブ内・仕入案件と切替）=====================
+function MediationView({ data, setData, dealType, setDealType }) {
+  const currentUser = getCurrentUser();
+  const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
+  const [search, setSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState("__ALL__");
+  const [filterMember, setFilterMember] = useState("__ALL__");
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const empty = {
+    name: "", assignee: currentUser || MEMBERS[0], seller: "",
+    mediationType: MEDIATION_TYPES[0], status: MEDIATION_STATUSES[0],
+    listPrice: "", closePrice: "", brokerFee: "",
+    contractDate: "", settleDate: "", memo: "",
+  };
+  const [form, setForm] = useState(empty);
+
+  const mediations = data.mediations || [];
+  const filtered = useMemo(() => mediations.filter(m => {
+    if (filterStatus !== "__ALL__" && m.status !== filterStatus) return false;
+    if (filterMember !== "__ALL__" && !isAssignedTo([m.assignee], filterMember)) return false;
+    if (search && !(m.name || "").includes(search) && !(m.seller || "").includes(search)) return false;
+    return true;
+  }), [mediations, filterStatus, filterMember, search]);
+
+  const statusColor = (st) => ({ "媒介契約": C.accent, "売出中": C.warn, "買付あり": C.purple, "売買契約": "#f97316", "決済完了": C.success }[st] || C.muted);
+
+  const openEdit = (m) => {
+    setForm({ ...m, listPrice: String(m.listPrice || ""), closePrice: String(m.closePrice || ""), brokerFee: String(m.brokerFee || "") });
+    setEditItem(m);
+    setShowForm(true);
+  };
+  const handleSave = () => {
+    if (editItem && !canEdit(editItem)) { alert("⚠️ 編集権限がありません"); setShowForm(false); setEditItem(null); return; }
+    if (!form.name.trim()) { alert("物件名を入力してください"); return; }
+    const item = {
+      ...form,
+      id: editItem?.id || Date.now(),
+      listPrice: Number(form.listPrice) || 0,
+      closePrice: Number(form.closePrice) || 0,
+      brokerFee: Number(form.brokerFee) || 0,
+    };
+    setData(d => {
+      const next = { ...d, mediations: editItem
+        ? (d.mediations || []).map(m => m.id === editItem.id ? item : m)
+        : [...(d.mediations || []), item] };
+      return appendLogAndNotify(next, editItem ? "update" : "add", "mediation", `仲介案件「${item.name || "(無題)"}」（${item.status}）`, item);
+    });
+    setShowForm(false); setEditItem(null);
+  };
+  const handleDelete = (id) => {
+    const target = mediations.find(m => m.id === id);
+    if (target && !canEdit(target)) { alert("⚠️ 削除権限がありません"); return; }
+    if (!window.confirm("この仲介案件を削除しますか？")) return;
+    setData(d => {
+      const next = { ...d, mediations: (d.mediations || []).filter(m => m.id !== id) };
+      return appendLogAndNotify(next, "delete", "mediation", `仲介案件「${target?.name || "(無題)"}」を削除`, target);
+    });
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>🏠 在庫・案件管理</div>
+        <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14, background: C.purple, borderColor: C.purple }} onClick={() => { setForm(empty); setEditItem(null); setShowForm(true); }}>＋ 仲介案件を追加</button>
+      </div>
+      {/* 🆕 仕入案件 / 仲介案件 切替 */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 4 }}>
+        {[{ key: "stock", label: "📦 仕入案件", color: C.accent }, { key: "mediation", label: "🤝 仲介案件", color: C.purple }].map(t => {
+          const active = dealType === t.key;
+          return <button key={t.key} onClick={() => setDealType(t.key)} style={{
+            flex: 1, background: active ? t.color : "none", border: "none",
+            color: active ? "#fff" : C.muted, borderRadius: 9, padding: "10px 4px",
+            cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 500, fontFamily: "inherit",
+          }}>{t.label}</button>;
+        })}
+      </div>
+      <SearchBar value={search} onChange={setSearch} placeholder="物件名・売主で検索..." />
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>👤 表示する担当者{filterMember === "__ALL__" ? "（全員）" : ""}</div>
+        <select style={{ ...inp, marginBottom: 0 }} value={filterMember} onChange={e => setFilterMember(e.target.value)}>
+          <option value="__ALL__">全メンバー</option>
+          {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      </div>
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>
+        <button onClick={() => setFilterStatus("__ALL__")} style={{ padding: "6px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, background: filterStatus === "__ALL__" ? C.accent : C.cardBg, color: filterStatus === "__ALL__" ? "#fff" : C.muted, border: `1px solid ${filterStatus === "__ALL__" ? C.accent : C.borderDim}`, fontFamily: "inherit" }}>すべて</button>
+        {MEDIATION_STATUSES.map(st => {
+          const active = filterStatus === st;
+          return <button key={st} onClick={() => setFilterStatus(active ? "__ALL__" : st)} style={{ padding: "6px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, background: active ? statusColor(st) : C.cardBg, color: active ? "#fff" : C.muted, border: `1px solid ${active ? statusColor(st) : C.borderDim}`, fontFamily: "inherit" }}>{st}</button>;
+        })}
+      </div>
+      <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
+      {filtered.length === 0 && (
+        <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 32, textAlign: "center", color: C.muted }}>仲介案件がまだありません</div>
+      )}
+      {filtered.map(m => (
+        <div key={m.id} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <Tag label={m.status} color={statusColor(m.status)} />
+            <MemberTag name={m.assignee} />
+            {m.mediationType && <Tag label={m.mediationType} color={C.purple} />}
+          </div>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 6 }}>{m.name}</div>
+          {m.seller && <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>売主: {m.seller}</div>}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+            {[["売出価格", m.listPrice ? (m.listPrice / 10000).toFixed(0) + "万" : "—", C.text], ["成約価格", m.closePrice ? (m.closePrice / 10000).toFixed(0) + "万" : "—", C.accent], ["仲介手数料", m.brokerFee ? (m.brokerFee / 10000).toFixed(0) + "万" : "—", C.success]].map(([l, v, c]) => (
+              <div key={l} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ color: C.muted, fontSize: 10 }}>{l}</div>
+                <div style={{ color: c, fontWeight: 700, fontSize: 15 }}>{v}</div>
+              </div>
+            ))}
+          </div>
+          {(m.contractDate || m.settleDate) && (
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
+              {m.contractDate && <span>📝 媒介契約 {m.contractDate}　</span>}
+              {m.settleDate && <span>✅ 決済 {m.settleDate}</span>}
+            </div>
+          )}
+          {m.memo && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{m.memo}</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            {canEdit(m) ? (
+              <>
+                <button style={{ ...btnStyle("ghost"), flex: 1, padding: "10px", fontSize: 14 }} onClick={() => openEdit(m)}>編集</button>
+                <button style={{ ...btnStyle("danger"), padding: "10px 14px", fontSize: 14 }} onClick={() => handleDelete(m.id)}>削除</button>
+              </>
+            ) : (
+              <button style={{ flex: 1, padding: "10px", fontSize: 14, fontFamily: "inherit", fontWeight: 700, background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 10, cursor: "pointer" }} onClick={() => openEdit(m)}>👁 詳細を見る（{m.assignee}さん担当）</button>
+            )}
+          </div>
+        </div>
+      ))}
+      {showForm && (
+        <BottomSheet title={editItem ? (canEdit(editItem) ? "仲介案件を編集" : `👁 仲介案件詳細（${editItem.assignee}さん担当）`) : "仲介案件を追加"} onClose={() => { setShowForm(false); setEditItem(null); }}>
+          <Field label="物件名 *"><input style={inp} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="〇〇市〇〇" /></Field>
+          <Field label="担当者"><select style={inp} value={form.assignee} onChange={e => setForm(p => ({ ...p, assignee: e.target.value }))}>{MEMBERS.map(mm => <option key={mm}>{mm}</option>)}</select></Field>
+          <Field label="売主"><input style={inp} value={form.seller} onChange={e => setForm(p => ({ ...p, seller: e.target.value }))} /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="媒介の種類"><select style={inp} value={form.mediationType} onChange={e => setForm(p => ({ ...p, mediationType: e.target.value }))}>{MEDIATION_TYPES.map(t => <option key={t}>{t}</option>)}</select></Field>
+            <Field label="フェーズ"><select style={inp} value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>{MEDIATION_STATUSES.map(st => <option key={st}>{st}</option>)}</select></Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="売出価格（円）"><MoneyInput value={form.listPrice} onChange={v => setForm(p => ({ ...p, listPrice: v }))} placeholder="5,000,000" /></Field>
+            <Field label="成約価格（円）"><MoneyInput value={form.closePrice} onChange={v => setForm(p => ({ ...p, closePrice: v }))} placeholder="4,800,000" /></Field>
+          </div>
+          <Field label="仲介手数料（円）"><MoneyInput value={form.brokerFee} onChange={v => setForm(p => ({ ...p, brokerFee: v }))} placeholder="200,000" /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="媒介契約日"><input type="date" style={inp} value={form.contractDate || ""} onChange={e => setForm(p => ({ ...p, contractDate: e.target.value }))} /></Field>
+            <Field label="決済日"><input type="date" style={inp} value={form.settleDate || ""} onChange={e => setForm(p => ({ ...p, settleDate: e.target.value }))} /></Field>
+          </div>
+          <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={e => setForm(p => ({ ...p, memo: e.target.value }))} /></Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            {editItem && !canEdit(editItem) ? (
+              <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowForm(false); setEditItem(null); }}>閉じる</button>
+            ) : (
+              <>
+                <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowForm(false); setEditItem(null); }}>キャンセル</button>
+                <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
+              </>
+            )}
+          </div>
+        </BottomSheet>
+      )}
+    </div>
+  );
+}
+
 function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
@@ -3943,6 +4145,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [statusFilterExpanded, setStatusFilterExpanded] = useState(false);
   const [filterMember, setFilterMember] = useState("__ALL__"); // 営業tabに合わせた単一選択
   const [viewMode, setViewMode] = useState("active"); // "active" | "completed" | "all"
+  const [dealType, setDealType] = useState("stock"); // 🆕 "stock"=仕入案件 / "mediation"=仲介案件
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [expandedViewings, setExpandedViewings] = useState({}); // {index: true/false}
@@ -4417,6 +4620,11 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     });
   };
 
+  // 🆕 仲介案件モードなら専用ビューを表示
+  if (dealType === "mediation") {
+    return <MediationView data={data} setData={setData} dealType={dealType} setDealType={setDealType} />;
+  }
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 8, flexWrap: "wrap" }}>
@@ -4429,6 +4637,18 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
           }} onClick={() => { setShowImport(true); setImportText(""); setImportParsed(null); setImportTargetStockId(null); }}>📥 反響取込</button>
           <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm(empty); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
         </div>
+      </div>
+
+      {/* 🆕 仕入案件 / 仲介案件 切替 */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 4 }}>
+        {[{ key: "stock", label: "📦 仕入案件", color: C.accent }, { key: "mediation", label: "🤝 仲介案件", color: C.purple }].map(t => {
+          const active = dealType === t.key;
+          return <button key={t.key} onClick={() => setDealType(t.key)} style={{
+            flex: 1, background: active ? t.color : "none", border: "none",
+            color: active ? "#fff" : C.muted, borderRadius: 9, padding: "10px 4px",
+            cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 500, fontFamily: "inherit",
+          }}>{t.label}</button>;
+        })}
       </div>
 
       {/* ====== 表示モード切替（現在の在庫 / 決済完了 / すべて） ====== */}
