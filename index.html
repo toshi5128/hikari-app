@@ -688,7 +688,7 @@ function mergeWithDefault(remote) {
 // ============== 🆕 v6: 項目ごとマージ（編集の取り合いを防ぐ）==============
 // 「物件まるごと最後の勝ち」だと、2人が別の項目を編集しても片方が丸ごと負ける。
 // 項目ごとに更新時刻を持たせ、項目単位で新しい方を採用する。反響・写真・コメント等のリストは「上書き」でなく「合算」する。
-const MERGEABLE_ARRAY_FIELDS = new Set(["viewings", "photos", "comments", "visitLog", "history"]);
+const MERGEABLE_ARRAY_FIELDS = new Set(["viewings", "photos", "comments", "visitLog", "history", "family"]);
 
 function v6ValuesEqual(a, b) {
   if (a === b) return true;
@@ -7360,6 +7360,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
 
 // Excelから取り込んだ地上げデータ（エリア別）
 const JIAGE_AREAS = ["熊谷", "行田", "深谷", "東松山", "本庄", "秩父", "上里"];
+// 🆕 地上げ：家族構成の続柄（この順でグループ表示される）
+const JIAGE_FAMILY_RELATIONS = ["名義人本人", "配偶者", "長男", "次男", "三男", "長女", "次女", "子", "父", "母", "兄", "弟", "姉", "妹", "孫", "その他"];
 
 // 🗺️ ジオコーディング：住所→緯度経度（国土地理院API・日本特化・無料）
 async function geocodeAddress(address) {
@@ -7560,6 +7562,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   // 訪問結果記録モード
   const [visitRecordTarget, setVisitRecordTarget] = useState(null); // 記録対象のitem
   const [visitForm, setVisitForm] = useState(null); // { date, time, result, signs, intensityLevel, memo }
+  // 🆕 家族構成の追加・編集フォーム
+  const [familyForm, setFamilyForm] = useState(null); // { editId, name, relation, memo } | null
 
   const navUrl = addr => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving`;
 
@@ -7946,10 +7950,45 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   };
 
   // 訪問記録モーダルを開く
+  // 🆕 家族構成：追加・更新・削除（対象は訪問記録モーダルのjiage）
+  const familyJiageId = () => visitRecordTarget && (visitRecordTarget.rawId || visitRecordTarget.id);
+  const saveFamilyMember = () => {
+    if (!familyForm || !familyForm.name.trim()) { alert("名前を入力してください"); return; }
+    const jid = familyJiageId();
+    if (jid == null) return;
+    const member = {
+      id: familyForm.editId || ("f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
+      name: familyForm.name.trim(),
+      relation: familyForm.relation || "その他",
+      memo: familyForm.memo || "",
+    };
+    setData(d => ({
+      ...d,
+      jiage: (d.jiage || []).map(j => {
+        if (j.id !== jid) return j;
+        const fam = j.family || [];
+        const nextFam = familyForm.editId
+          ? fam.map(m => m.id === familyForm.editId ? member : m)
+          : [...fam, member];
+        return { ...j, family: nextFam };
+      }),
+    }));
+    setFamilyForm(null);
+  };
+  const deleteFamilyMember = (memberId) => {
+    if (!window.confirm("この家族メンバーを削除しますか？")) return;
+    const jid = familyJiageId();
+    if (jid == null) return;
+    setData(d => ({
+      ...d,
+      jiage: (d.jiage || []).map(j => j.id === jid ? { ...j, family: (j.family || []).filter(m => m.id !== memberId) } : j),
+    }));
+  };
   const openVisitRecord = (item) => {
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     setVisitRecordTarget(item);
+    setFamilyForm(null);
     setVisitForm({
       date: today,
       time,
@@ -9250,6 +9289,62 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               onChange={e => setVisitForm({ ...visitForm, memo: e.target.value })}
               placeholder={visitForm.result === "ignore" ? "車のナンバー、生活音、灯りの位置など" : visitForm.result === "home" ? "話せた内容、対応者など" : "次回の作戦"} />
           </Field>
+
+          {/* 🆕 👪 家族構成 */}
+          {(() => {
+            const famJ = (data.jiage || []).find(j => j.id === (visitRecordTarget.rawId || visitRecordTarget.id));
+            const familyList = (famJ && famJ.family) || [];
+            const sorted = [...familyList].sort((a, b) => {
+              const ia = JIAGE_FAMILY_RELATIONS.indexOf(a.relation); const ib = JIAGE_FAMILY_RELATIONS.indexOf(b.relation);
+              return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+            });
+            return (
+              <div style={{ background: "#a855f711", border: `1px solid #a855f744`, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#a855f7" }}>👪 家族構成（{familyList.length}人）</span>
+                  {!familyForm && (
+                    <button onClick={() => setFamilyForm({ editId: null, name: "", relation: JIAGE_FAMILY_RELATIONS[0], memo: "" })}
+                      style={{ background: "#a855f722", border: `1.5px solid #a855f7`, color: "#a855f7", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}>＋ 家族を追加</button>
+                  )}
+                </div>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>名義人の一存で売却が決まらないことも多いので、関係者を記録しておく欄です</div>
+                {familyList.length === 0 && !familyForm && (
+                  <div style={{ fontSize: 11, color: C.muted, textAlign: "center", padding: "6px 0" }}>まだ登録なし</div>
+                )}
+                {sorted.map(m => (
+                  <div key={m.id} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 10px", marginBottom: 5 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ background: "#a855f733", color: "#a855f7", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{m.relation}</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{m.name}</span>
+                      <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                        <button onClick={() => setFamilyForm({ editId: m.id, name: m.name, relation: m.relation, memo: m.memo || "" })}
+                          style={{ background: "transparent", border: `1px solid ${C.muted}33`, color: C.muted, borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>✏️</button>
+                        <button onClick={() => deleteFamilyMember(m.id)}
+                          style={{ background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger, borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>🗑️</button>
+                      </div>
+                    </div>
+                    {m.memo && <div style={{ fontSize: 11, color: C.muted, marginTop: 4, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{m.memo}</div>}
+                  </div>
+                ))}
+                {familyForm && (
+                  <div style={{ background: C.cardBg, border: `1.5px solid #a855f7`, borderRadius: 8, padding: 10, marginTop: 6 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#a855f7", marginBottom: 6 }}>{familyForm.editId ? "家族を編集" : "家族を追加"}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 6 }}>
+                      <input style={{ ...inp, marginBottom: 0 }} value={familyForm.name} onChange={e => setFamilyForm(p => ({ ...p, name: e.target.value }))} placeholder="名前" />
+                      <select style={{ ...inp, marginBottom: 0 }} value={familyForm.relation} onChange={e => setFamilyForm(p => ({ ...p, relation: e.target.value }))}>
+                        {JIAGE_FAMILY_RELATIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </div>
+                    <textarea style={{ ...inp, height: 50, resize: "vertical", marginBottom: 6 }} value={familyForm.memo} onChange={e => setFamilyForm(p => ({ ...p, memo: e.target.value }))} placeholder="この人の状況・売却への姿勢など" />
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => setFamilyForm(null)} style={{ ...btnStyle("ghost"), flex: 1, padding: "7px", fontSize: 12 }}>キャンセル</button>
+                      <button onClick={saveFamilyMember} style={{ ...btnStyle(), flex: 2, padding: "7px", fontSize: 12, background: "#a855f7", borderColor: "#a855f7" }}>{familyForm.editId ? "更新" : "追加"}</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setVisitRecordTarget(null); setVisitForm(null); }}>キャンセル</button>
