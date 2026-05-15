@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-15-v3-sync-fix";
+const APP_VERSION = "2026-05-15-v4-sync-fix-2";
 console.log(`[ひかり不動産] ✅ バージョン: ${APP_VERSION}`);
 const {useState,useMemo,useEffect,useRef}=React;
 
@@ -1089,7 +1089,55 @@ function MainApp({ onLock, onSwitchUser }) {
 
   // 🆕 起動時に「古い sekisan 連動 customEvents」を掃除
   // - sekisanLinkId 付きの customEvent は、元の sekisan が「売主結果確認日」じゃないなら不要
+  // 🚨 重要：変更が必要な時のみ setData を呼ぶ（無駄な Supabase 保存を防ぐ）
   useEffect(() => {
+    // 一度マイグレーションが必要か判定してから setData を呼ぶ
+    const current = loadFromCache() || DEFAULT_DATA;
+    let needsMigration = false;
+
+    // ① customEvents の sekisan 連動掃除チェック
+    if (current.customEvents && current.customEvents.length > 0) {
+      const sekisanIdsWithResult = new Set(
+        (current.sekisan || [])
+          .filter(s => s.caseStatus === "売主結果確認日" && s.caseStatusAt)
+          .map(s => s.id)
+      );
+      const hasOrphan = current.customEvents.some(e => e.sekisanLinkId && !sekisanIdsWithResult.has(e.sekisanLinkId));
+      if (hasOrphan) needsMigration = true;
+    }
+
+    // ② stocks ステータスマイグレーションチェック
+    const STATUS_MIGRATION_MAP = {
+      "見込": "仕入役調中",
+      "仕入役調【未】": "仕入役調中", "仕入役調【完】": "仕入役調中",
+      "仕入契約書【未】": "仕契準備中", "仕入契約書【完】": "仕契完了",
+      "司法書士連絡済み": "登記依頼完了", "相続登記待ち": "登記依頼完了",
+      "残置物処理待ち": "残置物処理中", "残置物処理完了": "リフォーム待ち",
+      "入稿【未】": "リフォーム完了", "入稿【完】": "販売中",
+      "未入稿【残置物待】": "残置物処理中",
+      "販売中・内覧対応中": "販売中", "買付受付中": "販売中",
+      "売却契約準備中": "売契準備中",
+      "売却契約書作成【未】": "売契準備中", "売却契約書【完】": "売契完了",
+      "売却手付金受領": "売契完了",
+      "仕契完成": "仕契完了", "仕入決済完了": "仕決完了",
+      "登記・残置物処理中": "登記依頼完了",
+      "仕入契約済み": "仕契完了", "売却契約済み": "売契完了", "売却決済": "売決完了",
+      "仕入契約": "仕契完了", "仕入決済": "仕決完了", "売却契約": "売契完了",
+      "契約書作成中": "売契準備中",
+      "仕入契約済": "仕契完了", "売却契約完了": "売契完了", "決済完了": "売決完了",
+    };
+    if (current.stocks && current.stocks.length > 0) {
+      const hasOldStatus = current.stocks.some(s => STATUS_MIGRATION_MAP[s.status]);
+      if (hasOldStatus) needsMigration = true;
+    }
+
+    // マイグレーション不要なら何もしない（saveToSupabase もスキップ）
+    if (!needsMigration) {
+      console.log("[Migration] マイグレーション不要、setData スキップ");
+      return;
+    }
+
+    console.log("[Migration] マイグレーション実行");
     setData(d => {
       let changed = false;
       let next = { ...d };
@@ -1330,10 +1378,18 @@ function MainApp({ onLock, onSwitchUser }) {
   const setData = updater => {
     setDataRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
+
+      // 🆕 データが変わってない場合は何もしない（無駄な Supabase 上書き防止）
+      if (next === prev) {
+        console.log("[setData] データ変更なし、Supabase保存スキップ");
+        return prev;
+      }
+
       const now = Date.now();
 
       // 🆕 変更されたアイテムに updatedAt をセット（マージ時の競合解決用）
       const trackedKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan"];
+      let hasActualChange = false; // 実質的な変更があったか
       trackedKeys.forEach(k => {
         const prevArr = Array.isArray(prev[k]) ? prev[k] : [];
         const nextArr = Array.isArray(next[k]) ? next[k] : [];
@@ -1345,12 +1401,32 @@ function MainApp({ onLock, onSwitchUser }) {
           const prevItem = prevMap.get(item.id);
           // 新規 or 参照が変わった（編集された）アイテム → updatedAt 更新
           if (!prevItem || prevItem !== item) {
+            hasActualChange = true;
             return { ...item, updatedAt: now };
           }
           return item;
         });
         next[k] = updated;
+        // 削除されたアイテムがあるかチェック（次配列の方が短い）
+        if (prevArr.length !== nextArr.length) hasActualChange = true;
       });
+
+      // activityLog も含めて、何か変わったかチェック
+      if (!hasActualChange) {
+        const otherKeys = Object.keys(next).filter(k => !trackedKeys.includes(k) && k !== "__appVersion");
+        for (const k of otherKeys) {
+          if (next[k] !== prev[k]) {
+            hasActualChange = true;
+            break;
+          }
+        }
+      }
+
+      // 🆕 実質的な変更がない場合は Supabase 保存をスキップ
+      if (!hasActualChange) {
+        console.log("[setData] 実質変更なし、Supabase保存スキップ");
+        return prev; // prev を返して再レンダリングも防ぐ
+      }
 
       // 自分の保存時刻を記録（ポーリング上書き防止用）
       lastLocalSaveRef.current = now;
@@ -1384,7 +1460,7 @@ function MainApp({ onLock, onSwitchUser }) {
       <div style={{ background: C.cardBg, borderBottom: `1px solid ${C.borderDim}`, padding: "12px 16px", position: "sticky", top: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 800, color: C.text, letterSpacing: "-0.01em" }}>
-            ひかり不動産 <span style={{ fontSize: 9, fontWeight: 600, color: C.success, marginLeft: 4, padding: "2px 6px", background: C.success + "22", borderRadius: 4 }}>v3</span>
+            ひかり不動産 <span style={{ fontSize: 9, fontWeight: 600, color: C.success, marginLeft: 4, padding: "2px 6px", background: C.success + "22", borderRadius: 4 }}>v4</span>
           </div>
           <div style={{ fontSize: 10, marginTop: 1, color: syncing ? C.warn : savedMsg ? C.success : syncError ? C.danger : C.muted }}>
             {syncing ? "⟳ 同期中..." : savedMsg ? "✓ 保存・同期完了" : syncError ? "⚠ オフライン（ローカル保存）" : "☁ クラウド同期済み"}
