@@ -1536,6 +1536,40 @@ function MainApp({ onLock, onSwitchUser }) {
 
       const now = Date.now();
 
+      // 🆕 地上げが「仕入れ完了」に変わったぶん、営業タブの「仕入」カウンターを +1 する
+      //   ・transition（前は仕入れ完了でない → 今は仕入れ完了）のときだけ加算
+      //   ・新規追加・Excelインポート（前バージョンが無い／statusを変更しない）では発火しない
+      //   ・カウントは その地上げの担当者 に付く
+      {
+        const prevJ = Array.isArray(prev.jiage) ? prev.jiage : [];
+        const nextJ = Array.isArray(next.jiage) ? next.jiage : [];
+        const prevJMap = new Map();
+        prevJ.forEach(j => { if (j && j.id != null) prevJMap.set(j.id, j); });
+        const shiireBumps = [];
+        nextJ.forEach(j => {
+          if (!j || j.id == null) return;
+          const pj = prevJMap.get(j.id);
+          if (pj && pj.status !== "仕入れ完了" && j.status === "仕入れ完了") {
+            shiireBumps.push(j.assignee);
+          }
+        });
+        if (shiireBumps.length > 0) {
+          const todayStr = new Date(now).toISOString().split("T")[0];
+          let appr = Array.isArray(next.approaches) ? [...next.approaches] : [];
+          shiireBumps.forEach(member => {
+            const m = member || getCurrentUser() || "";
+            if (!m) return;
+            const idx = appr.findIndex(a => a.member === m && a.date === todayStr);
+            if (idx >= 0) {
+              appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), "仕入": ((appr[idx].values || {})["仕入"] || 0) + 1 } };
+            } else {
+              appr.push({ id: now + Math.floor(Math.random() * 100000), member: m, date: todayStr, values: { "仕入": 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
+            }
+          });
+          next.approaches = appr;
+        }
+      }
+
       // 🆕 変更されたアイテムに updatedAt をセット（マージ時の競合解決用）
       const trackedKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan"];
       let hasActualChange = false; // 実質的な変更があったか
@@ -11829,10 +11863,10 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
 
       // 🆕 行動管理（approaches）に自動カウント反映
       let nextApproaches = d.approaches || [];
-      if (becameKentou || becameShiire) {
+      if (becameKentou) {
         const targetMember = item.assignee || currentUser || "";
         const today = new Date().toISOString().split("T")[0];
-        const countKey = becameShiire ? "仕入" : "仕入検討";
+        const countKey = "仕入検討";
         if (targetMember) {
           const existing = nextApproaches.find(a => a.member === targetMember && a.date === today);
           if (existing) {
