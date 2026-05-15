@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8-dashboard";
+const APP_VERSION = "2026-05-16-v8.1-forceupdate-fix";
 console.log(`[ひかり不動産] ✅ バージョン: ${APP_VERSION}`);
 const {useState,useMemo,useEffect,useRef}=React;
 
@@ -11597,33 +11597,22 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       <div style={{ marginTop: 24, marginBottom: 12, fontSize: 14, fontWeight: 700, color: C.muted, letterSpacing: "0.05em" }}>🔄 アプリ更新</div>
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>
-          アプリが古いままで表示される場合や、共有メンバーが「読込中」で進まない場合は、強制更新を実行してください。<br />
-          <span style={{ fontSize: 11 }}>※ データはSupabaseに保存されているため失われません</span>
+          アプリが古いまま表示される / 共有メンバーが「読込中」で進まない場合に実行してください。<br />
+          <span style={{ fontSize: 11 }}>📦 ローカルキャッシュとサービスワーカーを削除して、Supabase から最新データを取り直します。</span><br />
+          <span style={{ fontSize: 11, color: C.danger }}>⚠️ もし手元に未保存の変更がある場合は、先に普通のリロード（ページ更新）で送信し終わってから実行してください。</span>
         </div>
         <button onClick={async () => {
-          if (!window.confirm("キャッシュをクリアして最新版を再読み込みします。\n（先にデータを Supabase に同期してから実行します）\n\n実行しますか？")) return;
+          if (!window.confirm("📦 ローカルのキャッシュをクリアして、Supabase の最新データを取り直します。\n\n⚠️ Supabase への書き込みは一切行いません（事故防止のため）。\nもし手元に未保存の変更がある場合は、先に普通のリロードで送信してから実行してください。\n\n実行しますか？")) return;
           try {
-            // 🆕 0. まず最新データを Supabase に保存（未保存データの保護）
-            try {
-              const cached = loadFromCache();
-              if (cached) {
-                const syncOk = await saveToSupabase(cached);
-                if (!syncOk) {
-                  if (!window.confirm("⚠️ Supabase への同期に失敗しました。\n\nこのまま強制更新すると、未保存の変更が失われる可能性があります。\n\n本当に続けますか？")) return;
-                } else {
-                  console.log("[ForceUpdate] Supabase 同期 OK");
-                }
-              }
-            } catch (syncErr) {
-              console.warn("[ForceUpdate] Sync error:", syncErr);
-              if (!window.confirm("⚠️ データ同期中にエラーが発生しました。\n\nこのまま続行すると変更が失われる可能性があります。\n本当に続けますか？")) return;
-            }
+            // 🔒 ローカル状態を Supabase に書き戻す処理は意図的に行わない（古いキャッシュで上書き事故を防ぐ）
 
             // 1. localStorage のキャッシュをクリア
             try {
               localStorage.removeItem("hikari_v4_cache");
               localStorage.removeItem("hikari_v3_cache");
               localStorage.removeItem("hikari_v2_cache");
+              // 🆕 直近保存マーカーもクリア（リロード後にポーリングが即座にリモートを取りに行けるように）
+              localStorage.removeItem("hikari_last_save");
             } catch (e) {}
 
             // 2. Service Worker のキャッシュ削除
@@ -11638,8 +11627,8 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
               await Promise.all(regs.map(r => r.unregister()));
             }
 
-            // 4. ハードリロード
-            window.location.reload(true);
+            // 4. ハードリロード（cache-busting クエリ付き）
+            window.location.href = window.location.pathname + "?v=" + Date.now();
           } catch (err) {
             alert("更新エラー: " + err.message + "\n手動でブラウザを再読み込みしてください。");
           }
