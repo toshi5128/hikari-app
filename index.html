@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-15-v4-sync-fix-2";
+const APP_VERSION = "2026-05-15-v5-tombstone-sync";
 console.log(`[ひかり不動産] ✅ バージョン: ${APP_VERSION}`);
 const {useState,useMemo,useEffect,useRef}=React;
 
@@ -524,6 +524,7 @@ const DEFAULT_DATA = {
   adminMembers: ["下田", "比嘉"], // 🆕 管理者リスト（複数。全データの編集権限あり）
   notifyMembers: ["下田", "比嘉"], // 🆕 通知を受け取るメンバー（変更があった時に Push 通知が飛ぶ）
   memberPasswords: {}, // { "下田": "1234", "比嘉": "5678", ... }
+  tombstones: {}, // 🆕 削除済みアイテムID（全端末で共有）→ 削除がどの端末でも確実に伝わり、復活を防ぐ。{ stocks: {"id": 削除時刻}, customEvents: {...}, ... }
 };
 
 // ============== 現在のユーザー識別 ==============
@@ -690,6 +691,8 @@ function mergeWithDefault(remote) {
 // localStorageに「削除済みID」を7日間保持
 const DELETED_IDS_KEY = "hikari_deleted_ids";
 const DELETED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7日間
+// 🆕 共有tombstone（data.tombstones）の保持期間。これを過ぎたら自動で掃除する
+const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30日間
 
 function _getDeletedIdsRaw() {
   try { return JSON.parse(localStorage.getItem(DELETED_IDS_KEY) || "{}"); }
@@ -1239,21 +1242,39 @@ function MainApp({ onLock, onSwitchUser }) {
 
     // 🆕 直近5分以内に自分が編集したか（updatedAt が無い既存データの保護）
     const recentlyEdited = (Date.now() - lastLocalSaveRef.current) < 5 * 60 * 1000;
+    const nowTs = Date.now();
+    const tombCutoff = nowTs - TOMBSTONE_RETENTION_MS;
+
+    // 🆕 共有tombstone（削除済みID）を local と remote から統合する
+    //    - どちらかで削除されていれば全端末に伝わる
+    //    - 30日より古い記録は自動で掃除する
+    const localTombAll = (local && local.tombstones) || {};
+    const remoteTombAll = (merged && merged.tombstones) || {};
+    const mergedTomb = {};
+    [localTombAll, remoteTombAll].forEach(src => {
+      Object.keys(src || {}).forEach(arrKey => {
+        const m = src[arrKey] || {};
+        if (!mergedTomb[arrKey]) mergedTomb[arrKey] = {};
+        Object.keys(m).forEach(id => {
+          const ts = Number(m[id]) || 0;
+          if (ts >= tombCutoff) {
+            mergedTomb[arrKey][id] = Math.max(mergedTomb[arrKey][id] || 0, ts);
+          }
+        });
+      });
+    });
 
     const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "activityLog"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
       const remoteArr = Array.isArray(merged[k]) ? merged[k] : [];
 
-      // ① 自分のローカルで削除したID（7日以内）を取得
+      // ① 自分のローカルで削除したID（localStorage・7日以内）
       const deletedIds = getDeletedIdSet(k);
+      // 🆕 ② 共有tombstone（全端末で共有・30日以内）
+      const tombForK = mergedTomb[k] || {};
 
-      // ② リモートから「削除済みID」のアイテムを除外（復活を防ぐ）
-      const cleanRemote = deletedIds.size > 0
-        ? remoteArr.filter(item => !deletedIds.has(item?.id))
-        : remoteArr;
-
-      // 🆕 アイテム単位の updatedAt 比較でマージ
+      // アイテム単位の updatedAt 比較でマージ
       const localMap = new Map();
       localArr.forEach(item => {
         if (item?.id != null && !deletedIds.has(item.id)) {
@@ -1261,26 +1282,38 @@ function MainApp({ onLock, onSwitchUser }) {
         }
       });
       const remoteMap = new Map();
-      cleanRemote.forEach(item => {
-        if (item?.id != null) remoteMap.set(item.id, item);
+      remoteArr.forEach(item => {
+        if (item?.id != null && !deletedIds.has(item.id)) {
+          remoteMap.set(item.id, item);
+        }
       });
 
       const allIds = new Set([...localMap.keys(), ...remoteMap.keys()]);
       const finalArr = [];
-      let localWins = 0, remoteWins = 0;
+      let localWins = 0, remoteWins = 0, tombRemoved = 0;
       allIds.forEach(id => {
         const localItem = localMap.get(id);
         const remoteItem = remoteMap.get(id);
+        const localTime = Number(localItem && localItem.updatedAt) || 0;
+        const remoteTime = Number(remoteItem && remoteItem.updatedAt) || 0;
+
+        // 🆕 共有tombstoneで削除確定なら、どちらにあっても除外（復活防止）
+        //    削除時刻 >= アイテムの更新時刻 のときだけ「削除のまま」とする
+        //    （削除より後に編集されていれば、その編集を優先して復活させる）
+        const tombTime = Number(tombForK[String(id)]) || 0;
+        if (tombTime && tombTime >= Math.max(localTime, remoteTime)) {
+          tombRemoved++;
+          return; // 削除されたまま
+        }
+
         if (!localItem) {
           finalArr.push(remoteItem);
         } else if (!remoteItem) {
-          // ローカル限定（自分が追加してまだ同期されてない）
+          // ローカルにしか無い（自分が追加してまだ同期されてない）→ 保護
           finalArr.push(localItem);
           localWins++;
         } else {
           // 両方にある → タイムスタンプ比較
-          const localTime = Number(localItem.updatedAt) || 0;
-          const remoteTime = Number(remoteItem.updatedAt) || 0;
           if (localTime > remoteTime) {
             finalArr.push(localItem);
             localWins++;
@@ -1290,7 +1323,7 @@ function MainApp({ onLock, onSwitchUser }) {
           } else {
             // updatedAt が同じ or 両方0（updatedAt なし既存データ）
             if (localTime === 0 && remoteTime === 0 && recentlyEdited) {
-              // 🆕 既存データで直近5分編集中 → ローカル優先（古いデータの保護）
+              // 既存データで直近5分編集中 → ローカル優先（古いデータの保護）
               finalArr.push(localItem);
               localWins++;
             } else {
@@ -1300,13 +1333,15 @@ function MainApp({ onLock, onSwitchUser }) {
         }
       });
 
-      const removedCount = remoteArr.length - cleanRemote.length;
-      if (removedCount > 0 || localWins > 0) {
-        console.log(`[Sync] ${k}: ローカル勝ち${localWins}件 / リモート勝ち${remoteWins}件 / 削除除外${removedCount}件`);
+      if (localWins > 0 || remoteWins > 0 || tombRemoved > 0) {
+        console.log(`[Sync] ${k}: ローカル勝ち${localWins}件 / リモート勝ち${remoteWins}件 / 削除除外${tombRemoved}件`);
       }
 
       merged[k] = finalArr;
     });
+
+    // 🆕 統合した共有tombstoneを保存（全端末に削除が伝わり続ける）
+    merged.tombstones = mergedTomb;
     return merged;
   };
 
@@ -1390,6 +1425,9 @@ function MainApp({ onLock, onSwitchUser }) {
       // 🆕 変更されたアイテムに updatedAt をセット（マージ時の競合解決用）
       const trackedKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan"];
       let hasActualChange = false; // 実質的な変更があったか
+      // 🆕 共有tombstone（削除済みID）を更新するための作業コピー
+      let nextTomb = { ...(next.tombstones || prev.tombstones || {}) };
+      let tombChanged = false;
       trackedKeys.forEach(k => {
         const prevArr = Array.isArray(prev[k]) ? prev[k] : [];
         const nextArr = Array.isArray(next[k]) ? next[k] : [];
@@ -1402,14 +1440,32 @@ function MainApp({ onLock, onSwitchUser }) {
           // 新規 or 参照が変わった（編集された）アイテム → updatedAt 更新
           if (!prevItem || prevItem !== item) {
             hasActualChange = true;
-            return { ...item, updatedAt: now };
+            // 🆕 updatedAt は必ず「編集元より新しい値」にする（端末の時計ズレ対策）
+            const prevUA = Number(prevItem && prevItem.updatedAt) || 0;
+            return { ...item, updatedAt: Math.max(now, prevUA + 1) };
           }
           return item;
         });
         next[k] = updated;
-        // 削除されたアイテムがあるかチェック（次配列の方が短い）
-        if (prevArr.length !== nextArr.length) hasActualChange = true;
+
+        // 🆕 削除されたアイテムID → 共有tombstoneに記録（全端末で削除を確実に伝える）
+        const nextIds = new Set(updated.map(it => (it && it.id != null) ? it.id : null).filter(x => x != null));
+        const tk = { ...(nextTomb[k] || {}) };
+        prevMap.forEach((_, id) => {
+          if (!nextIds.has(id)) {
+            tk[String(id)] = now;
+            hasActualChange = true;
+            tombChanged = true;
+          }
+        });
+        // 🆕 生きているアイテムのIDは tombstone から外す（誤った削除扱いを防ぐ）
+        nextIds.forEach(id => {
+          if (tk[String(id)] != null) { delete tk[String(id)]; tombChanged = true; }
+        });
+        nextTomb[k] = tk;
       });
+      // 🆕 tombstoneに変化があった時だけ反映（無変更時の無駄な保存を防ぐ）
+      if (tombChanged) next.tombstones = nextTomb;
 
       // activityLog も含めて、何か変わったかチェック
       if (!hasActualChange) {
