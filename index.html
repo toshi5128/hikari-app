@@ -7767,13 +7767,41 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       alert("インポート可能なデータがありませんでした");
       return;
     }
-    
-    setData(d => {
-      const next = { ...d, jiage: [...(d.jiage || []), ...allNewItems] };
-      const sheetNames = targetSheets.map(s => s.name).join(", ");
-      return appendLogAndNotify(next, "import", "jiage", `Excel(${sheetNames})から${allNewItems.length}件インポート`, null);
+
+    // 🆕 重複スキップ：既存の地上げ住所 ＋ 今回のExcel内での重複 を除外（住所で照合・既存は上書きしない）
+    const normAddr = (a) => String(a || "")
+      .replace(/[！-～]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+      .replace(/[\s　]/g, "")
+      .replace(/[ー－−‐―—]/g, "-")
+      .toLowerCase();
+    const existingAddrs = new Set((data.jiage || []).map(j => normAddr(j.address)));
+    const seenInBatch = new Set();
+    let dupExisting = 0, dupInBatch = 0;
+    const dedupedItems = [];
+    allNewItems.forEach(item => {
+      const na = normAddr(item.address);
+      if (!na) { dedupedItems.push(item); return; }
+      if (existingAddrs.has(na)) { dupExisting++; return; }
+      if (seenInBatch.has(na)) { dupInBatch++; return; }
+      seenInBatch.add(na);
+      dedupedItems.push(item);
     });
-    alert(`✅ ${allNewItems.length}件をインポートしました！\n（${targetSheets.length}シート分）`);
+
+    if (dedupedItems.length === 0) {
+      alert(`新規データはありませんでした。\n${dupExisting + dupInBatch}件はすべて重複だったためスキップしました。`);
+      setImportPreview(null);
+      return;
+    }
+
+    setData(d => {
+      const next = { ...d, jiage: [...(d.jiage || []), ...dedupedItems] };
+      const sheetNames = targetSheets.map(s => s.name).join(", ");
+      return appendLogAndNotify(next, "import", "jiage", `Excel(${sheetNames})から${dedupedItems.length}件インポート（重複${dupExisting + dupInBatch}件スキップ）`, null);
+    });
+    let importMsg = `✅ ${dedupedItems.length}件を新規インポートしました！（${targetSheets.length}シート分）`;
+    if (dupExisting > 0) importMsg += `\n⏭ 既存と重複: ${dupExisting}件をスキップ`;
+    if (dupInBatch > 0) importMsg += `\n⏭ Excel内の重複: ${dupInBatch}件をスキップ`;
+    alert(importMsg);
     setImportPreview(null);
   };
 
