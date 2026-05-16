@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.30-stock-delete-confirm";
+const APP_VERSION = "2026-05-16-v8.32-import-feedback-accurate";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -1053,14 +1053,22 @@ function ensureNestedIds(item) {
 //   どれも空なら null（重複判定しない）
 function viewingDedupSig(v) {
   if (!v) return null;
+  const date = String(v.date || "").trim();
   const cust = String(v.customer || "").trim();
   const contact = String(v.contact || "").replace(/[\s\-()]/g, "");
   const email = String(v.email || "").trim().toLowerCase();
-  if (cust && contact) return "c|" + cust + "|" + contact;
-  if (cust && email) return "e|" + cust + "|" + email;
-  if (contact) return "p|" + contact;
-  if (email) return "m|" + email;
-  if (cust) return "n|" + cust;
+  // 🆕 反響日 + 顧客識別子。日付が違うものは別問合せとして残す。
+  //    日付が無い古いデータは日付なしの後方互換 sig にフォールバック。
+  if (date && cust && contact) return "c|" + date + "|" + cust + "|" + contact;
+  if (date && cust && email) return "e|" + date + "|" + cust + "|" + email;
+  if (date && contact) return "p|" + date + "|" + contact;
+  if (date && email) return "m|" + date + "|" + email;
+  if (date && cust) return "n|" + date + "|" + cust;
+  if (cust && contact) return "c0|" + cust + "|" + contact;
+  if (cust && email) return "e0|" + cust + "|" + email;
+  if (contact) return "p0|" + contact;
+  if (email) return "m0|" + email;
+  if (cust) return "n0|" + cust;
   return null;
 }
 
@@ -5054,6 +5062,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
     const inquiryDateParsed = parseInquiryDate(importParsed.inquiryDate) || today;
     const newViewing = {
       id: viewingStableId({ date: inquiryDateParsed, customer: importParsed.customer || "", contact: importParsed.contact || "", email: importParsed.email || "", note: importParsed.note || "" }),
+      updatedAt: Date.now(), // 🆕 取り込み時刻を記録
       date: inquiryDateParsed, visitDate: "", visitTime: "",
       customer: importParsed.customer || "", contact: importParsed.contact || "", email: importParsed.email || "",
       funding: "", purpose: "", budget: importParsed.propertyPrice || "", people: "",
@@ -5083,7 +5092,20 @@ function MediationView({ data, setData, dealType, setDealType }) {
     setImportText("");
     setImportParsed(null);
     setImportTargetMedId(null);
-    alert(`✅ 反響を「${targetName}」に追加しました`);
+    const _existing = (targetMed && targetMed.viewings) || [];
+    const _tombs = (targetMed && targetMed.viewingTombstones) || {};
+    const _alive = _existing.some(v => v && v.id === newViewing.id);
+    const _tombed = !!_tombs[String(newViewing.id)];
+    const importMode = _alive ? "update" : (_tombed ? "resurrect" : "new");
+    setTimeout(() => {
+      if (importMode === "new") {
+        alert(`✅ 「${targetName}」に新しい反響を追加しました`);
+      } else if (importMode === "resurrect") {
+        alert(`♻ 「${targetName}」で過去に削除されていた反響を復活させました`);
+      } else {
+        alert(`📝 「${targetName}」の既存反響を更新しました\n（同じ顧客・同じ反響日のため統合）`);
+      }
+    }, 200);
   };
 
   return (
@@ -6108,6 +6130,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     const inquiryDateParsed = parseInquiryDate(importParsed.inquiryDate) || today;
     const newViewing = {
       id: viewingStableId({ date: inquiryDateParsed, customer: importParsed.customer || "", contact: importParsed.contact || "", email: importParsed.email || "", note: importParsed.note || "" }),
+      updatedAt: Date.now(), // 🆕 取り込み時刻を記録。同じ反響が再取り込みされたら新しい方の情報で更新
       date: inquiryDateParsed,
       visitDate: "", visitTime: "",
       customer: importParsed.customer || "",
@@ -6184,7 +6207,21 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     setImportText("");
     setImportParsed(null);
     setImportTargetStockId(null);
-    alert(`✅ 反響を「${targetName}」に追加しました`);
+    // 🆕 取り込みモード：setData 前に判定（new=新規 / resurrect=復活 / update=既存更新）
+    const _existing = (targetStock && targetStock.viewings) || [];
+    const _tombs = (targetStock && targetStock.viewingTombstones) || {};
+    const _alive = _existing.some(v => v && v.id === newViewing.id);
+    const _tombed = !!_tombs[String(newViewing.id)];
+    const importMode = _alive ? "update" : (_tombed ? "resurrect" : "new");
+    setTimeout(() => {
+      if (importMode === "new") {
+        alert(`✅ 「${targetName}」に新しい反響を追加しました`);
+      } else if (importMode === "resurrect") {
+        alert(`♻ 「${targetName}」で過去に削除されていた反響を復活させました`);
+      } else {
+        alert(`📝 「${targetName}」の既存反響を更新しました\n（同じ顧客・同じ反響日のため統合）`);
+      }
+    }, 200);
   };
 
   const handleDelete = id => {
