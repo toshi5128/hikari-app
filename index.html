@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.34-prefer-remote-on-tie";
+const APP_VERSION = "2026-05-16-v8.35-all-nested-tombstones";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -885,6 +885,51 @@ function mergeWithDefault(remote) {
 // 項目ごとに更新時刻を持たせ、項目単位で新しい方を採用する。反響・写真・コメント等のリストは「上書き」でなく「合算」する。
 const MERGEABLE_ARRAY_FIELDS = new Set(["viewings", "photos", "comments", "visitLog", "history", "family"]);
 
+// 🆕 v8.35: ネスト配列の削除を tombstone で他端末に伝えるための設定
+//   ・viewings 用と同じパターンを、家族構成・履歴・訪問ログ・写真にも横展開
+//   ・stringMode:true は要素が文字列（base64写真など、id を持たない）の場合に使う
+const NESTED_TOMB_FIELDS = [
+  { parentKeys: ["stocks", "mediations"], nestedKey: "viewings",  tombKey: "viewingTombstones" },
+  { parentKeys: ["stocks"],                nestedKey: "photos",    tombKey: "photoTombstones", stringMode: true },
+  { parentKeys: ["jiage", "owners"],       nestedKey: "visitLog",  tombKey: "visitTombstones" },
+  { parentKeys: ["jiage"],                 nestedKey: "family",    tombKey: "familyTombstones" },
+  { parentKeys: ["owners"],                nestedKey: "history",   tombKey: "historyTombstones" },
+];
+
+// 写真のような文字列要素を tombstone のキーにするためのハッシュ
+function _hikariPhotoKey(s) {
+  const str = String(s || "");
+  // 長すぎる base64 をそのままキーに使うとデータが膨らむので、先頭200文字 + 長さでハッシュ
+  return _hikariHashStr(str.slice(0, 200) + ":" + str.length);
+}
+
+// ネスト要素から tombstone のキーを抽出（object なら id、文字列モードならハッシュ）
+function _tombKeyForItem(el, stringMode) {
+  if (stringMode) {
+    return typeof el === "string" ? _hikariPhotoKey(el) : null;
+  }
+  return (el && el.id != null) ? String(el.id) : null;
+}
+
+// 親 key → 関連する tombstone 設定の配列
+const NESTED_TOMB_BY_PARENT = (() => {
+  const map = {};
+  NESTED_TOMB_FIELDS.forEach(cfg => {
+    cfg.parentKeys.forEach(pk => {
+      (map[pk] = map[pk] || []).push(cfg);
+    });
+  });
+  return map;
+})();
+
+// ネスト key → 設定（mergeItems 内検索高速化用）
+const NESTED_TOMB_BY_NESTED = (() => {
+  const map = {};
+  NESTED_TOMB_FIELDS.forEach(cfg => { map[cfg.nestedKey] = cfg; });
+  return map;
+})();
+
+
 function v6ValuesEqual(a, b) {
   if (a === b) return true;
   if (a && b && typeof a === "object" && typeof b === "object") {
@@ -987,13 +1032,18 @@ function mergeItems(localItem, remoteItem) {
     const lv = localItem[key], rv = remoteItem[key];
     if (MERGEABLE_ARRAY_FIELDS.has(key) && (Array.isArray(lv) || Array.isArray(rv))) {
       result[key] = mergeArrayField(Array.isArray(lv) ? lv : [], Array.isArray(rv) ? rv : []);
-      // 🆕 viewings は毎マージで重複除去＋ tombstone 適用
+      // 🆕 viewings は毎マージで重複除去
       if (key === "viewings") {
         const r = dedupeViewings(result[key]);
         if (r.changed) result[key] = r.arr;
-        // viewingTombstones を統合
-        const lTomb = (localItem && localItem.viewingTombstones) || {};
-        const rTomb = (remoteItem && remoteItem.viewingTombstones) || {};
+      }
+      // 🆕 v8.35: ネスト配列に対応する tombstone があれば、統合＋削除フィルタを適用
+      //   ・親 item の最新 updatedAt が tombstone より新しい場合は「再追加された」と判定して復活
+      //   ・viewings / photos / visitLog / family / history すべて同じパターン
+      const tombCfg = NESTED_TOMB_BY_NESTED[key];
+      if (tombCfg) {
+        const lTomb = (localItem && localItem[tombCfg.tombKey]) || {};
+        const rTomb = (remoteItem && remoteItem[tombCfg.tombKey]) || {};
         const mergedTomb = {};
         Object.keys(lTomb).forEach(id => { mergedTomb[id] = Number(lTomb[id]) || 0; });
         Object.keys(rTomb).forEach(id => {
@@ -1002,22 +1052,23 @@ function mergeItems(localItem, remoteItem) {
         // 30日より古い tombstone を掃除
         const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
         Object.keys(mergedTomb).forEach(id => { if (mergedTomb[id] < cutoff) delete mergedTomb[id]; });
-        // 🆕 親 stock の最新 updatedAt（local/remote のうち新しい方）が tombstone より新しい場合は「再追加された」と判定
-        const stockUA = Math.max(Number(localItem && localItem.updatedAt) || 0, Number(remoteItem && remoteItem.updatedAt) || 0);
+        // 親 item の最新 updatedAt（local/remote のうち新しい方）
+        const parentUA = Math.max(Number(localItem && localItem.updatedAt) || 0, Number(remoteItem && remoteItem.updatedAt) || 0);
         if (Object.keys(mergedTomb).length > 0) {
-          result[key] = result[key].filter(v => {
-            if (!v || v.id == null) return true;
-            const t = Number(mergedTomb[String(v.id)]) || 0;
+          result[key] = result[key].filter(el => {
+            const k2 = _tombKeyForItem(el, tombCfg.stringMode);
+            if (k2 == null) return true;
+            const t = Number(mergedTomb[k2]) || 0;
             if (!t) return true;
-            if (stockUA > t) {
+            if (parentUA > t) {
               // 削除されたあとに再追加された → tombstone から外して生かす
-              delete mergedTomb[String(v.id)];
+              delete mergedTomb[k2];
               return true;
             }
             return false; // 削除済みのまま
           });
         }
-        result.viewingTombstones = mergedTomb;
+        result[tombCfg.tombKey] = mergedTomb;
       }
       mergedF[key] = Math.max(Number(lf[key]) || lu, Number(rf[key]) || ru);
       return;
@@ -1111,36 +1162,50 @@ function viewingDedupSig(v) {
 // 🆕 data 全体の stocks/mediations について、各 item の viewings を dedup
 // 🆕 setData などユーザー操作時に、現存する viewing.id が tombstone に載っていたら
 //   「意図的な再追加」とみなして tombstone から外す（再取り込みを救済）
-function reviveResurrectedViewings(data) {
+// 🆕 v8.35: 全ネスト配列の tombstone を一括で「再追加なら復活」させる汎用版
+function reviveResurrectedNested(data) {
   if (!data || typeof data !== "object") return data;
   let changed = false;
   let result = data;
-  ["stocks", "mediations"].forEach(k => {
-    const arr = data[k];
+  Object.keys(NESTED_TOMB_BY_PARENT).forEach(parentKey => {
+    const cfgs = NESTED_TOMB_BY_PARENT[parentKey];
+    const arr = data[parentKey];
     if (!Array.isArray(arr)) return;
     let kChanged = false;
     const newArr = arr.map(item => {
-      if (!item || !Array.isArray(item.viewings)) return item;
-      const tomb = item.viewingTombstones || {};
-      if (Object.keys(tomb).length === 0) return item;
-      const livingIds = new Set(item.viewings.filter(v => v && v.id != null).map(v => String(v.id)));
-      let tombChanged = false;
-      const newTomb = { ...tomb };
-      livingIds.forEach(id => {
-        if (newTomb[id]) { delete newTomb[id]; tombChanged = true; }
+      if (!item) return item;
+      let updatedItem = item;
+      cfgs.forEach(cfg => {
+        const tomb = updatedItem[cfg.tombKey];
+        if (!tomb || Object.keys(tomb).length === 0) return;
+        const list = Array.isArray(updatedItem[cfg.nestedKey]) ? updatedItem[cfg.nestedKey] : [];
+        const livingKeys = new Set();
+        list.forEach(el => {
+          const k2 = _tombKeyForItem(el, cfg.stringMode);
+          if (k2 != null) livingKeys.add(k2);
+        });
+        let tombChanged = false;
+        const newTomb = { ...tomb };
+        livingKeys.forEach(k2 => {
+          if (newTomb[k2]) { delete newTomb[k2]; tombChanged = true; }
+        });
+        if (tombChanged) {
+          updatedItem = { ...updatedItem, [cfg.tombKey]: newTomb };
+        }
       });
-      if (!tombChanged) return item;
-      kChanged = true;
-      return { ...item, viewingTombstones: newTomb };
+      if (updatedItem !== item) { kChanged = true; return updatedItem; }
+      return item;
     });
     if (kChanged) {
       changed = true;
       if (result === data) result = { ...data };
-      result[k] = newArr;
+      result[parentKey] = newArr;
     }
   });
   return changed ? result : data;
 }
+// 後方互換のための旧名。setData などからの既存呼び出しが落ちないように残す。
+function reviveResurrectedViewings(data) { return reviveResurrectedNested(data); }
 
 function applyViewingsDedup(data) {
   if (!data || typeof data !== "object") return data;
@@ -2096,19 +2161,30 @@ function MainApp({ onLock, onSwitchUser }) {
             hasActualChange = true;
             // 🆕 v6: id の無いネスト配列要素（反響など）に id を付与
             let normItem = ensureNestedIds(item);
-            // 🆕 viewings の削除を tombstone に記録（他端末に削除を伝える）
-            if ((k === "stocks" || k === "mediations") && prevItem && Array.isArray(prevItem.viewings) && Array.isArray(normItem.viewings)) {
-              const prevVIds = new Set(prevItem.viewings.filter(v => v && v.id != null).map(v => v.id));
-              const nextVIds = new Set(normItem.viewings.filter(v => v && v.id != null).map(v => v.id));
-              const deletedVIds = [];
-              prevVIds.forEach(id => { if (!nextVIds.has(id)) deletedVIds.push(id); });
-              if (deletedVIds.length > 0) {
-                const tomb = { ...(normItem.viewingTombstones || {}) };
-                deletedVIds.forEach(id => { tomb[String(id)] = now; });
-                // 30日より古い tombstone は掃除
-                const cutoff = now - 30 * 24 * 60 * 60 * 1000;
-                Object.keys(tomb).forEach(id => { if ((Number(tomb[id]) || 0) < cutoff) delete tomb[id]; });
-                normItem = { ...normItem, viewingTombstones: tomb };
+            // 🆕 v8.35: ネスト配列の削除を tombstone に記録（他端末に削除を伝える）
+            //   ・viewings / photos / visitLog / family / history すべて一括処理
+            //   ・親 item key (k) に紐づく設定だけを適用
+            if (prevItem) {
+              const cfgs = NESTED_TOMB_BY_PARENT[k];
+              if (cfgs) {
+                cfgs.forEach(cfg => {
+                  const pArr = prevItem[cfg.nestedKey];
+                  const nArr = normItem[cfg.nestedKey];
+                  if (!Array.isArray(pArr) || !Array.isArray(nArr)) return;
+                  const pKeys = new Set();
+                  pArr.forEach(el => { const k2 = _tombKeyForItem(el, cfg.stringMode); if (k2 != null) pKeys.add(k2); });
+                  const nKeys = new Set();
+                  nArr.forEach(el => { const k2 = _tombKeyForItem(el, cfg.stringMode); if (k2 != null) nKeys.add(k2); });
+                  const deleted = [];
+                  pKeys.forEach(k2 => { if (!nKeys.has(k2)) deleted.push(k2); });
+                  if (deleted.length === 0) return;
+                  const tomb = { ...(normItem[cfg.tombKey] || {}) };
+                  deleted.forEach(k2 => { tomb[k2] = now; });
+                  // 30日より古い tombstone は掃除
+                  const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+                  Object.keys(tomb).forEach(k2 => { if ((Number(tomb[k2]) || 0) < cutoff) delete tomb[k2]; });
+                  normItem = { ...normItem, [cfg.tombKey]: tomb };
+                });
               }
             }
             // updatedAt は必ず「編集元より新しい値」にする（端末の時計ズレ対策）
