@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.39-jiage-counter-linked";
+const APP_VERSION = "2026-05-16-v8.40-migrate-old-jiage-data";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -397,7 +397,7 @@ const STATUS_GROUPS = [
   { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
-const ATTACK_STATUSES = ["未訪問", "訪問済", "見込み", "見込無し", "交渉中", "媒介", "仕入"];
+const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入"];
 // 🆕 仲介案件：媒介の種類とフェーズ
 const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
 const MEDIATION_STATUSES = ["媒介契約", "売出中", "買付あり", "売買契約", "決済完了"];
@@ -422,7 +422,7 @@ function addBusinessDays(dateStr, n) {
   return d.toISOString().split("T")[0];
 }
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
-const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店", "休み", "面談", "居留守", "訪問禁止", "未訪問", "訪問済", "見込み", "見込無し", "交渉中", "媒介"];
+const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店", "休み", "面談", "居留守", "訪問禁止", "未訪問", "訪問済", "初訪", "中長期見込", "見込み", "見込無し", "交渉中", "媒介"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
 const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "査定": 60, "仕入検討": 10, "仕入": 3, "地上初訪": 30, "地上再訪": 50, "新規地上": 10 };
 // 🆕 営業活動カウンターのカテゴリ別カラー（カード左ボーダー＋項目名）
@@ -452,7 +452,10 @@ const APPROACH_CATEGORY = {
   "訪問禁止":   { color: "#ef4444", icon: "⛔", group: "ネガ" },
   // 🆕 v8.39: 地上げステータス連動
   "未訪問":     { color: "#94a3b8", icon: "⏳", group: "訪問" },
-  "訪問済":     { color: "#3b82f6", icon: "✅", group: "訪問" },
+  "訪問済":     { color: "#3b82f6", icon: "✅", group: "訪問" }, // legacy
+  // 🆕 v8.40: 訪問済を 初訪/再訪 に分割、中長期見込を追加
+  "初訪":       { color: "#3b82f6", icon: "🚪", group: "訪問" },
+  "中長期見込": { color: "#fbbf24", icon: "🕰️", group: "KPI" },
   "見込み":     { color: "#10b981", icon: "🟢", group: "KPI" },
   "見込無し":   { color: "#64748b", icon: "⚫", group: "ネガ" },
   "交渉中":     { color: "#a855f7", icon: "💬", group: "KPI" },
@@ -479,12 +482,84 @@ const APPROACH_GROUPS = {
     //   ・訪問結果（面談・居留守・不在・訪問禁止）と
     //   ・ステータス（未訪問・訪問済・見込み・見込無し・交渉中・媒介・仕入）が保存時に +1
     //   ・「新規地上」のみ手動カウンターとして残置
-    items: ["面談", "居留守", "不在", "訪問禁止", "未訪問", "訪問済", "見込み", "見込無し", "交渉中", "媒介", "仕入", "新規地上"],
+    // 🆕 v8.40: 訪問済→初訪 にリネーム、再訪・中長期見込 を追加
+    items: ["面談", "居留守", "不在", "訪問禁止", "未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "新規地上"],
   },
 };
 const APPROACH_GROUP_KEYS = ["agent", "jiage"];
 function approachGroupItems(key) {
   return (APPROACH_GROUPS[key] && APPROACH_GROUPS[key].items) || APPROACH_ITEMS;
+}
+
+// 🆕 v8.40: 旧データを新表記に移行する1回限りのマイグレーション
+//   ・jiage status: 仕入れ完了→仕入, 見込→見込み, 興味あり/検討中→見込み,
+//                    断られた/NG→見込無し, 不在/居住している→初訪, 訪問済→初訪
+//   ・visitLog: result が "voicemail" のエントリ → "absent" に置換
+//   ・approaches values: 地上初訪→初訪, 地上再訪→再訪, 断り→訪問禁止, 訪問済→初訪
+function migrateJiageDataV840(d) {
+  if (!d || typeof d !== "object") return d;
+  const STATUS_MAP = {
+    "訪問済": "初訪",
+    "仕入れ完了": "仕入",
+    "見込": "見込み",
+    "興味あり": "見込み",
+    "検討中": "見込み",
+    "断られた": "見込無し",
+    "NG": "見込無し",
+    "不在": "初訪",
+    "居住している": "初訪",
+  };
+  const COUNTER_MAP = {
+    "地上初訪": "初訪",
+    "地上再訪": "再訪",
+    "断り": "訪問禁止",
+    "訪問済": "初訪",
+  };
+  const _migVisitLog = (log) => {
+    if (!Array.isArray(log)) return log;
+    let ch = false;
+    const newLog = log.map(v => {
+      if (v && v.result === "voicemail") { ch = true; return { ...v, result: "absent" }; }
+      return v;
+    });
+    return ch ? newLog : log;
+  };
+  const next = { ...d };
+  // jiage: status + visitLog
+  next.jiage = (Array.isArray(d.jiage) ? d.jiage : []).map(j => {
+    if (!j) return j;
+    let u = j;
+    if (j.status && STATUS_MAP[j.status]) u = { ...u, status: STATUS_MAP[j.status] };
+    const newLog = _migVisitLog(j.visitLog);
+    if (newLog !== j.visitLog) u = { ...u, visitLog: newLog };
+    return u;
+  });
+  // owners: visitLog のみ（OWNER_STATUSES は変更なし）
+  next.owners = (Array.isArray(d.owners) ? d.owners : []).map(o => {
+    if (!o) return o;
+    const newLog = _migVisitLog(o.visitLog);
+    if (newLog !== o.visitLog) return { ...o, visitLog: newLog };
+    return o;
+  });
+  // approaches: values の旧カウンターを新カウンターに集約
+  next.approaches = (Array.isArray(d.approaches) ? d.approaches : []).map(a => {
+    if (!a || !a.values) return a;
+    const newValues = { ...a.values };
+    let changed = false;
+    Object.keys(COUNTER_MAP).forEach(oldK => {
+      const v = Number(newValues[oldK]) || 0;
+      if (v > 0) {
+        const newK = COUNTER_MAP[oldK];
+        newValues[newK] = (Number(newValues[newK]) || 0) + v;
+        delete newValues[oldK];
+        changed = true;
+      }
+    });
+    if (changed) return { ...a, values: newValues };
+    return a;
+  });
+  next.migrations = { ...(d.migrations || {}), v840_jiage_relabel: Date.now() };
+  return next;
 }
 
 // 仕入検討積算表の判断ステータス（判断タブで使用）
@@ -2094,6 +2169,21 @@ function MainApp({ onLock, onSwitchUser }) {
     return () => clearTimeout(timer);
   }, [data]);
 
+  // 🆕 v8.40: 旧データを新表記に移行（1回限り、data.migrations.v840_jiage_relabel をマーカーに使用）
+  const v840MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v840MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v840_jiage_relabel) {
+      v840MigratedRef.current = true;
+      return;
+    }
+    // 何度も走らないようにフラグを先に立てる
+    v840MigratedRef.current = true;
+    console.log("[v8.40] 旧データを新ステータス/新カウンターに移行します…");
+    setData(d => migrateJiageDataV840(d));
+  }, [data]);
+
   const setData = updater => {
     setDataRaw(prev => {
       let next = typeof updater === "function" ? updater(prev) : updater;
@@ -2515,6 +2605,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480 }) 
     const colorByStatus = (status) => {
       if (status === "NG" || status === "断られた") return "#ef4444";
       if (status === "見込み" || status === "見込" || status === "興味あり" || status === "検討中" || status === "交渉中") return "#10b981";
+      if (status === "中長期見込") return "#fbbf24";
+      if (status === "初訪" || status === "再訪") return "#3b82f6";
       if (status === "見込無し") return "#64748b";
       if (status === "不在") return "#f59e0b";
       if (status === "訪問済") return "#3b82f6";
@@ -2649,6 +2741,8 @@ function StatusTag({ status }) {
     "検討中": C.warn, "興味あり": C.success, "断られた": C.danger, "交渉中": C.purple, "仕入れ完了": C.success, "媒介": "#a855f7",
     // 🆕 v8.37: 新ステータス（地上げ）
     "見込み": C.success, "見込": C.success, "見込無し": "#64748b", "仕入": "#06b6d4",
+    // 🆕 v8.40: 訪問済を 初訪/再訪 に分割、中長期見込追加
+    "初訪": C.accent, "再訪": "#2563eb", "中長期見込": "#fbbf24",
     "価格交渉中": C.accent, "見送り": C.danger, "成約": C.success,
   };
   return <Tag label={status} color={map[status] || C.muted} />;
@@ -9657,10 +9751,10 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // 訪問結果の定義
 const VISIT_RESULTS = [
-  { key: "home",      label: "🤝 面談",     short: "面談",     color: "#10b981", autoStatus: "訪問済" },
-  { key: "ignore",    label: "🚪 居留守",   short: "居留守",   color: "#f59e0b", autoStatus: "訪問済" },
-  { key: "absent",    label: "🚫 不在",     short: "不在",     color: "#94a3b8", autoStatus: "訪問済" },
-  { key: "rejected",  label: "⛔ 訪問禁止", short: "訪問禁止", color: "#ef4444", autoStatus: "訪問済" },
+  { key: "home",      label: "🤝 面談",     short: "面談",     color: "#10b981", autoStatus: "初訪" },
+  { key: "ignore",    label: "🚪 居留守",   short: "居留守",   color: "#f59e0b", autoStatus: "初訪" },
+  { key: "absent",    label: "🚫 不在",     short: "不在",     color: "#94a3b8", autoStatus: "初訪" },
+  { key: "rejected",  label: "⛔ 訪問禁止", short: "訪問禁止", color: "#ef4444", autoStatus: "初訪" },
 ];
 
 // 居留守の気配サイン
@@ -10264,7 +10358,12 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       signs: [],
       intensityLevel: "mid",
       memo: "",
-      status: item.status === "未訪問" ? "訪問済" : (item.status || "訪問済"),
+      // 🆕 v8.40: 初回訪問は「初訪」、過去に訪問ログがあれば「再訪」をデフォルト
+      status: (() => {
+        const prevVisits = ((item.raw && item.raw.visitLog) || item.visitLog || []).length;
+        if (item.status === "未訪問") return prevVisits > 0 ? "再訪" : "初訪";
+        return item.status || (prevVisits > 0 ? "再訪" : "初訪");
+      })(),
       assignee: item.assignee || MEMBERS[0],
     });
   };
@@ -10929,8 +11028,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 10 }}>
                         {[
                           { c: "#94a3b8", l: "未訪問" },
-                          { c: "#3b82f6", l: "訪問済" },
+                          { c: "#3b82f6", l: "初訪/再訪" },
                           { c: "#10b981", l: "見込み" },
+                          { c: "#fbbf24", l: "中長期見込" },
                           { c: "#64748b", l: "見込無し" },
                           { c: "#a855f7", l: "媒介" },
                           { c: "#06b6d4", l: "仕入" },
