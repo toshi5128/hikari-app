@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.28-jiage-latest-visit";
+const APP_VERSION = "2026-05-16-v8.29-tombstone-resurrect-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -955,11 +955,11 @@ function mergeItems(localItem, remoteItem) {
     const lv = localItem[key], rv = remoteItem[key];
     if (MERGEABLE_ARRAY_FIELDS.has(key) && (Array.isArray(lv) || Array.isArray(rv))) {
       result[key] = mergeArrayField(Array.isArray(lv) ? lv : [], Array.isArray(rv) ? rv : []);
-      // 🆕 viewings は毎マージで重複除去（端末ごとに違う id が付いた同一反響を統合）
+      // 🆕 viewings は毎マージで重複除去＋ tombstone 適用
       if (key === "viewings") {
         const r = dedupeViewings(result[key]);
         if (r.changed) result[key] = r.arr;
-        // 🆕 viewingTombstones を統合し、削除されたものをマージ結果から除外（他端末で削除→こちらにも反映）
+        // viewingTombstones を統合
         const lTomb = (localItem && localItem.viewingTombstones) || {};
         const rTomb = (remoteItem && remoteItem.viewingTombstones) || {};
         const mergedTomb = {};
@@ -970,9 +970,20 @@ function mergeItems(localItem, remoteItem) {
         // 30日より古い tombstone を掃除
         const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
         Object.keys(mergedTomb).forEach(id => { if (mergedTomb[id] < cutoff) delete mergedTomb[id]; });
-        // tombstone に載っている viewing は除外
+        // 🆕 親 stock の最新 updatedAt（local/remote のうち新しい方）が tombstone より新しい場合は「再追加された」と判定
+        const stockUA = Math.max(Number(localItem && localItem.updatedAt) || 0, Number(remoteItem && remoteItem.updatedAt) || 0);
         if (Object.keys(mergedTomb).length > 0) {
-          result[key] = result[key].filter(v => !(v && v.id != null && mergedTomb[String(v.id)]));
+          result[key] = result[key].filter(v => {
+            if (!v || v.id == null) return true;
+            const t = Number(mergedTomb[String(v.id)]) || 0;
+            if (!t) return true;
+            if (stockUA > t) {
+              // 削除されたあとに再追加された → tombstone から外して生かす
+              delete mergedTomb[String(v.id)];
+              return true;
+            }
+            return false; // 削除済みのまま
+          });
         }
         result.viewingTombstones = mergedTomb;
       }
