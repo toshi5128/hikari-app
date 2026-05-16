@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.19-viewing-dedupe-loose";
+const APP_VERSION = "2026-05-16-v8.20-viewing-dedupe-everywhere";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -1698,7 +1698,8 @@ function MainApp({ onLock, onSwitchUser }) {
 
     // 🆕 統合した共有tombstoneを保存（全端末に削除が伝わり続ける）
     merged.tombstones = mergedTomb;
-    return merged;
+    // 🆕 マージ後の全体に対しても反響重複を掃除（mergeItems を通らないパスでも確実に dedup）
+    return applyViewingsDedup(merged);
   };
 
   // 起動時にSupabaseから最新データを取得
@@ -1805,7 +1806,10 @@ function MainApp({ onLock, onSwitchUser }) {
 
   const setData = updater => {
     setDataRaw(prev => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
+      let next = typeof updater === "function" ? updater(prev) : updater;
+
+      // 🆕 全 stocks/mediations の反響重複を掃除（保存前に確実に dedup）
+      next = applyViewingsDedup(next);
 
       // 🆕 データが変わってない場合は何もしない（無駄な Supabase 上書き防止）
       if (next === prev) {
