@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.50-hide-mail-in-jiage";
+const APP_VERSION = "2026-05-16-v8.51-nested-tombstone-definitive";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -1283,20 +1283,16 @@ function mergeItems(localItem, remoteItem) {
         // 30日より古い tombstone を掃除
         const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
         Object.keys(mergedTomb).forEach(id => { if (mergedTomb[id] < cutoff) delete mergedTomb[id]; });
-        // 親 item の最新 updatedAt（local/remote のうち新しい方）
-        const parentUA = Math.max(Number(localItem && localItem.updatedAt) || 0, Number(remoteItem && remoteItem.updatedAt) || 0);
+        // 🆕 v8.51: ネスト配列の tombstone も確定化（同期での「編集勝ち」復活を停止）
+        //   ・stale キャッシュの端末が、ローカルの古い親 updatedAt で削除済み viewing を復活させてしまう問題を根絶
+        //   ・意図的な再追加（ユーザー操作で同じ id の viewing を viewings に入れ直す）は
+        //     setData プレパスの reviveResurrectedNested で tombstone がクリアされるので別経路で成立する
         if (Object.keys(mergedTomb).length > 0) {
           result[key] = result[key].filter(el => {
             const k2 = _tombKeyForItem(el, tombCfg.stringMode);
             if (k2 == null) return true;
             const t = Number(mergedTomb[k2]) || 0;
-            if (!t) return true;
-            if (parentUA > t) {
-              // 削除されたあとに再追加された → tombstone から外して生かす
-              delete mergedTomb[k2];
-              return true;
-            }
-            return false; // 削除済みのまま
+            return !t; // tombstone があれば問答無用に除外
           });
         }
         result[tombCfg.tombKey] = mergedTomb;
