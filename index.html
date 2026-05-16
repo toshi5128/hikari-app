@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.42-backfill-reshin";
+const APP_VERSION = "2026-05-16-v8.43-fix-migration-merge";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -475,7 +475,9 @@ const APPROACH_GROUPS = {
   agent: {
     label: "業者",
     icon: "🏢",
-    items: ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "閉店", "不在", "断り", "休み"],
+    // 🆕 v8.43: 地上げが訪問記録から自動連動するようになったため、不在/断り/休み/閉店 は業者から除外
+    //   ・業者は「業者訪問・架電など」の純粋な業者活動のみを集計
+    items: ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託"],
   },
   jiage: {
     label: "地上げ",
@@ -587,6 +589,36 @@ function migrateBackfillReshinV842(d) {
   if (upgraded > 0) {
     console.log(`[v8.42] ${upgraded}件の地上げ案件を 再訪 に更新しました`);
   }
+  return next;
+}
+
+// 🆕 v8.43: v842 が動かなかった環境向けに、より広いルールで再訪バックフィル
+//   ・visitLog が2件以上 かつ status が「先のフェーズ（見込み/中長期見込/見込無し/交渉中/媒介/仕入）以外」の場合 → 再訪 に上げる
+//   ・v840 が走らずに status が "訪問済" "不在" "居住している" "見込" "NG" "断られた" のまま残ってる端末でも救済できる broader 判定
+function migrateBackfillReshinV843(d) {
+  if (!d || typeof d !== "object") return d;
+  // ここに入っている案件は触らない（フェーズが進んでるので 再訪 にダウングレードしない）
+  const ADVANCED = new Set([
+    "見込み", "見込",
+    "中長期見込",
+    "見込無し", "NG", "断られた",
+    "交渉中",
+    "媒介",
+    "仕入", "仕入れ完了",
+    "再訪", // すでに 再訪 なら触らない
+  ]);
+  const next = { ...d };
+  let upgraded = 0;
+  next.jiage = (Array.isArray(d.jiage) ? d.jiage : []).map(j => {
+    if (!j) return j;
+    const log = Array.isArray(j.visitLog) ? j.visitLog : [];
+    if (log.length < 2) return j;
+    if (ADVANCED.has(j.status)) return j;
+    upgraded++;
+    return { ...j, status: "再訪" };
+  });
+  next.migrations = { ...(d.migrations || {}), v843_backfill_reshin: Date.now() };
+  console.log(`[v8.43] 再訪バックフィル: ${upgraded}件の地上げ案件を 再訪 に更新しました`);
   return next;
 }
 
@@ -2108,6 +2140,24 @@ function MainApp({ onLock, onSwitchUser }) {
 
     // 🆕 統合した共有tombstoneを保存（全端末に削除が伝わり続ける）
     merged.tombstones = mergedTomb;
+
+    // 🆕 v8.43: トップレベルの「マイグレーション履歴」を local と remote の union にする
+    //   ・mergeWithDefault は remote 起点なので、ローカルで実行したばかりの v8.43 マーカー等が消えていた
+    //   ・union を取ることで、どちらかで実行済みなら全端末で「実行済み」と判定される
+    if (local) {
+      merged.migrations = { ...(remote.migrations || {}), ...(local.migrations || {}) };
+    }
+
+    // 🆕 v8.43: ローカル直近5分以内の編集はトップレベルのオブジェクト設定も保護
+    //   ・memberGoals / memberPasswords / annualGoals / adminMember / counterCustom が
+    //     ポーリングで上書きされて消えるのを防ぐ
+    if (recentlyEdited && local) {
+      const protectedKeys = ["memberGoals", "memberPasswords", "annualGoals", "adminMember", "counterCustom"];
+      protectedKeys.forEach(k => {
+        if (local[k] !== undefined) merged[k] = local[k];
+      });
+    }
+
     // 🆕 マージ後の全体に対しても反響重複を掃除（mergeItems を通らないパスでも確実に dedup）
     return applyViewingsDedup(merged);
   };
@@ -2226,6 +2276,20 @@ function MainApp({ onLock, onSwitchUser }) {
     v842MigratedRef.current = true;
     console.log("[v8.42] 訪問ログ2件以上の地上げ案件を 再訪 にバックフィル…");
     setData(d => migrateBackfillReshinV842(d));
+  }, [data]);
+
+  // 🆕 v8.43: より広いルールの 再訪 バックフィル（v8.42 が効かなかった環境向け）
+  const v843MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v843MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v843_backfill_reshin) {
+      v843MigratedRef.current = true;
+      return;
+    }
+    v843MigratedRef.current = true;
+    console.log("[v8.43] 再訪 を broader rule で再バックフィル…");
+    setData(d => migrateBackfillReshinV843(d));
   }, [data]);
 
   const setData = updater => {
