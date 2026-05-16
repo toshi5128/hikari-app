@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.36-split-sales-counter";
+const APP_VERSION = "2026-05-16-v8.38-add-minkomi-nashi";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -397,7 +397,7 @@ const STATUS_GROUPS = [
   { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
-const ATTACK_STATUSES = ["未訪問", "訪問済", "不在", "居住している", "興味あり", "検討中", "交渉中", "見込", "媒介", "断られた", "NG", "仕入れ完了"];
+const ATTACK_STATUSES = ["未訪問", "訪問済", "見込み", "見込無し", "交渉中", "媒介", "仕入"];
 // 🆕 仲介案件：媒介の種類とフェーズ
 const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
 const MEDIATION_STATUSES = ["媒介契約", "売出中", "買付あり", "売買契約", "決済完了"];
@@ -2113,7 +2113,9 @@ function MainApp({ onLock, onSwitchUser }) {
           if (!j || j.id == null) return;
           const pj = prevJMap.get(j.id);
           if (!pj) return;
-          if (pj.status !== "仕入れ完了" && j.status === "仕入れ完了") statusBumps.push({ member: j.assignee, item: "仕入" });
+          const wasShi = (pj.status === "仕入" || pj.status === "仕入れ完了");
+          const isShi  = (j.status  === "仕入" || j.status  === "仕入れ完了");
+          if (!wasShi && isShi) statusBumps.push({ member: j.assignee, item: "仕入" });
           if (pj.status !== "媒介" && j.status === "媒介") statusBumps.push({ member: j.assignee, item: "仲介受託" });
         });
         if (statusBumps.length > 0) {
@@ -2498,11 +2500,12 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480 }) 
     // 色判定
     const colorByStatus = (status) => {
       if (status === "NG" || status === "断られた") return "#ef4444";
-      if (status === "見込" || status === "興味あり" || status === "検討中" || status === "交渉中") return "#10b981";
+      if (status === "見込み" || status === "見込" || status === "興味あり" || status === "検討中" || status === "交渉中") return "#10b981";
+      if (status === "見込無し") return "#64748b";
       if (status === "不在") return "#f59e0b";
       if (status === "訪問済") return "#3b82f6";
       if (status === "居住している") return "#64748b";
-      if (status === "仕入れ完了") return "#06b6d4";
+      if (status === "仕入" || status === "仕入れ完了") return "#06b6d4";
       if (status === "媒介") return "#a855f7";
       return "#94a3b8";
     };
@@ -2630,6 +2633,8 @@ function StatusTag({ status }) {
     // 地上げ・所有者ステータス
     "未訪問": C.muted, "訪問済": C.accent, "不在": C.warn, "NG": C.danger, "居住している": "#64748b",
     "検討中": C.warn, "興味あり": C.success, "断られた": C.danger, "交渉中": C.purple, "仕入れ完了": C.success, "媒介": "#a855f7",
+    // 🆕 v8.37: 新ステータス（地上げ）
+    "見込み": C.success, "見込": C.success, "見込無し": "#64748b", "仕入": "#06b6d4",
     "価格交渉中": C.accent, "見送り": C.danger, "成約": C.success,
   };
   return <Tag label={status} color={map[status] || C.muted} />;
@@ -9638,11 +9643,10 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // 訪問結果の定義
 const VISIT_RESULTS = [
-  { key: "home",      label: "😊 在宅",   short: "在宅",   color: "#10b981", autoStatus: "訪問済" },
-  { key: "ignore",    label: "🚪 居留守", short: "居留守", color: "#f59e0b", autoStatus: "訪問済" },
-  { key: "absent",    label: "🚫 不在",   short: "不在",   color: "#94a3b8", autoStatus: "不在" },
-  { key: "voicemail", label: "📞 留守電", short: "留守電", color: "#0ea5e9", autoStatus: "訪問済" },
-  { key: "rejected",  label: "❌ NG",     short: "NG",     color: "#ef4444", autoStatus: "NG" },
+  { key: "home",      label: "🤝 面談",     short: "面談",     color: "#10b981", autoStatus: "訪問済" },
+  { key: "ignore",    label: "🚪 居留守",   short: "居留守",   color: "#f59e0b", autoStatus: "訪問済" },
+  { key: "absent",    label: "🚫 不在",     short: "不在",     color: "#94a3b8", autoStatus: "訪問済" },
+  { key: "rejected",  label: "⛔ 訪問禁止", short: "訪問禁止", color: "#ef4444", autoStatus: "訪問済" },
 ];
 
 // 居留守の気配サイン
@@ -10909,12 +10913,10 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                         {[
                           { c: "#94a3b8", l: "未訪問" },
                           { c: "#3b82f6", l: "訪問済" },
-                          { c: "#f59e0b", l: "不在" },
-                          { c: "#10b981", l: "見込・興味あり" },
-                          { c: "#06b6d4", l: "仕入れ完了" },
+                          { c: "#10b981", l: "見込み" },
+                          { c: "#64748b", l: "見込無し" },
                           { c: "#a855f7", l: "媒介" },
-                          { c: "#64748b", l: "居住" },
-                          { c: "#ef4444", l: "NG" },
+                          { c: "#06b6d4", l: "仕入" },
                         ].map(it => (
                           <span key={it.l} style={{ display: "flex", alignItems: "center", gap: 3 }}>
                             <span style={{ width: 10, height: 10, borderRadius: "50%", background: it.c, border: "1.5px solid white" }} />
