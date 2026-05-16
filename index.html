@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.46-iron-clad-tombstones";
+const APP_VERSION = "2026-05-16-v8.47-edit-visit-history";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -10559,12 +10559,64 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     });
   };
 
-  // 訪問記録を保存
+  // 🆕 v8.47: 訪問履歴を編集
+  const openEditVisit = (item, visit) => {
+    setVisitRecordTarget(item);
+    setFamilyForm(null);
+    setVisitForm({
+      date: visit.date || today,
+      time: visit.time || "",
+      result: visit.result || "home",
+      signs: Array.isArray(visit.signs) ? visit.signs : [],
+      intensityLevel: visit.intensityLevel || "mid",
+      memo: visit.memo || "",
+      status: item.status || "",
+      assignee: visit.recordedBy || item.assignee || MEMBERS[0],
+      posted: !!visit.posted,
+      // 編集モードのフラグ：このフィールドが設定されていれば既存エントリの更新になる
+      editingId: visit.id,
+    });
+  };
+
+  // 🆕 v8.47: 訪問履歴を削除
+  const deleteVisitLog = (item, visitId) => {
+    if (!window.confirm("この訪問記録を削除しますか？")) return;
+    if (!window.confirm("⚠️ 最終確認\n削除すると元に戻せません。\n（カウンターの数字は減らされません）\n\nOKで削除実行")) return;
+    const targetType = item.type;
+    const targetId = item.rawId || item.id;
+    setData(d => {
+      if (targetType === "jiage") {
+        return {
+          ...d,
+          jiage: (d.jiage || []).map(j => {
+            if (j.id !== targetId) return j;
+            return { ...j, visitLog: (j.visitLog || []).filter(v => v.id !== visitId) };
+          }),
+        };
+      } else {
+        return {
+          ...d,
+          owners: (d.owners || []).map(o => {
+            if (o.id !== targetId) return o;
+            return { ...o, visitLog: (o.visitLog || []).filter(v => v.id !== visitId) };
+          }),
+        };
+      }
+    });
+    setSelected(s => {
+      if (!s) return s;
+      const newLog = (s.item.raw?.visitLog || []).filter(v => v.id !== visitId);
+      return { ...s, item: { ...s.item, raw: { ...s.item.raw, visitLog: newLog } } };
+    });
+  };
+
+  // 訪問記録を保存（新規 / 編集 両対応）
   const saveVisitRecord = () => {
     if (!visitRecordTarget || !visitForm) return;
+    const isEdit = !!visitForm.editingId;
     const dow = new Date(visitForm.date).getDay(); // 0=日
     const newEntry = {
-      id: Date.now(),
+      id: isEdit ? visitForm.editingId : Date.now(),
       date: visitForm.date,
       time: visitForm.time,
       dayOfWeek: dow,
@@ -10574,8 +10626,43 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       memo: visitForm.memo,
       // 🆕 v8.41: ポスティング済フラグを保存
       posted: !!visitForm.posted,
-      recordedBy: getCurrentUser() || MEMBERS[0],
+      recordedBy: visitForm.assignee || (isEdit ? null : getCurrentUser()) || MEMBERS[0],
+      // 🆕 v8.47: 編集時刻（マージで他端末の古い版に負けないように）
+      updatedAt: Date.now(),
     };
+    // 🆕 v8.47: 編集モードはエントリの更新だけ。カウンター加算や親ステータス変更はしない。
+    if (isEdit) {
+      const targetType = visitRecordTarget.type;
+      const targetId = visitRecordTarget.rawId || visitRecordTarget.id;
+      setData(d => {
+        if (targetType === "jiage") {
+          return {
+            ...d,
+            jiage: (d.jiage || []).map(j => {
+              if (j.id !== targetId) return j;
+              return { ...j, visitLog: (j.visitLog || []).map(v => v.id === newEntry.id ? newEntry : v) };
+            }),
+          };
+        } else {
+          return {
+            ...d,
+            owners: (d.owners || []).map(o => {
+              if (o.id !== targetId) return o;
+              return { ...o, visitLog: (o.visitLog || []).map(v => v.id === newEntry.id ? newEntry : v) };
+            }),
+          };
+        }
+      });
+      setSelected(s => {
+        if (!s) return s;
+        const newLog = (s.item.raw?.visitLog || []).map(v => v.id === newEntry.id ? newEntry : v);
+        return { ...s, item: { ...s.item, raw: { ...s.item.raw, visitLog: newLog } } };
+      });
+      setVisitRecordTarget(null);
+      setVisitForm(null);
+      return;
+    }
+    // 以下は新規追加モード
     const resDef = VISIT_RESULTS.find(r => r.key === visitForm.result);
     const newStatus = resDef ? resDef.autoStatus : null;
     
@@ -11573,6 +11660,19 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                         )}
                         {v.memo && <div style={{ marginTop: 4, fontSize: 10, color: C.muted, paddingLeft: 4 }}>📝 {v.memo}</div>}
                         {v.recordedBy && <div style={{ marginTop: 2, fontSize: 9, color: "#475569", paddingLeft: 4 }}>記録: {v.recordedBy}</div>}
+                        {/* 🆕 v8.47: 詳細(編集)・削除ボタン */}
+                        <div style={{ display: "flex", gap: 6, marginTop: 6, paddingLeft: 4 }}>
+                          <button onClick={() => openEditVisit(selected.item, v)} style={{
+                            background: C.accent + "22", color: C.accent, border: `1px solid ${C.accent}66`,
+                            borderRadius: 6, padding: "4px 10px", fontSize: 10, fontWeight: 700,
+                            cursor: "pointer", fontFamily: "inherit",
+                          }}>📝 詳細</button>
+                          <button onClick={() => deleteVisitLog(selected.item, v.id)} style={{
+                            background: C.danger + "22", color: C.danger, border: `1px solid ${C.danger}66`,
+                            borderRadius: 6, padding: "4px 10px", fontSize: 10, fontWeight: 700,
+                            cursor: "pointer", fontFamily: "inherit",
+                          }}>🗑 削除</button>
+                        </div>
                       </div>
                     );
                   })}
@@ -11822,7 +11922,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
 
       {/* 📍 訪問結果記録BottomSheet */}
       {visitRecordTarget && visitForm && (
-        <BottomSheet title={`📍 訪問記録 - ${visitRecordTarget.address || "(無住所)"}`} onClose={() => { setVisitRecordTarget(null); setVisitForm(null); }}>
+        <BottomSheet title={`${visitForm && visitForm.editingId ? "✏️ 訪問記録を編集" : "📍 訪問記録"} - ${visitRecordTarget.address || "(無住所)"}`} onClose={() => { setVisitRecordTarget(null); setVisitForm(null); }}>
           {/* 何回目の訪問か */}
           {(() => {
             const currentLog = (visitRecordTarget.raw && visitRecordTarget.raw.visitLog) || [];
