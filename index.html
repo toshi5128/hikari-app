@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.54-event-card-rows-split";
+const APP_VERSION = "2026-05-17-v8.55-reactive-today";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -472,6 +472,27 @@ const APPROACH_CATEGORY = {
 function approachItemLabel(item) {
   const cat = APPROACH_CATEGORY[item];
   return (cat && cat.label) || item;
+}
+
+// 🆕 v8.55: 日付が変わったら自動で再レンダリングする hook
+//   ・60秒に1回チェックして、日付が変わったら state を更新→ React が再描画
+//   ・アプリを開きっぱなしで日付が変わっても「今日」が正しい日に追従する
+function useTodayDate() {
+  const [today, setToday] = React.useState(() => new Date().toISOString().split("T")[0]);
+  React.useEffect(() => {
+    const tick = () => {
+      const now = new Date().toISOString().split("T")[0];
+      setToday(prev => prev !== now ? now : prev);
+    };
+    // 即座に1回チェック（戻ってきたタブで日付が変わってる場合用）
+    tick();
+    const timer = setInterval(tick, 60 * 1000);
+    // タブが可視化されたタイミングでも即チェック
+    const onVis = () => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVis); };
+  }, []);
+  return today;
 }
 
 // 🆕 v8.45: 訪問記録から自動加算されるカウンター項目（手入力 +/- は不要）
@@ -3003,7 +3024,7 @@ function FilterChips({ options, value, onChange, multi = false }) {
 
 // ===================== DASHBOARD =====================
 function Dashboard({ data, setData, setPage, setPendingNav }) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = useTodayDate();
   const currentYear = new Date().getFullYear();
   // 権限制御用
   const currentUser = getCurrentUser();
@@ -3094,6 +3115,14 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const [calMode, setCalMode] = useState("month"); // "month" | "week"
   const [calCursor, setCalCursor] = useState(() => new Date());
   const [calSelectedDate, setCalSelectedDate] = useState(today);
+  // 🆕 v8.55: 日付が変わって、ユーザーが「今日」を選択していたら新しい今日へ追従
+  const _prevTodayCalRef = React.useRef(today);
+  React.useEffect(() => {
+    if (_prevTodayCalRef.current !== today) {
+      setCalSelectedDate(prev => prev === _prevTodayCalRef.current ? today : prev);
+      _prevTodayCalRef.current = today;
+    }
+  }, [today]);
   const [calFilterType, setCalFilterType] = useState("all");
   const [calFilterMember, setCalFilterMember] = useState("__ALL__");
   const [calShowFilters, setCalShowFilters] = useState(false); // フィルター展開状態
@@ -7609,7 +7638,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
 // ===================== APPROACH PAGE =====================
 function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = useTodayDate();
   const currentYM = today.slice(0, 7);
 
   // 権限制御
@@ -10091,7 +10120,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
-  const today = new Date().toISOString().split("T")[0];
+  const today = useTodayDate();
   // 🆕 通知タップでハイライトする ID
   const [highlightJiageId, setHighlightJiageId] = useState(null);
   const [highlightOwnerId, setHighlightOwnerId] = useState(null);
