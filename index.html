@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.38-add-minkomi-nashi";
+const APP_VERSION = "2026-05-16-v8.39-jiage-counter-linked";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -422,7 +422,7 @@ function addBusinessDays(dateStr, n) {
   return d.toISOString().split("T")[0];
 }
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
-const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店", "休み"];
+const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店", "休み", "面談", "居留守", "訪問禁止", "未訪問", "訪問済", "見込み", "見込無し", "交渉中", "媒介"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
 const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "査定": 60, "仕入検討": 10, "仕入": 3, "地上初訪": 30, "地上再訪": 50, "新規地上": 10 };
 // 🆕 営業活動カウンターのカテゴリ別カラー（カード左ボーダー＋項目名）
@@ -446,9 +446,20 @@ const APPROACH_CATEGORY = {
   "断り":       { color: "#ef4444", icon: "❌", group: "ネガ" },
   "閉店":       { color: "#ef4444", icon: "🚪", group: "ネガ" },
   "休み":       { color: "#64748b", icon: "🌴", group: "休み" },
+  // 🆕 v8.39: 地上げ訪問結果連動
+  "面談":       { color: "#10b981", icon: "🤝", group: "訪問" },
+  "居留守":     { color: "#f59e0b", icon: "🚪", group: "訪問" },
+  "訪問禁止":   { color: "#ef4444", icon: "⛔", group: "ネガ" },
+  // 🆕 v8.39: 地上げステータス連動
+  "未訪問":     { color: "#94a3b8", icon: "⏳", group: "訪問" },
+  "訪問済":     { color: "#3b82f6", icon: "✅", group: "訪問" },
+  "見込み":     { color: "#10b981", icon: "🟢", group: "KPI" },
+  "見込無し":   { color: "#64748b", icon: "⚫", group: "ネガ" },
+  "交渉中":     { color: "#a855f7", icon: "💬", group: "KPI" },
+  "媒介":       { color: "#a855f7", icon: "📑", group: "KPI" },
 };
 // 🆕 目標対象外の項目（KPIには入れない、振り返り用 - エリア・曜日傾向分析）
-const NON_GOAL_ITEMS = new Set(["不在", "断り", "閉店", "休み"]);
+const NON_GOAL_ITEMS = new Set(["不在", "断り", "閉店", "休み", "居留守", "訪問禁止", "未訪問", "見込無し"]);
 const APPROACH_GOAL_ITEMS = APPROACH_ITEMS.filter(item => !NON_GOAL_ITEMS.has(item));
 
 // 🆕 v8.36: 業者活動 / 地上げ活動 で営業カウンターを分けて表示する設定
@@ -464,7 +475,11 @@ const APPROACH_GROUPS = {
   jiage: {
     label: "地上げ",
     icon: "🗺️",
-    items: ["地上初訪", "地上再訪", "新規地上", "不在", "断り", "休み"],
+    // 🆕 v8.39: 訪問記録の「訪問結果」「ステータス」と直接連動するカウンター
+    //   ・訪問結果（面談・居留守・不在・訪問禁止）と
+    //   ・ステータス（未訪問・訪問済・見込み・見込無し・交渉中・媒介・仕入）が保存時に +1
+    //   ・「新規地上」のみ手動カウンターとして残置
+    items: ["面談", "居留守", "不在", "訪問禁止", "未訪問", "訪問済", "見込み", "見込無し", "交渉中", "媒介", "仕入", "新規地上"],
   },
 };
 const APPROACH_GROUP_KEYS = ["agent", "jiage"];
@@ -2113,9 +2128,8 @@ function MainApp({ onLock, onSwitchUser }) {
           if (!j || j.id == null) return;
           const pj = prevJMap.get(j.id);
           if (!pj) return;
-          const wasShi = (pj.status === "仕入" || pj.status === "仕入れ完了");
-          const isShi  = (j.status  === "仕入" || j.status  === "仕入れ完了");
-          if (!wasShi && isShi) statusBumps.push({ member: j.assignee, item: "仕入" });
+          // 🆕 v8.39: 仕入カウンターは訪問記録保存で加算するためここでは加算しない（二重加算防止）
+          //   ・媒介→仲介受託 は別カウンターなのでそのまま維持
           if (pj.status !== "媒介" && j.status === "媒介") statusBumps.push({ member: j.assignee, item: "仲介受託" });
         });
         if (statusBumps.length > 0) {
@@ -10278,17 +10292,20 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     
     setData(d => {
       if (targetType === "jiage") {
-        // 🆕 地上げの訪問記録を保存したら、営業活動カウンターを自動連動
-        //   ・1回目の訪問 → 地上初訪 +1 ／ 2回目以降 → 地上再訪 +1
-        //   ・居留守 or 不在 → さらに「不在」+1
-        //   ・NG          → さらに「断り」+1
+        // 🆕 v8.39: 訪問結果とステータスを直接カウンターに +1（地上げグループ）
+        //   ・訪問結果 → 面談 / 居留守 / 不在 / 訪問禁止 のいずれか
+        //   ・ステータス → 保存時に選択されている値（未訪問・訪問済・見込み・見込無し・交渉中・媒介・仕入）
         //   ・担当者は visitForm.assignee 優先、無ければ案件の担当者、それも無ければ現在のユーザー
         const target = d.jiage.find(j => j.id === targetId);
-        const prevVisitCount = (target && Array.isArray(target.visitLog)) ? target.visitLog.length : 0;
         const bumpMember = visitForm.assignee || (target && target.assignee) || getCurrentUser() || "";
-        const bumpItems = [prevVisitCount === 0 ? "地上初訪" : "地上再訪"];
-        if (visitForm.result === "ignore" || visitForm.result === "absent") bumpItems.push("不在");
-        if (visitForm.result === "rejected") bumpItems.push("断り");
+        const bumpItems = [];
+        // 訪問結果 → カウンター
+        const _resultToItem = { home: "面談", ignore: "居留守", absent: "不在", rejected: "訪問禁止" };
+        const _resItem = _resultToItem[visitForm.result];
+        if (_resItem) bumpItems.push(_resItem);
+        // ステータス → カウンター（保存後のステータス値で）
+        const _finalStatus = visitForm.status || newStatus;
+        if (_finalStatus && ATTACK_STATUSES.includes(_finalStatus)) bumpItems.push(_finalStatus);
         let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
         if (bumpMember) {
           const todayStr = new Date().toISOString().split("T")[0];
