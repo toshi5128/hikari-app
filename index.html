@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.32-import-feedback-accurate";
+const APP_VERSION = "2026-05-16-v8.33-viewing-field-sync";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -894,6 +894,24 @@ function v6ValuesEqual(a, b) {
 }
 
 // 配列フィールドをマージ（要素が消えないように結合）
+// 🆕 同一 id の item を「空でないフィールドを優先」してマージ（updatedAt 無いとき用）
+function mergeItemNonEmpty(local, remote) {
+  if (!local) return remote;
+  if (!remote) return local;
+  const merged = {};
+  const allKeys = new Set([...Object.keys(local), ...Object.keys(remote)]);
+  allKeys.forEach(k => {
+    if (MERGEABLE_ARRAY_FIELDS.has(k)) return; // 配列フィールドは別途処理
+    const lv = local[k], rv = remote[k];
+    const lEmpty = lv === undefined || lv === null || lv === "";
+    const rEmpty = rv === undefined || rv === null || rv === "";
+    if (lEmpty && !rEmpty) merged[k] = rv;
+    else if (rEmpty && !lEmpty) merged[k] = lv;
+    else merged[k] = lv;
+  });
+  return merged;
+}
+
 function mergeArrayField(localArr, remoteArr) {
   const L = Array.isArray(localArr) ? localArr : [];
   const R = Array.isArray(remoteArr) ? remoteArr : [];
@@ -918,7 +936,19 @@ function mergeArrayField(localArr, remoteArr) {
       if (!byId.has(el.id)) { byId.set(el.id, el); idOrder.push(el.id); }
       else {
         const r = byId.get(el.id);
-        const m = { ...r, ...el };
+        // 🆕 updatedAt を見て新しい方を主、無ければ空でないフィールドを優先する
+        const lu = Number(el.updatedAt) || 0;
+        const ru = Number(r.updatedAt) || 0;
+        let m;
+        if (lu > 0 && ru > 0) {
+          m = lu >= ru ? { ...r, ...el } : { ...el, ...r };
+        } else if (lu > 0) {
+          m = { ...r, ...el };
+        } else if (ru > 0) {
+          m = { ...el, ...r };
+        } else {
+          m = mergeItemNonEmpty(el, r);
+        }
         Object.keys(m).forEach(kk => {
           if (MERGEABLE_ARRAY_FIELDS.has(kk) && (Array.isArray(el[kk]) || Array.isArray(r[kk]))) {
             m[kk] = mergeArrayField(el[kk], r[kk]);
@@ -5414,6 +5444,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
               <div style={{ fontSize: 12, fontWeight: 700, color: "#06b6d4" }}>👀 反響（{(form.viewings || []).length}件）</div>
               <button onClick={() => {
                 const newItem = {
+                  updatedAt: Date.now(),
                   date: "", visitDate: "", visitTime: "",
                   customer: "", contact: "", email: "",
                   funding: "", purpose: "", budget: "", people: "", channel: "",
@@ -5444,7 +5475,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
               return arr;
             })().map(({ v, originalIdx: i }) => {
               const isExpanded = !!expandedViewings[i];
-              const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val } : vv) }));
+              const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val, updatedAt: Date.now() } : vv) }));
               const prospect = PROSPECT_INFO[v.prospect];
               const result = RESULT_INFO[v.result];
               const dow = dayOfWeekLabel(v.date);
@@ -6832,6 +6863,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               <div style={{ fontSize: 12, fontWeight: 700, color: "#06b6d4" }}>👀 反響（{(form.viewings || []).length}件）</div>
               <button onClick={() => {
                 const newItem = {
+                  updatedAt: Date.now(),
                   date: "", visitDate: "", visitTime: "",
                   customer: "", contact: "", email: "",
                   funding: "", purpose: "", budget: "", people: "", channel: "",
@@ -6862,7 +6894,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               return arr;
             })().map(({ v, originalIdx: i }) => {
               const isExpanded = !!expandedViewings[i];
-              const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val } : vv) }));
+              const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val, updatedAt: Date.now() } : vv) }));
               const prospect = PROSPECT_INFO[v.prospect];
               const result = RESULT_INFO[v.result];
               const dow = dayOfWeekLabel(v.date);
