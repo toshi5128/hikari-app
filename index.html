@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.44-separate-jiage-counters";
+const APP_VERSION = "2026-05-16-v8.45-auto-only-jiage-counters";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -472,6 +472,18 @@ const APPROACH_CATEGORY = {
 function approachItemLabel(item) {
   const cat = APPROACH_CATEGORY[item];
   return (cat && cat.label) || item;
+}
+
+// 🆕 v8.45: 訪問記録から自動加算されるカウンター項目（手入力 +/- は不要）
+//   ・地上げの訪問記録モーダルから自動的に +1 されるアイテム
+//   ・新規地上 は手動で +1 するので除外
+const AUTO_BUMPED_ITEMS = new Set([
+  "面談", "居留守", "地上不在", "訪問禁止", "ポスティング",
+  "未訪問", "初訪", "地上再訪", "見込み", "中長期見込", "見込無し",
+  "交渉中", "媒介", "地上仕入",
+]);
+function isAutoBumpedItem(item) {
+  return AUTO_BUMPED_ITEMS.has(item);
 }
 // 🆕 目標対象外の項目（KPIには入れない、振り返り用 - エリア・曜日傾向分析）
 const NON_GOAL_ITEMS = new Set(["不在", "断り", "閉店", "休み", "居留守", "訪問禁止", "未訪問", "見込無し"]);
@@ -8931,26 +8943,33 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                       <span style={{ color: C.muted, fontSize: 9, flexShrink: 0 }}>未設定</span>
                     )}
                   </div>
-                  {/* 2段目：− 数字 ＋ */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <button
-                      onMouseDown={() => { if (Date.now() - lastTouchTimeRef.current < 500) return; startHold(`${item}-dec`, () => incVal(-1)); }}
-                      onMouseUp={() => stopHold(`${item}-dec`)}
-                      onMouseLeave={() => stopHold(`${item}-dec`)}
-                      onTouchStart={(e) => { lastTouchTimeRef.current = Date.now(); e.preventDefault(); startHold(`${item}-dec`, () => incVal(-1)); }}
-                      onTouchEnd={() => stopHold(`${item}-dec`)}
-                      onTouchCancel={() => stopHold(`${item}-dec`)}
-                      style={{ background: C.danger + "22", border: `1px solid ${C.danger}`, color: C.danger, borderRadius: 6, width: 32, height: 32, cursor: "pointer", fontSize: 16, fontWeight: 800, fontFamily: "inherit", userSelect: "none", touchAction: "manipulation", padding: 0 }}>−</button>
-                    <div style={{ flex: 1, textAlign: "center", fontSize: 20, fontWeight: 800, color: overAchieved ? "#FBBF24" : C.text }}>{val}</div>
-                    <button
-                      onMouseDown={() => { if (Date.now() - lastTouchTimeRef.current < 500) return; startHold(`${item}-inc`, () => incVal(1)); }}
-                      onMouseUp={() => stopHold(`${item}-inc`)}
-                      onMouseLeave={() => stopHold(`${item}-inc`)}
-                      onTouchStart={(e) => { lastTouchTimeRef.current = Date.now(); e.preventDefault(); startHold(`${item}-inc`, () => incVal(1)); }}
-                      onTouchEnd={() => stopHold(`${item}-inc`)}
-                      onTouchCancel={() => stopHold(`${item}-inc`)}
-                      style={{ background: overAchieved ? "linear-gradient(135deg, #FCD34D, #F59E0B)" : C.success + "22", border: overAchieved ? "1px solid #F59E0B" : `1px solid ${C.success}`, color: overAchieved ? "#451A03" : C.success, borderRadius: 6, width: 32, height: 32, cursor: "pointer", fontSize: 16, fontWeight: 800, fontFamily: "inherit", userSelect: "none", touchAction: "manipulation", padding: 0 }}>＋</button>
-                  </div>
+                  {/* 2段目：− 数字 ＋ （自動加算項目はボタンを出さず数字のみ） */}
+                  {isAutoBumpedItem(item) ? (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "4px 0" }}>
+                      <div style={{ fontSize: 26, fontWeight: 800, color: overAchieved ? "#FBBF24" : C.text, lineHeight: 1 }}>{val}</div>
+                      <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>(自動)</span>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <button
+                        onMouseDown={() => { if (Date.now() - lastTouchTimeRef.current < 500) return; startHold(`${item}-dec`, () => incVal(-1)); }}
+                        onMouseUp={() => stopHold(`${item}-dec`)}
+                        onMouseLeave={() => stopHold(`${item}-dec`)}
+                        onTouchStart={(e) => { lastTouchTimeRef.current = Date.now(); e.preventDefault(); startHold(`${item}-dec`, () => incVal(-1)); }}
+                        onTouchEnd={() => stopHold(`${item}-dec`)}
+                        onTouchCancel={() => stopHold(`${item}-dec`)}
+                        style={{ background: C.danger + "22", border: `1px solid ${C.danger}`, color: C.danger, borderRadius: 6, width: 32, height: 32, cursor: "pointer", fontSize: 16, fontWeight: 800, fontFamily: "inherit", userSelect: "none", touchAction: "manipulation", padding: 0 }}>−</button>
+                      <div style={{ flex: 1, textAlign: "center", fontSize: 20, fontWeight: 800, color: overAchieved ? "#FBBF24" : C.text }}>{val}</div>
+                      <button
+                        onMouseDown={() => { if (Date.now() - lastTouchTimeRef.current < 500) return; startHold(`${item}-inc`, () => incVal(1)); }}
+                        onMouseUp={() => stopHold(`${item}-inc`)}
+                        onMouseLeave={() => stopHold(`${item}-inc`)}
+                        onTouchStart={(e) => { lastTouchTimeRef.current = Date.now(); e.preventDefault(); startHold(`${item}-inc`, () => incVal(1)); }}
+                        onTouchEnd={() => stopHold(`${item}-inc`)}
+                        onTouchCancel={() => stopHold(`${item}-inc`)}
+                        style={{ background: overAchieved ? "linear-gradient(135deg, #FCD34D, #F59E0B)" : C.success + "22", border: overAchieved ? "1px solid #F59E0B" : `1px solid ${C.success}`, color: overAchieved ? "#451A03" : C.success, borderRadius: 6, width: 32, height: 32, cursor: "pointer", fontSize: 16, fontWeight: 800, fontFamily: "inherit", userSelect: "none", touchAction: "manipulation", padding: 0 }}>＋</button>
+                    </div>
+                  )}
                   {/* 3段目：プログレスバー＋あと◯件 */}
                   {goal > 0 && (
                     <div>
