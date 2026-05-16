@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.24-old-version-guard";
+const APP_VERSION = "2026-05-16-v8.25-viewing-deletion-sync";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -959,6 +959,22 @@ function mergeItems(localItem, remoteItem) {
       if (key === "viewings") {
         const r = dedupeViewings(result[key]);
         if (r.changed) result[key] = r.arr;
+        // 🆕 viewingTombstones を統合し、削除されたものをマージ結果から除外（他端末で削除→こちらにも反映）
+        const lTomb = (localItem && localItem.viewingTombstones) || {};
+        const rTomb = (remoteItem && remoteItem.viewingTombstones) || {};
+        const mergedTomb = {};
+        Object.keys(lTomb).forEach(id => { mergedTomb[id] = Number(lTomb[id]) || 0; });
+        Object.keys(rTomb).forEach(id => {
+          mergedTomb[id] = Math.max(mergedTomb[id] || 0, Number(rTomb[id]) || 0);
+        });
+        // 30日より古い tombstone を掃除
+        const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        Object.keys(mergedTomb).forEach(id => { if (mergedTomb[id] < cutoff) delete mergedTomb[id]; });
+        // tombstone に載っている viewing は除外
+        if (Object.keys(mergedTomb).length > 0) {
+          result[key] = result[key].filter(v => !(v && v.id != null && mergedTomb[String(v.id)]));
+        }
+        result.viewingTombstones = mergedTomb;
       }
       mergedF[key] = Math.max(Number(lf[key]) || lu, Number(rf[key]) || ru);
       return;
@@ -1051,11 +1067,23 @@ function applyViewingsDedup(data) {
     if (!Array.isArray(arr)) return;
     let kChanged = false;
     const newArr = arr.map(item => {
-      if (!item || !Array.isArray(item.viewings) || item.viewings.length < 2) return item;
-      const r = dedupeViewings(item.viewings);
-      if (!r.changed) return item;
+      if (!item) return item;
+      let vs = Array.isArray(item.viewings) ? item.viewings : null;
+      let itemChanged = false;
+      // 🆕 tombstone に載ってる viewing は除外
+      const tomb = item.viewingTombstones || {};
+      if (vs && Object.keys(tomb).length > 0) {
+        const filtered = vs.filter(v => !(v && v.id != null && tomb[String(v.id)]));
+        if (filtered.length !== vs.length) { vs = filtered; itemChanged = true; }
+      }
+      // 重複除去
+      if (vs && vs.length > 1) {
+        const r = dedupeViewings(vs);
+        if (r.changed) { vs = r.arr; itemChanged = true; }
+      }
+      if (!itemChanged) return item;
       kChanged = true;
-      return { ...item, viewings: r.arr };
+      return { ...item, viewings: vs };
     });
     if (kChanged) {
       changed = true;
@@ -1980,7 +2008,22 @@ function MainApp({ onLock, onSwitchUser }) {
           if (!prevItem || prevItem !== item) {
             hasActualChange = true;
             // 🆕 v6: id の無いネスト配列要素（反響など）に id を付与
-            const normItem = ensureNestedIds(item);
+            let normItem = ensureNestedIds(item);
+            // 🆕 viewings の削除を tombstone に記録（他端末に削除を伝える）
+            if ((k === "stocks" || k === "mediations") && prevItem && Array.isArray(prevItem.viewings) && Array.isArray(normItem.viewings)) {
+              const prevVIds = new Set(prevItem.viewings.filter(v => v && v.id != null).map(v => v.id));
+              const nextVIds = new Set(normItem.viewings.filter(v => v && v.id != null).map(v => v.id));
+              const deletedVIds = [];
+              prevVIds.forEach(id => { if (!nextVIds.has(id)) deletedVIds.push(id); });
+              if (deletedVIds.length > 0) {
+                const tomb = { ...(normItem.viewingTombstones || {}) };
+                deletedVIds.forEach(id => { tomb[String(id)] = now; });
+                // 30日より古い tombstone は掃除
+                const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+                Object.keys(tomb).forEach(id => { if ((Number(tomb[id]) || 0) < cutoff) delete tomb[id]; });
+                normItem = { ...normItem, viewingTombstones: tomb };
+              }
+            }
             // updatedAt は必ず「編集元より新しい値」にする（端末の時計ズレ対策）
             const prevUA = Number(prevItem && prevItem.updatedAt) || 0;
             const newUA = Math.max(now, prevUA + 1);
