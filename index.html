@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.18-viewing-dedupe";
+const APP_VERSION = "2026-05-16-v8.19-viewing-dedupe-loose";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -886,6 +886,11 @@ function mergeItems(localItem, remoteItem) {
     const lv = localItem[key], rv = remoteItem[key];
     if (MERGEABLE_ARRAY_FIELDS.has(key) && (Array.isArray(lv) || Array.isArray(rv))) {
       result[key] = mergeArrayField(Array.isArray(lv) ? lv : [], Array.isArray(rv) ? rv : []);
+      // 🆕 viewings は毎マージで重複除去（端末ごとに違う id が付いた同一反響を統合）
+      if (key === "viewings") {
+        const r = dedupeViewings(result[key]);
+        if (r.changed) result[key] = r.arr;
+      }
       mergedF[key] = Math.max(Number(lf[key]) || lu, Number(rf[key]) || ru);
       return;
     }
@@ -947,7 +952,26 @@ function ensureNestedIds(item) {
   return changed ? copy : item;
 }
 
-// 🆕 既存データの反響重複を除去：同じ内容（date+customer+contact+email+note）の反響を統合
+// 🆕 反響の重複判定 signature（ゆるめ・日付は含めない＝同じ顧客が日付違いで複数登録されても1件に統合）
+//   優先順：顧客名+連絡先 > 顧客名+メール > 連絡先のみ > メールのみ > 顧客名のみ
+//   どれも空なら null（重複判定しない）
+function viewingDedupSig(v) {
+  if (!v) return null;
+  const cust = String(v.customer || "").trim();
+  const contact = String(v.contact || "").replace(/[\s\-()]/g, "");
+  const email = String(v.email || "").trim().toLowerCase();
+  if (cust && contact) return "c|" + cust + "|" + contact;
+  if (cust && email) return "e|" + cust + "|" + email;
+  if (contact) return "p|" + contact;
+  if (email) return "m|" + email;
+  if (cust) return "n|" + cust;
+  return null;
+}
+
+// 🆕 反響の重複除去：同じ顧客（電話 or メール一致など）の反響を1件に統合
+//   ・コメントは合算（id 重複を除去）
+//   ・updatedAt が新しい方を優先採用、空フィールドは古い方で補完
+//   ・id は signature の安定ハッシュに統一
 function dedupeViewings(viewings) {
   if (!Array.isArray(viewings) || viewings.length < 2) return { arr: viewings, changed: false };
   const seenBySig = new Map();
@@ -955,20 +979,31 @@ function dedupeViewings(viewings) {
   let changed = false;
   viewings.forEach(v => {
     if (!v || typeof v !== "object") { order.push({ key: "__non" + order.length, v }); return; }
-    const sig = [v.date || "", v.customer || "", v.contact || "", v.email || "", v.note || ""].join("|");
-    if (sig.replace(/\|/g, "") === "") { order.push({ key: "__empty" + order.length, v }); return; }
+    const sig = viewingDedupSig(v);
+    if (!sig) {
+      // 識別情報が無いので重複扱いしない（そのまま並べる）
+      order.push({ key: "__nosig" + order.length, v });
+      return;
+    }
     const stableId = "v_" + _hikariHashStr(sig);
     if (seenBySig.has(sig)) {
       changed = true;
       const ex = seenBySig.get(sig);
-      const merged = [...(ex.comments || []), ...(v.comments || [])];
+      // コメント合算（id 重複を除去）
       const cIds = new Set();
       const cdedup = [];
-      merged.forEach(c => { if (!c) return; if (c.id != null) { if (!cIds.has(c.id)) { cIds.add(c.id); cdedup.push(c); } } else cdedup.push(c); });
-      const mergedV = { ...ex, ...v, id: stableId, comments: cdedup };
-      seenBySig.set(sig, mergedV);
+      [...(ex.comments || []), ...(v.comments || [])].forEach(c => {
+        if (!c) return;
+        if (c.id != null) { if (!cIds.has(c.id)) { cIds.add(c.id); cdedup.push(c); } }
+        else cdedup.push(c);
+      });
+      // updatedAt が新しい方を主、古い方で穴埋め
+      const newer = (Number(v.updatedAt) || 0) >= (Number(ex.updatedAt) || 0) ? v : ex;
+      const older = newer === v ? ex : v;
+      const merged = { ...older, ...newer, comments: cdedup, id: stableId };
+      seenBySig.set(sig, merged);
       const idx = order.findIndex(o => o.key === sig);
-      if (idx >= 0) order[idx].v = mergedV;
+      if (idx >= 0) order[idx].v = merged;
     } else {
       const normalized = (v.id !== stableId) ? { ...v, id: stableId } : v;
       if (v.id !== stableId) changed = true;
