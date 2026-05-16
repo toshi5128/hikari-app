@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.4-status-manual-respect";
+const APP_VERSION = "2026-05-16-v8.5-event-comments";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -2362,6 +2362,75 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const [editingEvent, setEditingEvent] = useState(null);
   const eventEmpty = { title: "", date: today, time: "", location: "", memo: "", assignees: [], reminderMinutes: 0 };
   const [eventForm, setEventForm] = useState(eventEmpty);
+  // 🆕 カレンダー予定のコメント関連 state
+  const [newEventComment, setNewEventComment] = useState("");
+  const [editingEventCommentId, setEditingEventCommentId] = useState(null);
+  const [editingEventCommentText, setEditingEventCommentText] = useState("");
+
+  // 💬 予定コメント：投稿
+  const handlePostEventComment = (eventId) => {
+    const text = (newEventComment || "").trim();
+    if (!text) return;
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    const comment = { id: Date.now(), member: currentUser, text, createdAt: new Date().toISOString() };
+    setData(d => ({
+      ...d,
+      customEvents: (d.customEvents || []).map(e =>
+        e.id === eventId ? { ...e, comments: [...(e.comments || []), comment] } : e
+      ),
+    }));
+    // 通知：参加者 + 通知メンバー + 過去にコメントした人（送信者除く）
+    const target = (data.customEvents || []).find(e => e.id === eventId);
+    if (target) {
+      const pastCommenters = (target.comments || []).map(c => c.member);
+      const allTargets = new Set([
+        ...getNotifyMembers(data),
+        ...(Array.isArray(target.assignees) ? target.assignees : []),
+        ...pastCommenters,
+      ]);
+      allTargets.delete(currentUser);
+      const targets = [...allTargets].filter(Boolean);
+      if (targets.length > 0) {
+        sendPushNotification(
+          targets,
+          `💬 ${currentUser}さんが予定にコメント`,
+          `${target.title || "(無題)"}（${target.date}${target.time ? " " + target.time : ""}）\n${text}`,
+          { tag: `hikari-event-comment-${eventId}-${comment.id}`, data: { tab: 'dashboard', eventId: eventId }, tab: 'dashboard', eventId: eventId }
+        );
+      }
+    }
+    setNewEventComment("");
+  };
+  const handleStartEditEventComment = (commentId, currentText) => {
+    setEditingEventCommentId(commentId);
+    setEditingEventCommentText(currentText);
+  };
+  const handleCancelEditEventComment = () => {
+    setEditingEventCommentId(null);
+    setEditingEventCommentText("");
+  };
+  const handleSaveEditEventComment = (eventId, commentId) => {
+    const newText = editingEventCommentText.trim();
+    if (!newText) { alert("内容が空です"); return; }
+    setData(d => ({
+      ...d,
+      customEvents: (d.customEvents || []).map(e => {
+        if (e.id !== eventId) return e;
+        return { ...e, comments: (e.comments || []).map(c => c.id === commentId ? { ...c, text: newText, editedAt: new Date().toISOString() } : c) };
+      }),
+    }));
+    setEditingEventCommentId(null);
+    setEditingEventCommentText("");
+  };
+  const handleDeleteEventComment = (eventId, commentId) => {
+    if (!window.confirm("このコメントを削除しますか？")) return;
+    setData(d => ({
+      ...d,
+      customEvents: (d.customEvents || []).map(e =>
+        e.id === eventId ? { ...e, comments: (e.comments || []).filter(c => c.id !== commentId) } : e
+      ),
+    }));
+  };
 
   const openNewEvent = (dateStr) => {
     setEventForm({ ...eventEmpty, date: dateStr || calSelectedDate });
@@ -3400,6 +3469,64 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               </div>
             )}
           </Field>
+          {/* 💬 コメント欄（編集モード時のみ） */}
+          {editingEvent && (() => {
+            const liveEvt = (data.customEvents || []).find(e => e.id === editingEvent.id) || editingEvent;
+            const comments = liveEvt.comments || [];
+            return (
+              <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 10, marginTop: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 8 }}>💬 やり取り（{comments.length}件）</div>
+                {comments.length === 0 ? (
+                  <div style={{ fontSize: 11, color: C.muted, textAlign: "center", padding: "6px 0" }}>まだコメントなし</div>
+                ) : comments.map(c => {
+                  const isEditing = editingEventCommentId === c.id;
+                  return (
+                    <div key={c.id} style={{ background: C.cardBg, borderLeft: `3px solid ${MEMBER_COLORS[c.member] || C.muted}`, borderRadius: 6, padding: "6px 10px", marginBottom: 6 }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3 }}>
+                        <MemberTag name={c.member} />
+                        <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>
+                          {new Date(c.createdAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                          {c.editedAt && <span style={{ marginLeft: 3 }}>(編集済)</span>}
+                        </span>
+                      </div>
+                      {isEditing ? (
+                        <>
+                          <textarea value={editingEventCommentText} onChange={e => setEditingEventCommentText(e.target.value)} style={{ ...inp, height: 50, resize: "vertical", marginBottom: 4, fontSize: 12 }} />
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <button onClick={() => handleSaveEditEventComment(editingEvent.id, c.id)} style={{ ...btnStyle(), flex: 1, padding: "5px", fontSize: 11 }}>💾 保存</button>
+                            <button onClick={handleCancelEditEventComment} style={{ ...btnStyle("ghost"), flex: 1, padding: "5px", fontSize: 11 }}>キャンセル</button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5, whiteSpace: "pre-wrap", marginBottom: c.member === currentUser ? 3 : 0 }}>{c.text}</div>
+                          {c.member === currentUser && (
+                            <div style={{ display: "flex", gap: 3, justifyContent: "flex-end" }}>
+                              <button onClick={() => handleStartEditEventComment(c.id, c.text)} style={{ background: "transparent", border: `1px solid ${C.muted}33`, color: C.muted, borderRadius: 3, padding: "1px 7px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>✏️</button>
+                              <button onClick={() => handleDeleteEventComment(editingEvent.id, c.id)} style={{ background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger, borderRadius: 3, padding: "1px 7px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>🗑️</button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                {/* 入力欄 */}
+                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                  <textarea
+                    value={newEventComment}
+                    onChange={e => setNewEventComment(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handlePostEventComment(editingEvent.id); } }}
+                    placeholder={currentUser ? `${currentUser}としてコメント (Enter送信)` : "ログインしてください"}
+                    style={{ ...inp, flex: 1, height: 40, resize: "vertical", fontSize: 12, padding: "6px 8px" }}
+                  />
+                  <button onClick={() => handlePostEventComment(editingEvent.id)}
+                    disabled={!newEventComment.trim() || !currentUser}
+                    style={{ ...btnStyle(), padding: "8px 14px", fontSize: 12, flexShrink: 0, opacity: (!newEventComment.trim() || !currentUser) ? 0.5 : 1 }}>送信</button>
+                </div>
+              </div>
+            );
+          })()}
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowEventForm(false); setEditingEvent(null); }}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2, background: "#f97316", borderColor: "#f97316" }} onClick={handleSaveEvent}>{editingEvent ? "更新する" : "予定を保存"}</button>
