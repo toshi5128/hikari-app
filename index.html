@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.47-edit-visit-history";
+const APP_VERSION = "2026-05-16-v8.48-manual-edit-auto-counter";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -7644,6 +7644,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   const [dailyGoals, setDailyGoals] = useState({}); // その日の目標値
   const [showDailyGoalEdit, setShowDailyGoalEdit] = useState(false);
   const [dailyGoalForm, setDailyGoalForm] = useState({});
+  // 🆕 v8.48: 自動カウンターを手動で編集するモーダル用 state
+  //   { item: string, draft: string } | null
+  const [manualEditAuto, setManualEditAuto] = useState(null);
   const [isLoaded, setIsLoaded] = useState(false); // 初回読み込み完了フラグ
   const [autoSaveStatus, setAutoSaveStatus] = useState("idle"); // "idle" | "saving" | "saved"
   const [lastSavedAt, setLastSavedAt] = useState(null); // 最終自動保存時刻
@@ -8982,9 +8985,15 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                   </div>
                   {/* 2段目：− 数字 ＋ （自動加算項目はボタンを出さず数字のみ） */}
                   {isAutoBumpedItem(item) ? (
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "4px 0" }}>
+                    // 🆕 v8.48: タップで手動編集モーダルを開く（誤カウントを管理者が修正できる）
+                    <div
+                      onClick={() => setManualEditAuto({ item, draft: String(val) })}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "4px 0", cursor: "pointer", borderRadius: 6 }}
+                      title="タップで手動編集"
+                    >
                       <div style={{ fontSize: 26, fontWeight: 800, color: overAchieved ? "#FBBF24" : C.text, lineHeight: 1 }}>{val}</div>
                       <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>(自動)</span>
+                      <span style={{ fontSize: 9, color: C.muted, opacity: 0.6 }}>✏️</span>
                     </div>
                   ) : (
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -9022,6 +9031,61 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               );
             })}
           </div>
+
+          {/* 🆕 v8.48: 自動カウンターの手動編集 BottomSheet */}
+          {manualEditAuto && (() => {
+            const item = manualEditAuto.item;
+            const cat = APPROACH_CATEGORY[item] || { color: C.muted, icon: "" };
+            const label = approachItemLabel(item);
+            const curVal = Number(inputValues[item]) || 0;
+            const setDraft = v => setManualEditAuto(p => p ? { ...p, draft: v } : p);
+            const close = () => setManualEditAuto(null);
+            const apply = (v) => {
+              const n = Math.max(0, Math.floor(Number(v) || 0));
+              setInputValues(p => ({ ...p, [item]: n }));
+              close();
+            };
+            return (
+              <BottomSheet title={`✏️ ${cat.icon || ""} ${label} を編集`} onClose={close}>
+                <div style={{ color: C.muted, fontSize: 12, marginBottom: 14, lineHeight: 1.6 }}>
+                  この項目は通常「訪問記録の保存」で自動加算されます。<br />
+                  誤カウントを直したいときだけ手動で編集してください。
+                </div>
+                <div style={{ background: C.bg, borderRadius: 10, border: `1px solid ${cat.color}33`, padding: "16px 14px", marginBottom: 14, textAlign: "center" }}>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>現在の値</div>
+                  <div style={{ fontSize: 32, fontWeight: 800, color: cat.color }}>{curVal}</div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+                  <button onClick={() => apply(curVal - 1)} disabled={curVal === 0} style={{
+                    ...btnStyle("ghost"), padding: "12px", fontSize: 14, fontWeight: 700,
+                    borderColor: C.danger, color: C.danger,
+                    opacity: curVal === 0 ? 0.4 : 1,
+                  }}>− 1</button>
+                  <button onClick={() => apply(0)} style={{
+                    ...btnStyle("ghost"), padding: "12px", fontSize: 14, fontWeight: 700,
+                    borderColor: C.muted, color: C.muted,
+                  }}>0 にリセット</button>
+                  <button onClick={() => apply(curVal + 1)} style={{
+                    ...btnStyle("ghost"), padding: "12px", fontSize: 14, fontWeight: 700,
+                    borderColor: C.success, color: C.success,
+                  }}>＋ 1</button>
+                </div>
+                <Field label="任意の値にセット">
+                  <input
+                    type="text" inputMode="numeric"
+                    value={manualEditAuto.draft}
+                    onChange={e => setDraft(e.target.value.replace(/[^0-9]/g, ""))}
+                    style={{ ...inp, fontSize: 18, textAlign: "center" }}
+                    placeholder="0"
+                  />
+                </Field>
+                <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                  <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={close}>キャンセル</button>
+                  <button style={{ ...btnStyle(), flex: 2 }} onClick={() => apply(manualEditAuto.draft)}>この値で保存</button>
+                </div>
+              </BottomSheet>
+            );
+          })()}
 
           {/* 🎯 今日の目標設定 BottomSheet */}
           {showDailyGoalEdit && (
