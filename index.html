@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.43-fix-migration-merge";
+const APP_VERSION = "2026-05-16-v8.44-separate-jiage-counters";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -422,7 +422,7 @@ function addBusinessDays(dateStr, n) {
   return d.toISOString().split("T")[0];
 }
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
-const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店", "休み", "面談", "居留守", "訪問禁止", "未訪問", "訪問済", "初訪", "中長期見込", "見込み", "見込無し", "交渉中", "媒介", "ポスティング"];
+const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店", "休み", "面談", "居留守", "訪問禁止", "未訪問", "訪問済", "初訪", "中長期見込", "見込み", "見込無し", "交渉中", "媒介", "ポスティング", "地上不在", "地上仕入"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
 const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "査定": 60, "仕入検討": 10, "仕入": 3, "地上初訪": 30, "地上再訪": 50, "新規地上": 10 };
 // 🆕 営業活動カウンターのカテゴリ別カラー（カード左ボーダー＋項目名）
@@ -462,7 +462,17 @@ const APPROACH_CATEGORY = {
   "見込無し":   { color: "#64748b", icon: "⚫", group: "ネガ" },
   "交渉中":     { color: "#a855f7", icon: "💬", group: "KPI" },
   "媒介":       { color: "#a855f7", icon: "📑", group: "KPI" },
+  // 🆕 v8.44: 地上げ専用の内部キー（業者カウンターと混入しないように分離）。UI上の表示名は label で上書き
+  "地上不在":   { color: "#94a3b8", icon: "🚫", group: "ネガ", label: "不在" },
+  "地上再訪":   { color: "#10b981", icon: "🔁", group: "訪問", label: "再訪" },
+  "地上仕入":   { color: "#06b6d4", icon: "🏆", group: "KPI",  label: "仕入" },
 };
+
+// 🆕 v8.44: カウンター項目の表示名を解決するヘルパー（APPROACH_CATEGORY[item].label を優先）
+function approachItemLabel(item) {
+  const cat = APPROACH_CATEGORY[item];
+  return (cat && cat.label) || item;
+}
 // 🆕 目標対象外の項目（KPIには入れない、振り返り用 - エリア・曜日傾向分析）
 const NON_GOAL_ITEMS = new Set(["不在", "断り", "閉店", "休み", "居留守", "訪問禁止", "未訪問", "見込無し"]);
 const APPROACH_GOAL_ITEMS = APPROACH_ITEMS.filter(item => !NON_GOAL_ITEMS.has(item));
@@ -475,9 +485,9 @@ const APPROACH_GROUPS = {
   agent: {
     label: "業者",
     icon: "🏢",
-    // 🆕 v8.43: 地上げが訪問記録から自動連動するようになったため、不在/断り/休み/閉店 は業者から除外
-    //   ・業者は「業者訪問・架電など」の純粋な業者活動のみを集計
-    items: ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託"],
+    // 🆕 v8.44: 業者は元の15項目を維持。不在/断り/休み/閉店 はそのまま手動カウンターとして使用
+    //   ・地上げ側のカウンターは内部キーを別名（地上不在/地上再訪/地上仕入）にして混入しないように分離
+    items: ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "閉店", "不在", "断り", "休み"],
   },
   jiage: {
     label: "地上げ",
@@ -488,7 +498,9 @@ const APPROACH_GROUPS = {
     //   ・「新規地上」のみ手動カウンターとして残置
     // 🆕 v8.40: 訪問済→初訪 にリネーム、再訪・中長期見込 を追加
     // 🆕 v8.41: ポスティング追加（不在/居留守時の資料投函記録）
-    items: ["面談", "居留守", "不在", "訪問禁止", "ポスティング", "未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "新規地上"],
+    // 🆕 v8.44: 業者の同名カウンターと混ざらないよう、競合する 不在/再訪/仕入 は内部キーを「地上不在/地上再訪/地上仕入」に変更
+    //   ・UI 上の表示名は「不在/再訪/仕入」のまま（APPROACH_CATEGORY の label で上書き）
+    items: ["面談", "居留守", "地上不在", "訪問禁止", "ポスティング", "未訪問", "初訪", "地上再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "地上仕入", "新規地上"],
   },
 };
 const APPROACH_GROUP_KEYS = ["agent", "jiage"];
@@ -7827,7 +7839,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
     // 通知送信
     const resultLabel = APPROACH_ITEMS
       .filter(item => (Number(inputValues[item]) || 0) > 0)
-      .map(item => `${item}${inputValues[item]}`)
+      .map(item => `${approachItemLabel(item)}${inputValues[item]}`)
       .join(" / ");
     const memoLabel = memo ? `\n💭 ${memo}` : "";
     const targets = getNotifyTargets(data, me, { member: selectedMember }); // 対象メンバーも含める
@@ -7987,7 +7999,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
     if (targets.length > 0) {
       const goalSummary = APPROACH_ITEMS
         .filter(item => Number(goalForm[item]) > 0)
-        .map(item => `${item}: ${goalForm[item]}件`)
+        .map(item => `${approachItemLabel(item)}: ${goalForm[item]}件`)
         .slice(0, 3)
         .join(" / ");
       sendPushNotification(
@@ -8912,7 +8924,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                 }}>
                   {/* 1段目：項目名 + 目標/% */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4, minHeight: 16 }}>
-                    <span style={{ color: overAchieved ? "#FBBF24" : cat.color, fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{overAchieved ? "🏆 " : (cat.icon ? cat.icon + " " : "")}{item}</span>
+                    <span style={{ color: overAchieved ? "#FBBF24" : cat.color, fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{overAchieved ? "🏆 " : (cat.icon ? cat.icon + " " : "")}{approachItemLabel(item)}</span>
                     {goal > 0 ? (
                       <span style={{ color: overAchieved ? "#FBBF24" : color, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>{val}/{goal}</span>
                     ) : (
@@ -8964,7 +8976,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 {APPROACH_GOAL_ITEMS.map(item => (
-                  <Field key={item} label={`🎯 ${item}`}>
+                  <Field key={item} label={`🎯 ${approachItemLabel(item)}`}>
                     <input
                       type="text" inputMode="numeric"
                       style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none", fontSize: 16, padding: "12px 14px" }}
@@ -9361,7 +9373,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                         </th>
                         {visibleItems.map(item => (
                           <th key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, minWidth: 56 }}>
-                            {item}
+                            {approachItemLabel(item)}
                           </th>
                         ))}
                       </tr>
@@ -9464,7 +9476,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                             return (
                               <div key={item} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px" }}>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
-                                  <span style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{item}</span>
+                                  <span style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{approachItemLabel(item)}</span>
                                   <span style={{ color, fontWeight: 800, fontSize: 13 }}>
                                     {val}{goal > 0 ? <span style={{ color: C.muted, fontWeight: 400 }}>/{goal}</span> : ""}
                                   </span>
@@ -9508,7 +9520,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                           </th>
                           {visibleItems.map(item => (
                             <th key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, minWidth: 56, background: C.accent, fontWeight: 700 }}>
-                              {item}
+                              {approachItemLabel(item)}
                             </th>
                           ))}
                         </tr>
@@ -9619,7 +9631,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                   {visibleItems.map(item => (
                     <div key={item} style={{ display: "flex", justifyContent: "space-between", background: C.bg, borderRadius: 8, padding: "6px 10px" }}>
-                      <span style={{ color: C.muted, fontSize: 12 }}>{item}</span>
+                      <span style={{ color: C.muted, fontSize: 12 }}>{approachItemLabel(item)}</span>
                       <span style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>{getGoal(m, item)}</span>
                     </div>
                   ))}
@@ -9636,7 +9648,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
           <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>各項目の月間目標値を入力してください</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {APPROACH_GOAL_ITEMS.map(item => (
-              <Field key={item} label={item}>
+              <Field key={item} label={approachItemLabel(item)}>
                 <input
                   type="text" inputMode="numeric"
                   style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none" }}
@@ -10523,13 +10535,17 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         const target = d.jiage.find(j => j.id === targetId);
         const bumpMember = visitForm.assignee || (target && target.assignee) || getCurrentUser() || "";
         const bumpItems = [];
-        // 訪問結果 → カウンター
-        const _resultToItem = { home: "面談", ignore: "居留守", absent: "不在", rejected: "訪問禁止" };
+        // 訪問結果 → カウンター（地上げ専用の内部キーで業者カウンターと分離）
+        const _resultToItem = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止" };
         const _resItem = _resultToItem[visitForm.result];
         if (_resItem) bumpItems.push(_resItem);
         // ステータス → カウンター（保存後のステータス値で）
+        //   ・再訪/仕入 は業者のものと混ざらないように 地上再訪/地上仕入 にマップ
+        const _statusToCounter = { "再訪": "地上再訪", "仕入": "地上仕入" };
         const _finalStatus = visitForm.status || newStatus;
-        if (_finalStatus && ATTACK_STATUSES.includes(_finalStatus)) bumpItems.push(_finalStatus);
+        if (_finalStatus && ATTACK_STATUSES.includes(_finalStatus)) {
+          bumpItems.push(_statusToCounter[_finalStatus] || _finalStatus);
+        }
         // 🆕 v8.41: ポスティング済 → カウンター
         if (visitForm.posted) bumpItems.push("ポスティング");
         let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
