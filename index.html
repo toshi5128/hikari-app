@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.45-auto-only-jiage-counters";
+const APP_VERSION = "2026-05-16-v8.46-iron-clad-tombstones";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -1016,6 +1016,42 @@ async function saveToSupabase(data, retries = 3) {
     }
   } catch (vErr) {
     console.warn("[Supabase] バージョンチェック失敗（保存は続行）:", vErr);
+  }
+
+  // 🆕 v8.46: 保存前にリモートのtombstoneを pre-fetch して union する（RMW パターン）
+  //   ・stale キャッシュの端末が他端末の tombstone を消し飛ばすバグを防止
+  //   ・top-level の data.tombstones だけ取得（ネスト配列の tombstone は item 単位なので別経路）
+  try {
+    const tombRes = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=data`, {
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+    });
+    if (tombRes.ok) {
+      const tombRows = await tombRes.json();
+      const remoteTombs = (tombRows && tombRows[0] && tombRows[0].data && tombRows[0].data.tombstones) || {};
+      const localTombs = (data && data.tombstones) || {};
+      const cutoff = Date.now() - TOMBSTONE_RETENTION_MS;
+      const mergedTombs = {};
+      [localTombs, remoteTombs].forEach(src => {
+        Object.keys(src || {}).forEach(arrKey => {
+          if (!mergedTombs[arrKey]) mergedTombs[arrKey] = {};
+          const m = src[arrKey] || {};
+          Object.keys(m).forEach(id => {
+            const ts = Number(m[id]) || 0;
+            if (ts >= cutoff) {
+              mergedTombs[arrKey][id] = Math.max(mergedTombs[arrKey][id] || 0, ts);
+            }
+          });
+        });
+      });
+      // 統合結果を保存対象の data に反映
+      data = { ...data, tombstones: mergedTombs };
+      // dataWithVersion も union 後の tombstones を持つように更新
+      Object.assign(dataWithVersion, { tombstones: mergedTombs });
+      // ローカルキャッシュも更新してこの後の merge でも参照されるように
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataWithVersion)); } catch {}
+    }
+  } catch (tErr) {
+    console.warn("[Supabase] tombstone pre-fetch failed:", tErr);
   }
 
   for (let attempt = 0; attempt < retries; attempt++) {
@@ -2128,13 +2164,14 @@ function MainApp({ onLock, onSwitchUser }) {
         const localTime = Number(localItem && localItem.updatedAt) || 0;
         const remoteTime = Number(remoteItem && remoteItem.updatedAt) || 0;
 
-        // 🆕 共有tombstoneで削除確定なら、どちらにあっても除外（復活防止）
-        //    削除時刻 >= アイテムの更新時刻 のときだけ「削除のまま」とする
-        //    （削除より後に編集されていれば、その編集を優先して復活させる）
+        // 🆕 v8.46: 上位アイテム（stocks/jiage/owners/mediations 等）は tombstone 確定化
+        //    一度どこかの端末で削除されたら、他端末の古いキャッシュからの「編集勝ち」では復活させない。
+        //    ※ ネスト配列 (viewings/visitLog/photos/...) の「再追加で復活」は別ロジックなので影響なし。
+        //    ※ 確定化により stale 端末の上書き同期での復活問題を根絶。
         const tombTime = Number(tombForK[String(id)]) || 0;
-        if (tombTime && tombTime >= Math.max(localTime, remoteTime)) {
+        if (tombTime > 0) {
           tombRemoved++;
-          return; // 削除されたまま
+          return; // 削除確定（top-level item）
         }
 
         if (!localItem) {
