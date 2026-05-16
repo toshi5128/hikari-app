@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.6-event-comments-inline";
+const APP_VERSION = "2026-05-16-v8.7-unread-comments";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -636,6 +636,29 @@ function getCurrentUser() {
 }
 function setCurrentUser(name) {
   try { localStorage.setItem(CURRENT_USER_KEY, name); } catch {}
+}
+
+// 🆕 コメント未読管理（各端末の localStorage に個別保存）
+function _hikariReadKey(user, threadKey) { return `hikari_lastRead_${user}_${threadKey}`; }
+function getLastReadTime(threadKey) {
+  const user = getCurrentUser();
+  if (!user) return null;
+  try { return localStorage.getItem(_hikariReadKey(user, threadKey)); } catch { return null; }
+}
+function countNewComments(comments, threadKey) {
+  const user = getCurrentUser();
+  if (!user || !comments || !comments.length) return 0;
+  const lastRead = getLastReadTime(threadKey);
+  if (!lastRead) {
+    return comments.filter(c => c && c.member !== user).length;
+  }
+  const lastReadTs = new Date(lastRead).getTime();
+  return comments.filter(c => c && c.member !== user && new Date(c.createdAt).getTime() > lastReadTs).length;
+}
+function markCommentsAsRead(threadKey) {
+  const user = getCurrentUser();
+  if (!user) return;
+  try { localStorage.setItem(_hikariReadKey(user, threadKey), new Date().toISOString()); } catch {}
 }
 
 // ============== 操作履歴 ==============
@@ -3377,9 +3400,17 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                       </div>
                     ) : (e.assignee && <MemberTag name={e.assignee} />)}
                     {customEv && (
-                      <button onClick={(clickEvt) => { clickEvt.stopPropagation(); setEventCommentsExpanded(p => ({ ...p, [customEv.id]: !p[customEv.id] })); }}
-                        style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
-                        💬 {evComments.length}{evExpanded ? " ▲" : " ▼"}
+<button onClick={(clickEvt) => {
+                          clickEvt.stopPropagation();
+                          const willExpand = !eventCommentsExpanded[customEv.id];
+                          setEventCommentsExpanded(p => ({ ...p, [customEv.id]: !p[customEv.id] }));
+                          if (willExpand) markCommentsAsRead(`event_${customEv.id}`);
+                        }} style={(() => {
+                          const newCount = countNewComments(evComments, `event_${customEv.id}`);
+                          const hasNew = newCount > 0;
+                          return { background: hasNew ? C.danger + "33" : C.accent + "22", border: `1.5px solid ${(hasNew ? C.danger : C.accent) + "66"}`, color: hasNew ? C.danger : C.accent, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 };
+                        })()}>
+                        💬 {evComments.length}{(() => { const n = countNewComments(evComments, `event_${customEv.id}`); return n > 0 ? ` 🆕${n}` : ""; })()}{evExpanded ? " ▲" : " ▼"}
                       </button>
                     )}
                     {e.isCustom && customEv && canEdit(customEv) && (
@@ -4334,6 +4365,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
   // 🆕 反響（viewings）関連の state
   const [expandedViewings, setExpandedViewings] = useState({});
   const [viewingsExpandedByMed, setViewingsExpandedByMed] = useState({});
+  // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
+  const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   const [newViewingComment, setNewViewingComment] = useState({});
   const [editingViewingCommentKey, setEditingViewingCommentKey] = useState(null);
   const [editingViewingCommentText, setEditingViewingCommentText] = useState("");
@@ -4736,8 +4769,27 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             </div>
                           )}
                           {v.note && <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, padding: "6px 8px", background: C.bg, borderRadius: 4, lineHeight: 1.5 }}>📝 {v.note}</div>}
-                          <div style={{ background: C.bg, borderRadius: 6, padding: "8px 10px", marginTop: 8 }}>
-                            <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, marginBottom: 6 }}>💬 やり取り ({comments.length}件)</div>
+                          {(() => {
+                            const threadKey = `medview_${m.id}_${vi}`;
+                            const cmtNewCount = countNewComments(comments, threadKey);
+                            const cmtHasNew = cmtNewCount > 0;
+                            const cmtExpKey = `${m.id}_${vi}`;
+                            const cmtExpanded = !!commentsExpandedByViewing[cmtExpKey];
+                            return (
+                              <div style={{ marginTop: 8 }}>
+                                <button onClick={() => {
+                                  const willExpand = !cmtExpanded;
+                                  setCommentsExpandedByViewing(p => ({ ...p, [cmtExpKey]: !p[cmtExpKey] }));
+                                  if (willExpand) markCommentsAsRead(threadKey);
+                                }} style={{
+                                  width: "100%", textAlign: "left",
+                                  background: cmtHasNew ? C.danger + "22" : C.accent + "22",
+                                  border: `1.5px solid ${(cmtHasNew ? C.danger : C.accent) + "66"}`,
+                                  color: cmtHasNew ? C.danger : C.accent,
+                                  borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                                }}>💬 やり取り {comments.length}件{cmtHasNew ? ` 🆕${cmtNewCount}` : ""}{cmtExpanded ? " ▲" : " ▼"}</button>
+                                {cmtExpanded && (
+                                  <div style={{ background: C.bg, borderRadius: 6, padding: "8px 10px", marginTop: 6 }}>
                             {comments.length === 0 ? (
                               <div style={{ fontSize: 10, color: C.muted, textAlign: "center", padding: "3px 0" }}>まだコメントなし</div>
                             ) : comments.map(c => {
@@ -4784,7 +4836,11 @@ function MediationView({ data, setData, dealType, setDealType }) {
                               />
                               <button onClick={() => handlePostViewingComment(m.id, vi)} disabled={!(newViewingComment[cmtKey] || "").trim() || !currentUser} style={{ ...btnStyle(), padding: "6px 10px", fontSize: 11, flexShrink: 0, opacity: (!(newViewingComment[cmtKey] || "").trim() || !currentUser) ? 0.5 : 1 }}>送信</button>
                             </div>
-                          </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })}
@@ -5175,6 +5231,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
   // 🆕 反響セクション折りたたみ（在庫カード単位）
   const [viewingsExpandedByStock, setViewingsExpandedByStock] = useState({}); // {stockId: bool}
+  // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
+  const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   // 🆕 反響ごとのコメント機能
   const [newViewingComment, setNewViewingComment] = useState({}); // {`${stockId}_${vi}`: text}
   const [editingViewingCommentKey, setEditingViewingCommentKey] = useState(null); // `${stockId}_${vi}_${commentId}`
@@ -5949,11 +6007,28 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                               </div>
                             )}
 
-                            {/* 💬 コメント欄（やり取り） */}
-                            <div style={{ background: C.bg, borderRadius: 6, padding: "8px 10px", marginTop: 8 }}>
-                              <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, marginBottom: 6 }}>
-                                💬 やり取り ({comments.length}件)
-                              </div>
+                            {/* 💬 コメント欄（折りたたみ式・新着指標つき） */}
+                            {(() => {
+                              const threadKey = `stockview_${s.id}_${vi}`;
+                              const cmtNewCount = countNewComments(comments, threadKey);
+                              const cmtHasNew = cmtNewCount > 0;
+                              const cmtExpKey = `${s.id}_${vi}`;
+                              const cmtExpanded = !!commentsExpandedByViewing[cmtExpKey];
+                              return (
+                                <div style={{ marginTop: 8 }}>
+                                  <button onClick={() => {
+                                    const willExpand = !cmtExpanded;
+                                    setCommentsExpandedByViewing(p => ({ ...p, [cmtExpKey]: !p[cmtExpKey] }));
+                                    if (willExpand) markCommentsAsRead(threadKey);
+                                  }} style={{
+                                    width: "100%", textAlign: "left",
+                                    background: cmtHasNew ? C.danger + "22" : C.accent + "22",
+                                    border: `1.5px solid ${(cmtHasNew ? C.danger : C.accent) + "66"}`,
+                                    color: cmtHasNew ? C.danger : C.accent,
+                                    borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                                  }}>💬 やり取り {comments.length}件{cmtHasNew ? ` 🆕${cmtNewCount}` : ""}{cmtExpanded ? " ▲" : " ▼"}</button>
+                                  {cmtExpanded && (
+                                    <div style={{ background: C.bg, borderRadius: 6, padding: "8px 10px", marginTop: 6 }}>
                               {comments.length === 0 ? (
                                 <div style={{ fontSize: 10, color: C.muted, textAlign: "center", padding: "3px 0" }}>まだコメントなし</div>
                               ) : comments.map(c => {
@@ -6026,7 +6101,11 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                                     opacity: (!(newViewingComment[cmtKey] || "").trim() || !currentUser) ? 0.5 : 1,
                                   }}>送信</button>
                               </div>
-                            </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })}
