@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.35-all-nested-tombstones";
+const APP_VERSION = "2026-05-16-v8.36-split-sales-counter";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -450,6 +450,27 @@ const APPROACH_CATEGORY = {
 // 🆕 目標対象外の項目（KPIには入れない、振り返り用 - エリア・曜日傾向分析）
 const NON_GOAL_ITEMS = new Set(["不在", "断り", "閉店", "休み"]);
 const APPROACH_GOAL_ITEMS = APPROACH_ITEMS.filter(item => !NON_GOAL_ITEMS.has(item));
+
+// 🆕 v8.36: 業者活動 / 地上げ活動 で営業カウンターを分けて表示する設定
+//   ・agent  … 業者寄りの一般営業（訪問・架電・査定など）
+//   ・jiage  … 地上げ活動に特化した項目（訪問記録から自動連動）
+//   ・「不在」「断り」「休み」は両方の活動で発生するので両グループに出す
+const APPROACH_GROUPS = {
+  agent: {
+    label: "業者",
+    icon: "🏢",
+    items: ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "閉店", "不在", "断り", "休み"],
+  },
+  jiage: {
+    label: "地上げ",
+    icon: "🗺️",
+    items: ["地上初訪", "地上再訪", "新規地上", "不在", "断り", "休み"],
+  },
+};
+const APPROACH_GROUP_KEYS = ["agent", "jiage"];
+function approachGroupItems(key) {
+  return (APPROACH_GROUPS[key] && APPROACH_GROUPS[key].items) || APPROACH_ITEMS;
+}
 
 // 仕入検討積算表の判断ステータス（判断タブで使用）
 const JUDGMENTS = [
@@ -7304,6 +7325,17 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
 
   const [tab, setTab] = useState("cases"); // "cases" | "input" | "monthly" | "goals"
+  // 🆕 v8.36: 業者 / 地上げ サブタブ
+  const [salesSubTab, setSalesSubTab] = useState(() => {
+    try {
+      const saved = localStorage.getItem("hikari_salesSubTab");
+      return (saved && APPROACH_GROUPS[saved]) ? saved : "agent";
+    } catch { return "agent"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hikari_salesSubTab", salesSubTab); } catch {}
+  }, [salesSubTab]);
+  const visibleItems = useMemo(() => approachGroupItems(salesSubTab), [salesSubTab]);
   // 一般メンバーは自分自身を初期選択、管理者は1番目のメンバー
   const [selectedMember, setSelectedMember] = useState(currentUser && !isAdmin ? currentUser : MEMBERS[0]);
   const [selectedYM, setSelectedYM] = useState(currentYM);
@@ -8600,13 +8632,28 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
             );
           })()}
 
+          {/* 🆕 v8.36: 業者 / 地上げ サブタブ（カウンター表示の切替） */}
+          <div style={{ display: "flex", background: C.bg, borderRadius: 10, padding: 4, marginBottom: 10, border: `1px solid ${C.borderDim}` }}>
+            {APPROACH_GROUP_KEYS.map(gk => {
+              const g = APPROACH_GROUPS[gk];
+              const active = salesSubTab === gk;
+              return (
+                <button key={gk} onClick={() => setSalesSubTab(gk)} style={{
+                  flex: 1, background: active ? C.accent : "none", border: "none",
+                  color: active ? "#fff" : C.muted, borderRadius: 7, padding: "8px 6px",
+                  cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 600, fontFamily: "inherit",
+                }}>{g.icon} {g.label}</button>
+              );
+            })}
+          </div>
+
           {/* カウンター項目（2列コンパクトレイアウト） */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 12, color: C.muted, fontWeight: 700 }}>📞 営業活動カウンター</div>
+            <div style={{ fontSize: 12, color: C.muted, fontWeight: 700 }}>📞 {APPROACH_GROUPS[salesSubTab]?.label || ""}活動カウンター</div>
             <div style={{ fontSize: 10, color: C.muted }}>タップで＋1 / 長押しで連射</div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(155px, 1fr))", gap: 6, marginBottom: 14 }}>
-            {APPROACH_ITEMS.map(item => {
+            {visibleItems.map(item => {
               const goal = Number(dailyGoals[item]) || 0;
               const val = Number(inputValues[item]) || 0;
               const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
@@ -8967,6 +9014,20 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
       {/* ===== 月次集計タブ ===== */}
       {tab === "monthly" && (
         <div>
+          {/* 🆕 v8.36: 業者 / 地上げ サブタブ */}
+          <div style={{ display: "flex", background: C.cardBg, borderRadius: 10, padding: 4, marginBottom: 12, border: `1px solid ${C.borderDim}` }}>
+            {APPROACH_GROUP_KEYS.map(gk => {
+              const g = APPROACH_GROUPS[gk];
+              const active = salesSubTab === gk;
+              return (
+                <button key={gk} onClick={() => setSalesSubTab(gk)} style={{
+                  flex: 1, background: active ? C.accent : "none", border: "none",
+                  color: active ? "#fff" : C.muted, borderRadius: 7, padding: "8px 6px",
+                  cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 600, fontFamily: "inherit",
+                }}>{g.icon} {g.label}</button>
+              );
+            })}
+          </div>
           {/* 月切替 */}
           <div style={{ marginBottom: 14 }}>
             <Field label="表示月">
@@ -9062,7 +9123,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                         <th style={{ padding: "8px 10px", textAlign: "left", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, position: "sticky", left: 0, background: C.accentBg, zIndex: 2, minWidth: 100 }}>
                           {Number(selectedYM.split("-")[1])}月 集計
                         </th>
-                        {APPROACH_ITEMS.map(item => (
+                        {visibleItems.map(item => (
                           <th key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, minWidth: 56 }}>
                             {item}
                           </th>
@@ -9075,7 +9136,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                         <td style={{ padding: "8px 10px", color: "#fff", fontWeight: 800, fontSize: 12, position: "sticky", left: 0, background: C.accentBg, borderRight: `1px solid ${C.borderDim}` }}>
                           合計
                         </td>
-                        {APPROACH_ITEMS.map(item => (
+                        {visibleItems.map(item => (
                           <td key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontWeight: 800, fontSize: 13 }}>
                             {totals[item] || ""}
                           </td>
@@ -9087,7 +9148,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                           一日平均
                           <span style={{ fontSize: 9, color: C.muted, marginLeft: 4 }}>({activeDays}日)</span>
                         </td>
-                        {APPROACH_ITEMS.map(item => {
+                        {visibleItems.map(item => {
                           const avg = activeDays > 0 ? Math.round(totals[item] / activeDays * 10) / 10 : 0;
                           return (
                             <td key={item} style={{ padding: "6px 4px", textAlign: "center", color: C.text, fontSize: 11 }}>
@@ -9101,7 +9162,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                         <td style={{ padding: "6px 10px", color: "#FCD34D", fontWeight: 700, fontSize: 11, position: "sticky", left: 0, background: C.warnBg, borderRight: `1px solid ${C.borderDim}` }}>
                           🎯 目標数値
                         </td>
-                        {APPROACH_ITEMS.map(item => (
+                        {visibleItems.map(item => (
                           <td key={item} style={{ padding: "6px 4px", textAlign: "center", color: "#FCD34D", fontWeight: 700, fontSize: 11 }}>
                             {goals[item] || ""}
                           </td>
@@ -9112,7 +9173,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                         <td style={{ padding: "6px 10px", color: C.muted, fontWeight: 700, fontSize: 11, position: "sticky", left: 0, background: C.cardBg, borderRight: `1px solid ${C.borderDim}` }}>
                           差分
                         </td>
-                        {APPROACH_ITEMS.map(item => {
+                        {visibleItems.map(item => {
                           const diff = totals[item] - goals[item];
                           const noGoal = goals[item] === 0;
                           if (noGoal) return <td key={item} style={{ padding: "6px 4px" }} />;
@@ -9150,7 +9211,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                       <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
                         <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, fontWeight: 700 }}>🎯 達成度（月間目標との対比）</div>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                          {APPROACH_ITEMS.map(item => {
+                          {visibleItems.map(item => {
                             const val = totals[item];
                             const goal = goals[item];
                             const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
@@ -9209,7 +9270,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                           <th style={{ padding: "8px 6px", textAlign: "left", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, position: "sticky", left: 0, background: C.accent, zIndex: 2, minWidth: 160, fontWeight: 700 }}>
                             日付 / 訪問エリア
                           </th>
-                          {APPROACH_ITEMS.map(item => (
+                          {visibleItems.map(item => (
                             <th key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontSize: 11, borderBottom: `2px solid ${C.accent}`, minWidth: 56, background: C.accent, fontWeight: 700 }}>
                               {item}
                             </th>
@@ -9239,7 +9300,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                                   </div>
                                 )}
                               </td>
-                              {APPROACH_ITEMS.map(item => {
+                              {visibleItems.map(item => {
                                 const v = Number(r.values[item]) || 0;
                                 return (
                                   <td key={item} style={{
@@ -9277,6 +9338,20 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
       {/* ===== 目標設定タブ ===== */}
       {tab === "goals" && (
         <div>
+          {/* 🆕 v8.36: 業者 / 地上げ サブタブ */}
+          <div style={{ display: "flex", background: C.cardBg, borderRadius: 10, padding: 4, marginBottom: 12, border: `1px solid ${C.borderDim}` }}>
+            {APPROACH_GROUP_KEYS.map(gk => {
+              const g = APPROACH_GROUPS[gk];
+              const active = salesSubTab === gk;
+              return (
+                <button key={gk} onClick={() => setSalesSubTab(gk)} style={{
+                  flex: 1, background: active ? C.accent : "none", border: "none",
+                  color: active ? "#fff" : C.muted, borderRadius: 7, padding: "8px 6px",
+                  cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 600, fontFamily: "inherit",
+                }}>{g.icon} {g.label}</button>
+              );
+            })}
+          </div>
           <div style={{ color: C.muted, fontSize: 13, marginBottom: 14, lineHeight: 1.6 }}>
             メンバーごとに月間目標を設定できます。<br />
             {isAdmin
@@ -9306,7 +9381,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                   )}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                  {APPROACH_ITEMS.map(item => (
+                  {visibleItems.map(item => (
                     <div key={item} style={{ display: "flex", justifyContent: "space-between", background: C.bg, borderRadius: 8, padding: "6px 10px" }}>
                       <span style={{ color: C.muted, fontSize: 12 }}>{item}</span>
                       <span style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>{getGoal(m, item)}</span>
