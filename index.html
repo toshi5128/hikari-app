@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.8-viewing-inline-edit";
+const APP_VERSION = "2026-05-16-v8.9-approach-comments-chip";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -6685,6 +6685,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   // コメント編集モード用
   const [editingCommentId, setEditingCommentId] = useState(null);
   const [editingCommentText, setEditingCommentText] = useState("");
+  // 🆕 営業コメント欄の開閉（メンバー×日付ごと）
+  const [approachCommentsExpanded, setApproachCommentsExpanded] = useState({});
   const [casesExpanded, setCasesExpanded] = useState(null); // 展開中のセクションkey
   const [casesMonth, setCasesMonth] = useState(today.slice(0, 7)); // 「今月の活動」表示対象月（YYYY-MM形式）
 
@@ -6732,8 +6734,10 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
       if (pendingNav.sekisanLinkId) {
         setTab("cases");
       }
-      // 🆕 scrollTo: 'comments' ならコメント欄まで自動スクロール
+      // 🆕 scrollTo: 'comments' ならコメント欄まで自動スクロール＋自動展開
       if (pendingNav.scrollTo === 'comments') {
+        const expKey = `${pendingNav.member || selectedMember}_${pendingNav.date || selectedDate}`;
+        setApproachCommentsExpanded(p => ({ ...p, [expKey]: true }));
         // データ読込・タブ切替を待ってからスクロール
         setTimeout(() => {
           const el = document.getElementById('approach-comments-section');
@@ -8097,15 +8101,39 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
             </div>
           </div>
 
-          {/* 💬 コメント欄 */}
+          {/* 💬 コメント欄（折りたたみ式・新着指標つき） */}
           <div id="approach-comments-section" style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 16, marginTop: 12, marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 4 }}>
-              💬 やり取り・コメント（{(existing?.comments || []).length}件）
-            </div>
-            <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>
-              今日の予定・気合い・応援メッセージなど、自由に書き込めます。<br />
-              書き込むと <b style={{ color: C.accent }}>{selectedMember}さん・下田さん・比嘉さん</b> に通知が飛びます。
-            </div>
+            {(() => {
+              const threadKey = `approach_${selectedMember}_${selectedDate}`;
+              const cmts = existing?.comments || [];
+              const newCount = countNewComments(cmts, threadKey);
+              const hasNew = newCount > 0;
+              const expKey = `${selectedMember}_${selectedDate}`;
+              const expanded = !!approachCommentsExpanded[expKey];
+              return (
+                <button onClick={() => {
+                  const willExpand = !expanded;
+                  setApproachCommentsExpanded(p => ({ ...p, [expKey]: !p[expKey] }));
+                  if (willExpand) markCommentsAsRead(threadKey);
+                }} style={{
+                  width: "100%", textAlign: "left",
+                  background: hasNew ? C.danger + "22" : C.accent + "22",
+                  border: `1.5px solid ${(hasNew ? C.danger : C.accent) + "66"}`,
+                  color: hasNew ? C.danger : C.accent,
+                  borderRadius: 8, padding: "10px 14px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700,
+                }}>💬 やり取り・コメント {cmts.length}件{hasNew ? ` 🆕${newCount}` : ""}{expanded ? " ▲" : " ▼"}</button>
+              );
+            })()}
+            {(() => {
+              const expKey = `${selectedMember}_${selectedDate}`;
+              const expanded = !!approachCommentsExpanded[expKey];
+              if (!expanded) return null;
+              return (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>
+                    今日の予定・気合い・応援メッセージなど、自由に書き込めます。<br />
+                    書き込むと <b style={{ color: C.accent }}>{selectedMember}さん・下田さん・比嘉さん</b> に通知が飛びます。
+                  </div>
             {(existing?.comments || []).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(c => (
               <div key={c.id} style={{
                 background: C.bg, borderLeft: `3px solid ${MEMBER_COLORS[c.member] || C.muted}`,
@@ -8181,6 +8209,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                 💬 コメントを送信
               </button>
             </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* 🏁 就業報告 */}
