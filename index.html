@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.33-viewing-field-sync";
+const APP_VERSION = "2026-05-16-v8.34-prefer-remote-on-tie";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -894,20 +894,22 @@ function v6ValuesEqual(a, b) {
 }
 
 // 配列フィールドをマージ（要素が消えないように結合）
-// 🆕 同一 id の item を「空でないフィールドを優先」してマージ（updatedAt 無いとき用）
+// 🆕 同一 id の item を「空でないフィールド優先＋両方値ありはリモート優先」でマージ
+//   ・updatedAt が無いレガシー反響でも、直近の Supabase 保存内容が他端末に行き渡るようにする
+//   ・直近のローカル編集は lastLocalSaveRef の30秒ガードで保護されるので overwrite は短時間に限定
 function mergeItemNonEmpty(local, remote) {
   if (!local) return remote;
   if (!remote) return local;
   const merged = {};
   const allKeys = new Set([...Object.keys(local), ...Object.keys(remote)]);
   allKeys.forEach(k => {
-    if (MERGEABLE_ARRAY_FIELDS.has(k)) return; // 配列フィールドは別途処理
+    if (MERGEABLE_ARRAY_FIELDS.has(k)) return;
     const lv = local[k], rv = remote[k];
     const lEmpty = lv === undefined || lv === null || lv === "";
     const rEmpty = rv === undefined || rv === null || rv === "";
     if (lEmpty && !rEmpty) merged[k] = rv;
     else if (rEmpty && !lEmpty) merged[k] = lv;
-    else merged[k] = lv;
+    else merged[k] = rv; // 両方値あり or 両方空 → リモート優先（直近の Supabase が真実）
   });
   return merged;
 }
