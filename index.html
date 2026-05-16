@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.12-viewing-edit-scroll";
+const APP_VERSION = "2026-05-16-v8.13-inquiry-date-from-email";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -4216,6 +4216,20 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
 // ===================== 📥 SUUMO/アットホーム反響取り込み =====================
 // メール本文を解析して反響情報を抽出するパース関数
+// 🆕 SUUMO/アットホームの「お問合せ日時」文字列を YYYY-MM-DD に正規化
+//   ・SUUMO 例: "2026/5/14 22:21:07" → "2026-05-14"
+//   ・アットホーム 例: "2026年05月15日13時32分" → "2026-05-15"
+//   ・不明な形式は null を返す
+function parseInquiryDate(raw) {
+  if (!raw) return null;
+  const s = String(raw);
+  let m = s.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")}`;
+  m = s.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")}`;
+  return null;
+}
+
 function parseInquiryEmail(text) {
   if (!text || typeof text !== "string") return null;
   // SUUMO判定（特徴的なキーワード）
@@ -4254,6 +4268,9 @@ function parseSUUMO(text) {
   if (price) result.propertyPrice = price;
   const urlMatch = text.match(/物件詳細画面\s*[\t\s　]+(https?:\/\/[^\s\n\r]+)/);
   if (urlMatch) result.propertyUrl = urlMatch[1].trim();
+  // 🆕 お問合せ日時：SUUMO は "2026/5/14 22:21:07" のような形式
+  const dateRaw = grab("お問合せ日時");
+  if (dateRaw) result.inquiryDate = dateRaw;
   return result;
 }
 
@@ -4632,8 +4649,10 @@ function MediationView({ data, setData, dealType, setDealType }) {
     if (!importParsed) return;
     if (!importTargetMedId) { alert("⚠️ 仲介案件を選択してください"); return; }
     const today = new Date().toISOString().split("T")[0];
+    // 🆕 メール本文の「お問合せ日時」を反響日に使う。解析できなければ今日。
+    const inquiryDateParsed = parseInquiryDate(importParsed.inquiryDate) || today;
     const newViewing = {
-      date: today, visitDate: "", visitTime: "",
+      date: inquiryDateParsed, visitDate: "", visitTime: "",
       customer: importParsed.customer || "", contact: importParsed.contact || "", email: importParsed.email || "",
       funding: "", purpose: "", budget: importParsed.propertyPrice || "", people: "",
       channel: importParsed.channel || "", prospect: "", result: "未実施", nextAction: "",
@@ -5641,8 +5660,10 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       return;
     }
     const today = new Date().toISOString().split("T")[0];
+    // 🆕 メール本文の「お問合せ日時」を反響日に使う。解析できなければ今日。
+    const inquiryDateParsed = parseInquiryDate(importParsed.inquiryDate) || today;
     const newViewing = {
-      date: today,
+      date: inquiryDateParsed,
       visitDate: "", visitTime: "",
       customer: importParsed.customer || "",
       contact: importParsed.contact || "",
