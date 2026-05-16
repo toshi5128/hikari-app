@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.20-viewing-dedupe-everywhere";
+const APP_VERSION = "2026-05-16-v8.21-fix-undefined-dedupe-helper";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -972,6 +972,31 @@ function viewingDedupSig(v) {
 //   ・コメントは合算（id 重複を除去）
 //   ・updatedAt が新しい方を優先採用、空フィールドは古い方で補完
 //   ・id は signature の安定ハッシュに統一
+// 🆕 data 全体の stocks/mediations について、各 item の viewings を dedup
+function applyViewingsDedup(data) {
+  if (!data || typeof data !== "object") return data;
+  let changed = false;
+  let result = data;
+  ["stocks", "mediations"].forEach(k => {
+    const arr = data[k];
+    if (!Array.isArray(arr)) return;
+    let kChanged = false;
+    const newArr = arr.map(item => {
+      if (!item || !Array.isArray(item.viewings) || item.viewings.length < 2) return item;
+      const r = dedupeViewings(item.viewings);
+      if (!r.changed) return item;
+      kChanged = true;
+      return { ...item, viewings: r.arr };
+    });
+    if (kChanged) {
+      changed = true;
+      if (result === data) result = { ...data };
+      result[k] = newArr;
+    }
+  });
+  return changed ? result : data;
+}
+
 function dedupeViewings(viewings) {
   if (!Array.isArray(viewings) || viewings.length < 2) return { arr: viewings, changed: false };
   const seenBySig = new Map();
