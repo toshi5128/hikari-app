@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.5-event-comments";
+const APP_VERSION = "2026-05-16-v8.6-event-comments-inline";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -2366,6 +2366,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const [newEventComment, setNewEventComment] = useState("");
   const [editingEventCommentId, setEditingEventCommentId] = useState(null);
   const [editingEventCommentText, setEditingEventCommentText] = useState("");
+  // 🆕 リスト行ごとにコメント欄の展開状態を保持
+  const [eventCommentsExpanded, setEventCommentsExpanded] = useState({});
 
   // 💬 予定コメント：投稿
   const handlePostEventComment = (eventId) => {
@@ -3338,8 +3340,11 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               {selectedEvents.map((e, i) => {
                 const customEv = e.isCustom ? (data.customEvents || []).find(ev => ev.id === e.rawId) : null;
                 const editable = (customEv && canEdit(customEv)) || (!e.isCustom && e.rawId);
+                const evComments = customEv ? (customEv.comments || []) : [];
+                const evExpanded = customEv ? !!eventCommentsExpanded[customEv.id] : false;
                 return (
-                <div key={i} 
+                <div key={i} style={{ background: C.bg, borderLeft: `4px solid ${e.color}`, borderRadius: 6, marginBottom: 6 }}>
+                <div 
                   onClick={editable ? () => {
                     if (customEv) openEditEvent(customEv);
                     else openLinkedEdit(e);
@@ -3347,8 +3352,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                   style={{
                   display: "flex", alignItems: "center", gap: 10,
                   flexWrap: "wrap",
-                  background: C.bg, borderLeft: `4px solid ${e.color}`,
-                  borderRadius: 6, padding: "10px 12px",
+                  padding: "10px 12px",
                   cursor: editable ? "pointer" : "default",
                   transition: "background 0.15s",
                 }}>
@@ -3372,16 +3376,18 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                         {e.assignees.map(a => <MemberTag key={a} name={a} />)}
                       </div>
                     ) : (e.assignee && <MemberTag name={e.assignee} />)}
-                    {e.isCustom && (() => {
-                      const customEv = (data.customEvents || []).find(ev => ev.id === e.rawId);
-                      if (!customEv || !canEdit(customEv)) return null;
-                      return (
-                        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                          <button onClick={(clickEvt) => { clickEvt.stopPropagation(); openEditEvent(customEv); }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
-                          <button onClick={(clickEvt) => { clickEvt.stopPropagation(); handleDeleteEvent(e.rawId); }} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
-                        </div>
-                      );
-                    })()}
+                    {customEv && (
+                      <button onClick={(clickEvt) => { clickEvt.stopPropagation(); setEventCommentsExpanded(p => ({ ...p, [customEv.id]: !p[customEv.id] })); }}
+                        style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
+                        💬 {evComments.length}{evExpanded ? " ▲" : " ▼"}
+                      </button>
+                    )}
+                    {e.isCustom && customEv && canEdit(customEv) && (
+                      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                        <button onClick={(clickEvt) => { clickEvt.stopPropagation(); openEditEvent(customEv); }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
+                        <button onClick={(clickEvt) => { clickEvt.stopPropagation(); handleDeleteEvent(e.rawId); }} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
+                      </div>
+                    )}
                     {/* 🆕 自動連動予定にも編集/削除ボタン */}
                     {!e.isCustom && ["jiage", "owner", "buyContract", "buy", "sellContract", "sell", "viewing"].includes(e.type) && e.rawId && (() => {
                       const sourceMap = { jiage: "jiage", owner: "owners", buyContract: "stocks", buy: "stocks", sellContract: "stocks", sell: "stocks", viewing: "stocks" };
@@ -3397,6 +3403,59 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                     })()}
                   </div>
                 </div>
+                {customEv && evExpanded && (
+                  <div style={{ padding: "10px 12px 12px", borderTop: `1px solid ${C.borderDim}`, background: C.bgDark }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.accent, marginBottom: 8 }}>💬 コメント（{evComments.length}件）</div>
+                    {evComments.length === 0 ? (
+                      <div style={{ fontSize: 11, color: C.muted, textAlign: "center", padding: "6px 0" }}>まだコメントなし</div>
+                    ) : evComments.map(c => {
+                      const isEditing = editingEventCommentId === c.id;
+                      return (
+                        <div key={c.id} style={{ background: C.cardBg, borderLeft: `3px solid ${MEMBER_COLORS[c.member] || C.muted}`, borderRadius: 6, padding: "6px 10px", marginBottom: 6 }}>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3 }}>
+                            <MemberTag name={c.member} />
+                            <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>
+                              {new Date(c.createdAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                              {c.editedAt && <span style={{ marginLeft: 3 }}>(編集済)</span>}
+                            </span>
+                          </div>
+                          {isEditing ? (
+                            <>
+                              <textarea value={editingEventCommentText} onChange={ev => setEditingEventCommentText(ev.target.value)} style={{ ...inp, height: 50, resize: "vertical", marginBottom: 4, fontSize: 12 }} />
+                              <div style={{ display: "flex", gap: 4 }}>
+                                <button onClick={() => handleSaveEditEventComment(customEv.id, c.id)} style={{ ...btnStyle(), flex: 1, padding: "5px", fontSize: 11 }}>💾 保存</button>
+                                <button onClick={handleCancelEditEventComment} style={{ ...btnStyle("ghost"), flex: 1, padding: "5px", fontSize: 11 }}>キャンセル</button>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5, whiteSpace: "pre-wrap", marginBottom: c.member === currentUser ? 3 : 0 }}>{c.text}</div>
+                              {c.member === currentUser && (
+                                <div style={{ display: "flex", gap: 3, justifyContent: "flex-end" }}>
+                                  <button onClick={() => handleStartEditEventComment(c.id, c.text)} style={{ background: "transparent", border: `1px solid ${C.muted}33`, color: C.muted, borderRadius: 3, padding: "1px 7px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>✏️</button>
+                                  <button onClick={() => handleDeleteEventComment(customEv.id, c.id)} style={{ background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger, borderRadius: 3, padding: "1px 7px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>🗑️</button>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                      <textarea
+                        value={newEventComment}
+                        onChange={ev => setNewEventComment(ev.target.value)}
+                        onKeyDown={ev => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); handlePostEventComment(customEv.id); } }}
+                        placeholder={currentUser ? `${currentUser}としてコメント (Enter送信)` : "ログインしてください"}
+                        style={{ ...inp, flex: 1, height: 40, resize: "vertical", fontSize: 12, padding: "6px 8px" }}
+                      />
+                      <button onClick={() => handlePostEventComment(customEv.id)}
+                        disabled={!newEventComment.trim() || !currentUser}
+                        style={{ ...btnStyle(), padding: "8px 14px", fontSize: 12, flexShrink: 0, opacity: (!newEventComment.trim() || !currentUser) ? 0.5 : 1 }}>送信</button>
+                    </div>
+                  </div>
+                )}
+              </div>
               );
               })}
             </div>
