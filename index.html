@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.16-broker-company-split";
+const APP_VERSION = "2026-05-16-v8.17-calendar-viewing-comments";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -2458,6 +2458,74 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     }));
   };
 
+  // 🆕 カレンダーの「案内予定（viewing event）」用コメントハンドラ。親在庫の viewings[i].comments を更新。
+  const handlePostViewCmt = (stockId, viewingIdx) => {
+    const key = `view_${stockId}_${viewingIdx}`;
+    const text = (newEventComment[key] || "").trim();
+    if (!text) return;
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    const comment = { id: Date.now(), member: currentUser, text, createdAt: new Date().toISOString() };
+    setData(d => ({
+      ...d,
+      stocks: (d.stocks || []).map(s =>
+        s.id !== stockId ? s : {
+          ...s,
+          viewings: (s.viewings || []).map((v, idx) =>
+            idx !== viewingIdx ? v : { ...v, comments: [...(v.comments || []), comment] }
+          )
+        }
+      ),
+    }));
+    const targetStock = (data.stocks || []).find(s => s.id === stockId);
+    if (targetStock) {
+      const v0 = (targetStock.viewings || [])[viewingIdx];
+      const past = (v0?.comments || []).map(c => c.member);
+      const allTargets = new Set([...getNotifyMembers(data), targetStock.assignee, ...past]);
+      allTargets.delete(currentUser);
+      const targets = [...allTargets].filter(Boolean);
+      if (targets.length > 0) {
+        sendPushNotification(
+          targets,
+          `💬 ${currentUser}さんが案内予定にコメント`,
+          `${targetStock.name || "(無題)"}\n顧客: ${v0?.customer || "(未設定)"}\n${text}`,
+          { tag: `hikari-stock-viewing-comment-${stockId}-${viewingIdx}-${comment.id}`, data: { tab: 'stock', stockLinkId: stockId }, tab: 'stock', stockLinkId: stockId }
+        );
+      }
+    }
+    setNewEventComment(p => ({ ...p, [key]: "" }));
+  };
+  const handleSaveEditViewCmt = (stockId, viewingIdx, commentId) => {
+    const newText = editingEventCommentText.trim();
+    if (!newText) { alert("内容が空です"); return; }
+    setData(d => ({
+      ...d,
+      stocks: (d.stocks || []).map(s =>
+        s.id !== stockId ? s : {
+          ...s,
+          viewings: (s.viewings || []).map((v, idx) =>
+            idx !== viewingIdx ? v : { ...v, comments: (v.comments || []).map(c => c.id === commentId ? { ...c, text: newText, editedAt: new Date().toISOString() } : c) }
+          )
+        }
+      ),
+    }));
+    setEditingEventCommentId(null);
+    setEditingEventCommentText("");
+  };
+  const handleDeleteViewCmt = (stockId, viewingIdx, commentId) => {
+    if (!window.confirm("このコメントを削除しますか？")) return;
+    setData(d => ({
+      ...d,
+      stocks: (d.stocks || []).map(s =>
+        s.id !== stockId ? s : {
+          ...s,
+          viewings: (s.viewings || []).map((v, idx) =>
+            idx !== viewingIdx ? v : { ...v, comments: (v.comments || []).filter(c => c.id !== commentId) }
+          )
+        }
+      ),
+    }));
+  };
+
   const openNewEvent = (dateStr) => {
     setEventForm({ ...eventEmpty, date: dateStr || calSelectedDate });
     setEditingEvent(null);
@@ -3366,6 +3434,28 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                 const editable = (customEv && canEdit(customEv)) || (!e.isCustom && e.rawId);
                 const evComments = customEv ? (customEv.comments || []) : [];
                 const evExpanded = customEv ? !!eventCommentsExpanded[customEv.id] : false;
+                // 🆕 viewing event（在庫の案内予定）の親在庫＋反響情報も取得
+                const parentStockForView = e.type === "viewing" ? (data.stocks || []).find(s => s.id === e.rawId) : null;
+                const viewItem = parentStockForView && e.viewingIdx != null ? (parentStockForView.viewings || [])[e.viewingIdx] : null;
+                // チップ＆コメント対象を統一
+                const cmtTarget = customEv ? {
+                  kind: "event",
+                  comments: customEv.comments || [],
+                  threadKey: `event_${customEv.id}`,
+                  expKey: customEv.id,
+                  inputKey: customEv.id,
+                } : viewItem ? {
+                  kind: "view",
+                  comments: viewItem.comments || [],
+                  threadKey: `stockview_${e.rawId}_${e.viewingIdx}`,
+                  expKey: `view_${e.rawId}_${e.viewingIdx}`,
+                  inputKey: `view_${e.rawId}_${e.viewingIdx}`,
+                  stockId: e.rawId,
+                  viewingIdx: e.viewingIdx,
+                  viewItem,
+                  parentStock: parentStockForView,
+                } : null;
+                const cmtExpanded = cmtTarget ? !!eventCommentsExpanded[cmtTarget.expKey] : false;
                 return (
                 <div key={i} style={{ background: C.bg, borderLeft: `4px solid ${e.color}`, borderRadius: 6, marginBottom: 6 }}>
                 <div 
@@ -3400,20 +3490,20 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                         {e.assignees.map(a => <MemberTag key={a} name={a} />)}
                       </div>
                     ) : (e.assignee && <MemberTag name={e.assignee} />)}
-                    {customEv && (
-<button onClick={(clickEvt) => {
+                    {cmtTarget && (() => {
+                      const newCount = countNewComments(cmtTarget.comments, cmtTarget.threadKey);
+                      const hasNew = newCount > 0;
+                      return (
+                        <button onClick={(clickEvt) => {
                           clickEvt.stopPropagation();
-                          const willExpand = !eventCommentsExpanded[customEv.id];
-                          setEventCommentsExpanded(p => ({ ...p, [customEv.id]: !p[customEv.id] }));
-                          if (willExpand) markCommentsAsRead(`event_${customEv.id}`);
-                        }} style={(() => {
-                          const newCount = countNewComments(evComments, `event_${customEv.id}`);
-                          const hasNew = newCount > 0;
-                          return { background: hasNew ? C.danger + "33" : C.accent + "22", border: `1.5px solid ${(hasNew ? C.danger : C.accent) + "66"}`, color: hasNew ? C.danger : C.accent, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 };
-                        })()}>
-                        💬 {evComments.length}{(() => { const n = countNewComments(evComments, `event_${customEv.id}`); return n > 0 ? ` 🆕${n}` : ""; })()}{evExpanded ? " ▲" : " ▼"}
-                      </button>
-                    )}
+                          const willExpand = !cmtExpanded;
+                          setEventCommentsExpanded(p => ({ ...p, [cmtTarget.expKey]: !p[cmtTarget.expKey] }));
+                          if (willExpand) markCommentsAsRead(cmtTarget.threadKey);
+                        }} style={{ background: hasNew ? C.danger + "33" : C.accent + "22", border: `1.5px solid ${(hasNew ? C.danger : C.accent) + "66"}`, color: hasNew ? C.danger : C.accent, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
+                          💬 {cmtTarget.comments.length}{hasNew ? ` 🆕${newCount}` : ""}{cmtExpanded ? " ▲" : " ▼"}
+                        </button>
+                      );
+                    })()}
                     {e.isCustom && customEv && canEdit(customEv) && (
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                         <button onClick={(clickEvt) => { clickEvt.stopPropagation(); openEditEvent(customEv); }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
@@ -3435,12 +3525,37 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                     })()}
                   </div>
                 </div>
-                {customEv && evExpanded && (
+                {cmtTarget && cmtExpanded && (
                   <div style={{ padding: "10px 12px 12px", borderTop: `1px solid ${C.borderDim}`, background: C.bgDark }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: C.accent, marginBottom: 8 }}>💬 コメント（{evComments.length}件）</div>
-                    {evComments.length === 0 ? (
+                    {/* 🆕 viewing event の場合は反響の詳細も表示 */}
+                    {cmtTarget.kind === "view" && cmtTarget.viewItem && (
+                      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 6, padding: "8px 10px", marginBottom: 10, fontSize: 11, color: C.muted, lineHeight: 1.7 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "#06b6d4", marginBottom: 4 }}>👀 反響の詳細</div>
+                        {cmtTarget.viewItem.customer && <div>👤 顧客: <span style={{ color: C.text, fontWeight: 700 }}>{cmtTarget.viewItem.customer}</span></div>}
+                        {cmtTarget.viewItem.contact && <div>📞 <a href={`tel:${cmtTarget.viewItem.contact}`} onClick={ev => ev.stopPropagation()} style={{ color: C.success }}>{cmtTarget.viewItem.contact}</a></div>}
+                        {cmtTarget.viewItem.email && <div>📧 <a href={`mailto:${cmtTarget.viewItem.email}`} onClick={ev => ev.stopPropagation()} style={{ color: C.accent }}>{cmtTarget.viewItem.email}</a></div>}
+                        {(cmtTarget.viewItem.funding || cmtTarget.viewItem.purpose || cmtTarget.viewItem.budget) && (
+                          <div>
+                            {cmtTarget.viewItem.funding && <span style={{ marginRight: 8 }}>💰{cmtTarget.viewItem.funding}</span>}
+                            {cmtTarget.viewItem.purpose && <span style={{ marginRight: 8 }}>🎯{cmtTarget.viewItem.purpose}</span>}
+                            {cmtTarget.viewItem.budget && <span style={{ marginRight: 8 }}>💵{cmtTarget.viewItem.budget}</span>}
+                          </div>
+                        )}
+                        {cmtTarget.viewItem.prospect && <div>🔥 見込度: {cmtTarget.viewItem.prospect}</div>}
+                        {cmtTarget.viewItem.channel && <div>🤝 経由: {cmtTarget.viewItem.channel}</div>}
+                        {cmtTarget.viewItem.note && <div style={{ marginTop: 4 }}>📝 {cmtTarget.viewItem.note}</div>}
+                        {cmtTarget.viewItem.channel === "仲介業者経由" && (cmtTarget.viewItem.brokerCompany || cmtTarget.viewItem.brokerContact) && (
+                          <div style={{ color: "#a855f7", marginTop: 4, padding: "4px 6px", background: "#a855f711", borderRadius: 4 }}>
+                            🏢 他社付け: <span style={{ fontWeight: 700 }}>{cmtTarget.viewItem.brokerCompany || ""}{cmtTarget.viewItem.brokerCompany && cmtTarget.viewItem.brokerContact ? " / " : ""}{cmtTarget.viewItem.brokerContact || ""}</span>
+                            {cmtTarget.viewItem.brokerPhone && <span style={{ marginLeft: 6 }}>📞 {cmtTarget.viewItem.brokerPhone}</span>}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.accent, marginBottom: 8 }}>💬 コメント（{cmtTarget.comments.length}件）</div>
+                    {cmtTarget.comments.length === 0 ? (
                       <div style={{ fontSize: 11, color: C.muted, textAlign: "center", padding: "6px 0" }}>まだコメントなし</div>
-                    ) : evComments.map(c => {
+                    ) : cmtTarget.comments.map(c => {
                       const isEditing = editingEventCommentId === c.id;
                       return (
                         <div key={c.id} style={{ background: C.cardBg, borderLeft: `3px solid ${MEMBER_COLORS[c.member] || C.muted}`, borderRadius: 6, padding: "6px 10px", marginBottom: 6 }}>
@@ -3455,7 +3570,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                             <>
                               <textarea value={editingEventCommentText} onChange={ev => setEditingEventCommentText(ev.target.value)} style={{ ...inp, height: 50, resize: "vertical", marginBottom: 4, fontSize: 12 }} />
                               <div style={{ display: "flex", gap: 4 }}>
-                                <button onClick={() => handleSaveEditEventComment(customEv.id, c.id)} style={{ ...btnStyle(), flex: 1, padding: "5px", fontSize: 11 }}>💾 保存</button>
+                                <button onClick={() => cmtTarget.kind === "event" ? handleSaveEditEventComment(customEv.id, c.id) : handleSaveEditViewCmt(cmtTarget.stockId, cmtTarget.viewingIdx, c.id)} style={{ ...btnStyle(), flex: 1, padding: "5px", fontSize: 11 }}>💾 保存</button>
                                 <button onClick={handleCancelEditEventComment} style={{ ...btnStyle("ghost"), flex: 1, padding: "5px", fontSize: 11 }}>キャンセル</button>
                               </div>
                             </>
@@ -3465,7 +3580,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                               {c.member === currentUser && (
                                 <div style={{ display: "flex", gap: 3, justifyContent: "flex-end" }}>
                                   <button onClick={() => handleStartEditEventComment(c.id, c.text)} style={{ background: "transparent", border: `1px solid ${C.muted}33`, color: C.muted, borderRadius: 3, padding: "1px 7px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>✏️</button>
-                                  <button onClick={() => handleDeleteEventComment(customEv.id, c.id)} style={{ background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger, borderRadius: 3, padding: "1px 7px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>🗑️</button>
+                                  <button onClick={() => cmtTarget.kind === "event" ? handleDeleteEventComment(customEv.id, c.id) : handleDeleteViewCmt(cmtTarget.stockId, cmtTarget.viewingIdx, c.id)} style={{ background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger, borderRadius: 3, padding: "1px 7px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>🗑️</button>
                                 </div>
                               )}
                             </>
@@ -3475,15 +3590,15 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                     })}
                     <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                       <textarea
-                        value={newEventComment[customEv.id] || ""}
-                        onChange={ev => setNewEventComment(p => ({ ...p, [customEv.id]: ev.target.value }))}
-                        onKeyDown={ev => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); handlePostEventComment(customEv.id); } }}
+                        value={newEventComment[cmtTarget.inputKey] || ""}
+                        onChange={ev => setNewEventComment(p => ({ ...p, [cmtTarget.inputKey]: ev.target.value }))}
+                        onKeyDown={ev => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); cmtTarget.kind === "event" ? handlePostEventComment(customEv.id) : handlePostViewCmt(cmtTarget.stockId, cmtTarget.viewingIdx); } }}
                         placeholder={currentUser ? `${currentUser}としてコメント (Enter送信)` : "ログインしてください"}
                         style={{ ...inp, flex: 1, height: 40, resize: "vertical", fontSize: 12, padding: "6px 8px" }}
                       />
-                      <button onClick={() => handlePostEventComment(customEv.id)}
-                        disabled={!(newEventComment[customEv.id] || "").trim() || !currentUser}
-                        style={{ ...btnStyle(), padding: "8px 14px", fontSize: 12, flexShrink: 0, opacity: (!(newEventComment[customEv.id] || "").trim() || !currentUser) ? 0.5 : 1 }}>送信</button>
+                      <button onClick={() => cmtTarget.kind === "event" ? handlePostEventComment(customEv.id) : handlePostViewCmt(cmtTarget.stockId, cmtTarget.viewingIdx)}
+                        disabled={!(newEventComment[cmtTarget.inputKey] || "").trim() || !currentUser}
+                        style={{ ...btnStyle(), padding: "8px 14px", fontSize: 12, flexShrink: 0, opacity: (!(newEventComment[cmtTarget.inputKey] || "").trim() || !currentUser) ? 0.5 : 1 }}>送信</button>
                     </div>
                   </div>
                 )}
