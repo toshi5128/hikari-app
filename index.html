@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.10-event-comment-perid-fix";
+const APP_VERSION = "2026-05-16-v8.11-comments-isolation-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -6682,7 +6682,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   }, []);
 
   // ===== コメント入力用 =====
-  const [newComment, setNewComment] = useState("");
+  // 🆕 メンバー×日付ごとに別々の入力値を保持
+  const [newComment, setNewComment] = useState({}); // { `${member}_${date}`: text }
   // コメント編集モード用
   const [editingCommentId, setEditingCommentId] = useState(null);
   const [editingCommentText, setEditingCommentText] = useState("");
@@ -6887,7 +6888,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
 
   // ===== 💬 コメント送信 =====
   const handlePostComment = () => {
-    const text = newComment.trim();
+    const cmtKey = `${selectedMember}_${selectedDate}`;
+    const text = (newComment[cmtKey] || "").trim();
     if (!text) return;
     if (!currentUser) { alert("先にログインしてください"); return; }
     const comment = {
@@ -6932,7 +6934,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
         }
       );
     }
-    setNewComment("");
+    setNewComment(p => ({ ...p, [cmtKey]: "" }));
   };
 
   // ===== ✏️ コメント編集 =====
@@ -8194,21 +8196,28 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               <div style={{ fontSize: 12, color: C.muted, textAlign: "center", padding: "12px 0" }}>まだコメントがありません</div>
             )}
             <div style={{ marginTop: 10 }}>
-              <textarea
-                value={newComment}
-                onChange={e => setNewComment(e.target.value)}
-                placeholder={`例）今日は熊谷市で訪問予定！　/　おはよう、頑張って！　/　お疲れさま`}
-                style={{ ...inp, height: 60, resize: "vertical", marginBottom: 8 }}
-              />
-              <button
-                onClick={handlePostComment}
-                disabled={!newComment.trim() || !currentUser}
-                style={{
-                  ...btnStyle(), width: "100%", padding: "11px", fontSize: 13,
-                  opacity: (!newComment.trim() || !currentUser) ? 0.5 : 1
-                }}>
+              {(() => {
+                const cmtKey = `${selectedMember}_${selectedDate}`;
+                return (
+                  <>
+                    <textarea
+                      value={newComment[cmtKey] || ""}
+                      onChange={e => setNewComment(p => ({ ...p, [cmtKey]: e.target.value }))}
+                      placeholder={`例）今日は熊谷市で訪問予定！　/　おはよう、頑張って！　/　お疲れさま`}
+                      style={{ ...inp, height: 60, resize: "vertical", marginBottom: 8 }}
+                    />
+                    <button
+                      onClick={handlePostComment}
+                      disabled={!(newComment[cmtKey] || "").trim() || !currentUser}
+                      style={{
+                        ...btnStyle(), width: "100%", padding: "11px", fontSize: 13,
+                        opacity: (!(newComment[cmtKey] || "").trim() || !currentUser) ? 0.5 : 1
+                      }}>
                 💬 コメントを送信
               </button>
+                  </>
+                );
+              })()}
             </div>
                 </div>
               );
