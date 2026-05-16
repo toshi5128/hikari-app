@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.40-migrate-old-jiage-data";
+const APP_VERSION = "2026-05-16-v8.41-posting-tracking";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -422,7 +422,7 @@ function addBusinessDays(dateStr, n) {
   return d.toISOString().split("T")[0];
 }
 const DM_STATUSES = ["未", "①", "②", "📩返送", "済"];
-const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店", "休み", "面談", "居留守", "訪問禁止", "未訪問", "訪問済", "初訪", "中長期見込", "見込み", "見込無し", "交渉中", "媒介"];
+const APPROACH_ITEMS = ["訪問", "再訪", "名刺取得", "架電", "アドレス取得", "現地案件", "メール案件", "査定", "仕入検討", "仕入", "仲介受託", "地上初訪", "地上再訪", "新規地上", "不在", "断り", "閉店", "休み", "面談", "居留守", "訪問禁止", "未訪問", "訪問済", "初訪", "中長期見込", "見込み", "見込無し", "交渉中", "媒介", "ポスティング"];
 const OWNER_STATUSES = ["未アタック", "手紙送付済", "電話済", "訪問済", "興味あり", "検討中", "断られた", "交渉中", "仕入れ完了"];
 const APPROACH_TARGETS = { "訪問": 600, "再訪": 200, "名刺取得": 400, "架電": 100, "アドレス取得": 500, "現地案件": 40, "メール案件": 40, "査定": 60, "仕入検討": 10, "仕入": 3, "地上初訪": 30, "地上再訪": 50, "新規地上": 10 };
 // 🆕 営業活動カウンターのカテゴリ別カラー（カード左ボーダー＋項目名）
@@ -456,6 +456,8 @@ const APPROACH_CATEGORY = {
   // 🆕 v8.40: 訪問済を 初訪/再訪 に分割、中長期見込を追加
   "初訪":       { color: "#3b82f6", icon: "🚪", group: "訪問" },
   "中長期見込": { color: "#fbbf24", icon: "🕰️", group: "KPI" },
+  // 🆕 v8.41: ポスティング（不在時に資料投函）
+  "ポスティング": { color: "#f97316", icon: "📬", group: "訪問" },
   "見込み":     { color: "#10b981", icon: "🟢", group: "KPI" },
   "見込無し":   { color: "#64748b", icon: "⚫", group: "ネガ" },
   "交渉中":     { color: "#a855f7", icon: "💬", group: "KPI" },
@@ -483,7 +485,8 @@ const APPROACH_GROUPS = {
     //   ・ステータス（未訪問・訪問済・見込み・見込無し・交渉中・媒介・仕入）が保存時に +1
     //   ・「新規地上」のみ手動カウンターとして残置
     // 🆕 v8.40: 訪問済→初訪 にリネーム、再訪・中長期見込 を追加
-    items: ["面談", "居留守", "不在", "訪問禁止", "未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "新規地上"],
+    // 🆕 v8.41: ポスティング追加（不在/居留守時の資料投函記録）
+    items: ["面談", "居留守", "不在", "訪問禁止", "ポスティング", "未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "新規地上"],
   },
 };
 const APPROACH_GROUP_KEYS = ["agent", "jiage"];
@@ -2615,13 +2618,28 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480 }) 
       if (status === "媒介") return "#a855f7";
       return "#94a3b8";
     };
+    // 🆕 v8.41: 30日以内にポスティングした案件は 📬 オーバーレイ
+    const _todayMs = Date.now();
+    const _postedRecently = (it) => {
+      const log = (it && it.visitLog) || [];
+      const posted = log.filter(v => v && v.posted && v.date);
+      if (posted.length === 0) return false;
+      // 最新の posted エントリの日付差を見る
+      const latest = posted.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+      const days = Math.floor((_todayMs - new Date(latest.date + "T00:00:00").getTime()) / 86400000);
+      return days >= 0 && days <= 30;
+    };
     validItems.forEach(it => {
       const lat = pinTarget === "ownerAddr" ? it.ownerLat : it.lat;
       const lng = pinTarget === "ownerAddr" ? it.ownerLng : it.lng;
       const color = colorByStatus(it.status);
+      const showPost = _postedRecently(it);
       const icon = L.divIcon({
         className: "hikari-pin",
-        html: `<div style="background:${color};width:22px;height:22px;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.5);"></div>`,
+        html: `<div style="position:relative;width:22px;height:22px;">
+          <div style="background:${color};width:22px;height:22px;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.5);"></div>
+          ${showPost ? `<div style="position:absolute;top:-6px;right:-6px;background:#f97316;color:#fff;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">📬</div>` : ""}
+        </div>`,
         iconSize: [22, 22],
         iconAnchor: [11, 11],
       });
@@ -10381,6 +10399,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       signs: visitForm.result === "ignore" ? visitForm.signs : [],
       intensityLevel: visitForm.result === "ignore" ? visitForm.intensityLevel : null,
       memo: visitForm.memo,
+      // 🆕 v8.41: ポスティング済フラグを保存
+      posted: !!visitForm.posted,
       recordedBy: getCurrentUser() || MEMBERS[0],
     };
     const resDef = VISIT_RESULTS.find(r => r.key === visitForm.result);
@@ -10405,6 +10425,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         // ステータス → カウンター（保存後のステータス値で）
         const _finalStatus = visitForm.status || newStatus;
         if (_finalStatus && ATTACK_STATUSES.includes(_finalStatus)) bumpItems.push(_finalStatus);
+        // 🆕 v8.41: ポスティング済 → カウンター
+        if (visitForm.posted) bumpItems.push("ポスティング");
         let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
         if (bumpMember) {
           const todayStr = new Date().toISOString().split("T")[0];
@@ -11034,6 +11056,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           { c: "#64748b", l: "見込無し" },
                           { c: "#a855f7", l: "媒介" },
                           { c: "#06b6d4", l: "仕入" },
+                          { c: "#f97316", l: "📬 30日以内に投函" },
                         ].map(it => (
                           <span key={it.l} style={{ display: "flex", alignItems: "center", gap: 3 }}>
                             <span style={{ width: 10, height: 10, borderRadius: "50%", background: it.c, border: "1.5px solid white" }} />
@@ -11196,11 +11219,24 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   const days = Math.floor((new Date(today) - new Date((v.date || today) + "T00:00:00")) / 86400000);
                   const daysLabel = days <= 0 ? "今日" : `${days}日前`;
                   const dColor = days <= 7 ? C.success : days <= 30 ? C.warn : C.danger;
+                  // 🆕 v8.41: ポスティング集計
+                  const allLog = (item.raw && item.raw.visitLog) || [];
+                  const postEntries = allLog.filter(x => x && x.posted);
+                  const lastPost = postEntries.length > 0 ? postEntries.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0] : null;
+                  const lastPostDays = lastPost ? Math.floor((new Date(today) - new Date((lastPost.date || today) + "T00:00:00")) / 86400000) : null;
                   return (
-                    <div style={{ padding: "6px 14px 8px", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", borderBottom: `1px solid ${C.borderDim}` }}>
-                      <span style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}88`, color: C.danger, borderRadius: 6, padding: "3px 8px", fontSize: 10, fontWeight: 800 }}>{visitNum}回目</span>
-                      <span style={{ color: C.muted, fontSize: 11 }}>{v.date || "—"} <span style={{ color: dow === "土" ? "#0ea5e9" : dow === "日" ? "#ef4444" : C.muted }}>({dow})</span>{v.time ? <span style={{ marginLeft: 4, color: C.text, fontWeight: 700 }}>{v.time}</span> : null}</span>
-                      <span style={{ background: dColor + "22", border: `1px solid ${dColor}66`, color: dColor, borderRadius: 6, padding: "2px 8px", fontSize: 10, fontWeight: 700, marginLeft: "auto" }}>⏱ {daysLabel}</span>
+                    <div style={{ padding: "6px 14px 8px", borderBottom: `1px solid ${C.borderDim}` }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <span style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}88`, color: C.danger, borderRadius: 6, padding: "3px 8px", fontSize: 10, fontWeight: 800 }}>{visitNum}回目</span>
+                        <span style={{ color: C.muted, fontSize: 11 }}>{v.date || "—"} <span style={{ color: dow === "土" ? "#0ea5e9" : dow === "日" ? "#ef4444" : C.muted }}>({dow})</span>{v.time ? <span style={{ marginLeft: 4, color: C.text, fontWeight: 700 }}>{v.time}</span> : null}</span>
+                        <span style={{ background: dColor + "22", border: `1px solid ${dColor}66`, color: dColor, borderRadius: 6, padding: "2px 8px", fontSize: 10, fontWeight: 700, marginLeft: "auto" }}>⏱ {daysLabel}</span>
+                      </div>
+                      {postEntries.length > 0 && (
+                        <div style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 6, fontSize: 10 }}>
+                          <span style={{ background: "#f9731622", border: `1px solid #f9731666`, color: "#f97316", borderRadius: 6, padding: "2px 7px", fontWeight: 800 }}>📬 {postEntries.length}回</span>
+                          <span style={{ color: C.muted }}>最終 <b style={{ color: lastPostDays !== null && lastPostDays <= 30 ? "#f97316" : C.muted }}>{lastPostDays === 0 ? "今日" : `${lastPostDays}日前`}</b></span>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -11347,6 +11383,10 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           <span style={{ background: resDef.color, color: "#fff", padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 11 }}>
                             {resDef.label}
                           </span>
+                          {/* 🆕 v8.41: ポスティング済バッジ */}
+                          {v.posted && (
+                            <span style={{ background: "#f97316", color: "#fff", padding: "3px 6px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>📬</span>
+                          )}
                         </div>
                         {v.signs && v.signs.length > 0 && (
                           <div style={{ marginTop: 4, fontSize: 10, color: C.muted, paddingLeft: 4 }}>
@@ -11661,6 +11701,47 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               );
             })}
           </div>
+
+          {/* 🆕 v8.41: ポスティング済トグル */}
+          {(() => {
+            const posted = !!visitForm.posted;
+            const recommend = visitForm.result === "absent" || visitForm.result === "ignore";
+            // 過去にポスティングしたことがあるか
+            const tgtJ = (data.jiage || []).find(j => j.id === (visitRecordTarget.rawId || visitRecordTarget.id));
+            const pastLog = (tgtJ && tgtJ.visitLog) || [];
+            const pastPosts = pastLog.filter(v => v && v.posted);
+            const lastPost = pastPosts.length > 0 ? pastPosts.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0] : null;
+            const lastDays = lastPost ? Math.floor((new Date(today) - new Date((lastPost.date || today) + "T00:00:00")) / 86400000) : null;
+            return (
+              <div style={{
+                background: posted ? "#f9731622" : (recommend ? "#f9731611" : C.bg),
+                border: `${posted ? 2 : 1.5}px solid ${posted ? "#f97316" : "#f9731655"}`,
+                borderRadius: 10, padding: "10px 12px", marginBottom: 12,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: posted ? "#f97316" : C.text }}>
+                      📬 ポスティング済
+                    </span>
+                    {pastPosts.length > 0 && (
+                      <span style={{ fontSize: 10, color: C.muted, lineHeight: 1.4 }}>
+                        過去 <b style={{ color: "#f97316" }}>{pastPosts.length}回</b>{lastDays !== null && lastDays >= 0 ? ` / 最終 ${lastDays === 0 ? "今日" : lastDays + "日前"}` : ""}
+                      </span>
+                    )}
+                    {pastPosts.length === 0 && recommend && (
+                      <span style={{ fontSize: 10, color: C.muted }}>初めてここに投函します</span>
+                    )}
+                  </div>
+                  <button onClick={() => setVisitForm({ ...visitForm, posted: !posted })} style={{
+                    background: posted ? "#f97316" : "transparent",
+                    border: `2px solid #f97316`, color: posted ? "#fff" : "#f97316",
+                    borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 800,
+                    cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+                  }}>{posted ? "✓ 投函した" : "投函した"}</button>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* 🆕 ステータス（フェーズ）＋ 担当者 */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
