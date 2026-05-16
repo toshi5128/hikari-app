@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.29-tombstone-resurrect-fix";
+const APP_VERSION = "2026-05-16-v8.30-stock-delete-confirm";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -6191,7 +6191,19 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     const target = data.stocks.find(s => s.id === id);
     // 保険：削除時の権限チェック
     if (target && !canEdit(target)) { alert("⚠️ 削除権限がありません"); return; }
-    if (window.confirm("削除しますか？\n※ 関連するカレンダーイベントも削除されます")) setData(d => {
+    // 🆕 二段階確認：まず物件名と件数を見せて確認、その後本当に消すかもう一度確認
+    const name = target?.name || "(無題)";
+    const viewingCount = ((target && target.viewings) || []).length;
+    const eventCount = ((data.customEvents || []).filter(e => e.stockLinkId && e.stockLinkId === id)).length;
+    const summaryMsg = `🗑 「${name}」を削除しますか？\n\n` +
+      `この物件を削除すると、以下も一緒に消えます:\n` +
+      `・反響データ ${viewingCount}件（コメント・案内予定など）\n` +
+      `・連動カレンダー予定 ${eventCount}件（仕入契約日・決済日など）\n` +
+      `\n続けますか？`;
+    if (!window.confirm(summaryMsg)) return;
+    const confirmMsg = `⚠️ 最終確認\n\n「${name}」を本当に削除します。\n削除すると元に戻せません。\n\nOKで削除を実行します。`;
+    if (!window.confirm(confirmMsg)) return;
+    setData(d => {
       // 🆕 カスケード削除されるカレンダーイベントの ID も追跡（他端末からの復活防止）
       const relatedEvents = (d.customEvents || []).filter(e => e.stockLinkId && e.stockLinkId === id);
       relatedEvents.forEach(ev => recordDeletion("event", ev.id));
