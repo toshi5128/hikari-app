@@ -139,13 +139,57 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.23-add-rest-counter";
+const APP_VERSION = "2026-05-16-v8.24-old-version-guard";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
   if (!remoteVer || !localVer) return false;
   if (remoteVer === localVer) return false;
   return String(remoteVer) > String(localVer);
+}
+
+// 🆕 新しいバージョンを検出したらカウントダウン付きバナーを表示し、最後に自動リロード
+//   ・キャンセルできない（古い版でデータを書き換えるリスクを防ぐ）
+//   ・ボタンで即時更新も可能
+//   ・連打防止：すでに表示中なら新しいバナーは作らない
+function showVersionUpdateBanner(remoteVer, seconds = 10) {
+  if (window.__hikariUpdateBannerShown__) return;
+  window.__hikariUpdateBannerShown__ = true;
+  const reload = () => {
+    window.location.href = window.location.pathname + "?v=" + Date.now();
+  };
+  // バナー DOM 構築
+  const banner = document.createElement("div");
+  banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;background:linear-gradient(135deg,#dc2626,#ea580c);color:#fff;padding:14px 16px;font-family:'Noto Sans JP',sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.3);display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:center;font-size:14px;font-weight:700";
+  const countSpan = document.createElement("span");
+  countSpan.style.cssText = "display:inline-block;min-width:24px;text-align:center;background:rgba(255,255,255,0.25);padding:2px 8px;border-radius:8px;font-weight:800";
+  countSpan.textContent = String(seconds);
+  const text = document.createElement("div");
+  text.style.cssText = "flex:1;min-width:0;line-height:1.5";
+  text.innerHTML = `⚠️ 新バージョン（${remoteVer}）が公開されました<br /><span style="font-size:11px;font-weight:500;opacity:0.95">あと </span>`;
+  text.appendChild(countSpan);
+  const tail = document.createElement("span");
+  tail.style.cssText = "font-size:11px;font-weight:500;opacity:0.95";
+  tail.textContent = " 秒で自動更新します";
+  text.appendChild(tail);
+  const btn = document.createElement("button");
+  btn.textContent = "🔁 いますぐ更新";
+  btn.style.cssText = "background:#fff;color:#dc2626;border:none;border-radius:8px;padding:8px 16px;font-weight:800;cursor:pointer;font-family:inherit;font-size:13px;flex-shrink:0";
+  btn.onclick = reload;
+  banner.appendChild(text);
+  banner.appendChild(btn);
+  document.body.appendChild(banner);
+  // カウントダウン
+  let remaining = seconds;
+  const tick = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(tick);
+      reload();
+    } else {
+      countSpan.textContent = String(remaining);
+    }
+  }, 1000);
 }
 console.log(`[ひかり不動産] ✅ バージョン: ${APP_VERSION}`);
 const {useState,useMemo,useEffect,useRef}=React;
@@ -754,6 +798,30 @@ async function saveToSupabase(data, retries = 3) {
   const dataWithVersion = { ...data, __appVersion: APP_VERSION };
   // ローカルキャッシュは先に保存（Supabase失敗してもローカルには確実に残す）
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataWithVersion)); } catch (e) { console.warn("localStorage save failed:", e); }
+
+  // 🆕 ① 古いバージョンからの上書き保護：保存前に Supabase の最新バージョンを軽くチェックし、
+  //    自分より新しいバージョンが書き込んでいたら保存を拒否（古いキャッシュでの上書き事故防止）
+  try {
+    const verCheck = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=data->__appVersion`, {
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+    });
+    if (verCheck.ok) {
+      const rows = await verCheck.json();
+      const remoteVer = rows && rows[0] && rows[0]["__appVersion"];
+      if (remoteVer && isRemoteVersionNewer(remoteVer, APP_VERSION)) {
+        console.warn(`[Supabase] ⛔ 保存拒否：リモート(${remoteVer})の方が新しいバージョン。ローカル(${APP_VERSION})は古い。`);
+        // 画面に通知（連打防止：3秒以内に再表示しない）
+        const now = Date.now();
+        if (!window.__hikariStaleSaveAlertAt__ || now - window.__hikariStaleSaveAlertAt__ > 3000) {
+          window.__hikariStaleSaveAlertAt__ = now;
+          alert(`⚠️ 保存できません\n\nこの端末のアプリが古いバージョン（${APP_VERSION}）のため、保存をブロックしました。\n他の端末（${remoteVer}）が新しい版を使用しています。\n\nブラウザの更新ボタン（↻）で再読み込みしてください。`);
+        }
+        return false;
+      }
+    }
+  } catch (vErr) {
+    console.warn("[Supabase] バージョンチェック失敗（保存は続行）:", vErr);
+  }
 
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
@@ -1733,21 +1801,13 @@ function MainApp({ onLock, onSwitchUser }) {
     // 🆕 古い削除レコード（7日以上前）を掃除
     cleanupOldDeletions();
     loadFromSupabase().then(remote => {
-      // 🆕 バージョンチェック：誰かが新版で保存してたら自動更新を促す
+      // 🆕 バージョンチェック：誰かが新版で保存してたら自動更新（カウントダウンバナー）
       if (remote?.__appVersion && isRemoteVersionNewer(remote.__appVersion, APP_VERSION)) {
         console.warn(`[ひかり不動産] ⚠ 古いバージョンを検出`);
         console.warn(`  あなたの端末: ${APP_VERSION}`);
         console.warn(`  最新: ${remote.__appVersion}`);
-        const msg = `🔔 アプリの新しいバージョンがあります\n\n` +
-                    `あなたの端末: ${APP_VERSION}\n` +
-                    `最新版: ${remote.__appVersion}\n\n` +
-                    `今すぐ更新してください（古いままだと編集が消える可能性があります）。\n` +
-                    `OKを押すとアプリを最新版に更新します。`;
-        if (window.confirm(msg)) {
-          // ブラウザキャッシュをバイパスして強制リロード
-          window.location.href = window.location.pathname + "?v=" + Date.now();
-          return;
-        }
+        showVersionUpdateBanner(remote.__appVersion);
+        return; // 古いバージョンではマージ作業を進めない（古いコードで処理してデータ汚染を防ぐ）
       }
       const merged = mergeRemoteSafely(remote);
       if (merged) {
@@ -1768,20 +1828,11 @@ function MainApp({ onLock, onSwitchUser }) {
       if (Date.now() - lastLocalSaveRef.current < 30000) return; // 直近の自分の保存はスキップ
       if (isUserEditing()) return; // 入力中はスキップ
       loadFromSupabase().then(remote => {
-        // 🆕 ポーリング時もバージョンチェック（開きっぱなしのアプリにも更新通知）
+        // 🆕 ポーリング時もバージョンチェック（カウントダウンバナーで自動更新）
         if (remote?.__appVersion && isRemoteVersionNewer(remote.__appVersion, APP_VERSION)) {
           console.warn(`[ひかり不動産] ⚠ ポーリング中に新バージョン検出: ${remote.__appVersion}`);
-          const msg = `🔔 アプリの新しいバージョンがあります！\n\n` +
-                      `あなたの端末: ${APP_VERSION}\n` +
-                      `最新版: ${remote.__appVersion}\n\n` +
-                      `今すぐ更新してください。\n` +
-                      `OKを押すとアプリを最新版に更新します。`;
-          if (window.confirm(msg)) {
-            window.location.href = window.location.pathname + "?v=" + Date.now();
-            return;
-          }
-          // キャンセルされたら、次回ポーリングまで通知を抑制（5分後にまた問い合わせ）
-          lastLocalSaveRef.current = Date.now() + 5 * 60 * 1000 - 30 * 1000;
+          showVersionUpdateBanner(remote.__appVersion);
+          return; // 古いバージョンではマージ作業を進めない
         }
         const merged = mergeRemoteSafely(remote);
         if (merged) {
