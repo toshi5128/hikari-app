@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.17-calendar-viewing-comments";
+const APP_VERSION = "2026-05-16-v8.18-viewing-dedupe";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -914,6 +914,17 @@ function buildFieldTimes(prevItem, nextItem, now) {
   return result;
 }
 
+// 🆕 コンテンツハッシュ：複数端末で同じ反響に同じ id を生成するため
+function _hikariHashStr(s) {
+  let h = 0;
+  const str = String(s || "");
+  for (let i = 0; i < str.length; i++) { h = ((h << 5) - h + str.charCodeAt(i)) | 0; }
+  return (h >>> 0).toString(36);
+}
+function viewingStableId(v) {
+  const sig = [v.date || "", v.customer || "", v.contact || "", v.email || "", v.note || ""].join("|");
+  return "v_" + _hikariHashStr(sig);
+}
 // 編集時：id の無いネスト配列要素（反響・履歴など）に id を付与
 function ensureNestedIds(item) {
   let changed = false;
@@ -924,6 +935,8 @@ function ensureNestedIds(item) {
       const arr = copy[k].map(el => {
         if (el && typeof el === "object" && el.id == null) {
           arrChanged = true;
+          // 🆕 反響は内容ベースの安定ID。同じ内容なら全端末で同じ id になる。
+          if (k === "viewings") return { ...el, id: viewingStableId(el) };
           return { ...el, id: "n" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) };
         }
         return el;
@@ -932,6 +945,38 @@ function ensureNestedIds(item) {
     }
   });
   return changed ? copy : item;
+}
+
+// 🆕 既存データの反響重複を除去：同じ内容（date+customer+contact+email+note）の反響を統合
+function dedupeViewings(viewings) {
+  if (!Array.isArray(viewings) || viewings.length < 2) return { arr: viewings, changed: false };
+  const seenBySig = new Map();
+  const order = [];
+  let changed = false;
+  viewings.forEach(v => {
+    if (!v || typeof v !== "object") { order.push({ key: "__non" + order.length, v }); return; }
+    const sig = [v.date || "", v.customer || "", v.contact || "", v.email || "", v.note || ""].join("|");
+    if (sig.replace(/\|/g, "") === "") { order.push({ key: "__empty" + order.length, v }); return; }
+    const stableId = "v_" + _hikariHashStr(sig);
+    if (seenBySig.has(sig)) {
+      changed = true;
+      const ex = seenBySig.get(sig);
+      const merged = [...(ex.comments || []), ...(v.comments || [])];
+      const cIds = new Set();
+      const cdedup = [];
+      merged.forEach(c => { if (!c) return; if (c.id != null) { if (!cIds.has(c.id)) { cIds.add(c.id); cdedup.push(c); } } else cdedup.push(c); });
+      const mergedV = { ...ex, ...v, id: stableId, comments: cdedup };
+      seenBySig.set(sig, mergedV);
+      const idx = order.findIndex(o => o.key === sig);
+      if (idx >= 0) order[idx].v = mergedV;
+    } else {
+      const normalized = (v.id !== stableId) ? { ...v, id: stableId } : v;
+      if (v.id !== stableId) changed = true;
+      seenBySig.set(sig, normalized);
+      order.push({ key: sig, v: normalized });
+    }
+  });
+  return { arr: order.map(o => o.v), changed };
 }
 
 // ============== 🆕 削除アイテムID追跡 ==============
@@ -1383,6 +1428,23 @@ function MainApp({ onLock, onSwitchUser }) {
       const hasOldStatus = current.stocks.some(s => STATUS_MIGRATION_MAP[s.status]);
       if (hasOldStatus) needsMigration = true;
     }
+    // 🆕 反響に重複があれば migration 起動
+    const hasViewingDupes = (items) => {
+      if (!Array.isArray(items)) return false;
+      return items.some(it => {
+        if (!it || !Array.isArray(it.viewings) || it.viewings.length < 2) return false;
+        const seen = new Set();
+        for (const v of it.viewings) {
+          if (!v) continue;
+          const sig = [v.date || "", v.customer || "", v.contact || "", v.email || "", v.note || ""].join("|");
+          if (sig.replace(/\|/g, "") === "") continue;
+          if (seen.has(sig)) return true;
+          seen.add(sig);
+        }
+        return false;
+      });
+    };
+    if (hasViewingDupes(current.stocks) || hasViewingDupes(current.mediations)) needsMigration = true;
 
     // マイグレーション不要なら何もしない（saveToSupabase もスキップ）
     if (!needsMigration) {
@@ -1412,6 +1474,24 @@ function MainApp({ onLock, onSwitchUser }) {
           changed = true;
         }
       }
+
+      // 🆕 ③ 反響の重複除去マイグレーション
+      ["stocks", "mediations"].forEach(targetKey => {
+        const arr = d[targetKey];
+        if (!Array.isArray(arr)) return;
+        let viewingsCleaned = 0;
+        const newArr = arr.map(item => {
+          if (!item || !Array.isArray(item.viewings) || item.viewings.length < 2) return item;
+          const result = dedupeViewings(item.viewings);
+          if (result.changed) viewingsCleaned += (item.viewings.length - result.arr.length);
+          return result.changed ? { ...item, viewings: result.arr } : item;
+        });
+        if (viewingsCleaned > 0) {
+          console.log(`[Migration] ${targetKey} 反響の重複 ${viewingsCleaned} 件を統合`);
+          next[targetKey] = newArr;
+          changed = true;
+        }
+      });
 
       // 🆕 ② 旧ステータス値の自動マイグレーション（旧版すべて → 14段階）
       // 詳細ステータスをシンプルな14段階に集約
@@ -4767,6 +4847,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
     // 🆕 メール本文の「お問合せ日時」を反響日に使う。解析できなければ今日。
     const inquiryDateParsed = parseInquiryDate(importParsed.inquiryDate) || today;
     const newViewing = {
+      id: viewingStableId({ date: inquiryDateParsed, customer: importParsed.customer || "", contact: importParsed.contact || "", email: importParsed.email || "", note: importParsed.note || "" }),
       date: inquiryDateParsed, visitDate: "", visitTime: "",
       customer: importParsed.customer || "", contact: importParsed.contact || "", email: importParsed.email || "",
       funding: "", purpose: "", budget: importParsed.propertyPrice || "", people: "",
@@ -5815,6 +5896,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     // 🆕 メール本文の「お問合せ日時」を反響日に使う。解析できなければ今日。
     const inquiryDateParsed = parseInquiryDate(importParsed.inquiryDate) || today;
     const newViewing = {
+      id: viewingStableId({ date: inquiryDateParsed, customer: importParsed.customer || "", contact: importParsed.contact || "", email: importParsed.email || "", note: importParsed.note || "" }),
       date: inquiryDateParsed,
       visitDate: "", visitTime: "",
       customer: importParsed.customer || "",
