@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.27-viewing-resurrect";
+const APP_VERSION = "2026-05-16-v8.28-jiage-latest-visit";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -9904,6 +9904,30 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     return true;
   }), [allItems, typeFilter, areaFilter, filterStatuses, filterMember, search, searchTarget, quickFilter, today]);
 
+  // 🆕 最新訪問日（visitLog の中で最新のもの）を取り出す
+  const getLatestVisit = (item) => {
+    const log = (item && item.raw && item.raw.visitLog) || [];
+    if (log.length === 0) return null;
+    let latest = null;
+    for (const v of log) {
+      const ts = `${v.date || ""}T${v.time || "00:00"}`;
+      if (!latest || ts > latest.ts) latest = { ts, entry: v };
+    }
+    return latest;
+  };
+  // 🆕 リスト表示用：訪問の新しい順でソート（未訪問は末尾）
+  const sortedFiltered = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const la = getLatestVisit(a);
+      const lb = getLatestVisit(b);
+      if (!la && !lb) return 0;
+      if (!la) return 1;
+      if (!lb) return -1;
+      return lb.ts.localeCompare(la.ts);
+    });
+    return arr;
+  }, [filtered]);
   const isOverdue = item => item.nextDate && item.nextDate < today && !["NG", "断られた", "仕入れ完了"].includes(item.status);
   
   // ⛔ NGや断られた物件（もう訪問しない）
@@ -10764,10 +10788,11 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>
-          {filtered.map(item => {
+          {sortedFiltered.map(item => {
             const overdue = isOverdue(item);
             const nogo = isNoGo(item);
             const isHighlight = (item.type === "jiage" && highlightJiageId === item.rawId) || (item.type === "owner" && highlightOwnerId === item.rawId);
+            const latestVisit = getLatestVisit(item);
             return (
               <div
                 key={item.id}
@@ -10799,6 +10824,22 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   {overdue && <Tag label="⚠ 期限切れ" color={C.danger} />}
                   <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11 }}>{item.nextDate ? `次回 ${item.nextDate}` : ""}</span>
                 </div>
+                {/* 🆕 訪問バッジ（最新訪問の回数・日付・経過日数） */}
+                {latestVisit && (() => {
+                  const visitNum = ((item.raw && item.raw.visitLog) || []).length;
+                  const v = latestVisit.entry;
+                  const dow = ["日","月","火","水","木","金","土"][new Date((v.date || "") + "T00:00:00").getDay()] || "";
+                  const days = Math.floor((new Date(today) - new Date((v.date || today) + "T00:00:00")) / 86400000);
+                  const daysLabel = days <= 0 ? "今日" : `${days}日前`;
+                  const dColor = days <= 7 ? C.success : days <= 30 ? C.warn : C.danger;
+                  return (
+                    <div style={{ padding: "6px 14px 8px", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", borderBottom: `1px solid ${C.borderDim}` }}>
+                      <span style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}88`, color: C.danger, borderRadius: 6, padding: "3px 8px", fontSize: 10, fontWeight: 800 }}>{visitNum}回目</span>
+                      <span style={{ color: C.muted, fontSize: 11 }}>{v.date || "—"} <span style={{ color: dow === "土" ? "#0ea5e9" : dow === "日" ? "#ef4444" : C.muted }}>({dow})</span>{v.time ? <span style={{ marginLeft: 4, color: C.text, fontWeight: 700 }}>{v.time}</span> : null}</span>
+                      <span style={{ background: dColor + "22", border: `1px solid ${dColor}66`, color: dColor, borderRadius: 6, padding: "2px 8px", fontSize: 10, fontWeight: 700, marginLeft: "auto" }}>⏱ {daysLabel}</span>
+                    </div>
+                  );
+                })()}
 
                 {/* 物件住所ブロック */}
                 <div style={{ padding: "12px 14px 10px", borderBottom: `1px solid ${C.borderDim}` }}>
