@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.41-posting-tracking";
+const APP_VERSION = "2026-05-16-v8.42-backfill-reshin";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -562,6 +562,31 @@ function migrateJiageDataV840(d) {
     return a;
   });
   next.migrations = { ...(d.migrations || {}), v840_jiage_relabel: Date.now() };
+  return next;
+}
+
+// 🆕 v8.42: 訪問ログが2件以上ある地上げ案件で、ステータスが「未訪問/初訪/空」のものを「再訪」に上げる
+//   ・「見込み/中長期見込/見込無し/交渉中/媒介/仕入」など先のフェーズの案件は触らない
+//   ・data.migrations.v842_visit_count_to_status をマーカーに1回だけ実行
+function migrateBackfillReshinV842(d) {
+  if (!d || typeof d !== "object") return d;
+  const UPGRADABLE = new Set(["未訪問", "初訪", "", null, undefined]);
+  const next = { ...d };
+  let upgraded = 0;
+  next.jiage = (Array.isArray(d.jiage) ? d.jiage : []).map(j => {
+    if (!j) return j;
+    const log = Array.isArray(j.visitLog) ? j.visitLog : [];
+    if (log.length < 2) return j;
+    if (UPGRADABLE.has(j.status)) {
+      upgraded++;
+      return { ...j, status: "再訪" };
+    }
+    return j;
+  });
+  next.migrations = { ...(d.migrations || {}), v842_visit_count_to_status: Date.now() };
+  if (upgraded > 0) {
+    console.log(`[v8.42] ${upgraded}件の地上げ案件を 再訪 に更新しました`);
+  }
   return next;
 }
 
@@ -2185,6 +2210,22 @@ function MainApp({ onLock, onSwitchUser }) {
     v840MigratedRef.current = true;
     console.log("[v8.40] 旧データを新ステータス/新カウンターに移行します…");
     setData(d => migrateJiageDataV840(d));
+  }, [data]);
+
+  // 🆕 v8.42: 訪問ログ2件以上の案件をステータス「再訪」にバックフィル（1回限り）
+  const v842MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v842MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v842_visit_count_to_status) {
+      v842MigratedRef.current = true;
+      return;
+    }
+    // v8.40 のマイグレーションがまだ走ってない場合は待つ（順番を守る）
+    if (!(data.migrations && data.migrations.v840_jiage_relabel)) return;
+    v842MigratedRef.current = true;
+    console.log("[v8.42] 訪問ログ2件以上の地上げ案件を 再訪 にバックフィル…");
+    setData(d => migrateBackfillReshinV842(d));
   }, [data]);
 
   const setData = updater => {
