@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-16-v8.3-version-compare-fix";
+const APP_VERSION = "2026-05-16-v8.4-status-manual-respect";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -5229,27 +5229,36 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     // 売却契約日あり → 売契完了
     // 仕入決済日あり → 仕決完了
     // 仕入契約日あり → 仕契完了
-    // ※ 中間ステータス（登記、残置物、リフォーム、販売中、売契準備中、売却役調中など）を手動で設定してる場合は維持
-    if (item.sellDate) {
-      item.status = "売決完了";
-    } else if (item.sellContractDate) {
-      item.status = "売契完了";
-    } else if (item.buyDate) {
-      // 仕入決済以降の中間ステータスは維持
-      const keepStatuses = [
-        "登記依頼完了",
-        "残置物処理中",
-        "リフォーム待ち", "リフォーム中", "リフォーム完了",
-        "販売中", "売契準備中", "売却役調中",
-      ];
-      if (!keepStatuses.includes(item.status)) {
-        item.status = "仕決完了";
-      }
-    } else if (item.buyContractDate) {
-      // 仕入契約前の段階だけ自動更新（「仕入役調中」「仕契準備中」が対象）
-      const upgradeFrom = ["仕入役調中", "仕契準備中"];
-      if (upgradeFrom.includes(item.status) || !item.status) {
-        item.status = "仕契完了";
+    // 🔧 ユーザーが手動でステータスを変えたときはそれを尊重する：
+    //   ・ステータスが前回と変わってる → そのまま採用（強制上書きしない）
+    //   ・ステータスが変わっていなくて、関連する日付が「今回変わった」 → 自動連動でステータス更新
+    const userChangedStatus = (editItem?.status || "") !== (item.status || "");
+    const sellDateChanged = (editItem?.sellDate || "") !== (item.sellDate || "");
+    const sellContractDateChanged = (editItem?.sellContractDate || "") !== (item.sellContractDate || "");
+    const buyDateChanged = (editItem?.buyDate || "") !== (item.buyDate || "");
+    const buyContractDateChanged = (editItem?.buyContractDate || "") !== (item.buyContractDate || "");
+    if (!userChangedStatus) {
+      if (item.sellDate && sellDateChanged) {
+        item.status = "売決完了";
+      } else if (item.sellContractDate && sellContractDateChanged) {
+        item.status = "売契完了";
+      } else if (item.buyDate && buyDateChanged) {
+        // 仕入決済以降の中間ステータスは維持
+        const keepStatuses = [
+          "登記依頼完了",
+          "残置物処理中",
+          "リフォーム待ち", "リフォーム中", "リフォーム完了",
+          "販売中", "売契準備中", "売却役調中",
+        ];
+        if (!keepStatuses.includes(item.status)) {
+          item.status = "仕決完了";
+        }
+      } else if (item.buyContractDate && buyContractDateChanged) {
+        // 仕入契約前の段階だけ自動更新（「仕入役調中」「仕契準備中」が対象）
+        const upgradeFrom = ["仕入役調中", "仕契準備中"];
+        if (upgradeFrom.includes(item.status) || !item.status) {
+          item.status = "仕契完了";
+        }
       }
     }
 
