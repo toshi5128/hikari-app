@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.72-viewing-repeat-in-edit-form";
+const APP_VERSION = "2026-05-17-v8.73-viewing-resurrection-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -765,10 +765,24 @@ function migrateDedupViewingsV862(d) {
   let totalRemoved = 0;
   const processArr = (arr) => (Array.isArray(arr) ? arr : []).map(item => {
     if (!item || !Array.isArray(item.viewings) || item.viewings.length < 2) return item;
-    const before = item.viewings.length;
+    // 🆕 v8.73: tombstone に載っている viewing は最初に除外（dedup の「空フィールド補完」で蘇るのを防ぐ）
+    const tomb = (item && item.viewingTombstones) || {};
+    let viewingsFiltered = item.viewings;
+    if (Object.keys(tomb).length > 0) {
+      viewingsFiltered = item.viewings.filter(v => !(v && v.id != null && tomb[String(v.id)]));
+    }
+    const before = viewingsFiltered.length;
+    if (viewingsFiltered.length < 2) {
+      // tombstone 除外で 0〜1 件になった場合はそのまま返す
+      if (viewingsFiltered.length !== item.viewings.length) {
+        totalRemoved += item.viewings.length - viewingsFiltered.length;
+        return { ...item, viewings: viewingsFiltered };
+      }
+      return item;
+    }
     const groups = new Map();
     const noSig = [];
-    item.viewings.forEach(v => {
+    viewingsFiltered.forEach(v => {
       if (!v || typeof v !== "object") { noSig.push(v); return; }
       const sig = _viewingDedupSigNoDate(v);
       if (!sig) { noSig.push(v); return; }
@@ -805,7 +819,7 @@ function migrateDedupViewingsV862(d) {
       merged.push(result);
     });
     const newViewings = [...merged, ...noSig];
-    totalRemoved += before - newViewings.length;
+    totalRemoved += (item.viewings.length) - newViewings.length;
     return { ...item, viewings: newViewings };
   });
   const next = { ...d };
@@ -813,6 +827,31 @@ function migrateDedupViewingsV862(d) {
   next.mediations = processArr(d.mediations);
   next.migrations = { ...(d.migrations || {}), v862_dedupe_viewings: Date.now() };
   console.log(`[v8.62] 反響の重複を ${totalRemoved}件 統合しました`);
+  return next;
+}
+
+// 🆕 v8.73: tombstone で復活してしまった viewings を一括掃除する 1 回限り移行
+//   ・既存データに対し viewingTombstones に載っている id を持つ viewings を除去
+//   ・また dedupe で id が変わってしまった重複も applyViewingsDedup で掃除
+//   ・data.migrations.v873_purge_resurrected_viewings をマーカーに 1 回限り
+function migratePurgeResurrectedViewingsV873(d) {
+  if (!d || typeof d !== "object") return d;
+  let totalRemoved = 0;
+  const processArr = (arr) => (Array.isArray(arr) ? arr : []).map(item => {
+    if (!item || !Array.isArray(item.viewings)) return item;
+    const tomb = (item && item.viewingTombstones) || {};
+    if (Object.keys(tomb).length === 0) return item;
+    const before = item.viewings.length;
+    const filtered = item.viewings.filter(v => !(v && v.id != null && tomb[String(v.id)]));
+    if (filtered.length === before) return item;
+    totalRemoved += (before - filtered.length);
+    return { ...item, viewings: filtered };
+  });
+  const next = { ...d };
+  next.stocks = processArr(d.stocks);
+  next.mediations = processArr(d.mediations);
+  next.migrations = { ...(d.migrations || {}), v873_purge_resurrected_viewings: Date.now() };
+  console.log(`[v8.73] tombstone で残っていた反響を ${totalRemoved} 件掃除しました`);
   return next;
 }
 
@@ -2734,13 +2773,30 @@ function MainApp({ onLock, onSwitchUser }) {
     setData(d => migrateResetAnnualGoalsV869(d));
   }, [data]);
 
+  // 🆕 v8.73: 復活してしまった viewings を一括掃除（1回限り）
+  const v873MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v873MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v873_purge_resurrected_viewings) {
+      v873MigratedRef.current = true;
+      return;
+    }
+    v873MigratedRef.current = true;
+    console.log("[v8.73] 復活した反響を掃除します…");
+    setData(d => migratePurgeResurrectedViewingsV873(d));
+  }, [data]);
+
   const setData = updater => {
     setDataRaw(prev => {
       let next = typeof updater === "function" ? updater(prev) : updater;
 
-      // 🆕 ユーザーが「削除済み id」を意図的に再追加した場合は tombstone から外す
-      //   （これをやらないと再取り込みが dedup で消される）
-      next = reviveResurrectedViewings(next);
+      // 🆕 v8.73: tombstone 確定化 — 自動的な「id 一致での復活」を停止
+      //   ・以前は「削除済み id が viewings に現れたら tombstone を外す」自動復活ロジックがあったが、
+      //     stale 端末からの古いキャッシュや、SUUMO 反響の再取り込み（同じ内容 → 同じ stableId）が
+      //     ユーザーの「削除」を勝手に取り消していた。
+      //   ・再追加が必要な場合は明示的に viewingTombstones を編集する経路で行う。
+      // next = reviveResurrectedViewings(next);  // 🆕 v8.73 で停止
       // 🆕 全 stocks/mediations の反響重複を掃除（保存前に確実に dedup）
       next = applyViewingsDedup(next);
 
@@ -5899,10 +5955,27 @@ function MediationView({ data, setData, dealType, setDealType }) {
     };
     const targetMed = mediations.find(m => m.id === importTargetMedId);
     const targetName = targetMed?.name || "物件";
+    // 🆕 v8.73: tombstone 確認 — 過去に削除された反響を勝手に復活させない
+    const _existingTomb = (targetMed && targetMed.viewingTombstones) || {};
+    const _isTombed = !!_existingTomb[String(newViewing.id)];
+    if (_isTombed) {
+      if (!window.confirm(`⚠️ この反響（${newViewing.customer || "(名前不明)"}）は過去に削除されています。\n本当に復活させて追加しますか？`)) {
+        return;
+      }
+    }
     setData(d => {
       const next = {
         ...d,
-        mediations: (d.mediations || []).map(m => m.id === importTargetMedId ? { ...m, viewings: [newViewing, ...(m.viewings || [])] } : m),
+        mediations: (d.mediations || []).map(m => {
+          if (m.id !== importTargetMedId) return m;
+          // 🆕 v8.73: 復活承認時のみ、その id の tombstone を明示的に削除
+          let nextTomb = m.viewingTombstones || {};
+          if (_isTombed && nextTomb[String(newViewing.id)]) {
+            nextTomb = { ...nextTomb };
+            delete nextTomb[String(newViewing.id)];
+          }
+          return { ...m, viewings: [newViewing, ...(m.viewings || [])], viewingTombstones: nextTomb };
+        }),
       };
       return appendLogAndNotify(next, "viewing", "mediation", `👀 ${targetMed?.name || "(無題)"} に反響取り込み: ${importParsed.customer || "(名前不明)"} (${importParsed.channel})`, targetMed, { skipPush: true });
     });
@@ -7015,14 +7088,27 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     };
     const targetStock = (data.stocks || []).find(s => s.id === importTargetStockId);
     const targetName = targetStock?.name || "物件";
+    // 🆕 v8.73: tombstone 確認 — 過去に削除された反響を勝手に復活させない
+    const _existingTomb = (targetStock && targetStock.viewingTombstones) || {};
+    const _isTombed = !!_existingTomb[String(newViewing.id)];
+    if (_isTombed) {
+      if (!window.confirm(`⚠️ この反響（${newViewing.customer || "(名前不明)"}）は過去に削除されています。\n本当に復活させて追加しますか？`)) {
+        return;
+      }
+    }
     setData(d => {
       const next = {
         ...d,
-        stocks: (d.stocks || []).map(s =>
-          s.id === importTargetStockId
-            ? { ...s, viewings: [newViewing, ...(s.viewings || [])] }
-            : s
-        ),
+        stocks: (d.stocks || []).map(s => {
+          if (s.id !== importTargetStockId) return s;
+          // 🆕 v8.73: 復活承認時のみ、その id の tombstone を明示的に削除
+          let nextTomb = s.viewingTombstones || {};
+          if (_isTombed && nextTomb[String(newViewing.id)]) {
+            nextTomb = { ...nextTomb };
+            delete nextTomb[String(newViewing.id)];
+          }
+          return { ...s, viewings: [newViewing, ...(s.viewings || [])], viewingTombstones: nextTomb };
+        }),
       };
       // skipPush:true で汎用通知をスキップ → 専用通知を別途送信
       return appendLogAndNotify(
