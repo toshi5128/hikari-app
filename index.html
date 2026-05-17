@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.73-viewing-resurrection-fix";
+const APP_VERSION = "2026-05-17-v8.74-tombstone-union-merge";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -1455,6 +1455,9 @@ function _tombKeyForItem(el, stringMode) {
   return (el && el.id != null) ? String(el.id) : null;
 }
 
+// 🆕 v8.74: 全 tombstone キーの集合（mergeItems で常に union 合算するため）
+const NESTED_TOMB_KEY_SET = new Set(NESTED_TOMB_FIELDS.map(cfg => cfg.tombKey));
+
 // 親 key → 関連する tombstone 設定の配列
 const NESTED_TOMB_BY_PARENT = (() => {
   const map = {};
@@ -1574,6 +1577,25 @@ function mergeItems(localItem, remoteItem) {
     const hasL = Object.prototype.hasOwnProperty.call(localItem, key);
     const hasR = Object.prototype.hasOwnProperty.call(remoteItem, key);
     const lv = localItem[key], rv = remoteItem[key];
+    // 🆕 v8.74: tombstone フィールドは常に union（合算）。
+    //   ・以前は「タイムスタンプ新しい方が勝つ」だったため、別端末で並行編集すると
+    //     その端末の古い空 tombstone で削除記録が上書きされ、削除済み反響が復活していた。
+    //   ・union＋30日expiry で削除記録を確実に伝播させる。
+    if (NESTED_TOMB_KEY_SET.has(key)) {
+      const lTomb = (lv && typeof lv === "object") ? lv : {};
+      const rTomb = (rv && typeof rv === "object") ? rv : {};
+      const mergedTomb = {};
+      Object.keys(lTomb).forEach(id => { mergedTomb[id] = Number(lTomb[id]) || 0; });
+      Object.keys(rTomb).forEach(id => {
+        mergedTomb[id] = Math.max(mergedTomb[id] || 0, Number(rTomb[id]) || 0);
+      });
+      // 30日より古い tombstone を掃除
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      Object.keys(mergedTomb).forEach(id => { if (mergedTomb[id] < cutoff) delete mergedTomb[id]; });
+      result[key] = mergedTomb;
+      mergedF[key] = Math.max(Number(lf[key]) || lu, Number(rf[key]) || ru);
+      return;
+    }
     if (MERGEABLE_ARRAY_FIELDS.has(key) && (Array.isArray(lv) || Array.isArray(rv))) {
       result[key] = mergeArrayField(Array.isArray(lv) ? lv : [], Array.isArray(rv) ? rv : []);
       // 🆕 viewings は毎マージで重複除去
