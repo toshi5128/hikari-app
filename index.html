@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.62-dedupe-viewings";
+const APP_VERSION = "2026-05-17-v8.63-full-rmw-on-save";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -1146,40 +1146,98 @@ async function saveToSupabase(data, retries = 3) {
     console.warn("[Supabase] バージョンチェック失敗（保存は続行）:", vErr);
   }
 
-  // 🆕 v8.46: 保存前にリモートのtombstoneを pre-fetch して union する（RMW パターン）
-  //   ・stale キャッシュの端末が他端末の tombstone を消し飛ばすバグを防止
-  //   ・top-level の data.tombstones だけ取得（ネスト配列の tombstone は item 単位なので別経路）
+  // 🆕 v8.63: 保存前にリモートとフィールド全体マージ（RMW パターン拡張）
+  //   ・stale 端末の保存で remote の新しいフィールド（ステータス等）が消し飛ぶバグを防止
+  //   ・tombstone union + 配列の項目別マージ + migrations union を一括処理
+  //   ・mergeItems を使ってフィールドごとの更新時刻で判定
   try {
-    const tombRes = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=data`, {
+    const fetchRes = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=data`, {
       headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
     });
-    if (tombRes.ok) {
-      const tombRows = await tombRes.json();
-      const remoteTombs = (tombRows && tombRows[0] && tombRows[0].data && tombRows[0].data.tombstones) || {};
-      const localTombs = (data && data.tombstones) || {};
-      const cutoff = Date.now() - TOMBSTONE_RETENTION_MS;
-      const mergedTombs = {};
-      [localTombs, remoteTombs].forEach(src => {
-        Object.keys(src || {}).forEach(arrKey => {
-          if (!mergedTombs[arrKey]) mergedTombs[arrKey] = {};
-          const m = src[arrKey] || {};
-          Object.keys(m).forEach(id => {
-            const ts = Number(m[id]) || 0;
-            if (ts >= cutoff) {
-              mergedTombs[arrKey][id] = Math.max(mergedTombs[arrKey][id] || 0, ts);
-            }
+    if (fetchRes.ok) {
+      const rows = await fetchRes.json();
+      const remoteData = rows && rows[0] && rows[0].data;
+      if (remoteData && typeof remoteData === "object") {
+        // tombstones union (cutoff 30日)
+        const cutoff = Date.now() - TOMBSTONE_RETENTION_MS;
+        const mergedTombs = {};
+        [data.tombstones || {}, remoteData.tombstones || {}].forEach(src => {
+          Object.keys(src).forEach(arrKey => {
+            if (!mergedTombs[arrKey]) mergedTombs[arrKey] = {};
+            const m = src[arrKey] || {};
+            Object.keys(m).forEach(id => {
+              const ts = Number(m[id]) || 0;
+              if (ts >= cutoff) {
+                mergedTombs[arrKey][id] = Math.max(mergedTombs[arrKey][id] || 0, ts);
+              }
+            });
           });
         });
-      });
-      // 統合結果を保存対象の data に反映
-      data = { ...data, tombstones: mergedTombs };
-      // dataWithVersion も union 後の tombstones を持つように更新
-      Object.assign(dataWithVersion, { tombstones: mergedTombs });
-      // ローカルキャッシュも更新してこの後の merge でも参照されるように
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataWithVersion)); } catch {}
+        // 配列の項目別マージ（mergeItems を使う）
+        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations"];
+        const mergedArrays = {};
+        arrayKeys.forEach(k => {
+          const localArr = Array.isArray(data[k]) ? data[k] : [];
+          const remoteArr = Array.isArray(remoteData[k]) ? remoteData[k] : [];
+          const tombForK = mergedTombs[k] || {};
+          const byId = new Map();
+          const idOrder = [];
+          remoteArr.forEach(it => {
+            if (it && it.id != null) {
+              const tt = Number(tombForK[String(it.id)]) || 0;
+              if (tt > 0) return; // 削除確定
+              if (!byId.has(it.id)) { byId.set(it.id, it); idOrder.push(it.id); }
+            }
+          });
+          localArr.forEach(it => {
+            if (!it || it.id == null) return;
+            const tt = Number(tombForK[String(it.id)]) || 0;
+            if (tt > 0) return; // 削除確定
+            if (byId.has(it.id)) {
+              // 両方にある → 項目別マージ
+              byId.set(it.id, mergeItems(it, byId.get(it.id)));
+            } else {
+              byId.set(it.id, it);
+              idOrder.push(it.id);
+            }
+          });
+          mergedArrays[k] = idOrder.map(id => byId.get(id));
+        });
+        // activityLog は時系列なので、両者を結合して時刻で重複除去
+        {
+          const localLog = Array.isArray(data.activityLog) ? data.activityLog : [];
+          const remoteLog = Array.isArray(remoteData.activityLog) ? remoteData.activityLog : [];
+          const seen = new Set();
+          const combined = [];
+          [...localLog, ...remoteLog].forEach(entry => {
+            if (!entry || !entry.id) return;
+            const k = String(entry.id);
+            if (!seen.has(k)) { seen.add(k); combined.push(entry); }
+          });
+          combined.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          mergedArrays.activityLog = combined.slice(0, 200);
+        }
+        // migrations union
+        const mergedMigrations = { ...(remoteData.migrations || {}), ...(data.migrations || {}) };
+        // 統合結果を保存対象の data に反映
+        data = {
+          ...data,
+          ...mergedArrays,
+          tombstones: mergedTombs,
+          migrations: mergedMigrations,
+        };
+        Object.assign(dataWithVersion, {
+          ...mergedArrays,
+          tombstones: mergedTombs,
+          migrations: mergedMigrations,
+        });
+        // ローカルキャッシュも更新
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataWithVersion)); } catch {}
+        console.log("[Supabase] v8.63 RMW: 保存前のフィールド全体マージ完了");
+      }
     }
-  } catch (tErr) {
-    console.warn("[Supabase] tombstone pre-fetch failed:", tErr);
+  } catch (rmwErr) {
+    console.warn("[Supabase] v8.63 RMW pre-fetch failed:", rmwErr);
   }
 
   for (let attempt = 0; attempt < retries; attempt++) {
