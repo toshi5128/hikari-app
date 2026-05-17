@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.64-aggressive-update";
+const APP_VERSION = "2026-05-17-v8.65-auto-announce-version";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -2436,6 +2436,20 @@ function MainApp({ onLock, onSwitchUser }) {
       if (merged) {
         setDataRaw(merged);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
+
+        // 🆕 v8.65: 自分が新しいバージョンなら Supabase に「俺いるよ」をアナウンスして他端末のバナーを起動
+        //   ・remote.__appVersion < APP_VERSION のときに自動で minimal save を発火
+        //   ・ループ防止：このセッション中に1回だけ
+        const remoteVer = remote && remote.__appVersion;
+        if (!window.__hikariVerAnnounced__ && remoteVer && remoteVer !== APP_VERSION && isRemoteVersionNewer(APP_VERSION, remoteVer)) {
+          window.__hikariVerAnnounced__ = true;
+          console.log(`[v8.65] バージョン昇格: remote=${remoteVer} → local=${APP_VERSION} を Supabase にアナウンス`);
+          setTimeout(() => {
+            saveToSupabase(merged).then(ok => {
+              if (ok) console.log(`[v8.65] アナウンス完了。Supabase __appVersion を ${APP_VERSION} に更新`);
+            }).catch(() => {});
+          }, 1500); // 起動直後の他処理と被らないよう 1.5 秒ずらす
+        }
       }
       setSyncing(false);
     }).catch(() => {
