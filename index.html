@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.66-no-default-demo-data";
+const APP_VERSION = "2026-05-17-v8.67-scrub-and-clean";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -663,6 +663,32 @@ function migrateBackfillReshinV842(d) {
   return next;
 }
 
+// 🆕 v8.67: 過去のデモデータ起因で「全フィールドが今の時刻」になってしまった
+//   _fieldUpdatedAt を一度浄化する移行。
+//   ・_fieldUpdatedAt を {} にすると mergeItems は item.updatedAt をフォールバック値として使う
+//   ・正常な編集はその後の setData で改めて _fieldUpdatedAt が正しく刻まれる
+//   ・data.migrations.v867_scrub_field_timestamps をマーカーに 1 回限り
+function migrateScrubFieldTimestampsV867(d) {
+  if (!d || typeof d !== "object") return d;
+  const scrubArr = (arr) => (Array.isArray(arr) ? arr : []).map(it => {
+    if (!it || typeof it !== "object" || it.id == null) return it;
+    if (!it._fieldUpdatedAt) return it; // 既に空なら触らない
+    const cleaned = { ...it };
+    delete cleaned._fieldUpdatedAt;
+    return cleaned;
+  });
+  const next = { ...d };
+  next.stocks = scrubArr(d.stocks);
+  next.jiage = scrubArr(d.jiage);
+  next.owners = scrubArr(d.owners);
+  next.mediations = scrubArr(d.mediations);
+  next.sekisan = scrubArr(d.sekisan);
+  next.yakusho = scrubArr(d.yakusho);
+  next.migrations = { ...(d.migrations || {}), v867_scrub_field_timestamps: Date.now() };
+  console.log("[v8.67] 過去のデモデータ起因のタイムスタンプを浄化しました");
+  return next;
+}
+
 // 🆕 v8.62: 反響（viewings）の強化 dedupe 移行
 //   ・既存の viewingDedupSig は「日付＋顧客＋連絡先」を見るが、日付が違う重複は残ってしまう
 //   ・この移行では「日付を見ない」signature で、同じ顧客×連絡先(or メール) の反響を1件に統合
@@ -992,12 +1018,14 @@ const DEFAULT_DATA = {
   sekisan: [],
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
   memberGoals: {},
-  annualGoals: { sell: 30000, profit: 6000, buyCount: 30, brokerFee: 1500 }, // 売上3億万、利益6000万、仕入30件、仲介手数料1500万
-  activityLog: [], // 操作履歴（最新200件保持）
-  customEvents: [], // カスタム予定（自由入力）
-  adminMember: "下田", // 管理者メンバー（全員のパスワード変更可能）
-  adminMembers: ["下田", "比嘉"], // 🆕 管理者リスト（複数。全データの編集権限あり）
-  notifyMembers: ["下田", "比嘉"], // 🆕 通知を受け取るメンバー（変更があった時に Push 通知が飛ぶ）
+  // 🆕 v8.67: デモ目標値を 0 に。実目標は Supabase の値を使う
+  annualGoals: { sell: 0, profit: 0, buyCount: 0, brokerFee: 0 },
+  activityLog: [],
+  customEvents: [],
+  // 🆕 v8.67: 管理者は下田のみのデフォルト（実値は Supabase が優先される）
+  adminMember: "下田",
+  adminMembers: ["下田"],
+  notifyMembers: ["下田"],
   memberPasswords: {}, // { "下田": "1234", "比嘉": "5678", ... }
   tombstones: {}, // 🆕 削除済みアイテムID（全端末で共有）→ 削除がどの端末でも確実に伝わり、復活を防ぐ。{ stocks: {"id": 削除時刻}, customEvents: {...}, ... }
 };
@@ -2580,6 +2608,20 @@ function MainApp({ onLock, onSwitchUser }) {
     v862MigratedRef.current = true;
     console.log("[v8.62] 反響の重複を強化 dedupe で統合します…");
     setData(d => migrateDedupViewingsV862(d));
+  }, [data]);
+
+  // 🆕 v8.67: 過去のデモ汚染タイムスタンプを浄化（1回限り）
+  const v867MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v867MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v867_scrub_field_timestamps) {
+      v867MigratedRef.current = true;
+      return;
+    }
+    v867MigratedRef.current = true;
+    console.log("[v8.67] 過去のデモ汚染タイムスタンプを浄化します…");
+    setData(d => migrateScrubFieldTimestampsV867(d));
   }, [data]);
 
   const setData = updater => {
