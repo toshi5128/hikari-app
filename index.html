@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.61-clear-custom-events";
+const APP_VERSION = "2026-05-17-v8.62-dedupe-viewings";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -646,6 +646,78 @@ function migrateBackfillReshinV842(d) {
   if (upgraded > 0) {
     console.log(`[v8.42] ${upgraded}件の地上げ案件を 再訪 に更新しました`);
   }
+  return next;
+}
+
+// 🆕 v8.62: 反響（viewings）の強化 dedupe 移行
+//   ・既存の viewingDedupSig は「日付＋顧客＋連絡先」を見るが、日付が違う重複は残ってしまう
+//   ・この移行では「日付を見ない」signature で、同じ顧客×連絡先(or メール) の反響を1件に統合
+//   ・コメントは合算、空フィールドは古いデータから補完、id は最新を維持
+function _viewingDedupSigNoDate(v) {
+  if (!v) return null;
+  const cust = String(v.customer || "").trim();
+  const contact = String(v.contact || "").replace(/[\s\-()]/g, "");
+  const email = String(v.email || "").trim().toLowerCase();
+  if (cust && contact) return "C|" + cust + "|" + contact;
+  if (cust && email) return "E|" + cust + "|" + email;
+  if (contact) return "P|" + contact;
+  if (email) return "M|" + email;
+  if (cust) return "N|" + cust;
+  return null;
+}
+function migrateDedupViewingsV862(d) {
+  if (!d || typeof d !== "object") return d;
+  let totalRemoved = 0;
+  const processArr = (arr) => (Array.isArray(arr) ? arr : []).map(item => {
+    if (!item || !Array.isArray(item.viewings) || item.viewings.length < 2) return item;
+    const before = item.viewings.length;
+    const groups = new Map();
+    const noSig = [];
+    item.viewings.forEach(v => {
+      if (!v || typeof v !== "object") { noSig.push(v); return; }
+      const sig = _viewingDedupSigNoDate(v);
+      if (!sig) { noSig.push(v); return; }
+      if (!groups.has(sig)) groups.set(sig, []);
+      groups.get(sig).push(v);
+    });
+    const merged = [];
+    groups.forEach(items => {
+      if (items.length === 1) { merged.push(items[0]); return; }
+      items.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+      const newest = items[0];
+      const allComments = [];
+      const cIds = new Set();
+      items.forEach(v => {
+        (v.comments || []).forEach(c => {
+          if (!c) return;
+          if (c.id != null) {
+            if (!cIds.has(c.id)) { cIds.add(c.id); allComments.push(c); }
+          } else {
+            allComments.push(c);
+          }
+        });
+      });
+      let result = { ...newest, comments: allComments };
+      for (let i = 1; i < items.length; i++) {
+        const older = items[i];
+        Object.keys(older).forEach(k => {
+          if (k === "comments" || k === "id" || k === "updatedAt") return;
+          if (result[k] === undefined || result[k] === null || result[k] === "") {
+            result[k] = older[k];
+          }
+        });
+      }
+      merged.push(result);
+    });
+    const newViewings = [...merged, ...noSig];
+    totalRemoved += before - newViewings.length;
+    return { ...item, viewings: newViewings };
+  });
+  const next = { ...d };
+  next.stocks = processArr(d.stocks);
+  next.mediations = processArr(d.mediations);
+  next.migrations = { ...(d.migrations || {}), v862_dedupe_viewings: Date.now() };
+  console.log(`[v8.62] 反響の重複を ${totalRemoved}件 統合しました`);
   return next;
 }
 
@@ -2417,6 +2489,20 @@ function MainApp({ onLock, onSwitchUser }) {
     v861MigratedRef.current = true;
     console.log("[v8.61] カスタム予定を一括削除します…");
     setData(d => migrateClearCustomEventsV861(d));
+  }, [data]);
+
+  // 🆕 v8.62: 反響の強化 dedupe（1回限り）
+  const v862MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v862MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v862_dedupe_viewings) {
+      v862MigratedRef.current = true;
+      return;
+    }
+    v862MigratedRef.current = true;
+    console.log("[v8.62] 反響の重複を強化 dedupe で統合します…");
+    setData(d => migrateDedupViewingsV862(d));
   }, [data]);
 
   const setData = updater => {
