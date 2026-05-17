@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.63-full-rmw-on-save";
+const APP_VERSION = "2026-05-17-v8.64-aggressive-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -155,7 +155,20 @@ function isRemoteVersionNewer(remoteVer, localVer) {
 function showVersionUpdateBanner(remoteVer, seconds = 10) {
   if (window.__hikariUpdateBannerShown__) return;
   window.__hikariUpdateBannerShown__ = true;
-  const reload = () => {
+  // 🆕 v8.64: SW unregister と Cache API クリアもしてから再読込（PWAキャッシュ突破）
+  const reload = async () => {
+    try {
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister().catch(() => null)));
+      }
+    } catch {}
+    try {
+      if (typeof caches !== "undefined" && caches.keys) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k).catch(() => null)));
+      }
+    } catch {}
     window.location.href = window.location.pathname + "?v=" + Date.now();
   };
   // バナー DOM 構築
@@ -167,6 +180,7 @@ function showVersionUpdateBanner(remoteVer, seconds = 10) {
   const text = document.createElement("div");
   text.style.cssText = "flex:1;min-width:0;line-height:1.5";
   text.innerHTML = `⚠️ 新バージョン（${remoteVer}）が公開されました<br /><span style="font-size:11px;font-weight:500;opacity:0.95">あと </span>`;
+  // 🆕 v8.64: 直接更新でも反映されないケース向けの注意書き
   text.appendChild(countSpan);
   const tail = document.createElement("span");
   tail.style.cssText = "font-size:11px;font-weight:500;opacity:0.95";
