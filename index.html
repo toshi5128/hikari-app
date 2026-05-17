@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.67-scrub-and-clean";
+const APP_VERSION = "2026-05-17-v8.68-reset-demo-seeds";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -668,6 +668,48 @@ function migrateBackfillReshinV842(d) {
 //   ・_fieldUpdatedAt を {} にすると mergeItems は item.updatedAt をフォールバック値として使う
 //   ・正常な編集はその後の setData で改めて _fieldUpdatedAt が正しく刻まれる
 //   ・data.migrations.v867_scrub_field_timestamps をマーカーに 1 回限り
+// 🆕 v8.68: DEFAULT_DATA に存在した seed パターンと一致する stocks/jiage の
+//   updatedAt を 0 にリセットして、デモ起源タイムスタンプ汚染を完全浄化。
+//   ・id + name (stocks) または id + address (jiage) が完全一致するもののみ
+//   ・値（status/buyDate 等）は触らない。タイムスタンプだけ無効化
+//   ・updatedAt=0 にすることで、他端末の正しい編集が必ず勝つ
+//   ・data.migrations.v868_reset_demo_seeds をマーカーに 1 回限り
+function migrateResetDemoSeedTimestampsV868(d) {
+  if (!d || typeof d !== "object") return d;
+  const DEMO_STOCK_NAMES = new Set([
+    "川越市木野目", "日高市武蔵台", "大宮区天沼", "富士見市水谷東",
+    "羽生市北荻島", "川越市下広谷", "八街市東吉田", "越生町越生",
+  ]);
+  const DEMO_JIAGE_ADDRS = new Set([
+    "埼玉県熊谷市広瀬800-123", "埼玉県熊谷市大原1-1780-20",
+  ]);
+  let resetCount = 0;
+  const next = { ...d };
+  next.stocks = (Array.isArray(d.stocks) ? d.stocks : []).map(s => {
+    if (!s || s.id == null) return s;
+    if (s.id >= 1 && s.id <= 8 && DEMO_STOCK_NAMES.has(s.name)) {
+      resetCount++;
+      const cleaned = { ...s, updatedAt: 0 };
+      delete cleaned._fieldUpdatedAt;
+      return cleaned;
+    }
+    return s;
+  });
+  next.jiage = (Array.isArray(d.jiage) ? d.jiage : []).map(j => {
+    if (!j || j.id == null) return j;
+    if ((j.id === 1 || j.id === 2) && DEMO_JIAGE_ADDRS.has(j.address)) {
+      resetCount++;
+      const cleaned = { ...j, updatedAt: 0 };
+      delete cleaned._fieldUpdatedAt;
+      return cleaned;
+    }
+    return j;
+  });
+  next.migrations = { ...(d.migrations || {}), v868_reset_demo_seeds: Date.now() };
+  console.log(`[v8.68] デモ起源 ${resetCount}件のタイムスタンプをリセットしました`);
+  return next;
+}
+
 function migrateScrubFieldTimestampsV867(d) {
   if (!d || typeof d !== "object") return d;
   const scrubArr = (arr) => (Array.isArray(arr) ? arr : []).map(it => {
@@ -2622,6 +2664,21 @@ function MainApp({ onLock, onSwitchUser }) {
     v867MigratedRef.current = true;
     console.log("[v8.67] 過去のデモ汚染タイムスタンプを浄化します…");
     setData(d => migrateScrubFieldTimestampsV867(d));
+  }, [data]);
+
+  // 🆕 v8.68: デモ起源 stocks/jiage の updatedAt を 0 にリセット（1回限り）
+  const v868MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v868MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v868_reset_demo_seeds) {
+      v868MigratedRef.current = true;
+      return;
+    }
+    if (!(data.migrations && data.migrations.v867_scrub_field_timestamps)) return;
+    v868MigratedRef.current = true;
+    console.log("[v8.68] デモ起源 stocks/jiage の updatedAt をリセットします…");
+    setData(d => migrateResetDemoSeedTimestampsV868(d));
   }, [data]);
 
   const setData = updater => {
