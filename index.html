@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.75-stop-annual-goals-reset";
+const APP_VERSION = "2026-05-17-v8.76-tombstone-revival-marker";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -771,7 +771,7 @@ function migrateDedupViewingsV862(d) {
     const tomb = (item && item.viewingTombstones) || {};
     let viewingsFiltered = item.viewings;
     if (Object.keys(tomb).length > 0) {
-      viewingsFiltered = item.viewings.filter(v => !(v && v.id != null && tomb[String(v.id)]));
+      viewingsFiltered = item.viewings.filter(v => !(v && v.id != null && (Number(tomb[String(v.id)]) || 0) > 0));
     }
     const before = viewingsFiltered.length;
     if (viewingsFiltered.length < 2) {
@@ -844,7 +844,7 @@ function migratePurgeResurrectedViewingsV873(d) {
     const tomb = (item && item.viewingTombstones) || {};
     if (Object.keys(tomb).length === 0) return item;
     const before = item.viewings.length;
-    const filtered = item.viewings.filter(v => !(v && v.id != null && tomb[String(v.id)]));
+    const filtered = item.viewings.filter(v => !(v && v.id != null && (Number(tomb[String(v.id)]) || 0) > 0));
     if (filtered.length === before) return item;
     totalRemoved += (before - filtered.length);
     return { ...item, viewings: filtered };
@@ -1579,21 +1579,26 @@ function mergeItems(localItem, remoteItem) {
     const hasL = Object.prototype.hasOwnProperty.call(localItem, key);
     const hasR = Object.prototype.hasOwnProperty.call(remoteItem, key);
     const lv = localItem[key], rv = remoteItem[key];
-    // 🆕 v8.74: tombstone フィールドは常に union（合算）。
-    //   ・以前は「タイムスタンプ新しい方が勝つ」だったため、別端末で並行編集すると
-    //     その端末の古い空 tombstone で削除記録が上書きされ、削除済み反響が復活していた。
-    //   ・union＋30日expiry で削除記録を確実に伝播させる。
+    // 🆕 v8.74→v8.76: tombstone フィールドは abs(timestamp) 最大が勝つ union
+    //   ・正値=削除、負値=明示的な復活マーカー
+    //   ・絶対値の大きい方が「最新イベント」とみなされる
+    //   ・これで「削除は伝播・復活も伝播」が両立する
     if (NESTED_TOMB_KEY_SET.has(key)) {
       const lTomb = (lv && typeof lv === "object") ? lv : {};
       const rTomb = (rv && typeof rv === "object") ? rv : {};
       const mergedTomb = {};
+      const pickLatest = (a, b) => Math.abs(a) >= Math.abs(b) ? a : b;
       Object.keys(lTomb).forEach(id => { mergedTomb[id] = Number(lTomb[id]) || 0; });
       Object.keys(rTomb).forEach(id => {
-        mergedTomb[id] = Math.max(mergedTomb[id] || 0, Number(rTomb[id]) || 0);
+        const a = mergedTomb[id] || 0;
+        const b = Number(rTomb[id]) || 0;
+        mergedTomb[id] = pickLatest(a, b);
       });
-      // 30日より古い tombstone を掃除
+      // 30日より古いエントリ（削除も復活も）を掃除
       const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-      Object.keys(mergedTomb).forEach(id => { if (mergedTomb[id] < cutoff) delete mergedTomb[id]; });
+      Object.keys(mergedTomb).forEach(id => {
+        if (Math.abs(mergedTomb[id]) < cutoff) delete mergedTomb[id];
+      });
       result[key] = mergedTomb;
       mergedF[key] = Math.max(Number(lf[key]) || lu, Number(rf[key]) || ru);
       return;
@@ -1613,23 +1618,26 @@ function mergeItems(localItem, remoteItem) {
         const lTomb = (localItem && localItem[tombCfg.tombKey]) || {};
         const rTomb = (remoteItem && remoteItem[tombCfg.tombKey]) || {};
         const mergedTomb = {};
+        // 🆕 v8.76: abs(timestamp) が最大のイベントを採用（正=削除、負=復活マーカー）
+        const pickLatest = (a, b) => Math.abs(a) >= Math.abs(b) ? a : b;
         Object.keys(lTomb).forEach(id => { mergedTomb[id] = Number(lTomb[id]) || 0; });
         Object.keys(rTomb).forEach(id => {
-          mergedTomb[id] = Math.max(mergedTomb[id] || 0, Number(rTomb[id]) || 0);
+          const a = mergedTomb[id] || 0;
+          const b = Number(rTomb[id]) || 0;
+          mergedTomb[id] = pickLatest(a, b);
         });
-        // 30日より古い tombstone を掃除
+        // 30日より古いエントリ（削除も復活も）を掃除
         const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-        Object.keys(mergedTomb).forEach(id => { if (mergedTomb[id] < cutoff) delete mergedTomb[id]; });
-        // 🆕 v8.51: ネスト配列の tombstone も確定化（同期での「編集勝ち」復活を停止）
-        //   ・stale キャッシュの端末が、ローカルの古い親 updatedAt で削除済み viewing を復活させてしまう問題を根絶
-        //   ・意図的な再追加（ユーザー操作で同じ id の viewing を viewings に入れ直す）は
-        //     setData プレパスの reviveResurrectedNested で tombstone がクリアされるので別経路で成立する
+        Object.keys(mergedTomb).forEach(id => {
+          if (Math.abs(mergedTomb[id]) < cutoff) delete mergedTomb[id];
+        });
+        // 🆕 v8.76: 正値（削除確定）のものだけフィルタ対象。負値は「復活マーカー」なので残す
         if (Object.keys(mergedTomb).length > 0) {
           result[key] = result[key].filter(el => {
             const k2 = _tombKeyForItem(el, tombCfg.stringMode);
             if (k2 == null) return true;
             const t = Number(mergedTomb[k2]) || 0;
-            return !t; // tombstone があれば問答無用に除外
+            return !(t > 0); // 正値のみ削除扱い
           });
         }
         result[tombCfg.tombKey] = mergedTomb;
@@ -1786,7 +1794,7 @@ function applyViewingsDedup(data) {
       // 🆕 tombstone に載ってる viewing は除外
       const tomb = item.viewingTombstones || {};
       if (vs && Object.keys(tomb).length > 0) {
-        const filtered = vs.filter(v => !(v && v.id != null && tomb[String(v.id)]));
+        const filtered = vs.filter(v => !(v && v.id != null && (Number(tomb[String(v.id)]) || 0) > 0));
         if (filtered.length !== vs.length) { vs = filtered; itemChanged = true; }
       }
       // 重複除去
@@ -5992,11 +6000,12 @@ function MediationView({ data, setData, dealType, setDealType }) {
         ...d,
         mediations: (d.mediations || []).map(m => {
           if (m.id !== importTargetMedId) return m;
-          // 🆕 v8.73: 復活承認時のみ、その id の tombstone を明示的に削除
+          // 🆕 v8.73→v8.76: 復活承認時は tombstone を負値（復活マーカー）に書き換え。
+          //   ・delete だと RMW pre-fetch で remote の正値で復元され、結局フィルタで消えていた。
+          //   ・負値にしておけば union で abs 最大なら勝ち、フィルタも > 0 のみ削除扱いなので生き残る。
           let nextTomb = m.viewingTombstones || {};
-          if (_isTombed && nextTomb[String(newViewing.id)]) {
-            nextTomb = { ...nextTomb };
-            delete nextTomb[String(newViewing.id)];
+          if (_isTombed) {
+            nextTomb = { ...nextTomb, [String(newViewing.id)]: -Date.now() };
           }
           return { ...m, viewings: [newViewing, ...(m.viewings || [])], viewingTombstones: nextTomb };
         }),
@@ -7125,11 +7134,10 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         ...d,
         stocks: (d.stocks || []).map(s => {
           if (s.id !== importTargetStockId) return s;
-          // 🆕 v8.73: 復活承認時のみ、その id の tombstone を明示的に削除
+          // 🆕 v8.73→v8.76: 復活承認時は tombstone を負値（復活マーカー）に書き換え
           let nextTomb = s.viewingTombstones || {};
-          if (_isTombed && nextTomb[String(newViewing.id)]) {
-            nextTomb = { ...nextTomb };
-            delete nextTomb[String(newViewing.id)];
+          if (_isTombed) {
+            nextTomb = { ...nextTomb, [String(newViewing.id)]: -Date.now() };
           }
           return { ...s, viewings: [newViewing, ...(s.viewings || [])], viewingTombstones: nextTomb };
         }),
