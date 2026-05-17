@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.80-nuke-demo-seeds";
+const APP_VERSION = "2026-05-17-v8.82-untomb-on-merge";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -692,50 +692,47 @@ function migrateResetAnnualGoalsV869(d) {
   };
 }
 
-// 🆕 v8.80: デモ起源 stocks/jiage を配列から削除＋tombstone登録（1回限り）
-//   ・v8.68 では updatedAt=0 にしただけで残置→ buyContractDate/nextVisit がカレンダーに紫表示
-//   ・v8.80 で完全削除＋ data.tombstones.{stocks,jiage} に登録して stale 端末からの復活を防ぐ
+// 🆕 v8.80 → v8.81: 緊急ロールバック（no-op 化）
+//   ・v8.80 は「id 1-8 stocks + 名前一致」「id 1-2 jiage + 住所一致」でデモ判定していたが、
+//     ユーザーが再利用した同名物件まで削除してしまった。
+//   ・v8.81 で migration を no-op 化（マーカーだけ立てて値は一切触らない）。
+//   ・既に走ってしまった端末は別途 v8.81 復旧 migration で tombstones を解除する。
 function migrateNukeDemoSeedsV880(d) {
   if (!d || typeof d !== "object") return d;
-  const DEMO_STOCK_NAMES = new Set([
-    "川越市木野目", "日高市武蔵台", "大宮区天沼", "富士見市水谷東",
-    "羽生市北荻島", "川越市下広谷", "八街市東吉田", "越生町越生",
-  ]);
-  const DEMO_JIAGE_ADDRS = new Set([
-    "埼玉県熊谷市広瀬800-123", "埼玉県熊谷市大原1-1780-20",
-  ]);
-  const now = Date.now();
-  const tombs = { ...(d.tombstones || {}) };
-  const stocksTomb = { ...(tombs.stocks || {}) };
-  const jiageTomb = { ...(tombs.jiage || {}) };
-  let removed = 0;
-  const nextStocks = (Array.isArray(d.stocks) ? d.stocks : []).filter(s => {
-    if (!s || s.id == null) return true;
-    if (s.id >= 1 && s.id <= 8 && DEMO_STOCK_NAMES.has(s.name)) {
-      stocksTomb[String(s.id)] = now;
-      removed++;
-      return false;
-    }
-    return true;
-  });
-  const nextJiage = (Array.isArray(d.jiage) ? d.jiage : []).filter(j => {
-    if (!j || j.id == null) return true;
-    if ((j.id === 1 || j.id === 2) && DEMO_JIAGE_ADDRS.has(j.address)) {
-      jiageTomb[String(j.id)] = now;
-      removed++;
-      return false;
-    }
-    return true;
-  });
-  tombs.stocks = stocksTomb;
-  tombs.jiage = jiageTomb;
-  console.log(`[v8.80] デモ起源 ${removed} 件を削除＋tombstone登録しました`);
+  // ⚠ v8.81 でストッパー化：データは触らない
   return {
     ...d,
-    stocks: nextStocks,
-    jiage: nextJiage,
+    migrations: { ...(d.migrations || {}), v880_nuke_demo_seeds: Date.now() },
+  };
+}
+
+// 🆕 v8.81: v8.80 が誤って登録した tombstones を解除する復旧 migration
+//   ・v880_nuke_demo_seeds マーカーが立っていれば対象（v8.80 が走った端末）
+//   ・data.tombstones.stocks から id 1-8、data.tombstones.jiage から id 1-2 を削除
+//   ・別端末に該当 stocks/jiage が残っていれば、ポーリングで戻ってくる
+function migrateUnTombDemoSeedsV881(d) {
+  if (!d || typeof d !== "object") return d;
+  const tombs = { ...(d.tombstones || {}) };
+  let cleared = 0;
+  if (tombs.stocks && typeof tombs.stocks === "object") {
+    const next = { ...tombs.stocks };
+    [1, 2, 3, 4, 5, 6, 7, 8].forEach(id => {
+      if (next[String(id)] != null) { delete next[String(id)]; cleared++; }
+    });
+    tombs.stocks = next;
+  }
+  if (tombs.jiage && typeof tombs.jiage === "object") {
+    const next = { ...tombs.jiage };
+    [1, 2].forEach(id => {
+      if (next[String(id)] != null) { delete next[String(id)]; cleared++; }
+    });
+    tombs.jiage = next;
+  }
+  console.log(`[v8.81] v8.80 が登録した tombstones を ${cleared} 件解除しました`);
+  return {
+    ...d,
     tombstones: tombs,
-    migrations: { ...(d.migrations || {}), v880_nuke_demo_seeds: now },
+    migrations: { ...(d.migrations || {}), v881_untomb_demo_seeds: Date.now() },
   };
 }
 
@@ -1352,6 +1349,13 @@ async function saveToSupabase(data, retries = 3) {
             });
           });
         });
+        // 🆕 v8.82: v8.80 誤登録 tombstones を強制無効化
+        if (mergedTombs.stocks) {
+          [1, 2, 3, 4, 5, 6, 7, 8].forEach(id => { delete mergedTombs.stocks[String(id)]; });
+        }
+        if (mergedTombs.jiage) {
+          [1, 2].forEach(id => { delete mergedTombs.jiage[String(id)]; });
+        }
         // 配列の項目別マージ（mergeItems を使う）
         const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations"];
         const mergedArrays = {};
@@ -2548,6 +2552,16 @@ function MainApp({ onLock, onSwitchUser }) {
       });
     });
 
+    // 🆕 v8.82: v8.80 が誤って登録した tombstones を merge 前に強制無効化
+    //   ・stocks id 1-8, jiage id 1-2 はユーザーが再利用していた可能性が高い
+    //   ・mergeRemoteSafely の filter で消されるのを防ぐ
+    if (mergedTomb.stocks && typeof mergedTomb.stocks === "object") {
+      [1, 2, 3, 4, 5, 6, 7, 8].forEach(id => { delete mergedTomb.stocks[String(id)]; });
+    }
+    if (mergedTomb.jiage && typeof mergedTomb.jiage === "object") {
+      [1, 2].forEach(id => { delete mergedTomb.jiage[String(id)]; });
+    }
+
     const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "activityLog"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
@@ -2869,7 +2883,7 @@ function MainApp({ onLock, onSwitchUser }) {
     setData(d => migratePurgeResurrectedViewingsV873(d));
   }, [data]);
 
-  // 🆕 v8.80: デモ起源 stocks/jiage を完全削除＋tombstone登録（1回限り）
+  // 🆕 v8.80→v8.81: デモ判定 migration は no-op 化（誤削除防止）
   const v880MigratedRef = useRef(false);
   useEffect(() => {
     if (v880MigratedRef.current) return;
@@ -2879,8 +2893,22 @@ function MainApp({ onLock, onSwitchUser }) {
       return;
     }
     v880MigratedRef.current = true;
-    console.log("[v8.80] デモ起源 stocks/jiage を削除します…");
+    console.log("[v8.80→v8.81] migration マーカーだけ設定（値は触らない）");
     setData(d => migrateNukeDemoSeedsV880(d));
+  }, [data]);
+
+  // 🆕 v8.81: v8.80 が誤って登録した tombstones を解除（1回限り）
+  const v881MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v881MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v881_untomb_demo_seeds) {
+      v881MigratedRef.current = true;
+      return;
+    }
+    v881MigratedRef.current = true;
+    console.log("[v8.81] v8.80 が登録した tombstones を解除します…");
+    setData(d => migrateUnTombDemoSeedsV881(d));
   }, [data]);
 
   const setData = updater => {
