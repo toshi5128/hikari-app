@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.69-reset-annual-goals";
+const APP_VERSION = "2026-05-17-v8.70-admin-change-password";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -13208,6 +13208,41 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
     }
   };
 
+  // 🆕 v8.70: 管理者変更の認証（現管理者のパスワードを要求）
+  const confirmAdminChange = () => {
+    const currentAdmin = data.adminMember || "下田";
+    const newAdmin = pwdAuth.newAdmin;
+    const adminPwd = memberPasswords[currentAdmin];
+    if (!adminPwd) {
+      setPwdError("現管理者のパスワードが未設定です。設定してから再実行してください。");
+      return;
+    }
+    if (pwdInput !== adminPwd) {
+      setPwdError("パスワードが違います");
+      setPwdInput("");
+      return;
+    }
+    // 認証成功 → adminMember 変更
+    setData(d => ({ ...d, adminMember: newAdmin }));
+    setPwdAuth(null);
+    setPwdInput("");
+    setPwdError("");
+    alert(`✅ 管理者を「${newAdmin}」に変更しました。\nあなたは一般メンバーになりました。`);
+  };
+
+  // 🆕 v8.70: 管理者変更を試みる
+  const tryChangeAdmin = (newAdmin) => {
+    const currentAdmin = data.adminMember || "下田";
+    if (newAdmin === currentAdmin) return;
+    if (!memberPasswords[currentAdmin]) {
+      alert(`⚠️ 管理者を変更するには、先に現管理者（${currentAdmin}）のパスワードを設定してください。\n\n上の「🔐 メンバーパスワード管理」で ${currentAdmin} の「設定」ボタンからパスワードを設定できます。`);
+      return;
+    }
+    if (!window.confirm(`管理者を「${newAdmin}」に変更します。\n以降、あなたは一般メンバーになります。\n\n続行するには現管理者「${currentAdmin}」のパスワードを入力します。`)) return;
+    setPwdInput(""); setPwdError("");
+    setPwdAuth({ member: currentAdmin, action: "adminChange", newAdmin });
+  };
+
   // パスワード設定試行
   const tryOpenPwdSetting = (member) => {
     // 管理者は誰でも設定可能（旧パスワード不要）
@@ -13374,14 +13409,12 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
         {isAdmin && (
           <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.borderDim}` }}>
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontWeight: 700 }}>👑 管理者を変更（管理者操作）</div>
-            <select style={inp} value={adminMember} onChange={e => {
-              if (!window.confirm(`管理者を「${e.target.value}」に変更します。\n以降、あなたは一般メンバーになります。よろしいですか？`)) return;
-              setData(d => ({ ...d, adminMember: e.target.value }));
-            }}>
+            <select style={inp} value={adminMember} onChange={e => tryChangeAdmin(e.target.value)}>
               {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
             <div style={{ fontSize: 10, color: C.warn, marginTop: 4, lineHeight: 1.5 }}>
-              ⚠️ 管理者を変更すると、自分は一般メンバーになります
+              ⚠️ 管理者を変更すると、自分は一般メンバーになります<br />
+              🔒 v8.70: 変更には現管理者のパスワードが必要です
             </div>
           </div>
         )}
@@ -13451,6 +13484,29 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
           <div style={{ display: "flex", gap: 10 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setPwdAuth(null); setPwdInput(""); setPwdError(""); }}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2 }} onClick={confirmSwitch}>🔓 認証して切替</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* 🆕 v8.70: 管理者変更の認証 BottomSheet（現管理者のパスワードを要求） */}
+      {pwdAuth && pwdAuth.action === "adminChange" && (
+        <BottomSheet title={`👑 管理者変更の認証`} onClose={() => { setPwdAuth(null); setPwdInput(""); setPwdError(""); }}>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14, lineHeight: 1.6 }}>
+            管理者を <span style={{ color: C.text, fontWeight: 700 }}>{pwdAuth.member}</span> から <span style={{ color: "#FCD34D", fontWeight: 700 }}>{pwdAuth.newAdmin}</span> に変更します。<br />
+            続行するには現管理者「<span style={{ color: C.text, fontWeight: 700 }}>{pwdAuth.member}</span>」のパスワードを入力してください。
+          </div>
+          <Field label="🔑 現管理者のパスワード（4桁）">
+            <input type="password" inputMode="numeric" maxLength={4}
+              value={pwdInput} onChange={e => { setPwdInput(e.target.value.replace(/[^0-9]/g, "")); setPwdError(""); }}
+              onKeyDown={e => { if (e.key === "Enter") confirmAdminChange(); }}
+              autoFocus placeholder="••••"
+              style={{ ...inp, fontSize: 28, textAlign: "center", letterSpacing: "0.5em", padding: "14px" }}
+            />
+          </Field>
+          {pwdError && <div style={{ color: C.danger, fontSize: 13, textAlign: "center", marginBottom: 10 }}>{pwdError}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setPwdAuth(null); setPwdInput(""); setPwdError(""); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={confirmAdminChange}>👑 認証して変更</button>
           </div>
         </BottomSheet>
       )}
