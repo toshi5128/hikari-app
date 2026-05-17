@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.83-stock-sort-goals-protect";
+const APP_VERSION = "2026-05-17-v8.84-goals-write-protect";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -1425,17 +1425,35 @@ async function saveToSupabase(data, retries = 3) {
         }
         // migrations union
         const mergedMigrations = { ...(remoteData.migrations || {}), ...(data.migrations || {}) };
+
+        // 🆕 v8.84: annualGoals 非ゼロ保護（保存時）
+        //   ・local が全ゼロかつ remote に非ゼロ値があれば、remote の値を採用
+        //   ・古い端末 or 起動直後の状態が 0 を Supabase に書き込むのを防ぐ
+        let safeAnnualGoals = data.annualGoals;
+        if (data.annualGoals && remoteData.annualGoals) {
+          const local = data.annualGoals;
+          const remote = remoteData.annualGoals;
+          const localAllZero = !local.sell && !local.profit && !local.buyCount && !local.brokerFee;
+          const remoteHasNonZero = !!(remote.sell || remote.profit || remote.buyCount || remote.brokerFee);
+          if (localAllZero && remoteHasNonZero) {
+            console.log("[v8.84] saveToSupabase: local 全ゼロ、remote 非ゼロ → remote の annualGoals を保護");
+            safeAnnualGoals = remote;
+          }
+        }
+
         // 統合結果を保存対象の data に反映
         data = {
           ...data,
           ...mergedArrays,
           tombstones: mergedTombs,
           migrations: mergedMigrations,
+          annualGoals: safeAnnualGoals,
         };
         Object.assign(dataWithVersion, {
           ...mergedArrays,
           tombstones: mergedTombs,
           migrations: mergedMigrations,
+          annualGoals: safeAnnualGoals,
         });
         // ローカルキャッシュも更新
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataWithVersion)); } catch {}
@@ -2666,19 +2684,28 @@ function MainApp({ onLock, onSwitchUser }) {
       });
     }
 
-    // 🆕 v8.83: annualGoals 非ゼロ保護
-    //   ・古いバージョンの端末（v8.74 以前で v8.69 migration がまだ動く）が
-    //     起動時に annualGoals を全ゼロで Supabase に書き込むと、ポーリングで
-    //     全端末の表示が 0 に戻ってしまう。
-    //   ・remote が全ゼロかつ local に非ゼロ値があれば local を採用する。
+    // 🆕 v8.83→v8.84: annualGoals 非ゼロ保護＋自動修復
+    //   ・古いバージョン端末（v8.74 以前）が annualGoals を 0 で Supabase に書き込むと
+    //     ポーリングで全端末の表示が 0 に戻ってしまう問題への対策
+    //   ・remote が全ゼロかつ local に非ゼロ値があれば local を採用＋Supabase に書き戻す
     if (local && local.annualGoals && merged.annualGoals) {
       const ag = merged.annualGoals;
       const lag = local.annualGoals;
       const remoteAllZero = !ag.sell && !ag.profit && !ag.buyCount && !ag.brokerFee;
       const localHasNonZero = !!(lag.sell || lag.profit || lag.buyCount || lag.brokerFee);
       if (remoteAllZero && localHasNonZero) {
-        console.log("[v8.83] annualGoals: remote 全ゼロを検出、local の値を採用します");
+        console.log("[v8.84] annualGoals: remote 全ゼロを検出、local の値を採用＋Supabase に自動修復します");
         merged.annualGoals = lag;
+        // 🆕 v8.84: 0 上書きを検出したら local 値を Supabase に書き戻す
+        //   ・無限ループ防止のため 1 セッションに 1 回まで
+        if (!window.__hikariAnnualGoalsRestored__) {
+          window.__hikariAnnualGoalsRestored__ = true;
+          setTimeout(() => {
+            saveToSupabase({ ...merged }).then(ok => {
+              if (ok) console.log("[v8.84] annualGoals 自動修復: Supabase に local の値を書き戻しました");
+            }).catch(() => {});
+          }, 1000);
+        }
       }
     }
 
@@ -2887,19 +2914,13 @@ function MainApp({ onLock, onSwitchUser }) {
     setData(d => migrateResetDemoSeedTimestampsV868(d));
   }, [data]);
 
-  // 🆕 v8.69: annualGoals を 0 にリセット（1回限り）
-  const v869MigratedRef = useRef(false);
-  useEffect(() => {
-    if (v869MigratedRef.current) return;
-    if (!data) return;
-    if (data.migrations && data.migrations.v869_reset_annual_goals) {
-      v869MigratedRef.current = true;
-      return;
-    }
-    v869MigratedRef.current = true;
-    console.log("[v8.69→v8.75] annualGoals マーカーを設定（値は変更しません）");
-    setData(d => migrateResetAnnualGoalsV869(d));
-  }, [data]);
+  // 🆕 v8.69 → v8.84: useEffect を完全停止
+  //   ・以前は no-op でもマーカー設定のために setData を呼んでいたが、
+  //     setData が saveToSupabase を発火させ、local の annualGoals=0 を
+  //     Supabase に書き込んでしまう副作用があった。
+  //   ・v8.84 では useEffect ごと無効化。マーカーは他端末から伝播するだけにする。
+  // const v869MigratedRef = useRef(false);
+  // useEffect(() => { ... });  // v8.84 で完全に無効化
 
   // 🆕 v8.73: 復活してしまった viewings を一括掃除（1回限り）
   const v873MigratedRef = useRef(false);
