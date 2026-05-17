@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.74-tombstone-union-merge";
+const APP_VERSION = "2026-05-17-v8.75-stop-annual-goals-reset";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -674,15 +674,17 @@ function migrateBackfillReshinV842(d) {
 //   ・値（status/buyDate 等）は触らない。タイムスタンプだけ無効化
 //   ・updatedAt=0 にすることで、他端末の正しい編集が必ず勝つ
 //   ・data.migrations.v868_reset_demo_seeds をマーカーに 1 回限り
-// 🆕 v8.69: Supabase 側に残っている annualGoals のデモ値（売上3億万・利益6000万・仕入30件・仲介手数料1500万）を
-//   全て 0 にリセット。ユーザーが「目標編集」ボタンから実目標を入力する想定。
-//   ・data.migrations.v869_reset_annual_goals をマーカーに 1 回限り
+// 🆕 v8.69 → v8.75: annualGoals は触らない（マーカーのみ立てる）
+//   ・v8.69 では「Supabase 上のデモ値を 0 にリセット」する目的だったが、
+//     キャッシュにマーカーが無い別端末が起動するたびに 0 で上書きしてしまい、
+//     ユーザーが「目標編集」で保存した値が次のポーリングで消える不具合があった。
+//   ・v8.75 でこの migration は no-op 化（値は変更せず、マーカーだけ立てる）。
+//   ・既に Supabase 上で実目標を保存している場合、その値が保持される。
 function migrateResetAnnualGoalsV869(d) {
   if (!d || typeof d !== "object") return d;
-  console.log("[v8.69] annualGoals を 0 にリセット（実目標は「目標編集」から入力してください）");
+  // ⚠ annualGoals の値は一切触らない（保存した値を消さないため）
   return {
     ...d,
-    annualGoals: { sell: 0, profit: 0, buyCount: 0, brokerFee: 0 },
     migrations: { ...(d.migrations || {}), v869_reset_annual_goals: Date.now() },
   };
 }
@@ -2791,7 +2793,7 @@ function MainApp({ onLock, onSwitchUser }) {
       return;
     }
     v869MigratedRef.current = true;
-    console.log("[v8.69] annualGoals を 0 にリセットします…");
+    console.log("[v8.69→v8.75] annualGoals マーカーを設定（値は変更しません）");
     setData(d => migrateResetAnnualGoalsV869(d));
   }, [data]);
 
