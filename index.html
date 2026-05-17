@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.60-viewing-detail-button";
+const APP_VERSION = "2026-05-17-v8.61-clear-custom-events";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -647,6 +647,29 @@ function migrateBackfillReshinV842(d) {
     console.log(`[v8.42] ${upgraded}件の地上げ案件を 再訪 に更新しました`);
   }
   return next;
+}
+
+// 🆕 v8.61: カスタム予定（customEvents）を一括削除する移行
+//   ・テスト用の予定や古い予定で蓄積した customEvents をクリーンスタート
+//   ・削除した ID をすべて data.tombstones.customEvents に登録するので、stale 端末から復活しない
+//   ・物件の予定日（仕入決済日・売却契約日等）や反響案内、地上げ次回訪問日は影響なし
+function migrateClearCustomEventsV861(d) {
+  if (!d || typeof d !== "object") return d;
+  const oldEvents = Array.isArray(d.customEvents) ? d.customEvents : [];
+  const now = Date.now();
+  const tombs = { ...(d.tombstones || {}) };
+  const evTomb = { ...(tombs.customEvents || {}) };
+  oldEvents.forEach(ev => {
+    if (ev && ev.id != null) evTomb[String(ev.id)] = now;
+  });
+  tombs.customEvents = evTomb;
+  console.log(`[v8.61] ${oldEvents.length}件のカスタム予定を削除しました`);
+  return {
+    ...d,
+    customEvents: [],
+    tombstones: tombs,
+    migrations: { ...(d.migrations || {}), v861_clear_custom_events: now },
+  };
 }
 
 // 🆕 v8.43: v842 が動かなかった環境向けに、より広いルールで再訪バックフィル
@@ -2380,6 +2403,20 @@ function MainApp({ onLock, onSwitchUser }) {
     v843MigratedRef.current = true;
     console.log("[v8.43] 再訪 を broader rule で再バックフィル…");
     setData(d => migrateBackfillReshinV843(d));
+  }, [data]);
+
+  // 🆕 v8.61: カスタム予定（customEvents）の一括削除（1回限り）
+  const v861MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v861MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v861_clear_custom_events) {
+      v861MigratedRef.current = true;
+      return;
+    }
+    v861MigratedRef.current = true;
+    console.log("[v8.61] カスタム予定を一括削除します…");
+    setData(d => migrateClearCustomEventsV861(d));
   }, [data]);
 
   const setData = updater => {
