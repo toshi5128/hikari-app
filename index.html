@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.82-untomb-on-merge";
+const APP_VERSION = "2026-05-17-v8.83-stock-sort-goals-protect";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -689,6 +689,35 @@ function migrateResetAnnualGoalsV869(d) {
   return {
     ...d,
     migrations: { ...(d.migrations || {}), v869_reset_annual_goals: Date.now() },
+  };
+}
+
+// 🆕 v8.83: カレンダーから 5/15 広瀬・5/20 大原 のデモ予定を消す migration
+//   ・jiage id=1 で住所=「埼玉県熊谷市広瀬800-123」なら nextVisit クリア
+//   ・jiage id=2 で住所=「埼玉県熊谷市大原1-1780-20」なら nextVisit クリア
+//   ・jiage レコード自体（住所・履歴等）は残す
+//   ・ID と住所の両方が一致した場合のみ動作するので、ユーザーが上書きした実データには影響しない
+function migrateClearDemoJiageNextVisitV883(d) {
+  if (!d || typeof d !== "object") return d;
+  const DEMO_JIAGE_ADDRS = {
+    1: "埼玉県熊谷市広瀬800-123",
+    2: "埼玉県熊谷市大原1-1780-20",
+  };
+  let cleared = 0;
+  const next = { ...d };
+  next.jiage = (Array.isArray(d.jiage) ? d.jiage : []).map(j => {
+    if (!j || j.id == null) return j;
+    const expectAddr = DEMO_JIAGE_ADDRS[j.id];
+    if (expectAddr && j.address === expectAddr && j.nextVisit) {
+      cleared++;
+      return { ...j, nextVisit: "" };
+    }
+    return j;
+  });
+  console.log(`[v8.83] デモ jiage の nextVisit を ${cleared} 件クリアしました`);
+  return {
+    ...next,
+    migrations: { ...(d.migrations || {}), v883_clear_demo_jiage_nextvisit: Date.now() },
   };
 }
 
@@ -1349,13 +1378,7 @@ async function saveToSupabase(data, retries = 3) {
             });
           });
         });
-        // 🆕 v8.82: v8.80 誤登録 tombstones を強制無効化
-        if (mergedTombs.stocks) {
-          [1, 2, 3, 4, 5, 6, 7, 8].forEach(id => { delete mergedTombs.stocks[String(id)]; });
-        }
-        if (mergedTombs.jiage) {
-          [1, 2].forEach(id => { delete mergedTombs.jiage[String(id)]; });
-        }
+        // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去（手動削除を尊重）
         // 配列の項目別マージ（mergeItems を使う）
         const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations"];
         const mergedArrays = {};
@@ -2552,16 +2575,9 @@ function MainApp({ onLock, onSwitchUser }) {
       });
     });
 
-    // 🆕 v8.82: v8.80 が誤って登録した tombstones を merge 前に強制無効化
-    //   ・stocks id 1-8, jiage id 1-2 はユーザーが再利用していた可能性が高い
-    //   ・mergeRemoteSafely の filter で消されるのを防ぐ
-    if (mergedTomb.stocks && typeof mergedTomb.stocks === "object") {
-      [1, 2, 3, 4, 5, 6, 7, 8].forEach(id => { delete mergedTomb.stocks[String(id)]; });
-    }
-    if (mergedTomb.jiage && typeof mergedTomb.jiage === "object") {
-      [1, 2].forEach(id => { delete mergedTomb.jiage[String(id)]; });
-    }
-
+    // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去
+    //   ・データ回復が済んだので、今後は通常通り「ユーザーが削除した」 tombstone を尊重する
+    //   ・これにより手動で削除した stocks/jiage は復活しなくなる
     const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "activityLog"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
@@ -2648,6 +2664,22 @@ function MainApp({ onLock, onSwitchUser }) {
       protectedKeys.forEach(k => {
         if (local[k] !== undefined) merged[k] = local[k];
       });
+    }
+
+    // 🆕 v8.83: annualGoals 非ゼロ保護
+    //   ・古いバージョンの端末（v8.74 以前で v8.69 migration がまだ動く）が
+    //     起動時に annualGoals を全ゼロで Supabase に書き込むと、ポーリングで
+    //     全端末の表示が 0 に戻ってしまう。
+    //   ・remote が全ゼロかつ local に非ゼロ値があれば local を採用する。
+    if (local && local.annualGoals && merged.annualGoals) {
+      const ag = merged.annualGoals;
+      const lag = local.annualGoals;
+      const remoteAllZero = !ag.sell && !ag.profit && !ag.buyCount && !ag.brokerFee;
+      const localHasNonZero = !!(lag.sell || lag.profit || lag.buyCount || lag.brokerFee);
+      if (remoteAllZero && localHasNonZero) {
+        console.log("[v8.83] annualGoals: remote 全ゼロを検出、local の値を採用します");
+        merged.annualGoals = lag;
+      }
     }
 
     // 🆕 マージ後の全体に対しても反響重複を掃除（mergeItems を通らないパスでも確実に dedup）
@@ -2909,6 +2941,20 @@ function MainApp({ onLock, onSwitchUser }) {
     v881MigratedRef.current = true;
     console.log("[v8.81] v8.80 が登録した tombstones を解除します…");
     setData(d => migrateUnTombDemoSeedsV881(d));
+  }, [data]);
+
+  // 🆕 v8.83: デモ jiage の nextVisit をクリア（カレンダー表示を消す）
+  const v883MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v883MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v883_clear_demo_jiage_nextvisit) {
+      v883MigratedRef.current = true;
+      return;
+    }
+    v883MigratedRef.current = true;
+    console.log("[v8.83] デモ jiage の nextVisit をクリアします…");
+    setData(d => migrateClearDemoJiageNextVisitV883(d));
   }, [data]);
 
   const setData = updater => {
@@ -6900,15 +6946,35 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     all: data.stocks.length,
   }), [data.stocks]);
 
-  const filtered = useMemo(() => data.stocks.filter(s => {
-    // viewMode（現在の在庫 / 決済完了 / 全て）
-    if (viewMode === "active" && s.status === "売決完了") return false;
-    if (viewMode === "completed" && s.status !== "売決完了") return false;
-    if (filterStatuses.length && !filterStatuses.includes(s.status)) return false;
-    if (filterMember !== "__ALL__" && !isAssignedTo([s.assignee], filterMember)) return false;
-    if (search && !s.name.includes(search) && !s.assignee.includes(search)) return false;
-    return true;
-  }), [data.stocks, filterStatuses, filterMember, search, viewMode]);
+  // 🆕 v8.83: ステータス順ソート用の優先度マップ
+  //   販売中 → 売契系 → リフォーム → 登記 → 仕入 の順でグループ表示
+  const STATUS_SORT_ORDER = [
+    "販売中", "売契準備中", "売却役調中", "売契完了", "売決完了",
+    "リフォーム完了", "リフォーム中", "リフォーム待ち", "残置物処理中",
+    "登記依頼完了",
+    "仕決完了", "仕契完了", "仕契準備中", "仕入役調中",
+  ];
+  const _statusOrderMap = {};
+  STATUS_SORT_ORDER.forEach((s, i) => { _statusOrderMap[s] = i; });
+  const filtered = useMemo(() => {
+    const arr = data.stocks.filter(s => {
+      // viewMode（現在の在庫 / 決済完了 / 全て）
+      if (viewMode === "active" && s.status === "売決完了") return false;
+      if (viewMode === "completed" && s.status !== "売決完了") return false;
+      if (filterStatuses.length && !filterStatuses.includes(s.status)) return false;
+      if (filterMember !== "__ALL__" && !isAssignedTo([s.assignee], filterMember)) return false;
+      if (search && !s.name.includes(search) && !s.assignee.includes(search)) return false;
+      return true;
+    });
+    // 🆕 v8.83: ステータス順ソート
+    return [...arr].sort((a, b) => {
+      const ai = _statusOrderMap[a.status] ?? 999;
+      const bi = _statusOrderMap[b.status] ?? 999;
+      if (ai !== bi) return ai - bi;
+      // 同ステータス内は updatedAt 降順（最近更新優先）
+      return (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0);
+    });
+  }, [data.stocks, filterStatuses, filterMember, search, viewMode]);
 
   // 💬 反響コメント投稿
   const handlePostViewingComment = (stockId, viewingIdx) => {
