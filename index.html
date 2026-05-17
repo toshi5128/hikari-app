@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.70-admin-change-password";
+const APP_VERSION = "2026-05-17-v8.71-viewing-repeat-badge";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -1742,6 +1742,32 @@ function applyViewingsDedup(data) {
     }
   });
   return changed ? result : data;
+}
+
+// 🆕 v8.71: 反響の「同じ顧客名」リピート判定
+function computeViewingRepeats(viewings) {
+  if (!Array.isArray(viewings) || viewings.length === 0) return {};
+  const buckets = {};
+  viewings.forEach((v, idx) => {
+    if (!v || typeof v !== "object") return;
+    const raw = String(v.customer || "");
+    const norm = raw.trim().replace(/[\s　]+/g, "").toLowerCase();
+    if (!norm) return;
+    if (!buckets[norm]) buckets[norm] = [];
+    buckets[norm].push({
+      idx,
+      date: v.date || "0000-00-00",
+      ts: v.createdAt || v.updatedAt || 0,
+    });
+  });
+  const byIndex = {};
+  Object.keys(buckets).forEach(k => {
+    const arr = buckets[k];
+    arr.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.ts - b.ts) || (a.idx - b.idx)));
+    const total = arr.length;
+    arr.forEach((e, i) => { byIndex[e.idx] = { repeat: i + 1, total }; });
+  });
+  return byIndex;
 }
 
 function dedupeViewings(viewings) {
@@ -5992,7 +6018,9 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   {totalComments > 0 && <span style={{ background: C.accent + "33", color: C.accent, padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>💬{totalComments}</span>}
                   <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11, fontWeight: 700 }}>{expanded ? "▲ 閉じる" : "▼ 詳細"}</span>
                 </button>
-                {expanded && (
+                {expanded && (() => {
+                  const repeatMap = computeViewingRepeats(viewings);
+                  return (
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}`, display: "grid", gap: 8 }}>
                     {viewings.map((v, vi) => {
                       const prospect = PROSPECT_INFO[v.prospect];
@@ -6001,10 +6029,24 @@ function MediationView({ data, setData, dealType, setDealType }) {
                       const visitDow = dayOfWeekLabel(v.visitDate);
                       const comments = v.comments || [];
                       const cmtKey = `${m.id}_${vi}`;
+                      const rep = repeatMap[vi];
+                      const isRepeat = rep && rep.repeat > 1;
+                      const repeatColor = "#f97316";
                       return (
-                        <div key={vi} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "10px 12px" }}>
+                        <div key={vi} style={{
+                          background: isRepeat ? "#f9731611" : C.cardBg,
+                          border: `1px solid ${isRepeat ? repeatColor + "66" : C.borderDim}`,
+                          borderLeft: isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`,
+                          borderRadius: 8, padding: "10px 12px"
+                        }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 5 }}>
                             <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
+                            {rep && rep.total > 1 && (
+                              <span style={{
+                                background: repeatColor + "33", color: repeatColor,
+                                padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700,
+                              }}>🔁 {rep.repeat}回目 / 全{rep.total}件</span>
+                            )}
                             {prospect && <span style={{ background: prospect.color + "33", color: prospect.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{prospect.icon}{v.prospect}</span>}
                             {result && v.result !== "未実施" && <span style={{ background: result.color + "33", color: result.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{result.icon}{v.result}</span>}
                             {v.nextAction && <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>🔁{v.nextAction}</span>}
@@ -6112,7 +6154,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
                       );
                     })}
                   </div>
-                )}
+                  );
+                })()}
               </div>
             );
           })()}
@@ -7277,7 +7320,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11, fontWeight: 700 }}>{expanded ? "▲ 閉じる" : "▼ 詳細"}</span>
                   </button>
 
-                  {expanded && (
+                  {expanded && (() => {
+                    const repeatMap = computeViewingRepeats(viewings);
+                    return (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}`, display: "grid", gap: 8 }}>
                       {viewings.map((v, vi) => {
                         const prospect = PROSPECT_INFO[v.prospect];
@@ -7286,11 +7331,25 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                         const visitDow = dayOfWeekLabel(v.visitDate);
                         const comments = v.comments || [];
                         const cmtKey = `${s.id}_${vi}`;
+                        const rep = repeatMap[vi];
+                        const isRepeat = rep && rep.repeat > 1;
+                        const repeatColor = "#f97316";
                         return (
-                          <div key={vi} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "10px 12px" }}>
+                          <div key={vi} style={{
+                            background: isRepeat ? "#f9731611" : C.cardBg,
+                            border: `1px solid ${isRepeat ? repeatColor + "66" : C.borderDim}`,
+                            borderLeft: isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`,
+                            borderRadius: 8, padding: "10px 12px"
+                          }}>
                             {/* 顧客情報 */}
                             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 5 }}>
                               <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
+                              {rep && rep.total > 1 && (
+                                <span style={{
+                                  background: repeatColor + "33", color: repeatColor,
+                                  padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700,
+                                }}>🔁 {rep.repeat}回目 / 全{rep.total}件</span>
+                              )}
                               {prospect && (
                                 <span style={{ background: prospect.color + "33", color: prospect.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
                                   {prospect.icon}{v.prospect}
@@ -7466,7 +7525,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                         );
                       })}
                     </div>
-                  )}
+                    );
+                  })()}
                 </div>
               );
             })()}
