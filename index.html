@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.84-goals-write-protect";
+const APP_VERSION = "2026-05-17-v8.85-viewing-filter-chips";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -5866,6 +5866,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
   // 🆕 反響（viewings）関連の state
   const [expandedViewings, setExpandedViewings] = useState({});
   const [viewingsExpandedByMed, setViewingsExpandedByMed] = useState({});
+  // 🆕 v8.85: 反響フィルター（物件ごと） { [m.id]: { type: "prospect"|"result", value: string } }
+  const [viewingFiltersByMed, setViewingFiltersByMed] = useState({});
   // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
   const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   const [newViewingComment, setNewViewingComment] = useState({});
@@ -6298,9 +6300,83 @@ function MediationView({ data, setData, dealType, setDealType }) {
                 </button>
                 {expanded && (() => {
                   const repeatMap = computeViewingRepeats(viewings);
+                  // 🆕 v8.85: フィルター用件数集計
+                  const _filter = viewingFiltersByMed[m.id] || null;
+                  const _prospectCounts = { "熱い": 0, "検討中": 0, "普通": 0, "冷たい": 0 };
+                  const _resultCounts = { "未実施": 0, "好印象": 0, "普通": 0, "NG": 0 };
+                  viewings.forEach(v => {
+                    if (v && v.prospect && (v.prospect in _prospectCounts)) _prospectCounts[v.prospect]++;
+                    const r = (v && v.result) || "未実施";
+                    if (r in _resultCounts) _resultCounts[r]++;
+                  });
+                  const _setFilter = (type, value) => {
+                    setViewingFiltersByMed(p => {
+                      const cur = p[m.id] || null;
+                      if (cur && cur.type === type && cur.value === value) {
+                        const next = { ...p }; delete next[m.id]; return next;
+                      }
+                      return { ...p, [m.id]: { type, value } };
+                    });
+                  };
+                  const _clearFilter = () => {
+                    setViewingFiltersByMed(p => { const n = { ...p }; delete n[m.id]; return n; });
+                  };
+                  // フィルタ適用（元 index 保持）
+                  const _indexed = viewings.map((v, idx) => ({ v, idx }));
+                  const _shown = _filter
+                    ? _indexed.filter(({ v }) => (_filter.type === "result" ? (v.result || "未実施") : v[_filter.type]) === _filter.value)
+                    : _indexed;
                   return (
-                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}`, display: "grid", gap: 8 }}>
-                    {viewings.map((v, vi) => {
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
+                    {/* 🆕 v8.85: フィルターチップバー */}
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6, alignItems: "center" }}>
+                      <button onClick={_clearFilter} style={{
+                        padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                        border: !_filter ? `1.5px solid ${C.accent}` : `1px solid ${C.borderDim}`,
+                        background: !_filter ? C.accent : "transparent",
+                        color: !_filter ? "#fff" : C.muted, cursor: "pointer",
+                      }}>すべて {viewings.length}</button>
+                    </div>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4, alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>見込度</span>
+                      {Object.keys(PROSPECT_INFO).map(p => {
+                        const info = PROSPECT_INFO[p];
+                        const c = _prospectCounts[p] || 0;
+                        const active = _filter && _filter.type === "prospect" && _filter.value === p;
+                        const dim = c === 0;
+                        return (
+                          <button key={p} onClick={() => !dim && _setFilter("prospect", p)} disabled={dim} style={{
+                            padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                            border: active ? `1.5px solid ${info.color}` : `1px solid ${info.color}55`,
+                            background: active ? info.color : info.color + "11",
+                            color: active ? "#fff" : info.color,
+                            cursor: dim ? "not-allowed" : "pointer",
+                            opacity: dim ? 0.35 : 1,
+                          }}>{info.icon}{p}({c})</button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>結果</span>
+                      {Object.keys(RESULT_INFO).map(r => {
+                        const info = RESULT_INFO[r];
+                        const c = _resultCounts[r] || 0;
+                        const active = _filter && _filter.type === "result" && _filter.value === r;
+                        const dim = c === 0;
+                        return (
+                          <button key={r} onClick={() => !dim && _setFilter("result", r)} disabled={dim} style={{
+                            padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                            border: active ? `1.5px solid ${info.color}` : `1px solid ${info.color}55`,
+                            background: active ? info.color : info.color + "11",
+                            color: active ? "#fff" : info.color,
+                            cursor: dim ? "not-allowed" : "pointer",
+                            opacity: dim ? 0.35 : 1,
+                          }}>{info.icon}{r}({c})</button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                    {_shown.map(({ v, idx: vi }) => {
                       const prospect = PROSPECT_INFO[v.prospect];
                       const result = RESULT_INFO[v.result];
                       const dow = dayOfWeekLabel(v.date);
@@ -6431,6 +6507,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                         </div>
                       );
                     })}
+                    </div>
                   </div>
                   );
                 })()}
@@ -6872,6 +6949,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
   // 🆕 反響セクション折りたたみ（在庫カード単位）
   const [viewingsExpandedByStock, setViewingsExpandedByStock] = useState({}); // {stockId: bool}
+  // 🆕 v8.85: 反響フィルター（物件ごと）
+  const [viewingFiltersByStock, setViewingFiltersByStock] = useState({});
   // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
   const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   // 🆕 反響ごとのコメント機能
@@ -7661,9 +7740,82 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
                   {expanded && (() => {
                     const repeatMap = computeViewingRepeats(viewings);
+                    // 🆕 v8.85: フィルター用件数集計
+                    const _filter = viewingFiltersByStock[s.id] || null;
+                    const _prospectCounts = { "熱い": 0, "検討中": 0, "普通": 0, "冷たい": 0 };
+                    const _resultCounts = { "未実施": 0, "好印象": 0, "普通": 0, "NG": 0 };
+                    viewings.forEach(v => {
+                      if (v && v.prospect && (v.prospect in _prospectCounts)) _prospectCounts[v.prospect]++;
+                      const r = (v && v.result) || "未実施";
+                      if (r in _resultCounts) _resultCounts[r]++;
+                    });
+                    const _setFilter = (type, value) => {
+                      setViewingFiltersByStock(p => {
+                        const cur = p[s.id] || null;
+                        if (cur && cur.type === type && cur.value === value) {
+                          const next = { ...p }; delete next[s.id]; return next;
+                        }
+                        return { ...p, [s.id]: { type, value } };
+                      });
+                    };
+                    const _clearFilter = () => {
+                      setViewingFiltersByStock(p => { const n = { ...p }; delete n[s.id]; return n; });
+                    };
+                    const _indexed = viewings.map((v, idx) => ({ v, idx }));
+                    const _shown = _filter
+                      ? _indexed.filter(({ v }) => (_filter.type === "result" ? (v.result || "未実施") : v[_filter.type]) === _filter.value)
+                      : _indexed;
                     return (
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}`, display: "grid", gap: 8 }}>
-                      {viewings.map((v, vi) => {
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
+                      {/* 🆕 v8.85: フィルターチップバー */}
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6, alignItems: "center" }}>
+                        <button onClick={_clearFilter} style={{
+                          padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                          border: !_filter ? `1.5px solid ${C.accent}` : `1px solid ${C.borderDim}`,
+                          background: !_filter ? C.accent : "transparent",
+                          color: !_filter ? "#fff" : C.muted, cursor: "pointer",
+                        }}>すべて {viewings.length}</button>
+                      </div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4, alignItems: "center" }}>
+                        <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>見込度</span>
+                        {Object.keys(PROSPECT_INFO).map(p => {
+                          const info = PROSPECT_INFO[p];
+                          const c = _prospectCounts[p] || 0;
+                          const active = _filter && _filter.type === "prospect" && _filter.value === p;
+                          const dim = c === 0;
+                          return (
+                            <button key={p} onClick={() => !dim && _setFilter("prospect", p)} disabled={dim} style={{
+                              padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                              border: active ? `1.5px solid ${info.color}` : `1px solid ${info.color}55`,
+                              background: active ? info.color : info.color + "11",
+                              color: active ? "#fff" : info.color,
+                              cursor: dim ? "not-allowed" : "pointer",
+                              opacity: dim ? 0.35 : 1,
+                            }}>{info.icon}{p}({c})</button>
+                          );
+                        })}
+                      </div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+                        <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>結果</span>
+                        {Object.keys(RESULT_INFO).map(r => {
+                          const info = RESULT_INFO[r];
+                          const c = _resultCounts[r] || 0;
+                          const active = _filter && _filter.type === "result" && _filter.value === r;
+                          const dim = c === 0;
+                          return (
+                            <button key={r} onClick={() => !dim && _setFilter("result", r)} disabled={dim} style={{
+                              padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                              border: active ? `1.5px solid ${info.color}` : `1px solid ${info.color}55`,
+                              background: active ? info.color : info.color + "11",
+                              color: active ? "#fff" : info.color,
+                              cursor: dim ? "not-allowed" : "pointer",
+                              opacity: dim ? 0.35 : 1,
+                            }}>{info.icon}{r}({c})</button>
+                          );
+                        })}
+                      </div>
+                      <div style={{ display: "grid", gap: 8 }}>
+                      {_shown.map(({ v, idx: vi }) => {
                         const prospect = PROSPECT_INFO[v.prospect];
                         const result = RESULT_INFO[v.result];
                         const dow = dayOfWeekLabel(v.date);
@@ -7863,6 +8015,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                           </div>
                         );
                       })}
+                      </div>
                     </div>
                     );
                   })()}
