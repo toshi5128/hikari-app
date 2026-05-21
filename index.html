@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.86-multi-admin";
+const APP_VERSION = "2026-05-17-v8.87-jiage-status-colors";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -412,6 +412,18 @@ const STATUS_GROUPS = [
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
 const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入"];
+// 🆕 v8.87: 地上げステータスの色分け（一目で判別できるように）
+const JIAGE_STATUS_COLORS = {
+  "未訪問": "#94a3b8",     // グレー
+  "初訪": "#0ea5e9",       // スカイブルー
+  "再訪": "#2563eb",       // ブルー
+  "見込み": "#22c55e",     // グリーン
+  "中長期見込": "#fbbf24", // アンバー
+  "見込無し": "#ef4444",   // レッド（NG）
+  "交渉中": "#f97316",     // オレンジ
+  "媒介": "#a855f7",       // パープル
+  "仕入": "#06b6d4",       // シアン
+};
 // 🆕 仲介案件：媒介の種類とフェーズ
 const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
 const MEDIATION_STATUSES = ["媒介契約", "売出中", "買付あり", "売買契約", "決済完了"];
@@ -3556,6 +3568,8 @@ function StatusTag({ status }) {
     // 🆕 v8.40: 訪問済を 初訪/再訪 に分割、中長期見込追加
     "初訪": C.accent, "再訪": "#2563eb", "中長期見込": "#fbbf24",
     "価格交渉中": C.accent, "見送り": C.danger, "成約": C.success,
+    // 🆕 v8.87: 地上げステータスの色分けを最優先で適用
+    ...JIAGE_STATUS_COLORS,
   };
   return <Tag label={status} color={map[status] || C.muted} />;
 }
@@ -11497,7 +11511,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const isOverdue = item => item.nextDate && item.nextDate < today && !["NG", "断られた", "仕入れ完了"].includes(item.status);
   
   // ⛔ NGや断られた物件（もう訪問しない）
-  const isNoGo = item => ["NG", "断られた", "お断り"].includes(item.status);
+  // 🆕 v8.87: 「見込無し」と「訪問結果＝訪問禁止(rejected)」も NG 扱い → 枠を赤く
+  const isNoGo = item => {
+    if (["NG", "断られた", "お断り", "見込無し"].includes(item.status)) return true;
+    const lv = getLatestVisit(item);
+    if (lv && lv.entry && lv.entry.result === "rejected") return true;
+    return false;
+  };
 
   const handleDelete = item => {
     if (!window.confirm("削除しますか？")) return;
@@ -12085,15 +12105,14 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
 
         {/* 🚦 状況で絞り込み（折りたたみ式・複数選択可） */}
         {(() => {
-          const stColor = (st) => st === "未訪問" ? C.muted
+          const stColor = (st) => JIAGE_STATUS_COLORS[st]
+            || (st === "NG" || st === "断られた" || st === "お断り" ? "#ef4444"
             : st === "訪問済" ? C.success
             : st === "不在" ? C.warn
-            : st === "NG" || st === "断られた" ? C.danger
-            : st === "見込" || st === "興味あり" || st === "検討中" || st === "交渉中" ? C.accent
+            : st === "見込" || st === "興味あり" || st === "検討中" ? C.accent
             : st === "仕入れ完了" ? "#06b6d4"
-            : st === "媒介" ? "#a855f7"
             : st === "居住している" ? "#64748b"
-            : C.muted;
+            : C.muted);
           const hasSelection = filterStatuses.length > 0;
           
           return (
