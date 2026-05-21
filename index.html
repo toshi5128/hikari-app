@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.85-viewing-filter-chips";
+const APP_VERSION = "2026-05-17-v8.86-multi-admin";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -2172,7 +2172,7 @@ function UserAuthScreen({ onAuth }) {
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 6, textAlign: "center" }}>ようこそ</div>
           <div style={{ fontSize: 26, fontWeight: 800, color: MEMBER_COLORS[selectedMember] || C.text, marginBottom: 6, textAlign: "center" }}>
             {selectedMember} さん
-            {selectedMember === adminMember && <span style={{ marginLeft: 6, fontSize: 18 }}>👑</span>}
+            {getAdminMembers(cache).includes(selectedMember) && <span style={{ marginLeft: 6, fontSize: 18 }}>👑</span>}
           </div>
           <div style={{ fontSize: 12, color: C.muted, marginBottom: 24, textAlign: "center", lineHeight: 1.6 }}>パスワードを入力してください</div>
           <input
@@ -2211,7 +2211,7 @@ function UserAuthScreen({ onAuth }) {
           {MEMBERS.map(m => {
             const color = MEMBER_COLORS[m] || C.accent;
             const hasPwd = !!memberPasswords[m];
-            const isAdmin = m === adminMember;
+            const isAdmin = getAdminMembers(cache).includes(m);
             const wasLast = m === lastUser;
             return (
               <button key={m} onClick={() => handleSelectMember(m)} style={{
@@ -2678,7 +2678,7 @@ function MainApp({ onLock, onSwitchUser }) {
     //   ・memberGoals / memberPasswords / annualGoals / adminMember / counterCustom が
     //     ポーリングで上書きされて消えるのを防ぐ
     if (recentlyEdited && local) {
-      const protectedKeys = ["memberGoals", "memberPasswords", "annualGoals", "adminMember", "counterCustom"];
+      const protectedKeys = ["memberGoals", "memberPasswords", "annualGoals", "adminMember", "adminMembers", "counterCustom"];
       protectedKeys.forEach(k => {
         if (local[k] !== undefined) merged[k] = local[k];
       });
@@ -13812,6 +13812,57 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
     setPwdAuth({ member: currentAdmin, action: "adminChange", newAdmin });
   };
 
+  // 🆕 v8.86: 管理者の追加/削除（複数管理者対応）
+  const tryToggleAdmin = (member, makeAdmin) => {
+    const admins = getAdminMembers(data);
+    if (makeAdmin && admins.includes(member)) return;
+    if (!makeAdmin && !admins.includes(member)) return;
+    // 最後の1人を外そうとした場合は拒否
+    if (!makeAdmin && admins.length <= 1) {
+      alert("⚠️ 管理者を0人にはできません。少なくとも1人は必要です。");
+      return;
+    }
+    // 認証に使う現管理者：ログイン中ユーザーが管理者ならそのユーザー、なければ admins[0]
+    const authMember = admins.includes(currentUser) ? currentUser : (admins[0] || "下田");
+    if (!memberPasswords[authMember]) {
+      alert(`⚠️ 管理者を変更するには、先に管理者（${authMember}）のパスワードを設定してください。\n\n上の「🔐 メンバーパスワード管理」で ${authMember} の「設定」ボタンからパスワードを設定できます。`);
+      return;
+    }
+    const verb = makeAdmin ? "追加" : "解除";
+    if (!window.confirm(`「${member}」を管理者に${verb}します。\n\n続行するには管理者「${authMember}」のパスワードを入力します。`)) return;
+    setPwdInput(""); setPwdError("");
+    setPwdAuth({ member: authMember, action: "adminToggle", targetMember: member, makeAdmin });
+  };
+
+  // 🆕 v8.86: 管理者トグルの認証
+  const confirmAdminToggle = () => {
+    const authMember = pwdAuth.member;
+    const target = pwdAuth.targetMember;
+    const makeAdmin = pwdAuth.makeAdmin;
+    const adminPwd = memberPasswords[authMember];
+    if (!adminPwd) {
+      setPwdError("管理者のパスワードが未設定です。設定してから再実行してください。");
+      return;
+    }
+    if (pwdInput !== adminPwd) {
+      setPwdError("パスワードが違います");
+      setPwdInput("");
+      return;
+    }
+    setData(d => {
+      const cur = getAdminMembers(d);
+      let next;
+      if (makeAdmin) next = Array.from(new Set([...cur, target]));
+      else next = cur.filter(x => x !== target);
+      if (next.length === 0) next = cur; // 念のため0人を防止
+      return { ...d, adminMembers: next, adminMember: next[0] };
+    });
+    setPwdAuth(null);
+    setPwdInput("");
+    setPwdError("");
+    alert(`✅ 「${target}」を管理者${makeAdmin ? "に追加" : "から解除"}しました。`);
+  };
+
   // パスワード設定試行
   const tryOpenPwdSetting = (member) => {
     // 管理者は誰でも設定可能（旧パスワード不要）
@@ -13934,7 +13985,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
           const hasPwd = !!memberPasswords[m];
           const canEdit = isAdmin || m === currentUser;
           const isMe = m === currentUser;
-          const isAdminRow = m === adminMember;
+          const isAdminRow = getAdminMembers(data).includes(m);
           return (
             <div key={m} style={{
               display: "flex", alignItems: "center", gap: 10,
@@ -13974,19 +14025,47 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
             </div>
           );
         })}
-        {/* 管理者変更（管理者だけ可能） */}
-        {isAdmin && (
+        {/* 🆕 v8.86: 管理者の追加/削除（複数管理者対応） */}
+        {isAdmin && (() => {
+          const admins = getAdminMembers(data);
+          return (
           <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.borderDim}` }}>
-            <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontWeight: 700 }}>👑 管理者を変更（管理者操作）</div>
-            <select style={inp} value={adminMember} onChange={e => tryChangeAdmin(e.target.value)}>
-              {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-            <div style={{ fontSize: 10, color: C.warn, marginTop: 4, lineHeight: 1.5 }}>
-              ⚠️ 管理者を変更すると、自分は一般メンバーになります<br />
-              🔒 v8.70: 変更には現管理者のパスワードが必要です
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontWeight: 700 }}>👑 管理者の設定（複数可）</div>
+            <div style={{ fontSize: 10, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
+              現在の管理者: <b style={{ color: "#FCD34D" }}>{admins.join("・")}</b>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {MEMBERS.map(m => {
+                const on = admins.includes(m);
+                return (
+                  <div key={m} style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "8px 10px", borderRadius: 8,
+                    background: on ? "#FCD34D11" : C.bg,
+                    border: `1px solid ${on ? "#FCD34D66" : C.borderDim}`,
+                  }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <MemberTag name={m} />
+                      {on && <span style={{ fontSize: 13 }}>👑</span>}
+                    </span>
+                    <button onClick={() => tryToggleAdmin(m, !on)} style={{
+                      background: on ? C.danger + "22" : "#FCD34D22",
+                      border: `1.5px solid ${on ? C.danger : "#FCD34D"}`,
+                      color: on ? C.danger : "#FCD34D",
+                      borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12,
+                      fontFamily: "inherit", fontWeight: 700, flexShrink: 0,
+                    }}>{on ? "管理者から外す" : "管理者にする"}</button>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 10, color: C.warn, marginTop: 8, lineHeight: 1.5 }}>
+              🔒 追加・削除には現管理者のパスワードが必要です<br />
+              ⚠️ 管理者は最低1人必要です
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* 🆕 通知メンバー設定 */}
         {isAdmin && (
@@ -14076,6 +14155,29 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
           <div style={{ display: "flex", gap: 10 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setPwdAuth(null); setPwdInput(""); setPwdError(""); }}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2 }} onClick={confirmAdminChange}>👑 認証して変更</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* 🆕 v8.86: 管理者トグルの認証 BottomSheet */}
+      {pwdAuth && pwdAuth.action === "adminToggle" && (
+        <BottomSheet title={`👑 管理者${pwdAuth.makeAdmin ? "追加" : "解除"}の認証`} onClose={() => { setPwdAuth(null); setPwdInput(""); setPwdError(""); }}>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14, lineHeight: 1.6 }}>
+            <span style={{ color: "#FCD34D", fontWeight: 700 }}>{pwdAuth.targetMember}</span> を管理者{pwdAuth.makeAdmin ? "に追加" : "から解除"}します。<br />
+            続行するには管理者「<span style={{ color: C.text, fontWeight: 700 }}>{pwdAuth.member}</span>」のパスワードを入力してください。
+          </div>
+          <Field label="🔑 管理者のパスワード（4桁）">
+            <input type="password" inputMode="numeric" maxLength={4}
+              value={pwdInput} onChange={e => { setPwdInput(e.target.value.replace(/[^0-9]/g, "")); setPwdError(""); }}
+              onKeyDown={e => { if (e.key === "Enter") confirmAdminToggle(); }}
+              autoFocus placeholder="••••"
+              style={{ ...inp, fontSize: 28, textAlign: "center", letterSpacing: "0.5em", padding: "14px" }}
+            />
+          </Field>
+          {pwdError && <div style={{ color: C.danger, fontSize: 13, textAlign: "center", marginBottom: 10 }}>{pwdError}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setPwdAuth(null); setPwdInput(""); setPwdError(""); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={confirmAdminToggle}>👑 認証して{pwdAuth.makeAdmin ? "追加" : "解除"}</button>
           </div>
         </BottomSheet>
       )}
