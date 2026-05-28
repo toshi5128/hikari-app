@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
 </script>
 <script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-05-17-v8.88-jiage-card-frame-colors";
+const APP_VERSION = "2026-05-17-v8.89-admin-sync-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -2690,10 +2690,24 @@ function MainApp({ onLock, onSwitchUser }) {
     //   ・memberGoals / memberPasswords / annualGoals / adminMember / counterCustom が
     //     ポーリングで上書きされて消えるのを防ぐ
     if (recentlyEdited && local) {
-      const protectedKeys = ["memberGoals", "memberPasswords", "annualGoals", "adminMember", "adminMembers", "counterCustom"];
+      const protectedKeys = ["memberGoals", "memberPasswords", "annualGoals", "counterCustom"];
       protectedKeys.forEach(k => {
         if (local[k] !== undefined) merged[k] = local[k];
       });
+    }
+
+    // 🆕 v8.89: 管理者リスト（adminMembers / adminMember）は field-level 更新時刻で arbitration
+    //   ・blanket な recentlyEdited 保護だと、他端末で行った管理者追加が反映されない問題を修正
+    //   ・local.adminMembersUpdatedAt > remote の時のみ local を採用
+    //   ・タイ（両方0または同値）は remote を採用 → 古い cache で新しい remote を消さない
+    if (local) {
+      const localAdminTs = Number(local.adminMembersUpdatedAt) || 0;
+      const remoteAdminTs = Number(merged.adminMembersUpdatedAt) || 0;
+      if (localAdminTs > remoteAdminTs) {
+        if (local.adminMembers !== undefined) merged.adminMembers = local.adminMembers;
+        if (local.adminMember !== undefined) merged.adminMember = local.adminMember;
+        merged.adminMembersUpdatedAt = localAdminTs;
+      }
     }
 
     // 🆕 v8.83→v8.84: annualGoals 非ゼロ保護＋自動修復
@@ -13813,7 +13827,8 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       return;
     }
     // 認証成功 → adminMember 変更
-    setData(d => ({ ...d, adminMember: newAdmin }));
+    // 🆕 v8.89: adminMembers も同期＋ field-level 更新時刻
+    setData(d => ({ ...d, adminMember: newAdmin, adminMembers: [newAdmin], adminMembersUpdatedAt: Date.now() }));
     setPwdAuth(null);
     setPwdInput("");
     setPwdError("");
@@ -13876,7 +13891,8 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       if (makeAdmin) next = Array.from(new Set([...cur, target]));
       else next = cur.filter(x => x !== target);
       if (next.length === 0) next = cur; // 念のため0人を防止
-      return { ...d, adminMembers: next, adminMember: next[0] };
+      // 🆕 v8.89: 端末跨ぎ同期のため field-level 更新時刻を刻む
+      return { ...d, adminMembers: next, adminMember: next[0], adminMembersUpdatedAt: Date.now() };
     });
     setPwdAuth(null);
     setPwdInput("");
