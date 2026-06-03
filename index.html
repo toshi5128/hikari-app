@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.92-babel-cache";
+const APP_VERSION = "2026-06-03-v8.93-ux-improvements";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -5893,6 +5893,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const [viewingsExpandedByMed, setViewingsExpandedByMed] = useState({});
   // 🆕 v8.85: 反響フィルター（物件ごと） { [m.id]: { type: "prospect"|"result", value: string } }
   const [viewingFiltersByMed, setViewingFiltersByMed] = useState({});
+  // 🆕 v8.93: 反響リストの顧客名検索（仲介案件）
+  const [viewingSearchByMed, setViewingSearchByMed] = useState({});
   // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
   const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   const [newViewingComment, setNewViewingComment] = useState({});
@@ -6346,13 +6348,37 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   const _clearFilter = () => {
                     setViewingFiltersByMed(p => { const n = { ...p }; delete n[m.id]; return n; });
                   };
+                  // 🆕 v8.93: 顧客名検索
+                  const _searchText = (viewingSearchByMed[m.id] || "").trim().toLowerCase();
                   // フィルタ適用（元 index 保持）
                   const _indexed = viewings.map((v, idx) => ({ v, idx }));
-                  const _shown = _filter
+                  let _shown = _filter
                     ? _indexed.filter(({ v }) => (_filter.type === "result" ? (v.result || "未実施") : v[_filter.type]) === _filter.value)
                     : _indexed;
+                  if (_searchText) {
+                    _shown = _shown.filter(({ v }) => (v.customer || "").toLowerCase().includes(_searchText));
+                  }
                   return (
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
+                    {/* 🆕 v8.93: 顧客名検索ボックス */}
+                    <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                      <input
+                        type="text"
+                        placeholder="🔍 顧客名で検索..."
+                        value={viewingSearchByMed[m.id] || ""}
+                        onChange={e => setViewingSearchByMed(p => ({ ...p, [m.id]: e.target.value }))}
+                        style={{
+                          flex: 1, background: C.bg, border: `1px solid ${C.borderDim}`,
+                          borderRadius: 8, padding: "5px 10px", fontSize: 12,
+                          color: C.text, fontFamily: "inherit",
+                        }}
+                      />
+                      {(viewingSearchByMed[m.id] || "") && (
+                        <button onClick={() => setViewingSearchByMed(p => { const n = { ...p }; delete n[m.id]; return n; })}
+                          style={{ background: C.danger + "22", border: `1px solid ${C.danger}`, color: C.danger,
+                            borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>✕</button>
+                      )}
+                    </div>
                     {/* 🆕 v8.85: フィルターチップバー */}
                     <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6, alignItems: "center" }}>
                       <button onClick={_clearFilter} style={{
@@ -6976,6 +7002,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [viewingsExpandedByStock, setViewingsExpandedByStock] = useState({}); // {stockId: bool}
   // 🆕 v8.85: 反響フィルター（物件ごと）
   const [viewingFiltersByStock, setViewingFiltersByStock] = useState({});
+  // 🆕 v8.93: 反響リストの顧客名検索（仕入案件）
+  const [viewingSearchByStock, setViewingSearchByStock] = useState({});
   // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
   const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   // 🆕 反響ごとのコメント機能
@@ -7561,6 +7589,46 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         </div>
       </div>
 
+      {/* 🆕 v8.93: 決済日未入力アラート（売上反映漏れ防止） */}
+      {(() => {
+        const needSellDate = (data.stocks || []).filter(s =>
+          s.status === "売契完了" && (!s.sellDate || s.sellDate === "")
+        );
+        const needBuyDate = (data.stocks || []).filter(s =>
+          s.status === "仕契完了" && (!s.buyDate || s.buyDate === "")
+        );
+        if (needSellDate.length === 0 && needBuyDate.length === 0) return null;
+        return (
+          <div style={{
+            background: "#fbbf2418", border: `2px solid #fbbf24`,
+            borderRadius: 12, padding: "10px 14px", marginBottom: 12,
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#fbbf24", marginBottom: 6 }}>
+              ⚠️ 決済日未入力の物件があります（売上に反映されません）
+            </div>
+            {needSellDate.length > 0 && (
+              <div style={{ fontSize: 12, color: C.text, marginBottom: 4, lineHeight: 1.5 }}>
+                売契完了・売却決済日が空: <b style={{ color: C.warn }}>{needSellDate.length}件</b>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                  {needSellDate.map(s => s.name).join("、")}
+                </div>
+              </div>
+            )}
+            {needBuyDate.length > 0 && (
+              <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5 }}>
+                仕契完了・仕入決済日が空: <b style={{ color: C.warn }}>{needBuyDate.length}件</b>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                  {needBuyDate.map(s => s.name).join("、")}
+                </div>
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+              💡 該当物件の「詳細・編集」から決済日を入れると、自動でステータスが「決済完了」になり売上に反映されます
+            </div>
+          </div>
+        );
+      })()}
+
       {/* 🆕 仕入案件 / 仲介案件 切替 */}
       <div style={{ display: "flex", gap: 6, marginBottom: 10, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 4 }}>
         {[{ key: "stock", label: "📦 仕入案件", color: C.accent }, { key: "mediation", label: "🤝 仲介案件", color: C.purple }].map(t => {
@@ -7786,12 +7854,36 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     const _clearFilter = () => {
                       setViewingFiltersByStock(p => { const n = { ...p }; delete n[s.id]; return n; });
                     };
+                    // 🆕 v8.93: 顧客名検索
+                    const _searchText = (viewingSearchByStock[s.id] || "").trim().toLowerCase();
                     const _indexed = viewings.map((v, idx) => ({ v, idx }));
-                    const _shown = _filter
+                    let _shown = _filter
                       ? _indexed.filter(({ v }) => (_filter.type === "result" ? (v.result || "未実施") : v[_filter.type]) === _filter.value)
                       : _indexed;
+                    if (_searchText) {
+                      _shown = _shown.filter(({ v }) => (v.customer || "").toLowerCase().includes(_searchText));
+                    }
                     return (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
+                      {/* 🆕 v8.93: 顧客名検索ボックス */}
+                      <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                        <input
+                          type="text"
+                          placeholder="🔍 顧客名で検索..."
+                          value={viewingSearchByStock[s.id] || ""}
+                          onChange={e => setViewingSearchByStock(p => ({ ...p, [s.id]: e.target.value }))}
+                          style={{
+                            flex: 1, background: C.bg, border: `1px solid ${C.borderDim}`,
+                            borderRadius: 8, padding: "5px 10px", fontSize: 12,
+                            color: C.text, fontFamily: "inherit",
+                          }}
+                        />
+                        {(viewingSearchByStock[s.id] || "") && (
+                          <button onClick={() => setViewingSearchByStock(p => { const n = { ...p }; delete n[s.id]; return n; })}
+                            style={{ background: C.danger + "22", border: `1px solid ${C.danger}`, color: C.danger,
+                              borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>✕</button>
+                        )}
+                      </div>
                       {/* 🆕 v8.85: フィルターチップバー */}
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6, alignItems: "center" }}>
                         <button onClick={_clearFilter} style={{
@@ -8823,14 +8915,27 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   }, [data.approaches, selectedYM]);
 
   // 月一覧（過去12ヶ月）
+  // 🆕 v8.93: 該当メンバーの日次データ件数をラベルに表示
+  //   ・「5月の記録が消えた」みたいな誤解（実際は月切替してないだけ）を防止
+  //   ・記録がある月は「○月（12日分の記録）」、無い月は「○月（記録なし）」
   const monthOptions = useMemo(() => {
+    const counts = {};
+    (data.approaches || []).forEach(a => {
+      if (a.member !== selectedMember) return;
+      const ym = (a.date || "").slice(0, 7);
+      if (!ym) return;
+      counts[ym] = (counts[ym] || 0) + 1;
+    });
     return Array.from({ length: 12 }, (_, i) => {
       const d = new Date();
       d.setMonth(d.getMonth() - i);
       const ym = d.toISOString().slice(0, 7);
-      return { ym, label: `${d.getFullYear()}年${d.getMonth() + 1}月` };
+      const cnt = counts[ym] || 0;
+      const base = `${d.getFullYear()}年${d.getMonth() + 1}月`;
+      const label = cnt > 0 ? `${base}（${cnt}日分の記録）` : `${base}（記録なし）`;
+      return { ym, label };
     });
-  }, []);
+  }, [data.approaches, selectedMember]);
 
   // ===== 🏁 就業報告 =====
   const handleCloseReport = () => {

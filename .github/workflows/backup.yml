@@ -1,0 +1,77 @@
+# 🔒 ひかり不動産：Supabaseデータの自動バックアップ
+#
+# 毎日 JST 11:00 に Supabase からデータを取得し、backups/ フォルダに JSON で保存。
+# 直近 30 日分を保持、それ以前は自動削除。
+# 手動実行: GitHub の Actions タブ → "Daily Backup" → "Run workflow"
+#
+# 万一データが消えたときは backups/ フォルダの好きな日付の JSON を使って復元可能。
+
+name: Daily Backup
+
+on:
+  schedule:
+    # cron は UTC。JST 11:00 = UTC 02:00
+    - cron: '0 2 * * *'
+  # 手動実行も可能（Actions タブから "Run workflow"）
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # backups/ フォルダにコミットするため
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch Supabase data
+        run: |
+          set -e
+          # APP_VERSION と一致する Supabase 設定（index.html と同じ。anon key は公開済み）
+          SUPABASE_URL="https://ckcykbvislsjwvkizkqc.supabase.co"
+          SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrY3lrYnZpc2xzand2a2l6a3FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0Njk1MzIsImV4cCI6MjA5NDA0NTUzMn0.Yf2EnNHRi6M5mwaaNFwBATNZb8jVBG3LsFxMt6eDfH8"
+          DATA_ID="hikari_main"
+
+          # JST タイムスタンプ（YYYY-MM-DD_HH-MM）
+          TS=$(TZ=Asia/Tokyo date +"%Y-%m-%d_%H-%M")
+          mkdir -p backups
+          OUT="backups/hikari_main_${TS}.json"
+
+          # Supabase REST API 経由で取得
+          curl -sS --fail \
+            -H "apikey: $SUPABASE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_KEY" \
+            "${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=data" \
+            -o "$OUT"
+
+          # サイズと中身を軽くチェック
+          SIZE=$(wc -c < "$OUT")
+          echo "Saved: $OUT ($SIZE bytes)"
+          if [ "$SIZE" -lt 1000 ]; then
+            echo "::error::バックアップが小さすぎます。取得失敗の可能性"
+            cat "$OUT"
+            exit 1
+          fi
+          # JSON 検証
+          python3 -c "import json,sys; json.load(open('$OUT'))" || { echo "::error::JSON が壊れています"; exit 1; }
+
+      - name: Cleanup old backups (keep last 30)
+        run: |
+          cd backups
+          # 古い順にソートして、30個より多ければ古いものから削除
+          ls -1 hikari_main_*.json 2>/dev/null | sort | head -n -30 | xargs -r rm -v
+          echo "Remaining backups:"
+          ls -1 hikari_main_*.json 2>/dev/null | wc -l
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backups/
+          if git diff --staged --quiet; then
+            echo "No changes to commit (バックアップ内容が前回と同一)"
+          else
+            TS=$(TZ=Asia/Tokyo date +"%Y-%m-%d %H:%M JST")
+            git commit -m "🔒 自動バックアップ ${TS}"
+            git push
+          fi
