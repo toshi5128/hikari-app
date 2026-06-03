@@ -134,12 +134,9 @@ if ('serviceWorker' in navigator) {
 </script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script>
-Babel.registerPreset('mypreset', {presets: [[Babel.availablePresets['react']]]}); 
-</script>
-<script type="text/babel" data-presets="react">
-const APP_VERSION = "2026-06-03-v8.91-import-dm-protect";
+<!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
+<script type="text/plain" id="hikari-jsx-src">
+const APP_VERSION = "2026-06-03-v8.92-babel-cache";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -16200,6 +16197,90 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
 
 const root=ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(App));
+</script>
+
+<!-- 🆕 v8.92: Babel コンパイル結果キャッシュ・ローダー -->
+<!--   ・キャッシュHit時: Babelをロードせずに直接実行 → 起動が劇的に速い -->
+<!--   ・キャッシュMiss時: Babelを動的読み込み→コンパイル→保存→実行 -->
+<!--   ・バージョン/ソース変化を fastHash で検知して自動再コンパイル -->
+<script>
+(function() {
+  var srcEl = document.getElementById('hikari-jsx-src');
+  if (!srcEl) { console.error('[Hikari v8.92] JSX source element not found'); return; }
+  var src = srcEl.textContent;
+  // APP_VERSION 抽出
+  var verMatch = src.match(/const APP_VERSION\s*=\s*"([^"]+)"/);
+  var version = verMatch ? verMatch[1] : 'unknown';
+  // ソースの先頭+末尾 1000 文字で簡易ハッシュ（コード変化検知用）
+  function fastHash(s) {
+    var sample = s.substring(0, 1000) + s.substring(Math.max(0, s.length - 1000));
+    var h = 0;
+    for (var i = 0; i < sample.length; i++) {
+      h = ((h << 5) - h) + sample.charCodeAt(i);
+      h |= 0;
+    }
+    return (h >>> 0).toString(36);
+  }
+  var cacheKey = 'hikari_compiled_' + version + '_' + fastHash(src);
+  function setMsg(m) {
+    var el = document.getElementById('hikari-loading-msg');
+    if (el && !window.__hikariReactStarted__) el.textContent = m;
+  }
+  function runCompiled(code) {
+    // 間接evalでグローバルスコープ実行（React/ReactDOM が見える）
+    (0, eval)(code);
+  }
+  function compile() {
+    setMsg('コードを準備中（初回のみ・少々お待ちください）...');
+    try {
+      var t0 = Date.now();
+      var out = Babel.transform(src, { presets: ['react'], compact: true }).code;
+      var dt = Date.now() - t0;
+      console.log('[Hikari v8.92] Babel コンパイル完了 ' + dt + 'ms (' + out.length + ' bytes)');
+      // 古い版を掃除して新しいキャッシュを書き込み
+      try {
+        for (var i = localStorage.length - 1; i >= 0; i--) {
+          var k = localStorage.key(i);
+          if (k && k.indexOf('hikari_compiled_') === 0 && k !== cacheKey) {
+            localStorage.removeItem(k);
+          }
+        }
+        localStorage.setItem(cacheKey, out);
+        console.log('[Hikari v8.92] キャッシュ書き込み成功 (' + cacheKey + ')');
+      } catch (e) {
+        console.warn('[Hikari v8.92] キャッシュ書き込み失敗 (容量不足など):', e);
+      }
+      runCompiled(out);
+    } catch (e) {
+      console.error('[Hikari v8.92] Babel コンパイル失敗:', e);
+      setMsg('コンパイル失敗。ページを再読み込みしてください');
+    }
+  }
+  function loadBabelThenCompile() {
+    setMsg('コードを準備しています（初回のみ）...');
+    var s = document.createElement('script');
+    s.src = 'https://unpkg.com/@babel/standalone/babel.min.js';
+    s.onload = compile;
+    s.onerror = function() { setMsg('Babelの読み込みに失敗しました'); };
+    document.head.appendChild(s);
+  }
+  // ===== メイン分岐 =====
+  var cached = null;
+  try { cached = localStorage.getItem(cacheKey); } catch (e) {}
+  if (cached && cached.length > 10000) {
+    console.log('[Hikari v8.92] キャッシュ Hit (' + cacheKey + ', ' + cached.length + ' bytes) → Babel スキップ');
+    try {
+      runCompiled(cached);
+    } catch (e) {
+      console.error('[Hikari v8.92] キャッシュ実行失敗、再コンパイルします:', e);
+      try { localStorage.removeItem(cacheKey); } catch (e2) {}
+      loadBabelThenCompile();
+    }
+  } else {
+    console.log('[Hikari v8.92] キャッシュ Miss → Babel 読込開始');
+    loadBabelThenCompile();
+  }
+})();
 </script>
 </body>
 </html>
