@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.109-landmark-gmap-hint";
+const APP_VERSION = "2026-06-03-v8.110-confirmed-by-assignee";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -11468,8 +11468,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     }
   };
 
-  // 🆕 v8.100→v8.104→v8.107: 現地ピン集計（地番待ち + 確定済み）
-  //   現地ピン=未処理ToDo として扱う。地番入力で確定→確定済みカウンタへ移動
+  // 🆕 v8.100→v8.104→v8.107→v8.110: 現地ピン集計（地番待ち + 確定済み・担当者別）
   const pendingPinSummary = useMemo(() => {
     const onsiteAll = (data.jiage || []).filter(j => !!j.coordsManual);
     const pendingPins = onsiteAll.filter(j => !j.address || String(j.address).trim() === "");
@@ -11479,7 +11478,12 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       const a = p.assignee || "(未割当)";
       byAssignee[a] = (byAssignee[a] || 0) + 1;
     });
-    // 今日も「現地ピン全体（確定込み）」の件数として参考表示用
+    // 🆕 v8.110: 確定済みも担当者別に集計
+    const confirmedByAssignee = {};
+    confirmedPins.forEach(p => {
+      const a = p.assignee || "(未割当)";
+      confirmedByAssignee[a] = (confirmedByAssignee[a] || 0) + 1;
+    });
     const _todayDS = new Date().toDateString();
     let todayTotalCount = 0;
     onsiteAll.forEach(j => {
@@ -11491,7 +11495,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       total: pendingPins.length,
       byAssignee,
       todayTotal: todayTotalCount,
-      confirmedTotal: confirmedPins.length, // 🆕 v8.107
+      confirmedTotal: confirmedPins.length,
+      confirmedByAssignee, // 🆕 v8.110
     };
   }, [data.jiage]);
 
@@ -13202,29 +13207,6 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                                   }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
                               );
                             })}
-                          {/* 🆕 v8.107: 「確定済み」チップ */}
-                          {pendingPinSummary.confirmedTotal > 0 && (() => {
-                            const isConfirmedFilter = quickFilter === "confirmed_onsite";
-                            return (
-                              <button onClick={() => {
-                                if (isConfirmedFilter) {
-                                  setQuickFilter(null);
-                                  setFilterMember("__ALL__");
-                                } else {
-                                  setQuickFilter("confirmed_onsite");
-                                  setFilterMember("__ALL__");
-                                }
-                              }}
-                                title={isConfirmedFilter ? "解除して全件表示" : "地番入力済みの現地ピンだけ表示"}
-                                style={{
-                                  background: isConfirmedFilter ? C.success : C.success + "22",
-                                  color: isConfirmedFilter ? "#fff" : C.success,
-                                  border: `1.5px solid ${C.success}`,
-                                  borderRadius: 12, padding: "3px 10px",
-                                  fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                                }}>{isConfirmedFilter ? "✓ " : ""}✅ 確定済み: {pendingPinSummary.confirmedTotal}件</button>
-                            );
-                          })()}
                           {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite") && (
                             <button onClick={() => { setFilterMember("__ALL__"); setQuickFilter(null); }}
                               style={{
@@ -13235,6 +13217,59 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                               }}>✕ 全件表示に戻す</button>
                           )}
                         </div>
+                        {/* 🆕 v8.110: 確定済みも独立した行で担当者別チップ */}
+                        {pendingPinSummary.confirmedTotal > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
+                            {(() => {
+                              const isAllConfirmed = quickFilter === "confirmed_onsite" && filterMember === "__ALL__";
+                              return (
+                                <button onClick={() => {
+                                  if (isAllConfirmed) {
+                                    setQuickFilter(null);
+                                    setFilterMember("__ALL__");
+                                  } else {
+                                    setQuickFilter("confirmed_onsite");
+                                    setFilterMember("__ALL__");
+                                  }
+                                }}
+                                  title={isAllConfirmed ? "解除して全件表示" : "全員の確定済み現地ピンだけ表示"}
+                                  style={{
+                                    background: isAllConfirmed ? C.success : C.success + "22",
+                                    color: isAllConfirmed ? "#fff" : C.success,
+                                    border: `1.5px solid ${C.success}`,
+                                    borderRadius: 12, padding: "3px 10px",
+                                    fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                  }}>{isAllConfirmed ? "✓ " : ""}✅ 確定済み: {pendingPinSummary.confirmedTotal}件</button>
+                              );
+                            })()}
+                            {Object.entries(pendingPinSummary.confirmedByAssignee)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([assignee, count]) => {
+                                const color = MEMBER_COLORS[assignee] || C.muted;
+                                const isFiltered = filterMember === assignee && quickFilter === "confirmed_onsite";
+                                return (
+                                  <button key={"conf-" + assignee}
+                                    onClick={() => {
+                                      if (isFiltered) {
+                                        setFilterMember("__ALL__");
+                                        setQuickFilter(null);
+                                      } else {
+                                        setFilterMember(assignee);
+                                        setQuickFilter("confirmed_onsite");
+                                      }
+                                    }}
+                                    title={isFiltered ? "解除して全件表示" : `${assignee} の確定済み現地ピンだけ表示`}
+                                    style={{
+                                      background: isFiltered ? color : color + "22",
+                                      color: isFiltered ? "#fff" : color,
+                                      border: `1.5px solid ${color}`,
+                                      borderRadius: 12, padding: "3px 10px",
+                                      fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                                );
+                              })}
+                          </div>
+                        )}
                         <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
                           💡 「📍 全体」「担当者」のチップを押すと <b>地番待ち</b> だけに、「✅ 確定済み」を押すと <b>地番入力済み</b> だけに絞り込み（地番確定後ピンが「消えた」ように見えるのはこのフィルタ）
                         </div>
@@ -13248,27 +13283,57 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                             <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>(今日 {pendingPinSummary.todayTotal}件確定)</span>
                           )}
                         </div>
-                        {/* 🆕 v8.107: 0件時でも確定済みチップを表示 */}
-                        {pendingPinSummary.confirmedTotal > 0 && (() => {
-                          const isConfirmedFilter = quickFilter === "confirmed_onsite";
-                          return (
-                            <button onClick={() => {
-                              if (isConfirmedFilter) {
-                                setQuickFilter(null);
-                                setFilterMember("__ALL__");
-                              } else {
-                                setQuickFilter("confirmed_onsite");
-                                setFilterMember("__ALL__");
-                              }
-                            }} style={{
-                              background: isConfirmedFilter ? C.success : C.success + "22",
-                              color: isConfirmedFilter ? "#fff" : C.success,
-                              border: `1.5px solid ${C.success}`,
-                              borderRadius: 12, padding: "3px 10px",
-                              fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                            }}>{isConfirmedFilter ? "✓ " : ""}✅ 確定済み: {pendingPinSummary.confirmedTotal}件を表示</button>
-                          );
-                        })()}
+                        {/* 🆕 v8.107→v8.110: 0件時の確定済みチップも担当者別に展開 */}
+                        {pendingPinSummary.confirmedTotal > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            {(() => {
+                              const isAllConfirmed = quickFilter === "confirmed_onsite" && filterMember === "__ALL__";
+                              return (
+                                <button onClick={() => {
+                                  if (isAllConfirmed) {
+                                    setQuickFilter(null);
+                                    setFilterMember("__ALL__");
+                                  } else {
+                                    setQuickFilter("confirmed_onsite");
+                                    setFilterMember("__ALL__");
+                                  }
+                                }} style={{
+                                  background: isAllConfirmed ? C.success : C.success + "22",
+                                  color: isAllConfirmed ? "#fff" : C.success,
+                                  border: `1.5px solid ${C.success}`,
+                                  borderRadius: 12, padding: "3px 10px",
+                                  fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                }}>{isAllConfirmed ? "✓ " : ""}✅ 確定済み: {pendingPinSummary.confirmedTotal}件</button>
+                              );
+                            })()}
+                            {Object.entries(pendingPinSummary.confirmedByAssignee)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([assignee, count]) => {
+                                const color = MEMBER_COLORS[assignee] || C.muted;
+                                const isFiltered = filterMember === assignee && quickFilter === "confirmed_onsite";
+                                return (
+                                  <button key={"conf0-" + assignee}
+                                    onClick={() => {
+                                      if (isFiltered) {
+                                        setFilterMember("__ALL__");
+                                        setQuickFilter(null);
+                                      } else {
+                                        setFilterMember(assignee);
+                                        setQuickFilter("confirmed_onsite");
+                                      }
+                                    }}
+                                    title={isFiltered ? "解除して全件表示" : `${assignee} の確定済み現地ピンだけ表示`}
+                                    style={{
+                                      background: isFiltered ? color : color + "22",
+                                      color: isFiltered ? "#fff" : color,
+                                      border: `1.5px solid ${color}`,
+                                      borderRadius: 12, padding: "3px 10px",
+                                      fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                                );
+                              })}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
