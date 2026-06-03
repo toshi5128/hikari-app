@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.98-pin-two-stage";
+const APP_VERSION = "2026-06-03-v8.99-today-pin-highlight";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -3442,6 +3442,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     };
     // 🆕 v8.98: 地番待ち判定（coordsManual かつ address 空）
     const isPendingLot = (it) => !!(it && it.coordsManual && (!it.address || String(it.address).trim() === ""));
+    // 🆕 v8.99: 今日立てたピン判定（createdAt が今日のローカル日付）
+    const _todayStr = new Date().toDateString();
+    const isCreatedToday = (it) => {
+      if (!it || !it.createdAt) return false;
+      try { return new Date(it.createdAt).toDateString() === _todayStr; }
+      catch (e) { return false; }
+    };
     // 🆕 v8.41: 30日以内にポスティングした案件は 📬 オーバーレイ
     const _todayMs = Date.now();
     const _postedRecently = (it) => {
@@ -3456,19 +3463,31 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     validItems.forEach(it => {
       const lat = pinTarget === "ownerAddr" ? it.ownerLat : it.lat;
       const lng = pinTarget === "ownerAddr" ? it.ownerLng : it.lng;
-      // 🆕 v8.98: 地番待ちなら黄色（status を上書き）
       const pendingLot = isPendingLot(it);
       const color = pendingLot ? "#fbbf24" : colorByStatus(it.status);
       const showPost = _postedRecently(it);
+      // 🆕 v8.99: 今日立てたピンは halo + 「今日」バッジで強調
+      const createdToday = isCreatedToday(it);
+      const outerSize = createdToday ? 42 : 22;
+      const innerOffset = createdToday ? 10 : 0;
+      const anchor = outerSize / 2;
+      const haloHtml = createdToday
+        ? `<div style="position:absolute;top:0;left:0;width:${outerSize}px;height:${outerSize}px;border-radius:50%;background:radial-gradient(circle,rgba(252,211,77,0.6) 25%,rgba(252,211,77,0) 70%);animation:hikariGoldPulse 1.6s ease-in-out infinite;pointer-events:none;"></div>`
+        : "";
+      const todayBadgeHtml = createdToday
+        ? `<div style="position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);background:#fbbf24;color:#000;font-size:8px;padding:1px 5px;border-radius:5px;font-weight:800;border:1.5px solid white;white-space:nowrap;line-height:1.1;box-shadow:0 1px 3px rgba(0,0,0,0.4);">今日</div>`
+        : "";
+      const innerBorder = createdToday ? "2.5px solid #fbbf24" : "2.5px solid white";
+      const innerPinHtml = `<div style="position:absolute;top:${innerOffset}px;left:${innerOffset}px;width:22px;height:22px;">
+        <div style="background:${color};width:22px;height:22px;border-radius:50%;border:${innerBorder};box-shadow:0 1px 4px rgba(0,0,0,0.5);box-sizing:border-box;"></div>
+        ${pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#fbbf24;color:#000;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;font-weight:800;">?</div>` : ""}
+        ${showPost && !pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#f97316;color:#fff;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">📬</div>` : ""}
+      </div>`;
       const icon = L.divIcon({
         className: "hikari-pin",
-        html: `<div style="position:relative;width:22px;height:22px;">
-          <div style="background:${color};width:22px;height:22px;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.5);"></div>
-          ${pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#fbbf24;color:#000;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;font-weight:800;">?</div>` : ""}
-          ${showPost && !pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#f97316;color:#fff;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">📬</div>` : ""}
-        </div>`,
-        iconSize: [22, 22],
-        iconAnchor: [11, 11],
+        html: `<div style="position:relative;width:${outerSize}px;height:${outerSize}px;">${haloHtml}${innerPinHtml}${todayBadgeHtml}</div>`,
+        iconSize: [outerSize, outerSize],
+        iconAnchor: [anchor, anchor],
       });
       const marker = L.marker([lat, lng], { icon }).addTo(map);
       // 🆕 v8.98: ポップアップ表示は地番優先、なければ目印住所、なければ「(地番待ち)」
@@ -11895,6 +11914,15 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       const raw = item.raw || {};
       if (!(raw.coordsManual && (!item.address || String(item.address).trim() === ""))) return false;
     }
+    // 🆕 v8.99: 今日立てたピンのみ
+    if (quickFilter === "today_pin") {
+      const raw = item.raw || {};
+      if (!raw.createdAt) return false;
+      const _todayDS = new Date().toDateString();
+      try {
+        if (new Date(raw.createdAt).toDateString() !== _todayDS) return false;
+      } catch (e) { return false; }
+    }
     // 🔄 再訪ラウンド（前回訪問済・不在で再訪日が3日以内 or 期限切れ）
     if (quickFilter === "redo") {
       const isVisitedBefore = (item.status === "訪問済" || item.status === "不在");
@@ -12481,6 +12509,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         {/* 🎯 今日の行動モード（折りたたみ式） */}
         {(() => {
           const allModes = [
+            // 🆕 v8.99: 今日立てた現地ピンだけ表示
+            { key: "today_pin", label: "✨ 今日のピン",       sub: "今日新しく立てたピンだけ", color: "#fbbf24" },
             // 🆕 v8.98: 地番待ち（現地ピンで地番未入力のもの）
             { key: "pending_lot", label: "🟡 地番待ち",       sub: "現地ピン・地番未入力", color: "#fbbf24" },
             { key: "now_best",  label: "⏰ 今この時間ベスト", sub: "現在の曜日・時間で不在/居留守を除外", color: "#fbbf24" },
