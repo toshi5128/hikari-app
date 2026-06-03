@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.111-lookup-pending-dm-ready";
+const APP_VERSION = "2026-06-03-v8.112-csv-lookup-only";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -11689,23 +11689,39 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     alert(lines.join("\n"));
   };
 
-  // 🆕 v8.95→v8.98: 現地ピン CSV エクスポート（確定分のみ）
+  // 🆕 v8.95→v8.98→v8.112: 現地ピン CSV エクスポート（謄本待ちのみ）
+  //   出力対象: coordsManual && address入り && 所有者なし
+  //   → 既に謄本取得済み（DM準備済）は除外。地番待ちも除外。
+  //   業務上、Claude Code に渡して謄本一括取得する用途を想定
   const downloadOnsitePinCSV = () => {
+    const hasOwner = (j) => !!((j.owner && String(j.owner).trim()) || (j.ownerName && String(j.ownerName).trim()));
     const all = (data.jiage || []).filter(j => j.coordsManual);
     if (all.length === 0) {
       alert("現地入力されたピンがまだありません。\n（地図画面の「現在地で立てる」「地図タップで立てる」で作れます）");
       return;
     }
-    // 🆕 v8.98: 地番(address)入力済みのみエクスポート
     const confirmed = all.filter(j => j.address && String(j.address).trim() !== "");
-    const pendingCount = all.length - confirmed.length;
+    const pendingLotCount = all.length - confirmed.length;
     if (confirmed.length === 0) {
       alert(`地番が確定しているピンがありません。\n（全${all.length}件すべて地番待ち）\n\n地図上の🟡ピンをタップして地番を入力すると確定します`);
       return;
     }
-    // 🆕 v8.98: landmark 列を追加
+    // 🆕 v8.112: 謄本待ち（所有者なし）のみ出力
+    const lookupPending = confirmed.filter(j => !hasOwner(j));
+    const dmReadyCount = confirmed.length - lookupPending.length;
+    if (lookupPending.length === 0) {
+      const lines = [
+        "📭 謄本待ちの現地ピンがありません",
+        "",
+        `（地番待ち ${pendingLotCount}件、DM準備済 ${dmReadyCount}件 は除外）`,
+        "",
+        "新しく地番を確定したピンができたら、ここから謄本取得用CSVを出力できます",
+      ];
+      alert(lines.join("\n"));
+      return;
+    }
     const headers = ["ID", "作成日", "地番", "目印住所", "担当者", "緯度", "経度", "ステータス", "メモ"];
-    const rows = confirmed.map(j => [
+    const rows = lookupPending.map(j => [
       j.id,
       j.createdAt ? new Date(j.createdAt).toLocaleDateString("ja-JP") : "",
       j.address || "",
@@ -11724,15 +11740,20 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     const a = document.createElement("a");
     a.href = url;
     const ts = new Date().toISOString().slice(0, 10);
-    a.download = `genchi_pin_${ts}.csv`;
+    a.download = `tohon_machi_${ts}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    const msg = pendingCount > 0
-      ? `✅ 確定${confirmed.length}件をCSV出力しました\n（地番待ち${pendingCount}件は除外）`
-      : `✅ ${confirmed.length}件の現地ピンをCSV出力しました`;
-    alert(msg);
+    const lines = [
+      `✅ 謄本待ち ${lookupPending.length}件 を CSV 出力しました`,
+      `   ファイル名: tohon_machi_${ts}.csv`,
+    ];
+    if (dmReadyCount > 0) lines.push(`   📨 DM準備済 ${dmReadyCount}件 は除外（謄本取得済み）`);
+    if (pendingLotCount > 0) lines.push(`   🟡 地番待ち ${pendingLotCount}件 は除外（地番未入力）`);
+    lines.push("");
+    lines.push("→ このCSVを Claude Code に渡して謄本一括取得 → 結果をインポート");
+    alert(lines.join("\n"));
   };
   const propNavDest = item => hasPin(item) ? `${item.lat},${item.lng}` : item.address;
 
@@ -12731,8 +12752,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               <div style={{ position: "absolute", right: 0, top: "110%", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, overflow: "hidden", zIndex: 50, minWidth: 180 }}>
                 <button onClick={() => { setAddType("jiage"); setForm(emptyJiage); setEditItem(null); setShowAdd(true); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid ${C.borderDim}` }}>📍 物件を追加</button>
                 <button onClick={() => { fileInputRef.current?.click(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.success, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid ${C.borderDim}` }}>📥 Excel/CSVをインポート</button>
-                {/* 🆕 v8.95: 現地ピンCSV出力 */}
-                <button onClick={() => { downloadOnsitePinCSV(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.accent, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>📥 現地ピンCSV出力</button>
+                {/* 🆕 v8.95→v8.112: 謄本待ちCSV出力（謄本取得用） */}
+                <button onClick={() => { downloadOnsitePinCSV(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.accent, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>📥 謄本待ちCSV出力（謄本取得用）</button>
               </div>
             )}
           </div>
