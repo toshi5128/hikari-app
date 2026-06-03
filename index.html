@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.97-onsite-pin-visible";
+const APP_VERSION = "2026-06-03-v8.98-pin-two-stage";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -3440,6 +3440,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       if (status === "媒介") return "#a855f7";
       return "#94a3b8";
     };
+    // 🆕 v8.98: 地番待ち判定（coordsManual かつ address 空）
+    const isPendingLot = (it) => !!(it && it.coordsManual && (!it.address || String(it.address).trim() === ""));
     // 🆕 v8.41: 30日以内にポスティングした案件は 📬 オーバーレイ
     const _todayMs = Date.now();
     const _postedRecently = (it) => {
@@ -3454,23 +3456,30 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     validItems.forEach(it => {
       const lat = pinTarget === "ownerAddr" ? it.ownerLat : it.lat;
       const lng = pinTarget === "ownerAddr" ? it.ownerLng : it.lng;
-      const color = colorByStatus(it.status);
+      // 🆕 v8.98: 地番待ちなら黄色（status を上書き）
+      const pendingLot = isPendingLot(it);
+      const color = pendingLot ? "#fbbf24" : colorByStatus(it.status);
       const showPost = _postedRecently(it);
       const icon = L.divIcon({
         className: "hikari-pin",
         html: `<div style="position:relative;width:22px;height:22px;">
           <div style="background:${color};width:22px;height:22px;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.5);"></div>
-          ${showPost ? `<div style="position:absolute;top:-6px;right:-6px;background:#f97316;color:#fff;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">📬</div>` : ""}
+          ${pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#fbbf24;color:#000;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;font-weight:800;">?</div>` : ""}
+          ${showPost && !pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#f97316;color:#fff;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">📬</div>` : ""}
         </div>`,
         iconSize: [22, 22],
         iconAnchor: [11, 11],
       });
       const marker = L.marker([lat, lng], { icon }).addTo(map);
+      // 🆕 v8.98: ポップアップ表示は地番優先、なければ目印住所、なければ「(地番待ち)」
+      const popupTitle = (it.address && it.address.trim()) || (it.landmark && `📍 ${it.landmark}（地番待ち）`) || "(地番未入力)";
+      const statusLabel = pendingLot ? "🟡 地番待ち" : it.status;
       marker.bindPopup(`
         <div style="font-family:'Noto Sans JP',sans-serif;min-width:160px;">
-          <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${(it.address || "").slice(0, 40)}</div>
+          <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${popupTitle.slice(0, 50)}</div>
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">👤 ${it.ownerName}</div>` : ""}
-          <div style="margin-top:5px;"><span style="background:${color};color:#fff;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${it.status}</span></div>
+          ${it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
+          <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span></div>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
       `);
@@ -11174,6 +11183,34 @@ async function geocodeAddress(address) {
   return null;
 }
 
+// 🆕 v8.98: 逆ジオコーディング（座標→日本語の市区町村+町名）
+// 失敗時は null を返す（UI 側で「手入力できます」にフォールバック）
+async function reverseGeocode(lat, lng) {
+  try {
+    // OpenStreetMap Nominatim: accept-language=ja で日本語住所
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=ja&zoom=18`;
+    const res = await fetch(url, { headers: { "Accept": "application/json" } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || !data.address) return null;
+    const a = data.address;
+    // 「市区町村+町名(+丁目)」の読みやすい組み立て
+    const parts = [];
+    const cityLike = a.city || a.town || a.village || a.municipality || a.county;
+    if (cityLike) parts.push(cityLike);
+    const subParts = [a.suburb, a.quarter, a.neighbourhood, a.hamlet];
+    for (const sp of subParts) {
+      if (sp && !parts.some(p => p.includes(sp))) parts.push(sp);
+    }
+    const joined = parts.join("");
+    if (joined) return joined;
+    return data.display_name || null;
+  } catch (e) {
+    console.warn("[reverseGeocode]", e);
+    return null;
+  }
+}
+
 // レート制限用 sleep
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -11335,7 +11372,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [currentLoc, setCurrentLoc] = useState(null); // {lat, lng, accuracy}
   const [pendingPin, setPendingPin] = useState(null); // {lat, lng}（地番フォーム表示用）
   const [centerLocKey, setCenterLocKey] = useState(0); // 現在地センタリング trigger
-  const [pinForm, setPinForm] = useState({ address: "", assignee: "", memo: "" });
+  const [pinForm, setPinForm] = useState({ address: "", landmark: "", assignee: "", memo: "" });
+  const [landmarkLoading, setLandmarkLoading] = useState(false); // 🆕 v8.98: 逆ジオコ実行中
   const [gpsError, setGpsError] = useState(null);
   const watchIdRef = React.useRef(null);
   // 🆕 v8.96: 「全件表示」ボタンで手動 fitBounds を発火
@@ -11392,34 +11430,57 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     setPlacementMode(true);
     alert("🗺 地図上で物件の位置をタップしてください");
   };
+  // 🆕 v8.98: 逆ジオコで目印住所を自動取得（ユーザーが既に入力してたら上書きしない）
+  const triggerReverseGeocode = async (lat, lng) => {
+    setLandmarkLoading(true);
+    try {
+      const lm = await reverseGeocode(lat, lng);
+      if (lm) {
+        setPinForm(p => p.landmark ? p : { ...p, landmark: lm });
+      }
+    } finally {
+      setLandmarkLoading(false);
+    }
+  };
   const startPlacementCurrent = () => {
     if (!currentLoc) {
       alert("⚠️ 現在地がまだ取得できていません。\n位置情報の許可と、屋外での再試行をお試しください。");
       return;
     }
     setPendingPin({ lat: currentLoc.lat, lng: currentLoc.lng, mode: "current" });
-    setPinForm({ address: "", assignee: currentUser || MEMBERS[0], memo: "" });
+    setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "" });
+    triggerReverseGeocode(currentLoc.lat, currentLoc.lng);
   };
   const handleMapTap = (lat, lng) => {
     if (!placementMode) return;
     setPlacementMode(false);
     setPendingPin({ lat, lng, mode: "tap" });
-    setPinForm({ address: "", assignee: currentUser || MEMBERS[0], memo: "" });
+    setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "" });
+    triggerReverseGeocode(lat, lng);
   };
   const cancelPendingPin = () => {
     setPendingPin(null);
-    setPinForm({ address: "", assignee: "", memo: "" });
+    setPinForm({ address: "", landmark: "", assignee: "", memo: "" });
+    setLandmarkLoading(false);
   };
   const saveOnsitePin = () => {
     if (!pendingPin) return;
     const address = (pinForm.address || "").trim();
-    if (!address) { alert("地番を入力してください（例: 深谷市常盤町68-11）"); return; }
-    // 🆕 v8.97: 住所から JIAGE_AREAS のエリアを自動判定（エリア絞り込みで隠れないように）
-    const detectedArea = JIAGE_AREAS.find(a => address.includes(a)) || "";
+    const landmark = (pinForm.landmark || "").trim();
+    // 🆕 v8.98: address は空でもOK（地番待ち）。landmark のみ or 両方入力可能
+    // ただし「両方とも空」だと識別不能なので拒否
+    if (!address && !landmark) {
+      alert("地番か目印住所のどちらかは入力してください");
+      return;
+    }
+    // 🆕 v8.97→v8.98: エリア自動判定（地番優先、なければ目印住所から）
+    const sourceForArea = address || landmark;
+    const detectedArea = JIAGE_AREAS.find(a => sourceForArea.includes(a)) || "";
     const newId = Date.now();
     const newJiage = {
       id: newId,
-      address,
+      address,                 // 空でもOK（地番待ち）
+      landmark,                // 🆕 v8.98: 目印住所
       lat: pendingPin.lat,
       lng: pendingPin.lng,
       assignee: pinForm.assignee || currentUser || MEMBERS[0],
@@ -11442,26 +11503,43 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     const pinLng = pendingPin.lng;
     setData(d => ({ ...d, jiage: [...(d.jiage || []), newJiage] }));
     setPendingPin(null);
-    setPinForm({ address: "", assignee: "", memo: "" });
+    setPinForm({ address: "", landmark: "", assignee: "", memo: "" });
     setPlacementMode(false);
-    // 🆕 v8.97: 保存後、地図を新ピンの位置にパン（ピンが見えるように）
+    setLandmarkLoading(false);
     setPanToCoords({ lat: pinLat, lng: pinLng });
     setPanToCoordsKey(Date.now());
-    alert(`✅ 現地ピンを保存しました\n地番: ${address}\n座標: ${pinLat.toFixed(6)}, ${pinLng.toFixed(6)}${detectedArea ? "\nエリア: " + detectedArea : ""}`);
+    const statusLabel = address ? "✅ 確定" : "🟡 地番待ち";
+    const lines = [
+      `${statusLabel} ピンを保存しました`,
+      address ? `地番: ${address}` : `（地番は後で入力）`,
+      landmark ? `目印: ${landmark}` : "",
+      `座標: ${pinLat.toFixed(6)}, ${pinLng.toFixed(6)}`,
+      detectedArea ? `エリア: ${detectedArea}` : "",
+    ].filter(Boolean);
+    alert(lines.join("\n"));
   };
 
-  // 🆕 v8.95: 現地ピン CSV エクスポート
+  // 🆕 v8.95→v8.98: 現地ピン CSV エクスポート（確定分のみ）
   const downloadOnsitePinCSV = () => {
-    const items = (data.jiage || []).filter(j => j.coordsManual);
-    if (items.length === 0) {
+    const all = (data.jiage || []).filter(j => j.coordsManual);
+    if (all.length === 0) {
       alert("現地入力されたピンがまだありません。\n（地図画面の「現在地で立てる」「地図タップで立てる」で作れます）");
       return;
     }
-    const headers = ["ID", "作成日", "地番", "担当者", "緯度", "経度", "ステータス", "メモ"];
-    const rows = items.map(j => [
+    // 🆕 v8.98: 地番(address)入力済みのみエクスポート
+    const confirmed = all.filter(j => j.address && String(j.address).trim() !== "");
+    const pendingCount = all.length - confirmed.length;
+    if (confirmed.length === 0) {
+      alert(`地番が確定しているピンがありません。\n（全${all.length}件すべて地番待ち）\n\n地図上の🟡ピンをタップして地番を入力すると確定します`);
+      return;
+    }
+    // 🆕 v8.98: landmark 列を追加
+    const headers = ["ID", "作成日", "地番", "目印住所", "担当者", "緯度", "経度", "ステータス", "メモ"];
+    const rows = confirmed.map(j => [
       j.id,
       j.createdAt ? new Date(j.createdAt).toLocaleDateString("ja-JP") : "",
       j.address || "",
+      j.landmark || "",
       j.assignee || "",
       j.lat,
       j.lng,
@@ -11481,7 +11559,10 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    alert(`✅ ${items.length}件の現地ピンをCSV出力しました`);
+    const msg = pendingCount > 0
+      ? `✅ 確定${confirmed.length}件をCSV出力しました\n（地番待ち${pendingCount}件は除外）`
+      : `✅ ${confirmed.length}件の現地ピンをCSV出力しました`;
+    alert(msg);
   };
   const propNavDest = item => hasPin(item) ? `${item.lat},${item.lng}` : item.address;
 
@@ -11808,6 +11889,11 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     // 🚪 未訪問エリア攻め（飛び込み・ピンポン）
     if (quickFilter === "untouched") {
       if (!(item.status === "未訪問" || item.status === "不在")) return false;
+    }
+    // 🆕 v8.98: 地番待ち（coordsManual で address が空）
+    if (quickFilter === "pending_lot") {
+      const raw = item.raw || {};
+      if (!(raw.coordsManual && (!item.address || String(item.address).trim() === ""))) return false;
     }
     // 🔄 再訪ラウンド（前回訪問済・不在で再訪日が3日以内 or 期限切れ）
     if (quickFilter === "redo") {
@@ -12395,6 +12481,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         {/* 🎯 今日の行動モード（折りたたみ式） */}
         {(() => {
           const allModes = [
+            // 🆕 v8.98: 地番待ち（現地ピンで地番未入力のもの）
+            { key: "pending_lot", label: "🟡 地番待ち",       sub: "現地ピン・地番未入力", color: "#fbbf24" },
             { key: "now_best",  label: "⏰ 今この時間ベスト", sub: "現在の曜日・時間で不在/居留守を除外", color: "#fbbf24" },
             { key: "untouched", label: "🚪 未訪問エリア攻め", sub: "未訪問・不在", color: C.purple },
             { key: "dm_un",     label: "📩 DM配る",          sub: "DM未送付", color: C.warn },
@@ -12773,7 +12861,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           { c: "#94a3b8", l: "未訪問" },
                           { c: "#3b82f6", l: "初訪/再訪" },
                           { c: "#10b981", l: "見込み" },
-                          { c: "#fbbf24", l: "中長期見込" },
+                          { c: "#fbbf24", l: "中長期見込 / 🟡地番待ち" },
                           { c: "#64748b", l: "見込無し" },
                           { c: "#a855f7", l: "媒介" },
                           { c: "#06b6d4", l: "仕入" },
@@ -13016,7 +13104,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         </div>
       )}
 
-      {/* 🆕 v8.95: 現地ピン入力モーダル */}
+      {/* 🆕 v8.95→v8.98: 現地ピン入力モーダル（2段構え: 目印住所＋地番） */}
       {pendingPin && (
         <BottomSheet title="📍 現地ピン登録" onClose={cancelPendingPin}>
           <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 10, marginBottom: 14, fontSize: 12 }}>
@@ -13028,12 +13116,21 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               ✓ この座標はジオコーディングで動かされません
             </div>
           </div>
-          <Field label="🏠 地番（市区町村から）※必須">
+          {/* 🆕 v8.98: 目印住所（逆ジオコで自動取得・手で上書き可） */}
+          <Field label={`📍 目印住所（自動取得・手入力もOK）${landmarkLoading ? " 🔄 取得中..." : ""}`}>
+            <input type="text" style={inp}
+              value={pinForm.landmark}
+              onChange={e => setPinForm(p => ({ ...p, landmark: e.target.value }))}
+              placeholder={landmarkLoading ? "自動取得中..." : "例: 深谷市本田 / 自動取得失敗時はここに手入力"}
+              autoFocus
+            />
+          </Field>
+          {/* 🆕 v8.98: 地番は任意（空のままでも保存可・後で入れる運用） */}
+          <Field label="🏠 地番（後で入力する場合は空のままでOK）">
             <input type="text" style={inp}
               value={pinForm.address}
               onChange={e => setPinForm(p => ({ ...p, address: e.target.value }))}
-              placeholder="例: 深谷市常盤町68-11"
-              autoFocus
+              placeholder="例: 深谷市常盤町68-11（後でブルーマップで確認）"
             />
           </Field>
           <Field label="👤 担当者">
@@ -13050,6 +13147,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               placeholder="築年数・空き家っぽさ・特徴など"
             />
           </Field>
+          <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginTop: 4, marginBottom: 8 }}>
+            💡 地番が空のままでもピンは作れます。地図上で<b style={{ color: "#fbbf24" }}>🟡 地番待ち</b>として表示され、後でブルーマップを見ながら地番を入れて確定できます。
+          </div>
           <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={cancelPendingPin}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2 }} onClick={saveOnsitePin}>📍 ピンを保存</button>
