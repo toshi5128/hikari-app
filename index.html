@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.94-prebuilt-deploy";
+const APP_VERSION = "2026-06-03-v8.95-onsite-pin";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -3383,10 +3383,13 @@ function Tag({ label, color }) {
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
 }
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480 }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, currentLocation, centerOnLocationKey }) {
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
   const markersRef = React.useRef([]);
+  // 🆕 v8.95: 現在地マーカー＋誤差サークル
+  const currentLocMarkerRef = React.useRef(null);
+  const currentLocCircleRef = React.useRef(null);
 
   // マップ初期化（一度だけ）
   React.useEffect(() => {
@@ -3485,6 +3488,66 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480 }) 
       } catch (e) {}
     }
   }, [items, pinTarget]);
+
+  // 🆕 v8.95: 地図タップで onMapClick を発火（プレースメントモード用）
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (!onMapClick) return;
+    const handler = (e) => {
+      const { lat, lng } = e.latlng;
+      onMapClick(lat, lng);
+    };
+    map.on("click", handler);
+    if (mapRef.current) mapRef.current.style.cursor = "crosshair";
+    return () => {
+      try { map.off("click", handler); } catch (e2) {}
+      if (mapRef.current) mapRef.current.style.cursor = "";
+    };
+  }, [onMapClick]);
+
+  // 🆕 v8.95: 現在地マーカー（青点＋誤差サークル）更新
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (currentLocMarkerRef.current) {
+      try { map.removeLayer(currentLocMarkerRef.current); } catch (e) {}
+      currentLocMarkerRef.current = null;
+    }
+    if (currentLocCircleRef.current) {
+      try { map.removeLayer(currentLocCircleRef.current); } catch (e) {}
+      currentLocCircleRef.current = null;
+    }
+    if (!currentLocation || typeof currentLocation.lat !== "number" || typeof currentLocation.lng !== "number") return;
+    const { lat, lng, accuracy } = currentLocation;
+    const icon = L.divIcon({
+      className: "hikari-curloc",
+      html: `<div style="width:16px;height:16px;background:#0ea5e9;border:3px solid white;border-radius:50%;box-shadow:0 0 10px rgba(14,165,233,0.85);"></div>`,
+      iconSize: [16, 16],
+      iconAnchor: [8, 8],
+    });
+    currentLocMarkerRef.current = L.marker([lat, lng], { icon, zIndexOffset: 1000, interactive: false }).addTo(map);
+    if (accuracy && accuracy > 0 && accuracy < 5000) {
+      currentLocCircleRef.current = L.circle([lat, lng], {
+        radius: accuracy,
+        color: "#0ea5e9",
+        fillColor: "#0ea5e9",
+        fillOpacity: 0.10,
+        weight: 1,
+        interactive: false,
+      }).addTo(map);
+    }
+  }, [currentLocation]);
+
+  // 🆕 v8.95: 現在地センタリング（centerOnLocationKey 変化で発火）
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !currentLocation) return;
+    if (centerOnLocationKey === undefined || centerOnLocationKey === null || centerOnLocationKey === 0) return;
+    try {
+      map.setView([currentLocation.lat, currentLocation.lng], Math.max(map.getZoom(), 16));
+    } catch (e) {}
+  }, [centerOnLocationKey]);
 
   return <div ref={mapRef} style={{ height, width: "100%", borderRadius: 12, border: `1px solid ${C.borderDim}` }} />;
 }
@@ -11241,10 +11304,147 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [visitForm, setVisitForm] = useState(null); // { date, time, result, signs, intensityLevel, memo }
   // 🆕 家族構成の追加・編集フォーム
   const [familyForm, setFamilyForm] = useState(null); // { editId, name, relation, memo } | null
+  // 🆕 v8.95: 現地ピン機能
+  const [placementMode, setPlacementMode] = useState(false); // 地図タップ待機モード
+  const [currentLoc, setCurrentLoc] = useState(null); // {lat, lng, accuracy}
+  const [pendingPin, setPendingPin] = useState(null); // {lat, lng}（地番フォーム表示用）
+  const [centerLocKey, setCenterLocKey] = useState(0); // 現在地センタリング trigger
+  const [pinForm, setPinForm] = useState({ address: "", assignee: "", memo: "" });
+  const [gpsError, setGpsError] = useState(null);
+  const watchIdRef = React.useRef(null);
 
   const navUrl = addr => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving`;
   // ピンの緯度経度を持っているか / ナビ先(あればドンピシャ座標、無ければ住所)
   const hasPin = item => item && item.lat != null && item.lat !== "" && item.lng != null && item.lng !== "";
+
+  // 🆕 v8.95: 地図表示中だけ現在地を継続取得（離れたら停止＝バッテリー配慮）
+  React.useEffect(() => {
+    if (viewMode !== "map") {
+      if (watchIdRef.current !== null) {
+        try { navigator.geolocation.clearWatch(watchIdRef.current); } catch (e) {}
+        watchIdRef.current = null;
+      }
+      return;
+    }
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setGpsError("この端末/ブラウザは位置情報に対応していません");
+      return;
+    }
+    if (watchIdRef.current !== null) return;
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        setCurrentLoc({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        });
+        setGpsError(null);
+      },
+      (err) => {
+        console.warn("[GPS]", err.code, err.message);
+        if (err.code === 1) setGpsError("位置情報の利用が拒否されています。ブラウザ設定で許可してください");
+        else if (err.code === 2) setGpsError("GPS信号が取得できません（屋内・地下など）");
+        else setGpsError("位置情報の取得がタイムアウトしました");
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+    );
+    return () => {
+      if (watchIdRef.current !== null) {
+        try { navigator.geolocation.clearWatch(watchIdRef.current); } catch (e) {}
+        watchIdRef.current = null;
+      }
+    };
+  }, [viewMode]);
+
+  // 🆕 v8.95: 現地ピン関連ハンドラ
+  const startPlacementTap = () => {
+    setPlacementMode(true);
+    alert("🗺 地図上で物件の位置をタップしてください");
+  };
+  const startPlacementCurrent = () => {
+    if (!currentLoc) {
+      alert("⚠️ 現在地がまだ取得できていません。\n位置情報の許可と、屋外での再試行をお試しください。");
+      return;
+    }
+    setPendingPin({ lat: currentLoc.lat, lng: currentLoc.lng, mode: "current" });
+    setPinForm({ address: "", assignee: currentUser || MEMBERS[0], memo: "" });
+  };
+  const handleMapTap = (lat, lng) => {
+    if (!placementMode) return;
+    setPlacementMode(false);
+    setPendingPin({ lat, lng, mode: "tap" });
+    setPinForm({ address: "", assignee: currentUser || MEMBERS[0], memo: "" });
+  };
+  const cancelPendingPin = () => {
+    setPendingPin(null);
+    setPinForm({ address: "", assignee: "", memo: "" });
+  };
+  const saveOnsitePin = () => {
+    if (!pendingPin) return;
+    const address = (pinForm.address || "").trim();
+    if (!address) { alert("地番を入力してください（例: 深谷市常盤町68-11）"); return; }
+    const newId = Date.now();
+    const newJiage = {
+      id: newId,
+      address,
+      lat: pendingPin.lat,
+      lng: pendingPin.lng,
+      assignee: pinForm.assignee || currentUser || MEMBERS[0],
+      memo: pinForm.memo || "",
+      status: "未訪問",
+      dm: "未",
+      visit: "未",
+      coordsManual: true,
+      source: "現地ピン",
+      area: "",
+      ownerName: "",
+      ownerAddr: "",
+      createdAt: newId,
+      updatedAt: newId,
+      history: [],
+      visitLog: [],
+      family: [],
+    };
+    setData(d => ({ ...d, jiage: [...(d.jiage || []), newJiage] }));
+    setPendingPin(null);
+    setPinForm({ address: "", assignee: "", memo: "" });
+    setPlacementMode(false);
+    alert(`✅ 現地ピンを保存しました\n地番: ${address}\n座標: ${pendingPin.lat.toFixed(6)}, ${pendingPin.lng.toFixed(6)}`);
+  };
+
+  // 🆕 v8.95: 現地ピン CSV エクスポート
+  const downloadOnsitePinCSV = () => {
+    const items = (data.jiage || []).filter(j => j.coordsManual);
+    if (items.length === 0) {
+      alert("現地入力されたピンがまだありません。\n（地図画面の「現在地で立てる」「地図タップで立てる」で作れます）");
+      return;
+    }
+    const headers = ["ID", "作成日", "地番", "担当者", "緯度", "経度", "ステータス", "メモ"];
+    const rows = items.map(j => [
+      j.id,
+      j.createdAt ? new Date(j.createdAt).toLocaleDateString("ja-JP") : "",
+      j.address || "",
+      j.assignee || "",
+      j.lat,
+      j.lng,
+      j.status || "",
+      (j.memo || "").replace(/[\r\n]+/g, " "),
+    ]);
+    const escape = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    const csv = [headers, ...rows].map(row => row.map(escape).join(",")).join("\r\n");
+    const bom = "\ufeff";
+    const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const ts = new Date().toISOString().slice(0, 10);
+    a.download = `genchi_pin_${ts}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    alert(`✅ ${items.length}件の現地ピンをCSV出力しました`);
+  };
   const propNavDest = item => hasPin(item) ? `${item.lat},${item.lng}` : item.address;
 
   // Excelファイル直接インポート用state
@@ -11941,6 +12141,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     // target: "address" | "ownerAddr"
     const isOwner = target === "ownerAddr";
     const targetJiage = (data.jiage || []).filter(j => {
+      // 🆕 v8.95: 現地入力(coordsManual)は絶対に上書きしない（実測座標を保護）
+      if (j.coordsManual) return false;
       const addr = isOwner ? j.ownerAddr : j.address;
       const lat = isOwner ? j.ownerLat : j.lat;
       return addr && (typeof lat !== "number");
@@ -12085,7 +12287,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             {showAddMenu && (
               <div style={{ position: "absolute", right: 0, top: "110%", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, overflow: "hidden", zIndex: 50, minWidth: 180 }}>
                 <button onClick={() => { setAddType("jiage"); setForm(emptyJiage); setEditItem(null); setShowAdd(true); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid ${C.borderDim}` }}>📍 物件を追加</button>
-                <button onClick={() => { fileInputRef.current?.click(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.success, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>📥 Excel/CSVをインポート</button>
+                <button onClick={() => { fileInputRef.current?.click(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.success, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid ${C.borderDim}` }}>📥 Excel/CSVをインポート</button>
+                {/* 🆕 v8.95: 現地ピンCSV出力 */}
+                <button onClick={() => { downloadOnsitePinCSV(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.accent, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>📥 現地ピンCSV出力</button>
               </div>
             )}
           </div>
@@ -12454,6 +12658,44 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   </button>
                 )}
 
+                {/* 🆕 v8.95: 現地ピン操作パネル */}
+                <div style={{ background: C.cardBg, border: `1.5px solid ${C.accent}66`, borderRadius: 10, padding: 10, marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontWeight: 700 }}>📍 現地ピン（実測座標で記録 / ジオコーディング不要）</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <button onClick={startPlacementCurrent} style={{
+                      flex: "1 1 140px", padding: "10px 12px", background: C.accent, color: "#fff",
+                      border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+                    }}>📍 現在地で立てる</button>
+                    <button onClick={startPlacementTap} style={{
+                      flex: "1 1 140px", padding: "10px 12px",
+                      background: placementMode ? C.warn : "transparent",
+                      color: placementMode ? "#000" : C.accent,
+                      border: `1.5px solid ${placementMode ? C.warn : C.accent}`,
+                      borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+                    }}>{placementMode ? "🗺 タップ待機中…" : "🗺 地図タップで立てる"}</button>
+                    <button onClick={() => { if (currentLoc) setCenterLocKey(Date.now()); else alert("⚠️ 現在地がまだ取れていません"); }} style={{
+                      flex: "0 0 auto", padding: "10px 12px", background: "transparent",
+                      color: C.success, border: `1.5px solid ${C.success}`, borderRadius: 8,
+                      cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+                    }}>🧭 現在地へ</button>
+                  </div>
+                  {placementMode && (
+                    <button onClick={() => setPlacementMode(false)} style={{
+                      marginTop: 6, background: "transparent", border: "none", color: C.muted,
+                      fontSize: 11, cursor: "pointer", padding: "2px 4px", fontFamily: "inherit",
+                    }}>✕ タップ待機を解除</button>
+                  )}
+                  {gpsError && (
+                    <div style={{ marginTop: 6, fontSize: 11, color: C.danger, lineHeight: 1.5 }}>⚠️ {gpsError}</div>
+                  )}
+                  {currentLoc && !gpsError && (
+                    <div style={{ marginTop: 6, fontSize: 10, color: C.muted }}>
+                      🛰️ 現在地: {currentLoc.lat.toFixed(5)}, {currentLoc.lng.toFixed(5)}
+                      {currentLoc.accuracy ? ` (±${Math.round(currentLoc.accuracy)}m)` : ""}
+                    </div>
+                  )}
+                </div>
+
                 {/* 地図 */}
                 {itemsWithCoord.length > 0 ? (
                   <>
@@ -12462,6 +12704,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       onPinClick={(it) => setSelected({ item: it })}
                       pinTarget={mapPinTarget}
                       height={420}
+                      onMapClick={placementMode ? handleMapTap : undefined}
+                      currentLocation={currentLoc}
+                      centerOnLocationKey={centerLocKey}
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span>📍 {itemsWithCoord.length}件のピンを表示中</span>
@@ -12722,6 +12967,47 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             );
           })}
         </div>
+      )}
+
+      {/* 🆕 v8.95: 現地ピン入力モーダル */}
+      {pendingPin && (
+        <BottomSheet title="📍 現地ピン登録" onClose={cancelPendingPin}>
+          <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 10, marginBottom: 14, fontSize: 12 }}>
+            <div style={{ color: C.muted, marginBottom: 4 }}>📌 立てた位置（実測座標）</div>
+            <div style={{ color: C.text, fontFamily: "monospace" }}>
+              {pendingPin.lat.toFixed(6)}, {pendingPin.lng.toFixed(6)}
+            </div>
+            <div style={{ marginTop: 4, fontSize: 10, color: C.success }}>
+              ✓ この座標はジオコーディングで動かされません
+            </div>
+          </div>
+          <Field label="🏠 地番（市区町村から）※必須">
+            <input type="text" style={inp}
+              value={pinForm.address}
+              onChange={e => setPinForm(p => ({ ...p, address: e.target.value }))}
+              placeholder="例: 深谷市常盤町68-11"
+              autoFocus
+            />
+          </Field>
+          <Field label="👤 担当者">
+            <select style={inp}
+              value={pinForm.assignee}
+              onChange={e => setPinForm(p => ({ ...p, assignee: e.target.value }))}>
+              {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="📝 メモ（任意）">
+            <textarea style={{ ...inp, minHeight: 60, fontFamily: "inherit" }}
+              value={pinForm.memo}
+              onChange={e => setPinForm(p => ({ ...p, memo: e.target.value }))}
+              placeholder="築年数・空き家っぽさ・特徴など"
+            />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={cancelPendingPin}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 2 }} onClick={saveOnsitePin}>📍 ピンを保存</button>
+          </div>
+        </BottomSheet>
       )}
 
       {/* 詳細ボトムシート */}
