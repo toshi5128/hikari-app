@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.100-pin-counter-auto";
+const APP_VERSION = "2026-06-03-v8.101-pin-confirm-flow";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -13274,14 +13274,57 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       )}
 
       {/* 詳細ボトムシート */}
-      {selected && (
-        <BottomSheet title={selected.item.address} onClose={() => setSelected(null)}>
+      {selected && (() => {
+        // 🆕 v8.101: 地番待ち判定とタイトル組み立て
+        const _raw = selected.item.raw || {};
+        const _isPendingLot = !!(_raw.coordsManual && (!selected.item.address || String(selected.item.address).trim() === ""));
+        const _sheetTitle = selected.item.address && selected.item.address.trim()
+          ? selected.item.address
+          : (_raw.landmark ? `🟡 ${_raw.landmark}（地番待ち）` : "🟡 地番待ち");
+        return (
+        <BottomSheet title={_sheetTitle} onClose={() => setSelected(null)}>
           {/* タイプバッジ */}
           <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
             <Tag label={selected.item.type === "jiage" ? "📍地上げ" : "👤所有者アタック"} color={selected.item.type === "jiage" ? C.accent : C.purple} />
-            <StatusTag status={selected.item.status} />
+            {_raw.coordsManual && <Tag label="📍現地ピン" color="#fbbf24" />}
+            {_isPendingLot ? <Tag label="🟡 地番待ち" color="#fbbf24" /> : <StatusTag status={selected.item.status} />}
             <MemberTag name={selected.item.assignee} />
           </div>
+
+          {/* 🆕 v8.101: 現地ピン情報パネル（landmark / 座標 / 地番待ち CTA） */}
+          {_raw.coordsManual && (
+            <div style={{
+              background: _isPendingLot ? "#fbbf2418" : C.bg,
+              border: `1.5px solid ${_isPendingLot ? "#fbbf24" : C.borderDim}`,
+              borderRadius: 12, padding: 12, marginBottom: 14,
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: _isPendingLot ? "#fbbf24" : C.accent, marginBottom: 8 }}>
+                {_isPendingLot ? "🟡 地番待ち（後で入力）" : "📍 現地ピン情報"}
+              </div>
+              {_raw.landmark && (
+                <div style={{ fontSize: 12, marginBottom: 6, lineHeight: 1.5 }}>
+                  <span style={{ color: C.muted }}>目印住所: </span>
+                  <span style={{ color: C.text, fontWeight: 700 }}>{_raw.landmark}</span>
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: _isPendingLot ? 8 : 0 }}>
+                座標: {typeof _raw.lat === "number" ? _raw.lat.toFixed(6) : "?"}, {typeof _raw.lng === "number" ? _raw.lng.toFixed(6) : "?"}
+              </div>
+              {_isPendingLot && (
+                <div style={{ marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: C.text, marginBottom: 6, lineHeight: 1.5 }}>
+                    💡 ブルーマップで確認した地番を入力すると確定します（謄本取得対象になる）
+                  </div>
+                  <button onClick={() => openEdit(selected.item)} style={{
+                    background: "#fbbf24", color: "#000", border: "none",
+                    borderRadius: 8, padding: "8px 14px", cursor: "pointer",
+                    fontSize: 12, fontWeight: 800, fontFamily: "inherit",
+                    width: "100%",
+                  }}>✏️ 地番を入力して確定する</button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* 所有者情報 */}
           <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
@@ -13476,12 +13519,41 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             <button style={{ ...btnStyle("danger"), flex: 1 }} onClick={() => handleDelete(selected.item)}>削除する</button>
           </div>
         </BottomSheet>
-      )}
+        );
+      })()}
 
       {/* 新規登録フォーム */}
       {showAdd && (
         <BottomSheet title={`${editItem ? "編集" : "新規"} — ${addType === "jiage" ? "📍地上げ物件" : "👤所有者アタック"}`} onClose={() => { setShowAdd(false); setEditItem(null); }}>
-          <Field label="物件住所"><input style={inp} value={form.address} onChange={f("address")} placeholder="埼玉県熊谷市〇〇" /></Field>
+          {/* 🆕 v8.101: 現地ピン編集時の情報枠（座標・現地ピン識別） */}
+          {addType === "jiage" && form.coordsManual && (
+            <div style={{
+              background: (!form.address || !form.address.trim()) ? "#fbbf2418" : C.bg,
+              border: `1px solid ${(!form.address || !form.address.trim()) ? "#fbbf24" : C.borderDim}`,
+              borderRadius: 10, padding: 10, marginBottom: 14, fontSize: 12,
+            }}>
+              <div style={{ fontWeight: 800, color: (!form.address || !form.address.trim()) ? "#fbbf24" : C.accent, marginBottom: 6 }}>
+                📍 現地ピン {(!form.address || !form.address.trim()) ? "（🟡 地番待ち）" : "（確定済み）"}
+              </div>
+              <div style={{ color: C.muted, fontFamily: "monospace", fontSize: 11 }}>
+                座標: {typeof form.lat === "number" ? form.lat.toFixed(6) : "?"}, {typeof form.lng === "number" ? form.lng.toFixed(6) : "?"}
+              </div>
+              {(!form.address || !form.address.trim()) && (
+                <div style={{ marginTop: 4, color: C.text, fontSize: 11, lineHeight: 1.5 }}>
+                  💡 下の「🏠 地番」欄に地番を入力すると確定扱い（謄本取得対象）になります
+                </div>
+              )}
+            </div>
+          )}
+          <Field label={addType === "jiage" && form.coordsManual ? "🏠 地番（市区町村から・例: 深谷市常盤町68-11）" : "物件住所"}>
+            <input style={inp} value={form.address} onChange={f("address")} placeholder={addType === "jiage" && form.coordsManual ? "例: 深谷市常盤町68-11" : "埼玉県熊谷市〇〇"} />
+          </Field>
+          {/* 🆕 v8.101: 現地ピンには目印住所(landmark)も表示・編集可能に */}
+          {addType === "jiage" && form.coordsManual && (
+            <Field label="📍 目印住所（自動取得 / 手入力可）">
+              <input style={inp} value={form.landmark || ""} onChange={f("landmark")} placeholder="例: 深谷市本田" />
+            </Field>
+          )}
           <Field label={addType === "jiage" ? "所有者名" : "所有者名"}><input style={inp} value={addType === "jiage" ? form.owner || "" : form.ownerName || ""} onChange={e => setForm(p => ({ ...p, [addType === "jiage" ? "owner" : "ownerName"]: e.target.value }))} /></Field>
           <Field label="所有者住所"><input style={inp} value={addType === "jiage" ? form.ownerAddr || "" : form.ownerAddress || ""} onChange={e => setForm(p => ({ ...p, [addType === "jiage" ? "ownerAddr" : "ownerAddress"]: e.target.value }))} placeholder="謄本記載の住所" /></Field>
           {addType === "owner" && <Field label="連絡先"><input style={inp} value={form.ownerContact || ""} onChange={f("ownerContact")} /></Field>}
