@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.110-confirmed-by-assignee";
+const APP_VERSION = "2026-06-03-v8.111-lookup-pending-dm-ready";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -11468,21 +11468,37 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     }
   };
 
-  // 🆕 v8.100→v8.104→v8.107→v8.110: 現地ピン集計（地番待ち + 確定済み・担当者別）
+  // 🆕 v8.100→v8.111: 現地ピン3段階集計（地番待ち / 謄本待ち / DM準備済）
+  //   1. 地番待ち   = coordsManual && !address
+  //   2. 謄本待ち   = coordsManual && address && !owner
+  //   3. DM準備済   = coordsManual && address && owner
   const pendingPinSummary = useMemo(() => {
     const onsiteAll = (data.jiage || []).filter(j => !!j.coordsManual);
+    const hasOwner = (j) => !!((j.owner && String(j.owner).trim()) || (j.ownerName && String(j.ownerName).trim()));
     const pendingPins = onsiteAll.filter(j => !j.address || String(j.address).trim() === "");
     const confirmedPins = onsiteAll.filter(j => j.address && String(j.address).trim() !== "");
+    // 🆕 v8.111: 確定済みを2分割
+    const lookupPendingPins = confirmedPins.filter(j => !hasOwner(j));
+    const dmReadyPins = confirmedPins.filter(j => hasOwner(j));
     const byAssignee = {};
     pendingPins.forEach(p => {
       const a = p.assignee || "(未割当)";
       byAssignee[a] = (byAssignee[a] || 0) + 1;
     });
-    // 🆕 v8.110: 確定済みも担当者別に集計
     const confirmedByAssignee = {};
     confirmedPins.forEach(p => {
       const a = p.assignee || "(未割当)";
       confirmedByAssignee[a] = (confirmedByAssignee[a] || 0) + 1;
+    });
+    const lookupPendingByAssignee = {};
+    lookupPendingPins.forEach(p => {
+      const a = p.assignee || "(未割当)";
+      lookupPendingByAssignee[a] = (lookupPendingByAssignee[a] || 0) + 1;
+    });
+    const dmReadyByAssignee = {};
+    dmReadyPins.forEach(p => {
+      const a = p.assignee || "(未割当)";
+      dmReadyByAssignee[a] = (dmReadyByAssignee[a] || 0) + 1;
     });
     const _todayDS = new Date().toDateString();
     let todayTotalCount = 0;
@@ -11496,7 +11512,12 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       byAssignee,
       todayTotal: todayTotalCount,
       confirmedTotal: confirmedPins.length,
-      confirmedByAssignee, // 🆕 v8.110
+      confirmedByAssignee,
+      // 🆕 v8.111
+      lookupPendingTotal: lookupPendingPins.length,
+      lookupPendingByAssignee,
+      dmReadyTotal: dmReadyPins.length,
+      dmReadyByAssignee,
     };
   }, [data.jiage]);
 
@@ -12167,6 +12188,22 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       const raw = item.raw || {};
       if (!raw.coordsManual) return false;
       if (!item.address || String(item.address).trim() === "") return false;
+    }
+    // 🆕 v8.111: 謄本待ち（地番済み・所有者なし）
+    if (quickFilter === "lookup_pending") {
+      const raw = item.raw || {};
+      if (!raw.coordsManual) return false;
+      if (!item.address || String(item.address).trim() === "") return false;
+      const hasOwner = (raw.owner && String(raw.owner).trim()) || (raw.ownerName && String(raw.ownerName).trim());
+      if (hasOwner) return false;
+    }
+    // 🆕 v8.111: DM準備済（地番＋所有者）
+    if (quickFilter === "dm_ready") {
+      const raw = item.raw || {};
+      if (!raw.coordsManual) return false;
+      if (!item.address || String(item.address).trim() === "") return false;
+      const hasOwner = (raw.owner && String(raw.owner).trim()) || (raw.ownerName && String(raw.ownerName).trim());
+      if (!hasOwner) return false;
     }
     // 🆕 v8.99: 今日立てたピンのみ
     if (quickFilter === "today_pin") {
@@ -13146,12 +13183,15 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${C.borderDim}` }}>
                     {pendingPinSummary.total > 0 ? (
                       <>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
                           <span style={{ fontSize: 11, color: "#fbbf24", fontWeight: 800 }}>📍 現地ピン合計</span>
                           <span style={{ fontSize: 15, fontWeight: 800, color: "#fbbf24" }}>{pendingPinSummary.total}件</span>
                           <span style={{ fontSize: 10, color: C.muted }}>(要 地番入力)</span>
-                          {pendingPinSummary.confirmedTotal > 0 && (
-                            <span style={{ fontSize: 10, color: C.success, fontWeight: 700 }}>/ ✅確定 {pendingPinSummary.confirmedTotal}件</span>
+                          {pendingPinSummary.lookupPendingTotal > 0 && (
+                            <span style={{ fontSize: 10, color: "#f97316", fontWeight: 700 }}>/ ⏳謄本待 {pendingPinSummary.lookupPendingTotal}件</span>
+                          )}
+                          {pendingPinSummary.dmReadyTotal > 0 && (
+                            <span style={{ fontSize: 10, color: C.success, fontWeight: 700 }}>/ 📨DM準備 {pendingPinSummary.dmReadyTotal}件</span>
                           )}
                           {pendingPinSummary.todayTotal > 0 && (
                             <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>※ 今日新規 {pendingPinSummary.todayTotal}件</span>
@@ -13207,7 +13247,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                                   }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
                               );
                             })}
-                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite") && (
+                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite" || quickFilter === "lookup_pending" || quickFilter === "dm_ready") && (
                             <button onClick={() => { setFilterMember("__ALL__"); setQuickFilter(null); }}
                               style={{
                                 background: "transparent", color: C.muted,
@@ -13217,48 +13257,81 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                               }}>✕ 全件表示に戻す</button>
                           )}
                         </div>
-                        {/* 🆕 v8.110: 確定済みも独立した行で担当者別チップ */}
-                        {pendingPinSummary.confirmedTotal > 0 && (
+                        {/* 🆕 v8.111: 謄本待ち（地番済・所有者なし）担当者別 */}
+                        {pendingPinSummary.lookupPendingTotal > 0 && (
                           <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
                             {(() => {
-                              const isAllConfirmed = quickFilter === "confirmed_onsite" && filterMember === "__ALL__";
+                              const isAll = quickFilter === "lookup_pending" && filterMember === "__ALL__";
                               return (
                                 <button onClick={() => {
-                                  if (isAllConfirmed) {
-                                    setQuickFilter(null);
-                                    setFilterMember("__ALL__");
-                                  } else {
-                                    setQuickFilter("confirmed_onsite");
-                                    setFilterMember("__ALL__");
-                                  }
+                                  if (isAll) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                                  else { setQuickFilter("lookup_pending"); setFilterMember("__ALL__"); }
                                 }}
-                                  title={isAllConfirmed ? "解除して全件表示" : "全員の確定済み現地ピンだけ表示"}
+                                  title={isAll ? "解除" : "謄本まだ取得していない現地ピンだけ表示"}
                                   style={{
-                                    background: isAllConfirmed ? C.success : C.success + "22",
-                                    color: isAllConfirmed ? "#fff" : C.success,
-                                    border: `1.5px solid ${C.success}`,
+                                    background: isAll ? "#f97316" : "#f9731622",
+                                    color: isAll ? "#fff" : "#f97316",
+                                    border: `1.5px solid #f97316`,
                                     borderRadius: 12, padding: "3px 10px",
                                     fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
-                                  }}>{isAllConfirmed ? "✓ " : ""}✅ 確定済み: {pendingPinSummary.confirmedTotal}件</button>
+                                  }}>{isAll ? "✓ " : ""}⏳ 謄本待ち: {pendingPinSummary.lookupPendingTotal}件</button>
                               );
                             })()}
-                            {Object.entries(pendingPinSummary.confirmedByAssignee)
+                            {Object.entries(pendingPinSummary.lookupPendingByAssignee)
                               .sort((a, b) => b[1] - a[1])
                               .map(([assignee, count]) => {
                                 const color = MEMBER_COLORS[assignee] || C.muted;
-                                const isFiltered = filterMember === assignee && quickFilter === "confirmed_onsite";
+                                const isFiltered = filterMember === assignee && quickFilter === "lookup_pending";
                                 return (
-                                  <button key={"conf-" + assignee}
+                                  <button key={"look-" + assignee}
                                     onClick={() => {
-                                      if (isFiltered) {
-                                        setFilterMember("__ALL__");
-                                        setQuickFilter(null);
-                                      } else {
-                                        setFilterMember(assignee);
-                                        setQuickFilter("confirmed_onsite");
-                                      }
+                                      if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
+                                      else { setFilterMember(assignee); setQuickFilter("lookup_pending"); }
                                     }}
-                                    title={isFiltered ? "解除して全件表示" : `${assignee} の確定済み現地ピンだけ表示`}
+                                    title={isFiltered ? "解除" : `${assignee} の謄本待ちだけ表示`}
+                                    style={{
+                                      background: isFiltered ? color : color + "22",
+                                      color: isFiltered ? "#fff" : color,
+                                      border: `1.5px solid ${color}`,
+                                      borderRadius: 12, padding: "3px 10px",
+                                      fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                                );
+                              })}
+                          </div>
+                        )}
+                        {/* 🆕 v8.111: DM準備済（地番＋所有者あり）担当者別 */}
+                        {pendingPinSummary.dmReadyTotal > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
+                            {(() => {
+                              const isAll = quickFilter === "dm_ready" && filterMember === "__ALL__";
+                              return (
+                                <button onClick={() => {
+                                  if (isAll) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                                  else { setQuickFilter("dm_ready"); setFilterMember("__ALL__"); }
+                                }}
+                                  title={isAll ? "解除" : "DM送付準備が整った現地ピンだけ表示"}
+                                  style={{
+                                    background: isAll ? C.success : C.success + "22",
+                                    color: isAll ? "#fff" : C.success,
+                                    border: `1.5px solid ${C.success}`,
+                                    borderRadius: 12, padding: "3px 10px",
+                                    fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                  }}>{isAll ? "✓ " : ""}📨 DM準備済: {pendingPinSummary.dmReadyTotal}件</button>
+                              );
+                            })()}
+                            {Object.entries(pendingPinSummary.dmReadyByAssignee)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([assignee, count]) => {
+                                const color = MEMBER_COLORS[assignee] || C.muted;
+                                const isFiltered = filterMember === assignee && quickFilter === "dm_ready";
+                                return (
+                                  <button key={"dm-" + assignee}
+                                    onClick={() => {
+                                      if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
+                                      else { setFilterMember(assignee); setQuickFilter("dm_ready"); }
+                                    }}
+                                    title={isFiltered ? "解除" : `${assignee} のDM準備済だけ表示`}
                                     style={{
                                       background: isFiltered ? color : color + "22",
                                       color: isFiltered ? "#fff" : color,
@@ -13283,47 +13356,73 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                             <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>(今日 {pendingPinSummary.todayTotal}件確定)</span>
                           )}
                         </div>
-                        {/* 🆕 v8.107→v8.110: 0件時の確定済みチップも担当者別に展開 */}
-                        {pendingPinSummary.confirmedTotal > 0 && (
-                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {/* 🆕 v8.111: 0件時でも謄本待ち / DM準備済を担当者別表示 */}
+                        {pendingPinSummary.lookupPendingTotal > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4 }}>
                             {(() => {
-                              const isAllConfirmed = quickFilter === "confirmed_onsite" && filterMember === "__ALL__";
+                              const isAll = quickFilter === "lookup_pending" && filterMember === "__ALL__";
                               return (
                                 <button onClick={() => {
-                                  if (isAllConfirmed) {
-                                    setQuickFilter(null);
-                                    setFilterMember("__ALL__");
-                                  } else {
-                                    setQuickFilter("confirmed_onsite");
-                                    setFilterMember("__ALL__");
-                                  }
+                                  if (isAll) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                                  else { setQuickFilter("lookup_pending"); setFilterMember("__ALL__"); }
                                 }} style={{
-                                  background: isAllConfirmed ? C.success : C.success + "22",
-                                  color: isAllConfirmed ? "#fff" : C.success,
-                                  border: `1.5px solid ${C.success}`,
+                                  background: isAll ? "#f97316" : "#f9731622",
+                                  color: isAll ? "#fff" : "#f97316",
+                                  border: `1.5px solid #f97316`,
                                   borderRadius: 12, padding: "3px 10px",
                                   fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
-                                }}>{isAllConfirmed ? "✓ " : ""}✅ 確定済み: {pendingPinSummary.confirmedTotal}件</button>
+                                }}>{isAll ? "✓ " : ""}⏳ 謄本待ち: {pendingPinSummary.lookupPendingTotal}件</button>
                               );
                             })()}
-                            {Object.entries(pendingPinSummary.confirmedByAssignee)
+                            {Object.entries(pendingPinSummary.lookupPendingByAssignee)
                               .sort((a, b) => b[1] - a[1])
                               .map(([assignee, count]) => {
                                 const color = MEMBER_COLORS[assignee] || C.muted;
-                                const isFiltered = filterMember === assignee && quickFilter === "confirmed_onsite";
+                                const isFiltered = filterMember === assignee && quickFilter === "lookup_pending";
                                 return (
-                                  <button key={"conf0-" + assignee}
+                                  <button key={"look0-" + assignee}
                                     onClick={() => {
-                                      if (isFiltered) {
-                                        setFilterMember("__ALL__");
-                                        setQuickFilter(null);
-                                      } else {
-                                        setFilterMember(assignee);
-                                        setQuickFilter("confirmed_onsite");
-                                      }
-                                    }}
-                                    title={isFiltered ? "解除して全件表示" : `${assignee} の確定済み現地ピンだけ表示`}
-                                    style={{
+                                      if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
+                                      else { setFilterMember(assignee); setQuickFilter("lookup_pending"); }
+                                    }} style={{
+                                      background: isFiltered ? color : color + "22",
+                                      color: isFiltered ? "#fff" : color,
+                                      border: `1.5px solid ${color}`,
+                                      borderRadius: 12, padding: "3px 10px",
+                                      fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                                );
+                              })}
+                          </div>
+                        )}
+                        {pendingPinSummary.dmReadyTotal > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            {(() => {
+                              const isAll = quickFilter === "dm_ready" && filterMember === "__ALL__";
+                              return (
+                                <button onClick={() => {
+                                  if (isAll) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                                  else { setQuickFilter("dm_ready"); setFilterMember("__ALL__"); }
+                                }} style={{
+                                  background: isAll ? C.success : C.success + "22",
+                                  color: isAll ? "#fff" : C.success,
+                                  border: `1.5px solid ${C.success}`,
+                                  borderRadius: 12, padding: "3px 10px",
+                                  fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                }}>{isAll ? "✓ " : ""}📨 DM準備済: {pendingPinSummary.dmReadyTotal}件</button>
+                              );
+                            })()}
+                            {Object.entries(pendingPinSummary.dmReadyByAssignee)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([assignee, count]) => {
+                                const color = MEMBER_COLORS[assignee] || C.muted;
+                                const isFiltered = filterMember === assignee && quickFilter === "dm_ready";
+                                return (
+                                  <button key={"dm0-" + assignee}
+                                    onClick={() => {
+                                      if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
+                                      else { setFilterMember(assignee); setQuickFilter("dm_ready"); }
+                                    }} style={{
                                       background: isFiltered ? color : color + "22",
                                       color: isFiltered ? "#fff" : color,
                                       border: `1.5px solid ${color}`,
