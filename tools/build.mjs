@@ -14,7 +14,7 @@
 //   ・全端末で爆速（Android低スペックでも即起動）
 //   ・Babel-standalone (3MB) の読み込みが不要
 
-import { readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, statSync, copyFileSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import babel from "@babel/core";
@@ -92,11 +92,25 @@ built = built.replace(
 mkdirSync(DIST_DIR, { recursive: true });
 writeFileSync(DIST, built);
 
+// 🆕 v8.94: PWA で必要な静的アセットも dist/ にコピー（本番デプロイ用）
+const STATIC_ASSETS = ["manifest.json", "sw.js", "icon-192.png", "icon-512.png"];
+let copiedCount = 0;
+for (const f of STATIC_ASSETS) {
+  const src = join(ROOT, f);
+  const dst = join(DIST_DIR, f);
+  if (existsSync(src)) {
+    copyFileSync(src, dst);
+    copiedCount++;
+  } else {
+    console.warn(`⚠️  ${f} が見つからない（スキップ）`);
+  }
+}
+
 console.log(`\n=== 完了 ===`);
 console.log(`出力: ${DIST}`);
 console.log(`出力サイズ: ${(built.length / 1024).toFixed(1)} KB`);
 console.log(`削減率（元比）: ${((built.length / html.length) * 100).toFixed(1)}%`);
+console.log(`静的アセットコピー: ${copiedCount}/${STATIC_ASSETS.length}`);
 console.log(
-  `\n💡 動作確認: dist/index.html をブラウザで直接開いて、今と同じように動くか確認してください`
+  `\n💡 動作確認: dist/index.html をブラウザで直接開いて、今と同じように動くか確認してください\n`
 );
-console.log(`💡 問題なければ Step B（GitHub Actions 自動化）に進みます\n`);

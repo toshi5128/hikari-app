@@ -1,0 +1,90 @@
+# 🚀 本番デプロイ（事前コンパイル版を GitHub Pages に配信）
+#
+# push があったら：
+#   1. JSX を事前コンパイル
+#   2. dist/index.html + 静的アセット（manifest.json, sw.js, icons）を artifact 化
+#   3. GitHub Pages に直接デプロイ（main ブランチには書き戻さない）
+#
+# このワークフローを有効化するには:
+#   GitHub の Settings → Pages → Source を「GitHub Actions」に変更してください
+#
+# 戻したい時:
+#   Settings → Pages → Source を「Deploy from a branch」→ main → / (root) に戻すだけで
+#   従来通り main の index.html が配信されます（瞬時にロールバック）
+
+name: Deploy to Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'tools/**'
+      - 'package.json'
+      - 'manifest.json'
+      - 'sw.js'
+      - 'icon-*.png'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+# GitHub Pages デプロイに必要な権限
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時実行制御（複数同時 push でも安全）
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          ls -lh dist/
+          test -f dist/index.html || { echo "::error::dist/index.html がない"; exit 1; }
+          test -f dist/manifest.json || { echo "::error::dist/manifest.json がない"; exit 1; }
+          test -f dist/sw.js || { echo "::error::dist/sw.js がない"; exit 1; }
+          # サイズ確認: あまりに小さければビルド失敗の可能性
+          SIZE=$(wc -c < dist/index.html)
+          if [ "$SIZE" -lt 100000 ]; then
+            echo "::error::dist/index.html が小さすぎる ($SIZE bytes)"
+            exit 1
+          fi
+          echo "✓ ビルド検証OK ($SIZE bytes)"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
