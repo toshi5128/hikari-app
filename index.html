@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.105-chip-pin-only";
+const APP_VERSION = "2026-06-03-v8.106-map-search";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3576,14 +3576,16 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     } catch (e) {}
   }, [fitBoundsKey]);
 
-  // 🆕 v8.97: panToCoordsKey が変わったら指定座標へパン（新規ピン保存後に位置を見せる用）
+  // 🆕 v8.97→v8.106: panToCoordsKey が変わったら指定座標へパン
+  //   panToCoords.zoom があればそれを使う（エリア検索は14、新規ピン保存は17）
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
     if (panToCoordsKey === undefined || panToCoordsKey === null || panToCoordsKey === 0) return;
     if (!panToCoords || typeof panToCoords.lat !== "number" || typeof panToCoords.lng !== "number") return;
     try {
-      map.setView([panToCoords.lat, panToCoords.lng], Math.max(map.getZoom(), 17));
+      const z = typeof panToCoords.zoom === "number" ? panToCoords.zoom : Math.max(map.getZoom(), 17);
+      map.setView([panToCoords.lat, panToCoords.lng], z);
     } catch (e) {}
   }, [panToCoordsKey]);
 
@@ -11444,6 +11446,27 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   // 🆕 v8.97: 新規ピン保存後に地図をその位置にパン
   const [panToCoords, setPanToCoords] = useState(null);
   const [panToCoordsKey, setPanToCoordsKey] = useState(0);
+  // 🆕 v8.106: 地図検索バー
+  const [mapSearchInput, setMapSearchInput] = useState("");
+  const [mapSearchLoading, setMapSearchLoading] = useState(false);
+  const handleMapSearch = async () => {
+    const q = (mapSearchInput || "").trim();
+    if (!q) return;
+    setMapSearchLoading(true);
+    try {
+      const result = await geocodeAddress(q);
+      if (result && typeof result.lat === "number") {
+        setPanToCoords({ lat: result.lat, lng: result.lng, zoom: 14 });
+        setPanToCoordsKey(Date.now());
+      } else {
+        alert(`「${q}」の場所が見つかりませんでした。\n別の書き方でお試しください（例: 「埼玉県小川町」「比企郡小川町」）`);
+      }
+    } catch (e) {
+      alert(`検索に失敗しました: ${(e && e.message) || e}`);
+    } finally {
+      setMapSearchLoading(false);
+    }
+  };
 
   // 🆕 v8.100→v8.104: 「未処理の現地ピン」を集計（地番待ち全件・日付関係なし）
   //   現地ピン=未処理ToDo として扱う。地番入力で確定→集計から外れる
@@ -12912,6 +12935,38 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                     <span style={{ fontSize: 20 }}>→</span>
                   </button>
                 )}
+
+                {/* 🆕 v8.106: 地図検索バー（住所・地名でジャンプ） */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                  <input
+                    type="text"
+                    placeholder="🔍 住所・地名で地図移動（例: 小川町、東松山市本田）"
+                    value={mapSearchInput}
+                    onChange={e => setMapSearchInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") handleMapSearch(); }}
+                    style={{
+                      flex: 1, background: C.bg, border: `1px solid ${C.borderDim}`,
+                      borderRadius: 8, padding: "8px 12px", color: C.text,
+                      fontSize: 13, fontFamily: "inherit",
+                    }}
+                  />
+                  <button onClick={handleMapSearch}
+                    disabled={mapSearchLoading || !mapSearchInput.trim()}
+                    style={{
+                      background: C.accent, color: "#fff", border: "none",
+                      borderRadius: 8, padding: "8px 16px", cursor: mapSearchLoading || !mapSearchInput.trim() ? "not-allowed" : "pointer",
+                      fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+                      opacity: mapSearchLoading || !mapSearchInput.trim() ? 0.5 : 1,
+                    }}>{mapSearchLoading ? "🔄..." : "移動"}</button>
+                  {mapSearchInput && (
+                    <button onClick={() => setMapSearchInput("")}
+                      style={{
+                        background: "transparent", color: C.muted,
+                        border: `1px solid ${C.borderDim}`, borderRadius: 8,
+                        padding: "8px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit",
+                      }}>✕</button>
+                  )}
+                </div>
 
                 {/* 🆕 v8.95: 現地ピン操作パネル */}
                 <div style={{ background: C.cardBg, border: `1.5px solid ${C.accent}66`, borderRadius: 10, padding: 10, marginBottom: 8 }}>
