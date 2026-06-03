@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.96-map-bigger-zoom-keep";
+const APP_VERSION = "2026-06-03-v8.97-onsite-pin-visible";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "2026-05-16-v8.2-..." 先頭の日付 + バージョン番号でローカル比較で十分。
 function isRemoteVersionNewer(remoteVer, localVer) {
@@ -3383,7 +3383,7 @@ function Tag({ label, color }) {
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
 }
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, currentLocation, centerOnLocationKey, fitBoundsKey }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey }) {
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
   const markersRef = React.useRef([]);
@@ -3503,6 +3503,17 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       map.fitBounds(group.getBounds().pad(0.15), { maxZoom: 14 });
     } catch (e) {}
   }, [fitBoundsKey]);
+
+  // 🆕 v8.97: panToCoordsKey が変わったら指定座標へパン（新規ピン保存後に位置を見せる用）
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (panToCoordsKey === undefined || panToCoordsKey === null || panToCoordsKey === 0) return;
+    if (!panToCoords || typeof panToCoords.lat !== "number" || typeof panToCoords.lng !== "number") return;
+    try {
+      map.setView([panToCoords.lat, panToCoords.lng], Math.max(map.getZoom(), 17));
+    } catch (e) {}
+  }, [panToCoordsKey]);
 
   // 🆕 v8.95: 地図タップで onMapClick を発火（プレースメントモード用）
   React.useEffect(() => {
@@ -11329,6 +11340,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const watchIdRef = React.useRef(null);
   // 🆕 v8.96: 「全件表示」ボタンで手動 fitBounds を発火
   const [fitBoundsKey, setFitBoundsKey] = useState(0);
+  // 🆕 v8.97: 新規ピン保存後に地図をその位置にパン
+  const [panToCoords, setPanToCoords] = useState(null);
+  const [panToCoordsKey, setPanToCoordsKey] = useState(0);
 
   const navUrl = addr => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving`;
   // ピンの緯度経度を持っているか / ナビ先(あればドンピシャ座標、無ければ住所)
@@ -11400,6 +11414,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     if (!pendingPin) return;
     const address = (pinForm.address || "").trim();
     if (!address) { alert("地番を入力してください（例: 深谷市常盤町68-11）"); return; }
+    // 🆕 v8.97: 住所から JIAGE_AREAS のエリアを自動判定（エリア絞り込みで隠れないように）
+    const detectedArea = JIAGE_AREAS.find(a => address.includes(a)) || "";
     const newId = Date.now();
     const newJiage = {
       id: newId,
@@ -11413,7 +11429,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       visit: "未",
       coordsManual: true,
       source: "現地ピン",
-      area: "",
+      area: detectedArea,
       ownerName: "",
       ownerAddr: "",
       createdAt: newId,
@@ -11422,11 +11438,16 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       visitLog: [],
       family: [],
     };
+    const pinLat = pendingPin.lat;
+    const pinLng = pendingPin.lng;
     setData(d => ({ ...d, jiage: [...(d.jiage || []), newJiage] }));
     setPendingPin(null);
     setPinForm({ address: "", assignee: "", memo: "" });
     setPlacementMode(false);
-    alert(`✅ 現地ピンを保存しました\n地番: ${address}\n座標: ${pendingPin.lat.toFixed(6)}, ${pendingPin.lng.toFixed(6)}`);
+    // 🆕 v8.97: 保存後、地図を新ピンの位置にパン（ピンが見えるように）
+    setPanToCoords({ lat: pinLat, lng: pinLng });
+    setPanToCoordsKey(Date.now());
+    alert(`✅ 現地ピンを保存しました\n地番: ${address}\n座標: ${pinLat.toFixed(6)}, ${pinLng.toFixed(6)}${detectedArea ? "\nエリア: " + detectedArea : ""}`);
   };
 
   // 🆕 v8.95: 現地ピン CSV エクスポート
@@ -12731,6 +12752,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       currentLocation={currentLoc}
                       centerOnLocationKey={centerLocKey}
                       fitBoundsKey={fitBoundsKey}
+                      panToCoords={panToCoords}
+                      panToCoordsKey={panToCoordsKey}
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span>📍 {itemsWithCoord.length}件のピンを表示中</span>
