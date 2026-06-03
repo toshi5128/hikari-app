@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.107-confirmed-chip";
+const APP_VERSION = "2026-06-03-v8.108-import-merge-onsite";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -11789,6 +11789,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             if (mapping.lat === undefined) mapping.lat = i;
           } else if (h === "経度" || lower === "lng" || lower === "lon" || lower === "longitude") {
             if (mapping.lng === undefined) mapping.lng = i;
+          } else if (h === "ID" || h === "id" || lower === "id" || lower === "appid" || lower === "app_id") {
+            // 🆕 v8.108: アプリ側の現地ピンID（マージの最優先キー）
+            if (mapping.appId === undefined) mapping.appId = i;
           } else if (h.includes("ステータス") || h.includes("状態") || h.includes("状況")) {
             if (mapping.status === undefined) mapping.status = i;
           } else if (h.includes("住所") || h.includes("所在")) {
@@ -11871,8 +11874,12 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       const addressArea = inferAreaFromAddress(address);
       const finalArea = addressArea || (sheetIsValidArea ? sheetAreaName : "");
       
+      // 🆕 v8.108: appId(アプリ側の現地ピンID)を取り込み（マージの最優先キー）
+      const appIdRaw = get("appId");
+      const appId = appIdRaw ? String(appIdRaw).trim() : null;
       newItems.push({
         id: uid++,
+        appId, // 🆕 v8.108
         bmPage: get("bmPage"),
         address,
         owner: get("owner"),
@@ -11921,68 +11928,179 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       return;
     }
 
-    // 🆕 重複マージ：物件住所＋所有者名で照合
-    //   ・既存と一致 → DM・住確だけExcelの値で更新（訪問状況/備考/初訪/メモ等はアプリの値を維持）
-    //   ・新規 → そのまま追加　・Excel内の重複 → スキップ
+    // 🆕 v8.108: 重複マージ・現地ピン連携対応版
+    //   優先順位:
+    //     (a) appId（アプリ側現地ピンID）一致 → 既存ピンとフルマージ
+    //     (b) coordsManual:true の既存ピン × 物件住所(正規化)一致 → 所有者不問でフルマージ
+    //     (c) 物件住所+所有者(従来) 一致 → DM/住確のみ更新（後方互換）
+    //   同一appIdの複数行（共有）は事前に1件に集約
     const normAddr = (a) => String(a || "")
       .replace(/[！-～]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
       .replace(/[\s　]/g, "")
       .replace(/[ー－−‐―—]/g, "-")
       .toLowerCase();
-    const existingByKey = new Map();
-    (data.jiage || []).forEach(j => {
-      const a = normAddr(j.address);
-      if (!a) return;
-      const k = a + "|" + normAddr(j.owner);
-      if (!existingByKey.has(k)) existingByKey.set(k, j);
+
+    // === ステップ1: 同一appId の行を1件に集約（共有を表現） ===
+    const groupedByAppId = {};
+    const noAppIdItems = [];
+    allNewItems.forEach(it => {
+      if (it.appId) {
+        if (!groupedByAppId[it.appId]) groupedByAppId[it.appId] = [];
+        groupedByAppId[it.appId].push(it);
+      } else {
+        noAppIdItems.push(it);
+      }
     });
+    const consolidatedFromGroups = [];
+    Object.entries(groupedByAppId).forEach(([appId, rows]) => {
+      if (rows.length === 1) {
+        consolidatedFromGroups.push(rows[0]);
+      } else {
+        // 共有: ownerを連結、所有者住所も連結、memoも連結
+        const base = { ...rows[0] };
+        const owners = [...new Set(rows.map(r => (r.owner || "").trim()).filter(Boolean))];
+        const ownerAddrs = [...new Set(rows.map(r => (r.ownerAddr || "").trim()).filter(Boolean))];
+        const memos = [...new Set(rows.map(r => (r.memo || "").trim()).filter(Boolean))];
+        base.owner = owners.join("・");
+        base.ownerAddr = ownerAddrs.join(" / ");
+        base.memo = memos.join("\n---\n");
+        consolidatedFromGroups.push(base);
+      }
+    });
+    const consolidatedItems = [...consolidatedFromGroups, ...noAppIdItems];
+
+    // === ステップ2: 既存 jiage を検索用 Map に整理 ===
+    const existingById = new Map();
+    const existingByAddrCoordsManual = new Map();
+    const existingByAddrOwner = new Map();
+    (data.jiage || []).forEach(j => {
+      if (j.id != null) existingById.set(String(j.id), j);
+      const na = normAddr(j.address);
+      if (!na) return;
+      if (j.coordsManual && !existingByAddrCoordsManual.has(na)) {
+        existingByAddrCoordsManual.set(na, j);
+      }
+      const k = na + "|" + normAddr(j.owner);
+      if (!existingByAddrOwner.has(k)) existingByAddrOwner.set(k, j);
+    });
+
+    // === ステップ3: 各取込行に既存をマッチング（優先順位順） ===
     const seenInBatch = new Set();
     const claimedExisting = new Set();
     let dupInBatch = 0;
     const newItems = [];
     const updates = [];
-    allNewItems.forEach(item => {
+    consolidatedItems.forEach(item => {
+      // (a) appId 一致
+      if (item.appId && existingById.has(String(item.appId))) {
+        const ex = existingById.get(String(item.appId));
+        if (claimedExisting.has(ex.id)) { dupInBatch++; return; }
+        claimedExisting.add(ex.id);
+        updates.push({ id: ex.id, item, mergeFull: true });
+        return;
+      }
       const addr = normAddr(item.address);
       if (!addr) { newItems.push(item); return; }
-      const key = addr + "|" + normAddr(item.owner);
-      const ex = existingByKey.get(key);
+      // (b) coordsManual ピン × address一致（所有者不問）
+      if (existingByAddrCoordsManual.has(addr)) {
+        const ex = existingByAddrCoordsManual.get(addr);
+        if (!claimedExisting.has(ex.id)) {
+          claimedExisting.add(ex.id);
+          updates.push({ id: ex.id, item, mergeFull: true });
+          return;
+        }
+      }
+      // (c) address+owner 一致（従来）
+      const legacyKey = addr + "|" + normAddr(item.owner);
+      const ex = existingByAddrOwner.get(legacyKey);
       if (ex) {
         if (claimedExisting.has(ex.id)) { dupInBatch++; return; }
         claimedExisting.add(ex.id);
-        updates.push({ id: ex.id, dm: item.dm, visit: item.visit });
+        updates.push({ id: ex.id, item, mergeFull: false });
         return;
       }
-      if (seenInBatch.has(key)) { dupInBatch++; return; }
-      seenInBatch.add(key);
+      const batchKey = addr + "|" + normAddr(item.owner) + "|" + (item.appId || "");
+      if (seenInBatch.has(batchKey)) { dupInBatch++; return; }
+      seenInBatch.add(batchKey);
       newItems.push(item);
     });
 
     if (newItems.length === 0 && updates.length === 0) {
-      alert(`取り込める新規データも更新対象もありませんでした。\n（Excel内の重複 ${dupInBatch}件をスキップ）`);
+      alert(`取り込める新規データも更新対象もありませんでした。\n（重複 ${dupInBatch}件をスキップ）`);
       setImportPreview(null);
       return;
     }
 
-    setData(d => {
-      // 既存に当たった行 → DM・住確だけ更新（他項目はアプリのまま）
-      const updateMap = new Map(updates.map(u => [u.id, u]));
-      const mergedJiage = (d.jiage || []).map(j => {
-        const u = updateMap.get(j.id);
-        if (!u) return j;
-        // 🆕 取込側のDM・住確が空/「未」のときは既存値を維持（再取込で進捗をリセットしない）
-        const newDm = (u.dm && u.dm !== "未") ? u.dm : j.dm;
-        const newVisit = (u.visit && u.visit !== "未") ? u.visit : j.visit;
-        if (j.dm === newDm && j.visit === newVisit) return j;
-        return { ...j, dm: newDm, visit: newVisit };
-      });
-      const next = { ...d, jiage: [...mergedJiage, ...newItems] };
-      const sheetNames = targetSheets.map(s => s.name).join(", ");
-      return appendLogAndNotify(next, "import", "jiage", `Excel(${sheetNames})から 新規${newItems.length}件追加・既存${updates.length}件のDM/住確を更新`, null);
+    // 新規アイテム: appId は保存しない（取込時のキーとしてのみ使用）
+    const newItemsClean = newItems.map(it => {
+      const { appId: _, ...rest } = it;
+      return rest;
     });
+
+    setData(d => {
+      const updateMap = new Map(updates.map(u => [String(u.id), u]));
+      const mergedJiage = (d.jiage || []).map(j => {
+        const u = updateMap.get(String(j.id));
+        if (!u) return j;
+        const it = u.item;
+        if (!u.mergeFull) {
+          // 後方互換: address+owner 一致は DM・住確のみ
+          const newDm = (it.dm && it.dm !== "未") ? it.dm : j.dm;
+          const newVisit = (it.visit && it.visit !== "未") ? it.visit : j.visit;
+          if (j.dm === newDm && j.visit === newVisit) return j;
+          return { ...j, dm: newDm, visit: newVisit, updatedAt: Date.now() };
+        }
+        // === フルマージ: 現地ピン or appId 一致 ===
+        const next = { ...j };
+        // 🆕 v8.108: owner と ownerName 両方に同じ値を入れる（地図ポップアップ・詳細・重複判定の表示一致）
+        const newOwner = it.owner && String(it.owner).trim();
+        if (newOwner) {
+          next.owner = newOwner;
+          next.ownerName = newOwner;
+        }
+        if (it.ownerAddr && String(it.ownerAddr).trim()) {
+          next.ownerAddr = it.ownerAddr;
+        }
+        if (it.ownerContact && !next.ownerContact) {
+          next.ownerContact = it.ownerContact;
+        }
+        // DM/住確（空/未では上書きしない・既存仕様）
+        if (it.dm && it.dm !== "未") next.dm = it.dm;
+        if (it.visit && it.visit !== "未") next.visit = it.visit;
+        // 実測座標保護: coordsManual:true なら絶対に上書きしない
+        if (!j.coordsManual && typeof it.lat === "number" && typeof it.lng === "number") {
+          next.lat = it.lat;
+          next.lng = it.lng;
+        }
+        if (!j.assignee && it.assignee) next.assignee = it.assignee;
+        if (!j.area && it.area) next.area = it.area;
+        // メモ: 既存があれば追記
+        if (it.memo && String(it.memo).trim()) {
+          const existingMemo = next.memo || "";
+          if (!existingMemo) {
+            next.memo = it.memo;
+          } else if (!existingMemo.includes(it.memo)) {
+            next.memo = existingMemo + "\n---\n" + it.memo;
+          }
+        }
+        if (!next.nextVisit && it.nextVisit) next.nextVisit = it.nextVisit;
+        // landmark/createdAt/source/coordsManual は維持（spread で残る）
+        next.updatedAt = Date.now();
+        return next;
+      });
+      const next = { ...d, jiage: [...mergedJiage, ...newItemsClean] };
+      const sheetNames = targetSheets.map(s => s.name).join(", ");
+      const fullMergeCount = updates.filter(u => u.mergeFull).length;
+      const partialMergeCount = updates.length - fullMergeCount;
+      return appendLogAndNotify(next, "import", "jiage", `Excel(${sheetNames})から 新規${newItemsClean.length}件・現地ピンマージ${fullMergeCount}件・DM/住確のみ${partialMergeCount}件`, null);
+    });
+    const fullMergeCount = updates.filter(u => u.mergeFull).length;
+    const partialMergeCount = updates.length - fullMergeCount;
     let importMsg = `✅ インポート完了（${targetSheets.length}シート分）`;
-    importMsg += `\n・新規追加: ${newItems.length}件`;
-    importMsg += `\n・既存を更新（DM・住確のみ）: ${updates.length}件`;
-    if (dupInBatch > 0) importMsg += `\n・Excel内の重複スキップ: ${dupInBatch}件`;
+    importMsg += `\n・新規追加: ${newItemsClean.length}件`;
+    if (fullMergeCount > 0) importMsg += `\n・現地ピン/appIdマージ: ${fullMergeCount}件（所有者情報を追加）`;
+    if (partialMergeCount > 0) importMsg += `\n・既存(address+owner)を更新: ${partialMergeCount}件（DM・住確のみ）`;
+    if (dupInBatch > 0) importMsg += `\n・取込内の重複スキップ: ${dupInBatch}件`;
     alert(importMsg);
     setImportPreview(null);
   };
