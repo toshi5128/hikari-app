@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.102-version-compare-fix";
+const APP_VERSION = "2026-06-03-v8.105-chip-pin-only";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3493,8 +3493,9 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const pendingLot = isPendingLot(it);
       const color = pendingLot ? "#fbbf24" : colorByStatus(it.status);
       const showPost = _postedRecently(it);
-      // 🆕 v8.99: 今日立てたピンは halo + 「今日」バッジで強調
-      const createdToday = isCreatedToday(it);
+      // 🆕 v8.99→v8.104: 「今日かつ地番待ち」のみ halo + 「今日」バッジで強調
+      //   （確定したら halo は消える → 現地ピンは未処理ToDoという位置づけ）
+      const createdToday = isCreatedToday(it) && pendingLot;
       const outerSize = createdToday ? 42 : 22;
       const innerOffset = createdToday ? 10 : 0;
       const anchor = outerSize / 2;
@@ -3520,11 +3521,27 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       // 🆕 v8.98: ポップアップ表示は地番優先、なければ目印住所、なければ「(地番待ち)」
       const popupTitle = (it.address && it.address.trim()) || (it.landmark && `📍 ${it.landmark}（地番待ち）`) || "(地番未入力)";
       const statusLabel = pendingLot ? "🟡 地番待ち" : it.status;
+      // 🆕 v8.103: 現地ピンには「誰が・いつ」を強調表示
+      const _isOnsite = !!it.coordsManual;
+      const _whoWhenHtml = (() => {
+        if (!_isOnsite || !it.createdAt) return "";
+        try {
+          const d = new Date(it.createdAt);
+          const mo = d.getMonth() + 1;
+          const da = d.getDate();
+          const dow = ["日","月","火","水","木","金","土"][d.getDay()];
+          const hh = String(d.getHours()).padStart(2, "0");
+          const mm = String(d.getMinutes()).padStart(2, "0");
+          const who = it.assignee || "(担当未割当)";
+          return `<div style="background:#fbbf2422;border:1px solid #fbbf2466;border-radius:6px;padding:4px 8px;margin:4px 0;font-size:11px;color:#fbbf24;font-weight:800;">📍 ${mo}/${da}(${dow}) ${hh}:${mm} — <span style="color:#fff;background:#fbbf24;padding:1px 6px;border-radius:4px;">${who}</span> が立てた</div>`;
+        } catch (e) { return ""; }
+      })();
       marker.bindPopup(`
-        <div style="font-family:'Noto Sans JP',sans-serif;min-width:160px;">
+        <div style="font-family:'Noto Sans JP',sans-serif;min-width:180px;">
           <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${popupTitle.slice(0, 50)}</div>
+          ${_whoWhenHtml}
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">👤 ${it.ownerName}</div>` : ""}
-          ${it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
+          ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
           <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span></div>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
@@ -11428,20 +11445,28 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [panToCoords, setPanToCoords] = useState(null);
   const [panToCoordsKey, setPanToCoordsKey] = useState(0);
 
-  // 🆕 v8.100: 今日立てた現地ピンの集計（担当者別）
-  const todayPinSummary = useMemo(() => {
-    const _todayDS = new Date().toDateString();
-    const todayPins = (data.jiage || []).filter(j => {
-      if (!j.coordsManual || !j.createdAt) return false;
-      try { return new Date(j.createdAt).toDateString() === _todayDS; }
-      catch (e) { return false; }
+  // 🆕 v8.100→v8.104: 「未処理の現地ピン」を集計（地番待ち全件・日付関係なし）
+  //   現地ピン=未処理ToDo として扱う。地番入力で確定→集計から外れる
+  const pendingPinSummary = useMemo(() => {
+    const pendingPins = (data.jiage || []).filter(j => {
+      if (!j.coordsManual) return false;
+      const a = j.address;
+      return !a || String(a).trim() === "";
     });
     const byAssignee = {};
-    todayPins.forEach(p => {
+    pendingPins.forEach(p => {
       const a = p.assignee || "(未割当)";
       byAssignee[a] = (byAssignee[a] || 0) + 1;
     });
-    return { total: todayPins.length, byAssignee };
+    // 今日も「現地ピン全体（確定込み）」の件数として参考表示用
+    const _todayDS = new Date().toDateString();
+    let todayTotalCount = 0;
+    (data.jiage || []).forEach(j => {
+      if (!j.coordsManual || !j.createdAt) return;
+      try { if (new Date(j.createdAt).toDateString() === _todayDS) todayTotalCount++; }
+      catch (e) {}
+    });
+    return { total: pendingPins.length, byAssignee, todayTotal: todayTotalCount };
   }, [data.jiage]);
 
   const navUrl = addr => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving`;
@@ -12930,45 +12955,92 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       {currentLoc.accuracy ? ` (±${Math.round(currentLoc.accuracy)}m)` : ""}
                     </div>
                   )}
-                  {/* 🆕 v8.100: 今日のピン集計（担当者別） */}
-                  {todayPinSummary.total > 0 && (
-                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${C.borderDim}` }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-                        <span style={{ fontSize: 11, color: "#fbbf24", fontWeight: 800 }}>✨ 今日のピン</span>
-                        <span style={{ fontSize: 13, fontWeight: 800, color: C.text }}>合計 {todayPinSummary.total}件</span>
-                        <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>※ 各担当者の「新規地上」に自動カウント済</span>
-                      </div>
-                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                        {Object.entries(todayPinSummary.byAssignee)
-                          .sort((a, b) => b[1] - a[1])
-                          .map(([assignee, count]) => {
-                            const color = MEMBER_COLORS[assignee] || C.muted;
-                            const isFiltered = filterMember === assignee;
+                  {/* 🆕 v8.104→v8.105: 現地ピン残（要 地番入力）集計 - チップ押下で現地ピンのみ表示 */}
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${C.borderDim}` }}>
+                    {pendingPinSummary.total > 0 ? (
+                      <>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, color: "#fbbf24", fontWeight: 800 }}>📍 現地ピン合計</span>
+                          <span style={{ fontSize: 15, fontWeight: 800, color: "#fbbf24" }}>{pendingPinSummary.total}件</span>
+                          <span style={{ fontSize: 10, color: C.muted }}>(要 地番入力)</span>
+                          {pendingPinSummary.todayTotal > 0 && (
+                            <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>※ 今日新規 {pendingPinSummary.todayTotal}件</span>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                          {/* 🆕 v8.105: 「全体」チップ - 全員の地番待ち現地ピンのみ表示 */}
+                          {(() => {
+                            const isAllPending = quickFilter === "pending_lot" && filterMember === "__ALL__";
                             return (
-                              <button key={assignee}
-                                onClick={() => setFilterMember(isFiltered ? "__ALL__" : assignee)}
-                                title={isFiltered ? "クリックで全員表示に戻す" : `${assignee} のピンだけ表示`}
+                              <button onClick={() => {
+                                if (isAllPending) {
+                                  setQuickFilter(null);
+                                } else {
+                                  setQuickFilter("pending_lot");
+                                  setFilterMember("__ALL__");
+                                }
+                              }}
+                                title={isAllPending ? "解除して全件表示に戻す" : "全員の地番待ち現地ピンだけ表示"}
                                 style={{
-                                  background: isFiltered ? color : color + "22",
-                                  color: isFiltered ? "#fff" : color,
-                                  border: `1.5px solid ${color}`,
+                                  background: isAllPending ? "#fbbf24" : "#fbbf2422",
+                                  color: isAllPending ? "#000" : "#fbbf24",
+                                  border: `1.5px solid #fbbf24`,
                                   borderRadius: 12, padding: "3px 10px",
-                                  fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                                }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                                  fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                }}>{isAllPending ? "✓ " : ""}📍 全体: {pendingPinSummary.total}件</button>
                             );
-                          })}
-                        {filterMember !== "__ALL__" && (
-                          <button onClick={() => setFilterMember("__ALL__")}
-                            style={{
-                              background: "transparent", color: C.muted,
-                              border: `1px solid ${C.borderDim}`,
-                              borderRadius: 12, padding: "3px 10px",
-                              fontSize: 11, cursor: "pointer", fontFamily: "inherit",
-                            }}>✕ 全員に戻す</button>
+                          })()}
+                          {Object.entries(pendingPinSummary.byAssignee)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([assignee, count]) => {
+                              const color = MEMBER_COLORS[assignee] || C.muted;
+                              // 🆕 v8.105: 現地ピンのみフィルタ判定（filterMember + quickFilter=pending_lot 両方一致時のみ active）
+                              const isFiltered = filterMember === assignee && quickFilter === "pending_lot";
+                              return (
+                                <button key={assignee}
+                                  onClick={() => {
+                                    if (isFiltered) {
+                                      setFilterMember("__ALL__");
+                                      setQuickFilter(null);
+                                    } else {
+                                      setFilterMember(assignee);
+                                      setQuickFilter("pending_lot");
+                                    }
+                                  }}
+                                  title={isFiltered ? "解除して全件表示に戻す" : `${assignee} の地番待ち現地ピンだけ表示（インポート物件は除外）`}
+                                  style={{
+                                    background: isFiltered ? color : color + "22",
+                                    color: isFiltered ? "#fff" : color,
+                                    border: `1.5px solid ${color}`,
+                                    borderRadius: 12, padding: "3px 10px",
+                                    fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                  }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                              );
+                            })}
+                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot") && (
+                            <button onClick={() => { setFilterMember("__ALL__"); setQuickFilter(null); }}
+                              style={{
+                                background: "transparent", color: C.muted,
+                                border: `1px solid ${C.borderDim}`,
+                                borderRadius: 12, padding: "3px 10px",
+                                fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                              }}>✕ 全件表示に戻す</button>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                          💡 チップを押すと「現地ピンのみ」に絞り込み（インポート物件は除外）。地番入力で確定→カウンタから外れる
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.success, fontSize: 12 }}>
+                        <span style={{ fontSize: 14 }}>✅</span>
+                        <span style={{ fontWeight: 700 }}>現地ピン: 0件 — 全件確定済み</span>
+                        {pendingPinSummary.todayTotal > 0 && (
+                          <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>(今日 {pendingPinSummary.todayTotal}件確定)</span>
                         )}
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
 
                 {/* 地図 */}
@@ -13319,6 +13391,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
           </div>
 
           {/* 🆕 v8.101: 現地ピン情報パネル（landmark / 座標 / 地番待ち CTA） */}
+          {/* 🆕 v8.103: 立てた日時・立てた人を明示 */}
           {_raw.coordsManual && (
             <div style={{
               background: _isPendingLot ? "#fbbf2418" : C.bg,
@@ -13328,6 +13401,33 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               <div style={{ fontSize: 12, fontWeight: 800, color: _isPendingLot ? "#fbbf24" : C.accent, marginBottom: 8 }}>
                 {_isPendingLot ? "🟡 地番待ち（後で入力）" : "📍 現地ピン情報"}
               </div>
+              {/* 🆕 v8.103: 立てた日時 / 立てた人 */}
+              {(() => {
+                if (!_raw.createdAt) return null;
+                try {
+                  const d = new Date(_raw.createdAt);
+                  const y = d.getFullYear();
+                  const mo = d.getMonth() + 1;
+                  const da = d.getDate();
+                  const dow = ["日","月","火","水","木","金","土"][d.getDay()];
+                  const hh = String(d.getHours()).padStart(2, "0");
+                  const mm = String(d.getMinutes()).padStart(2, "0");
+                  const who = _raw.assignee || selected.item.assignee || "(担当未割当)";
+                  const whoColor = MEMBER_COLORS[who] || C.muted;
+                  return (
+                    <div style={{ background: "#fbbf2418", border: `1px solid #fbbf2466`, borderRadius: 8, padding: "8px 10px", marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>📅 立てた日時</div>
+                      <div style={{ fontSize: 13, color: C.text, fontWeight: 700, marginBottom: 6 }}>
+                        {y}年{mo}月{da}日({dow}) {hh}:{mm}
+                      </div>
+                      <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>👤 立てた人</div>
+                      <div style={{ display: "inline-block", background: whoColor, color: "#fff", padding: "3px 10px", borderRadius: 8, fontSize: 13, fontWeight: 800 }}>
+                        {who}
+                      </div>
+                    </div>
+                  );
+                } catch (e) { return null; }
+              })()}
               {_raw.landmark && (
                 <div style={{ fontSize: 12, marginBottom: 6, lineHeight: 1.5 }}>
                   <span style={{ color: C.muted }}>目印住所: </span>
