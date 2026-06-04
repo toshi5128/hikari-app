@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.115-default-hide-excluded";
+const APP_VERSION = "2026-06-03-v8.116-visit-ok-label";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -11483,7 +11483,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   // 🆕 v8.100→v8.111→v8.114: 現地ピン4状態集計
   //   優先順位:
   //   1. 🟡 地番待ち   = coordsManual && !address
-  //   2. 📨 DM準備済   = coordsManual && address && hasOwner       （hasOwner 最優先）
+  //   2. 🚪 訪問OK     = coordsManual && address && hasOwner       （hasOwner 最優先）
   //   3. 🚫 対象外     = coordsManual && address && !hasOwner && excluded
   //   4. ⏳ 謄本待ち   = coordsManual && address && !hasOwner && !excluded
   const pendingPinSummary = useMemo(() => {
@@ -11491,7 +11491,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     const hasOwner = (j) => !!((j.owner && String(j.owner).trim()) || (j.ownerName && String(j.ownerName).trim()));
     const pendingPins = onsiteAll.filter(j => !j.address || String(j.address).trim() === "");
     const confirmedPins = onsiteAll.filter(j => j.address && String(j.address).trim() !== "");
-    // 🆕 v8.114: hasOwner 最優先で DM準備済 → 残りを excluded で分割
+    // 🆕 v8.114: hasOwner 最優先で 訪問OK → 残りを excluded で分割
     const dmReadyPins = confirmedPins.filter(j => hasOwner(j));
     const noOwnerPins = confirmedPins.filter(j => !hasOwner(j));
     const excludedPins = noOwnerPins.filter(j => j.excluded === true);
@@ -11714,7 +11714,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
 
   // 🆕 v8.95→v8.98→v8.112: 現地ピン CSV エクスポート（謄本待ちのみ）
   //   出力対象: coordsManual && address入り && 所有者なし
-  //   → 既に謄本取得済み（DM準備済）は除外。地番待ちも除外。
+  //   → 既に謄本取得済み（訪問OK）は除外。地番待ちも除外。
   //   業務上、Claude Code に渡して謄本一括取得する用途を想定
   const downloadOnsitePinCSV = () => {
     const hasOwner = (j) => !!((j.owner && String(j.owner).trim()) || (j.ownerName && String(j.ownerName).trim()));
@@ -11739,7 +11739,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       const lines = [
         "📭 謄本待ちの現地ピンがありません",
         "",
-        `（地番待ち ${pendingLotCount}件、🚫対象外 ${excludedCount}件、📨DM準備済 ${dmReadyCount}件 は除外）`,
+        `（地番待ち ${pendingLotCount}件、🚫対象外 ${excludedCount}件、🚪訪問OK ${dmReadyCount}件 は除外）`,
         "",
         "新しく地番を確定したピンができたら、ここから謄本取得用CSVを出力できます",
       ];
@@ -11776,7 +11776,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       `   ファイル名: tohon_machi_${ts}.csv`,
     ];
     if (excludedCount > 0) lines.push(`   🚫 対象外 ${excludedCount}件 は除外（謄本取得済・本人居住等）`);
-    if (dmReadyCount > 0) lines.push(`   📨 DM準備済 ${dmReadyCount}件 は除外（謄本取得済み）`);
+    if (dmReadyCount > 0) lines.push(`   🚪 訪問OK ${dmReadyCount}件 は除外（謄本取得済み）`);
     if (pendingLotCount > 0) lines.push(`   🟡 地番待ち ${pendingLotCount}件 は除外（地番未入力）`);
     lines.push("");
     lines.push("→ このCSVを Claude Code に渡して謄本一括取得 → 結果をインポート");
@@ -12147,7 +12147,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         if (newOwner) {
           next.owner = newOwner;
           next.ownerName = newOwner;
-          // 🆕 v8.114: 所有者が入ったら excluded を解除（DM準備済へ）
+          // 🆕 v8.114: 所有者が入ったら excluded を解除（訪問OKへ）
           if (next.excluded) {
             delete next.excluded;
             delete next.excludedReason;
@@ -12215,7 +12215,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
 
   const filtered = useMemo(() => allItems.filter(item => {
     // 🆕 v8.115: 既定で🚫対象外を非表示（"excluded" フィルタ時のみ表示）
-    //   通常物件・🟡地番待ち・⏳謄本待ち・📨DM準備済 は影響なし
+    //   通常物件・🟡地番待ち・⏳謄本待ち・🚪訪問OK は影響なし
     //   excluded===true && quickFilter !== "excluded" → 非表示
     {
       const _raw = item.raw || {};
@@ -12274,7 +12274,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       if (hasOwner) return false;
       if (raw.excluded === true) return false;
     }
-    // 🆕 v8.111: DM準備済（地番＋所有者）
+    // 🆕 v8.111: 訪問OK（地番＋所有者）
     if (quickFilter === "dm_ready") {
       const raw = item.raw || {};
       if (!raw.coordsManual) return false;
@@ -13280,7 +13280,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                             <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700 }}>/ 🚫対象外 {pendingPinSummary.excludedTotal}件</span>
                           )}
                           {pendingPinSummary.dmReadyTotal > 0 && (
-                            <span style={{ fontSize: 10, color: C.success, fontWeight: 700 }}>/ 📨DM準備 {pendingPinSummary.dmReadyTotal}件</span>
+                            <span style={{ fontSize: 10, color: C.success, fontWeight: 700 }}>/ 🚪訪問OK {pendingPinSummary.dmReadyTotal}件</span>
                           )}
                           {pendingPinSummary.todayTotal > 0 && (
                             <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>※ 今日新規 {pendingPinSummary.todayTotal}件</span>
@@ -13432,7 +13432,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                               })}
                           </div>
                         )}
-                        {/* 🆕 v8.111: DM準備済（地番＋所有者あり）担当者別 */}
+                        {/* 🆕 v8.111→v8.116: 訪問OK（地番＋所有者あり）担当者別 */}
                         {pendingPinSummary.dmReadyTotal > 0 && (
                           <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
                             {(() => {
@@ -13449,7 +13449,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                                     border: `1.5px solid ${C.success}`,
                                     borderRadius: 12, padding: "3px 10px",
                                     fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
-                                  }}>{isAll ? "✓ " : ""}📨 DM準備済: {pendingPinSummary.dmReadyTotal}件</button>
+                                  }}>{isAll ? "✓ " : ""}🚪 訪問OK: {pendingPinSummary.dmReadyTotal}件</button>
                               );
                             })()}
                             {Object.entries(pendingPinSummary.dmReadyByAssignee)
@@ -13463,7 +13463,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                                       if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
                                       else { setFilterMember(assignee); setQuickFilter("dm_ready"); }
                                     }}
-                                    title={isFiltered ? "解除" : `${assignee} のDM準備済だけ表示`}
+                                    title={isFiltered ? "解除" : `${assignee} の訪問OKだけ表示`}
                                     style={{
                                       background: isFiltered ? color : color + "22",
                                       color: isFiltered ? "#fff" : color,
@@ -13488,7 +13488,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                             <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>(今日 {pendingPinSummary.todayTotal}件確定)</span>
                           )}
                         </div>
-                        {/* 🆕 v8.111: 0件時でも謄本待ち / DM準備済を担当者別表示 */}
+                        {/* 🆕 v8.111→v8.116: 0件時でも謄本待ち / 訪問OK を担当者別表示 */}
                         {pendingPinSummary.lookupPendingTotal > 0 && (
                           <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4 }}>
                             {(() => {
@@ -13580,7 +13580,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                                   border: `1.5px solid ${C.success}`,
                                   borderRadius: 12, padding: "3px 10px",
                                   fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
-                                }}>{isAll ? "✓ " : ""}📨 DM準備済: {pendingPinSummary.dmReadyTotal}件</button>
+                                }}>{isAll ? "✓ " : ""}🚪 訪問OK: {pendingPinSummary.dmReadyTotal}件</button>
                               );
                             })()}
                             {Object.entries(pendingPinSummary.dmReadyByAssignee)
