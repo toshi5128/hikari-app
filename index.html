@@ -138,7 +138,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-04-v8.132-fix-usememo-hooks-rule";
+const APP_VERSION = "2026-06-04-v8.133-popup-persist-and-inline-search";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3413,7 +3413,7 @@ function Tag({ label, color }) {
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
 }
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps }) {
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
   const markersRef = React.useRef([]);
@@ -3442,6 +3442,9 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       mapInstanceRef.current = null;
     };
   }, []);
+
+  // 🆕 v8.133: 開いてるポップアップの ID を記憶（再生成後に復元）
+  const openPopupIdRef = React.useRef(null);
 
   // マーカー更新
   React.useEffect(() => {
@@ -3606,16 +3609,27 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         </div>
       `, { autoClose: false, closeOnClick: false });
       marker.on("popupopen", () => {
+        // 🆕 v8.133: 開いたポップアップ位置を記憶
+        openPopupIdRef.current = it && (it.id != null ? it.id : it.rawId);
         setTimeout(() => {
           const btn = document.getElementById("pin-detail-btn");
           if (btn) btn.onclick = (ev) => {
-            // 🆕 v8.131: クリックバブリングで BottomSheet 即閉じバグを防ぐ
             if (ev) { try { ev.stopPropagation(); ev.preventDefault(); } catch (er) {} }
-            // setTimeout(0) で React イベントループから切り離す
             setTimeout(() => { onPinClick && onPinClick(it); }, 0);
           };
         }, 10);
       });
+      marker.on("popupclose", () => {
+        const curId = it && (it.id != null ? it.id : it.rawId);
+        if (openPopupIdRef.current === curId) openPopupIdRef.current = null;
+      });
+      // 🆕 v8.133: 再生成後に元のポップアップを復元
+      if (openPopupIdRef.current != null) {
+        const curId = it && (it.id != null ? it.id : it.rawId);
+        if (curId === openPopupIdRef.current) {
+          setTimeout(() => { try { marker.openPopup(); } catch (er) {} }, 30);
+        }
+      }
       markersRef.current.push(marker);
     });
     // 🆕 v8.96: 中心調整は初回のみ自動実行（ユーザーがズーム/パンした後は勝手に戻さない）
@@ -3626,7 +3640,15 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         hasInitializedBoundsRef.current = true;
       } catch (e) {}
     }
-  }, [items, pinTarget]);
+  }, [
+    // 🆕 v8.133: items 内容ハッシュで判定（参照同一性ではなく内容変化で再描画）
+    items.length,
+    items.map(i => {
+      const r = (i && i.raw) || i || {};
+      return `${i.id || i.rawId || ""}|${i.lat ?? ""}|${i.lng ?? ""}|${i.ownerLat ?? ""}|${i.ownerLng ?? ""}|${i.status || ""}|${r.coordsManual ? 1 : 0}|${r.address || ""}|${r.owner || r.ownerName || ""}|${r.excluded === true ? 1 : 0}|${r.lookupFailed === true ? 1 : 0}`;
+    }).join("¦"),
+    pinTarget,
+  ]);
 
   // 🆕 v8.96: fitBoundsKey が変わったら手動で全件表示（「全件表示」ボタン用）
   React.useEffect(() => {
@@ -3837,7 +3859,82 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     } catch (e) {}
   }, [centerOnLocationKey]);
 
-  return <div ref={mapRef} style={{ height, width: "100%", borderRadius: 12, border: `1px solid ${C.borderDim}` }} />;
+  return (
+    <div style={{ position: "relative" }}>
+      <div
+        ref={mapRef}
+        style={{ height, width: "100%", borderRadius: 12, border: `1px solid ${C.borderDim}` }}
+      />
+      {/* 🆕 v8.133: Googleマップ風の地図内固定検索バー */}
+      {searchProps && (
+        <div style={{
+          position: "absolute",
+          top: 10, left: 10, right: 10,
+          zIndex: 500,
+          background: "rgba(15,23,42,0.92)",
+          backdropFilter: "blur(8px)",
+          borderRadius: 12,
+          padding: "8px 10px",
+          display: "flex",
+          gap: 6,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          pointerEvents: "auto",
+        }}>
+          <input
+            type="text"
+            placeholder="🔍 住所・地名で地図移動"
+            value={searchProps.value || ""}
+            onChange={e => searchProps.onChange && searchProps.onChange(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && searchProps.onSubmit) searchProps.onSubmit(); }}
+            style={{
+              flex: 1,
+              background: "rgba(255,255,255,0.08)",
+              border: "1px solid rgba(255,255,255,0.12)",
+              borderRadius: 8,
+              padding: "8px 12px",
+              color: "#fff",
+              fontSize: 13,
+              fontFamily: "inherit",
+              outline: "none",
+            }}
+          />
+          <button
+            onClick={() => searchProps.onSubmit && searchProps.onSubmit()}
+            disabled={searchProps.loading || !((searchProps.value || "").trim())}
+            style={{
+              background: "#0ea5e9",
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              padding: "8px 14px",
+              cursor: (searchProps.loading || !((searchProps.value || "").trim())) ? "not-allowed" : "pointer",
+              fontSize: 13,
+              fontWeight: 700,
+              fontFamily: "inherit",
+              opacity: (searchProps.loading || !((searchProps.value || "").trim())) ? 0.4 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >{searchProps.loading ? "🔄" : "移動"}</button>
+          {searchProps.value && (
+            <button
+              onClick={() => searchProps.onChange && searchProps.onChange("")}
+              style={{
+                background: "transparent",
+                color: "rgba(255,255,255,0.7)",
+                border: "1px solid rgba(255,255,255,0.2)",
+                borderRadius: 8,
+                padding: "8px 10px",
+                cursor: "pointer",
+                fontSize: 12,
+                fontFamily: "inherit",
+              }}
+            >✕</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // 📍 手動でピン位置を指定するモーダル
@@ -13547,37 +13644,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   </button>
                 )}
 
-                {/* 🆕 v8.106: 地図検索バー（住所・地名でジャンプ） */}
-                <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-                  <input
-                    type="text"
-                    placeholder="🔍 住所・地名で地図移動（例: 小川町、東松山市本田）"
-                    value={mapSearchInput}
-                    onChange={e => setMapSearchInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter") handleMapSearch(); }}
-                    style={{
-                      flex: 1, background: C.bg, border: `1px solid ${C.borderDim}`,
-                      borderRadius: 8, padding: "8px 12px", color: C.text,
-                      fontSize: 13, fontFamily: "inherit",
-                    }}
-                  />
-                  <button onClick={handleMapSearch}
-                    disabled={mapSearchLoading || !mapSearchInput.trim()}
-                    style={{
-                      background: C.accent, color: "#fff", border: "none",
-                      borderRadius: 8, padding: "8px 16px", cursor: mapSearchLoading || !mapSearchInput.trim() ? "not-allowed" : "pointer",
-                      fontSize: 13, fontWeight: 700, fontFamily: "inherit",
-                      opacity: mapSearchLoading || !mapSearchInput.trim() ? 0.5 : 1,
-                    }}>{mapSearchLoading ? "🔄..." : "移動"}</button>
-                  {mapSearchInput && (
-                    <button onClick={() => setMapSearchInput("")}
-                      style={{
-                        background: "transparent", color: C.muted,
-                        border: `1px solid ${C.borderDim}`, borderRadius: 8,
-                        padding: "8px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit",
-                      }}>✕</button>
-                  )}
-                </div>
+                {/* 🆕 v8.133: 地図外検索バー削除（LeafletMap内に固定表示） */}
 
                 {/* 🆕 v8.95: 現地ピン操作パネル */}
                 <div style={{ background: C.cardBg, border: `1.5px solid ${C.accent}66`, borderRadius: 10, padding: 10, marginBottom: 8 }}>
@@ -14056,6 +14123,12 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       fitBoundsKey={fitBoundsKey}
                       panToCoords={panToCoords}
                       panToCoordsKey={panToCoordsKey}
+                      searchProps={{
+                        value: mapSearchInput,
+                        onChange: setMapSearchInput,
+                        onSubmit: handleMapSearch,
+                        loading: mapSearchLoading,
+                      }}
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span>📍 {itemsWithCoord.length}件のピンを表示中</span>
