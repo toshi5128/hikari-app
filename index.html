@@ -138,7 +138,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-04-v8.131-fix-popup-and-colors-and-ripple";
+const APP_VERSION = "2026-06-04-v8.132-fix-usememo-hooks-rule";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13485,25 +13485,18 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
 
           {/* 🗺️ Leaflet地図表示 */}
           {(() => {
-            // 🆕 v8.131: 内側で計算してた配列を React.useMemo に置き換えて参照同一性を保つ
-            //   → LeafletMap の useEffect([items]) が無駄発火しなくなる
-            //   → ピンタップで開いたポップアップが勝手に消える問題を解消
-            const itemsWithCoord = React.useMemo(
-              () => filtered.filter(i => {
-                const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
-                const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
-                return typeof lat === "number" && typeof lng === "number";
-              }),
-              [filtered, mapPinTarget]
-            );
-            const itemsNoCoord = React.useMemo(
-              () => filtered.filter(i => {
-                const addr = mapPinTarget === "ownerAddr" ? i.ownerAddress : i.address;
-                const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
-                return !!addr && (typeof lat !== "number");
-              }),
-              [filtered, mapPinTarget]
-            );
+            // 🆕 v8.131→v8.132: useMemo はフック規則違反になるため通常の filter に戻す
+            //   ポップアップが消える問題は別の対策（setTimeout/stopPropagation/300msガード）で対処済み
+            const itemsWithCoord = filtered.filter(i => {
+              const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
+              const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
+              return typeof lat === "number" && typeof lng === "number";
+            });
+            const itemsNoCoord = filtered.filter(i => {
+              const addr = mapPinTarget === "ownerAddr" ? i.ownerAddress : i.address;
+              const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
+              return !!addr && (typeof lat !== "number");
+            });
             
             return (
               <div style={{ marginBottom: 14 }}>
