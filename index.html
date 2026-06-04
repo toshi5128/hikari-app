@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.118-lookup-failed";
+const APP_VERSION = "2026-06-04-v8.119-flag-clear-sync-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -12237,37 +12237,58 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         // 🆕 v8.118: 判定=未取得（謄本取得失敗）の判定
         const isLookupFailedJudge = it.judge && (String(it.judge).indexOf("未取得") >= 0 || String(it.judge).toLowerCase() === "lookup_failed" || String(it.judge).toLowerCase() === "notfound" || String(it.judge).toLowerCase() === "not_found");
         if (isExcludedJudge && !newOwner) {
+          const _now = Date.now();
           next.excluded = true;
           next.excludedReason = "本人居住";
-          // 🆕 v8.118: 対象外フラグ立て時は lookupFailed は不要（excluded が優先）
-          if (next.lookupFailed) { delete next.lookupFailed; delete next.lookupNote; }
-          next.updatedAt = Date.now();
+          // 🆕 v8.118→v8.119: 対象外フラグ立て時は lookupFailed を false（sync 復活防止）
+          next.lookupFailed = false;
+          next.lookupNote = "";
+          next._fieldUpdatedAt = {
+            ...(next._fieldUpdatedAt || {}),
+            excluded: _now, excludedReason: _now,
+            lookupFailed: _now, lookupNote: _now,
+          };
+          next.updatedAt = _now;
           return next; // owner/ownerAddr を一切触らずに終了
         }
         // 🆕 v8.118: 判定=未取得 で所有者空なら lookupFailed:true をセット（owner は変更しない）
         //   ※ 所有者が入っている場合は要修正であっても通常マージ（hasOwner 最優先）
         if (isLookupFailedJudge && !newOwner) {
+          const _now = Date.now();
           next.lookupFailed = true;
           next.lookupNote = "謄本取れず・地番要確認";
-          // excluded が立っていたら下げる（lookupFailed 優先で要修正へ）
-          if (next.excluded) { delete next.excluded; delete next.excludedReason; }
-          next.updatedAt = Date.now();
+          // 🆕 v8.119: excluded が立っていたら false に下げる（sync 復活防止）
+          next.excluded = false;
+          next.excludedReason = "";
+          next._fieldUpdatedAt = {
+            ...(next._fieldUpdatedAt || {}),
+            lookupFailed: _now, lookupNote: _now,
+            excluded: _now, excludedReason: _now,
+          };
+          next.updatedAt = _now;
           return next; // owner/ownerAddr を一切触らずに終了
         }
         // 🆕 v8.108: owner と ownerName 両方に同じ値を入れる（地図ポップアップ・詳細・重複判定の表示一致）
         if (newOwner) {
+          const _now = Date.now();
           next.owner = newOwner;
           next.ownerName = newOwner;
-          // 🆕 v8.114: 所有者が入ったら excluded を解除（訪問OKへ）
+          const _fua = { ...(next._fieldUpdatedAt || {}), owner: _now, ownerName: _now };
+          // 🆕 v8.114→v8.119: 所有者が入ったら excluded を解除（sync 復活防止のため false 化）
           if (next.excluded) {
-            delete next.excluded;
-            delete next.excludedReason;
+            next.excluded = false;
+            next.excludedReason = "";
+            _fua.excluded = _now;
+            _fua.excludedReason = _now;
           }
-          // 🆕 v8.118: 所有者が入ったら lookupFailed も解除（訪問OKへ＝hasOwner 最優先）
+          // 🆕 v8.118→v8.119: 所有者が入ったら lookupFailed も解除（sync 復活防止のため false 化）
           if (next.lookupFailed) {
-            delete next.lookupFailed;
-            delete next.lookupNote;
+            next.lookupFailed = false;
+            next.lookupNote = "";
+            _fua.lookupFailed = _now;
+            _fua.lookupNote = _now;
           }
+          next._fieldUpdatedAt = _fua;
         }
         if (it.ownerAddr && String(it.ownerAddr).trim()) {
           next.ownerAddr = it.ownerAddr;
@@ -12899,15 +12920,20 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const handleSave = () => {
     if (addType === "jiage") {
       const item = { ...form, id: editItem?.rawId || Date.now() };
-      // 🆕 v8.118: 地番(address)が変更されたら lookupFailed を自動解除（=⏳謄本待ちに戻す）
-      //   - 編集前 lookupFailed が立っていて、address が空でなく、かつ前と違う値になっていれば解除
-      //   - これで「正しい地番に直したら次のCSV出力に自動で乗る」運用が成立
+      // 🆕 v8.118→v8.119: 地番(address)が変更されたら lookupFailed を自動解除（=⏳謄本待ちに戻す）
+      //   - delete ではなく false 化＋_fieldUpdatedAt 更新（sync 復活防止）
       if (editItem && editItem.raw && editItem.raw.lookupFailed === true) {
         const prevAddr = String((editItem.raw.address || "")).trim();
         const newAddr  = String((item.address     || "")).trim();
         if (newAddr && newAddr !== prevAddr) {
-          delete item.lookupFailed;
-          delete item.lookupNote;
+          const _now = Date.now();
+          item.lookupFailed = false;
+          item.lookupNote = "";
+          item._fieldUpdatedAt = {
+            ...(item._fieldUpdatedAt || {}),
+            lookupFailed: _now, lookupNote: _now,
+          };
+          item.updatedAt = _now;
         }
       }
       setData(d => {
@@ -14260,10 +14286,18 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                         ...d,
                         jiage: (d.jiage || []).map(j => {
                           if (j.id !== selected.item.rawId) return j;
-                          const next = { ...j };
-                          delete next.excluded;
-                          delete next.excludedReason;
-                          next.updatedAt = Date.now();
+                          // 🆕 v8.119: delete ではなく false 化＋_fieldUpdatedAt 更新（sync 復活防止）
+                          const _now = Date.now();
+                          const next = {
+                            ...j,
+                            excluded: false,
+                            excludedReason: "",
+                            _fieldUpdatedAt: {
+                              ...(j._fieldUpdatedAt || {}),
+                              excluded: _now, excludedReason: _now,
+                            },
+                            updatedAt: _now,
+                          };
                           return next;
                         }),
                       }));
@@ -14281,10 +14315,21 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                         ...d,
                         jiage: (d.jiage || []).map(j => {
                           if (j.id !== selected.item.rawId) return j;
-                          // 🆕 v8.118: 対象外設定時は lookupFailed も解除
-                          const next = { ...j, excluded: true, excludedReason: "本人居住", updatedAt: Date.now() };
-                          if (next.lookupFailed) { delete next.lookupFailed; delete next.lookupNote; }
-                          return next;
+                          // 🆕 v8.118→v8.119: 対象外設定時は lookupFailed も false 化（sync 復活防止）
+                          const _now = Date.now();
+                          return {
+                            ...j,
+                            excluded: true,
+                            excludedReason: "本人居住",
+                            lookupFailed: false,
+                            lookupNote: "",
+                            _fieldUpdatedAt: {
+                              ...(j._fieldUpdatedAt || {}),
+                              excluded: _now, excludedReason: _now,
+                              lookupFailed: _now, lookupNote: _now,
+                            },
+                            updatedAt: _now,
+                          };
                         }),
                       }));
                       setSelected(null);
@@ -14305,11 +14350,18 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                             ...d,
                             jiage: (d.jiage || []).map(j => {
                               if (j.id !== selected.item.rawId) return j;
-                              const next = { ...j };
-                              delete next.lookupFailed;
-                              delete next.lookupNote;
-                              next.updatedAt = Date.now();
-                              return next;
+                              // 🆕 v8.119: delete ではなく false 化＋_fieldUpdatedAt 更新（sync 復活防止）
+                              const _now = Date.now();
+                              return {
+                                ...j,
+                                lookupFailed: false,
+                                lookupNote: "",
+                                _fieldUpdatedAt: {
+                                  ...(j._fieldUpdatedAt || {}),
+                                  lookupFailed: _now, lookupNote: _now,
+                                },
+                                updatedAt: _now,
+                              };
                             }),
                           }));
                           setSelected(null);
@@ -14326,7 +14378,18 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                             ...d,
                             jiage: (d.jiage || []).map(j => {
                               if (j.id !== selected.item.rawId) return j;
-                              return { ...j, lookupFailed: true, lookupNote: "手動で要修正に設定", updatedAt: Date.now() };
+                              // 🆕 v8.119: _fieldUpdatedAt も明示更新
+                              const _now = Date.now();
+                              return {
+                                ...j,
+                                lookupFailed: true,
+                                lookupNote: "手動で要修正に設定",
+                                _fieldUpdatedAt: {
+                                  ...(j._fieldUpdatedAt || {}),
+                                  lookupFailed: _now, lookupNote: _now,
+                                },
+                                updatedAt: _now,
+                              };
                             }),
                           }));
                           setSelected(null);
