@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-04-v8.121-pin-color-5states";
+const APP_VERSION = "2026-06-04-v8.122-longpress-and-no-autolandmark";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3410,7 +3410,7 @@ function Tag({ label, color }) {
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
 }
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey }) {
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
   const markersRef = React.useRef([]);
@@ -3656,6 +3656,26 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       if (mapRef.current) mapRef.current.style.cursor = "";
     };
   }, [onMapClick]);
+
+  // 🆕 v8.122: 地図長押しでピン立て（PC: 右クリック / モバイル: ロングプレス）
+  //   Leaflet の "contextmenu" イベントは両方を発火するので一発で両対応
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (!onMapLongPress) return;
+    const handler = (e) => {
+      // 既存のクリック動作を完全に遮断（既存マーカーのポップアップは生かしたいので map のみ）
+      if (e && e.originalEvent && typeof e.originalEvent.preventDefault === "function") {
+        try { e.originalEvent.preventDefault(); } catch (er) {}
+      }
+      const { lat, lng } = e.latlng;
+      onMapLongPress(lat, lng);
+    };
+    map.on("contextmenu", handler);
+    return () => {
+      try { map.off("contextmenu", handler); } catch (e2) {}
+    };
+  }, [onMapLongPress]);
 
   // 🆕 v8.95: 現在地マーカー（青点＋誤差サークル）更新
   React.useEffect(() => {
@@ -11737,14 +11757,24 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     }
     setPendingPin({ lat: currentLoc.lat, lng: currentLoc.lng, mode: "current" });
     setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "" });
-    triggerReverseGeocode(currentLoc.lat, currentLoc.lng);
+    // 🆕 v8.122: 目印住所の自動入力は廃止（空のまま開く）
   };
   const handleMapTap = (lat, lng) => {
     if (!placementMode) return;
     setPlacementMode(false);
     setPendingPin({ lat, lng, mode: "tap" });
     setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "" });
-    triggerReverseGeocode(lat, lng);
+    // 🆕 v8.122: 目印住所の自動入力は廃止（空のまま開く）
+  };
+  // 🆕 v8.122: 地図長押しでピン立て（Googleマップ風）
+  //   タップ待機モードを経由せず、長押しした位置で即モーダル表示
+  const handleMapLongPress = (lat, lng) => {
+    // 既に登録モーダルが開いてるときは無視（誤操作防止）
+    if (pendingPin) return;
+    setPlacementMode(false);
+    setPendingPin({ lat, lng, mode: "longpress" });
+    setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "" });
+    // 目印住所の自動入力なし（空のまま）
   };
   const cancelPendingPin = () => {
     setPendingPin(null);
@@ -13448,6 +13478,10 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit",
                     }}>🎯 全件表示</button>
                   </div>
+                  {/* 🆕 v8.122: 長押し操作のヒント */}
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>
+                    💡 地図を <b style={{ color: C.text }}>長押し</b> しても、その場でピンを立てられます（Googleマップ風）
+                  </div>
                   {placementMode && (
                     <button onClick={() => setPlacementMode(false)} style={{
                       marginTop: 6, background: "transparent", border: "none", color: C.muted,
@@ -13901,6 +13935,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       pinTarget={mapPinTarget}
                       height="65vh"
                       onMapClick={placementMode ? handleMapTap : undefined}
+                      onMapLongPress={handleMapLongPress}
                       currentLocation={currentLoc}
                       centerOnLocationKey={centerLocKey}
                       fitBoundsKey={fitBoundsKey}
