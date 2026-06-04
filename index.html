@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-04-v8.128-longpress-only-and-sticky-popup";
+const APP_VERSION = "2026-06-04-v8.129-700ms-redpin-gray3";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -438,14 +438,14 @@ const STATUS_GROUPS = [
 const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入"];
 // 🆕 v8.87: 地上げステータスの色分け（一目で判別できるように）
 const JIAGE_STATUS_COLORS = {
-  // 🆕 v8.126: 現地ピン5状態と被らない色相帯に
-  "未訪問": "#475569",     // 濃グレー（対象外の薄グレーと区別）
+  // 🆕 v8.126→v8.129: グレー3段階を明確化
+  "未訪問": "#9ca3af",     // クールグレー（中）
   "初訪": "#0ea5e9",       // スカイブルー
   "再訪": "#1d4ed8",       // 濃ブルー
   "見込み": "#0d9488",     // ティール（訪問OKの緑と区別）
   "中長期見込": "#eab308", // 黄土（地番待ちの明黄と区別）
-  "見込無し": "#7f1d1d",   // 暗赤茶（要修正の鮮赤と区別）
-  "交渉中": "#c026d3",     // フューシア（被らない強色）
+  "見込無し": "#1f2937",   // ダークスレート（ほぼ黒・要修正鮮赤と区別）
+  "交渉中": "#c026d3",     // フューシア
   "媒介": "#a855f7",       // パープル
   "仕入": "#06b6d4",       // 明シアン
 };
@@ -3411,7 +3411,7 @@ function Tag({ label, color }) {
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
 }
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey }) {
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
   const markersRef = React.useRef([]);
@@ -3455,29 +3455,29 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       return typeof lat === "number" && typeof lng === "number" && !isNaN(lat) && !isNaN(lng);
     });
     // 色判定
-    // 🆕 v8.126: 現地ピン5状態と判別しやすい色相に統一
+    // 🆕 v8.126→v8.129: 判別しやすい色相＋グレー3段階明確化
     const colorByStatus = (status) => {
-      if (status === "NG" || status === "断られた") return "#7f1d1d";       // 暗赤茶（要修正の鮮赤と区別）
-      if (status === "見込み" || status === "見込" || status === "興味あり" || status === "検討中") return "#0d9488"; // ティール（訪問OKの緑と区別）
+      if (status === "NG" || status === "断られた") return "#7f1d1d";       // 暗赤茶
+      if (status === "見込み" || status === "見込" || status === "興味あり" || status === "検討中") return "#0d9488"; // ティール
       if (status === "交渉中") return "#c026d3";                            // フューシア
-      if (status === "中長期見込") return "#eab308";                         // 黄土（地番待ち明黄と区別）
+      if (status === "中長期見込") return "#eab308";                         // 黄土
       if (status === "初訪") return "#0ea5e9";                              // スカイブルー
       if (status === "再訪") return "#1d4ed8";                              // 濃ブルー
-      if (status === "訪問済") return "#1d4ed8";                            // 濃ブルー（再訪と同系）
-      if (status === "見込無し") return "#334155";                          // 暗グレー
-      if (status === "不在") return "#d97706";                              // 茶寄りオレンジ（謄本待ちと区別）
+      if (status === "訪問済") return "#1d4ed8";                            // 濃ブルー
+      if (status === "見込無し") return "#1f2937";                          // ダークスレート（ほぼ黒）
+      if (status === "不在") return "#d97706";                              // 茶寄りオレンジ
       if (status === "居住している") return "#64748b";                       // 中グレー
       if (status === "仕入" || status === "仕入れ完了") return "#06b6d4";   // 明シアン
       if (status === "媒介") return "#a855f7";                              // パープル
-      return "#475569"; // 未訪問など: 濃グレー（対象外の薄グレーと区別）
+      return "#9ca3af"; // 未訪問など: クールグレー（中）
     };
     // 🆕 v8.125: rawヘルパー（allItems経由なら it.raw が元データ、直接渡しなら it 自身）
     const _raw = (it) => (it && it.raw) || it || {};
-    // 🆕 v8.125→v8.126: 現地ピン5状態 色定義（判別しやすい強コントラスト）
+    // 🆕 v8.125→v8.129: 現地ピン5状態（グレー3段階明確化版）
     const ONSITE_COLORS = {
       pendingLot:    "#fde047",  // 🟡 地番待ち（明るい黄）
       lookupPending: "#fb923c",  // ⏳ 謄本待ち（鮮オレンジ）
-      excluded:      "#94a3b8",  // 🚫 対象外（薄グレー）
+      excluded:      "#cbd5e1",  // 🚫 対象外（ライトグレー・最も明るい）
       lookupFailed:  "#dc2626",  // 🔧 要修正（鮮赤）
       dmReady:       "#22c55e",  // 🚪 訪問OK（明緑）
     };
@@ -3663,25 +3663,112 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     };
   }, [onMapClick]);
 
-  // 🆕 v8.127: 地図長押しでピン立て（PC: 右クリック / モバイル: 長押し）
-  //   Leaflet の "contextmenu" は両プラットフォームで発火する
+  // 🆕 v8.127→v8.129: 地図長押しでピン立て
+  //   - PC: 右クリック（contextmenu）
+  //   - モバイル: 自前で touchstart/touchend を計測して 700ms 以上を長押し判定
+  //     ※ touchmove で 10px 以上動いたらキャンセル（地図ドラッグと区別）
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
     if (!onMapLongPress) return;
-    const handler = (e) => {
+
+    // PC: 右クリック
+    const ctxHandler = (e) => {
       if (!e || !e.latlng) return;
-      // iOSの選択メニュー等の標準動作を抑止
       if (e.originalEvent && typeof e.originalEvent.preventDefault === "function") {
         try { e.originalEvent.preventDefault(); } catch (er) {}
       }
       onMapLongPress(e.latlng.lat, e.latlng.lng);
     };
-    map.on("contextmenu", handler);
+    map.on("contextmenu", ctxHandler);
+
+    // モバイル: touchstart/end で 700ms 計測
+    const LONG_PRESS_MS = 700;
+    const MOVE_TOLERANCE = 10; // px
+    let pressTimer = null;
+    let startX = 0, startY = 0;
+    let startLatLng = null;
+    let cancelled = false;
+
+    const onTouchStart = (e) => {
+      if (!e.touches || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      startX = t.clientX;
+      startY = t.clientY;
+      cancelled = false;
+      // クライアント座標 → 地図座標
+      try {
+        const rect = mapRef.current.getBoundingClientRect();
+        const containerPoint = L.point(t.clientX - rect.left, t.clientY - rect.top);
+        startLatLng = map.containerPointToLatLng(containerPoint);
+      } catch (er) { startLatLng = null; }
+      pressTimer = setTimeout(() => {
+        if (cancelled || !startLatLng) return;
+        // iOS の選択メニュー等を抑止
+        try { e.preventDefault && e.preventDefault(); } catch (er) {}
+        onMapLongPress(startLatLng.lat, startLatLng.lng);
+      }, LONG_PRESS_MS);
+    };
+    const onTouchMove = (e) => {
+      if (!e.touches || e.touches.length !== 1 || !pressTimer) return;
+      const t = e.touches[0];
+      if (Math.abs(t.clientX - startX) > MOVE_TOLERANCE || Math.abs(t.clientY - startY) > MOVE_TOLERANCE) {
+        cancelled = true;
+        clearTimeout(pressTimer);
+        pressTimer = null;
+      }
+    };
+    const onTouchEnd = () => {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    };
+
+    const container = mapRef.current;
+    if (container) {
+      container.addEventListener("touchstart", onTouchStart, { passive: true });
+      container.addEventListener("touchmove", onTouchMove, { passive: true });
+      container.addEventListener("touchend", onTouchEnd, { passive: true });
+      container.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    }
     return () => {
-      try { map.off("contextmenu", handler); } catch (e2) {}
+      try { map.off("contextmenu", ctxHandler); } catch (e2) {}
+      if (container) {
+        container.removeEventListener("touchstart", onTouchStart);
+        container.removeEventListener("touchmove", onTouchMove);
+        container.removeEventListener("touchend", onTouchEnd);
+        container.removeEventListener("touchcancel", onTouchEnd);
+      }
+      if (pressTimer) clearTimeout(pressTimer);
     };
   }, [onMapLongPress]);
+
+  // 🆕 v8.129: 長押し位置に赤いピン（Googleマップ風）を表示
+  //   pendingPinLocation = { lat, lng } | null
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    // 既存の赤ピンを消す
+    if (mapInstanceRef.current._hikariPendingMarker) {
+      try { map.removeLayer(mapInstanceRef.current._hikariPendingMarker); } catch (er) {}
+      mapInstanceRef.current._hikariPendingMarker = null;
+    }
+    if (!pendingPinLocation || typeof pendingPinLocation.lat !== "number") return;
+    const icon = L.divIcon({
+      className: "hikari-red-pin",
+      html: `
+        <div style="position:relative;width:40px;height:50px;">
+          <div style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:32px;height:32px;border-radius:50% 50% 50% 0;background:#dc2626;border:3px solid white;box-shadow:0 3px 8px rgba(0,0,0,0.5);transform-origin:center;transform:translateX(-50%) rotate(-45deg);">
+            <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(45deg);width:10px;height:10px;background:white;border-radius:50%;"></div>
+          </div>
+          <div style="position:absolute;bottom:-4px;left:50%;transform:translateX(-50%);width:14px;height:6px;background:rgba(0,0,0,0.3);border-radius:50%;filter:blur(2px);"></div>
+        </div>`,
+      iconSize: [40, 50],
+      iconAnchor: [20, 50],
+    });
+    const m = L.marker([pendingPinLocation.lat, pendingPinLocation.lng], { icon, zIndexOffset: 2000, interactive: false }).addTo(map);
+    mapInstanceRef.current._hikariPendingMarker = m;
+    // 赤ピンの位置に地図中心を寄せる（既存ズームは維持）
+    try { map.setView([pendingPinLocation.lat, pendingPinLocation.lng], map.getZoom(), { animate: true }); } catch (er) {}
+  }, [pendingPinLocation]);
 
   // 🆕 v8.95: 現在地マーカー（青点＋誤差サークル）更新
   React.useEffect(() => {
@@ -13928,6 +14015,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       height="65vh"
                       onMapClick={placementMode ? handleMapTap : undefined}
                       onMapLongPress={handleMapLongPress}
+                      pendingPinLocation={pendingPin}
                       currentLocation={currentLoc}
                       centerOnLocationKey={centerLocKey}
                       fitBoundsKey={fitBoundsKey}
@@ -13944,22 +14032,22 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       )}
                     </div>
 
-                    {/* 🆕 v8.125→v8.126: ピン色凡例（判別しやすい色に統一） */}
+                    {/* 🆕 v8.125→v8.129: ピン色凡例（グレー3段階明確化版） */}
                     <div style={{ marginTop: 8, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 10px" }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 5, fontWeight: 700 }}>🎨 ピン色凡例</div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 10 }}>
                         {[
                           { c: "#fde047", l: "🟡 地番待ち" },
                           { c: "#fb923c", l: "⏳ 謄本待ち" },
-                          { c: "#94a3b8", l: "🚫 対象外" },
+                          { c: "#cbd5e1", l: "🚫 対象外" },
                           { c: "#dc2626", l: "🔧 要修正" },
                           { c: "#22c55e", l: "🚪 訪問OK" },
-                          { c: "#475569", l: "未訪問" },
+                          { c: "#9ca3af", l: "未訪問" },
                           { c: "#0ea5e9", l: "初訪" },
                           { c: "#1d4ed8", l: "再訪/訪問済" },
                           { c: "#0d9488", l: "見込み" },
                           { c: "#eab308", l: "中長期見込" },
-                          { c: "#334155", l: "見込無し" },
+                          { c: "#1f2937", l: "見込無し" },
                           { c: "#c026d3", l: "交渉中" },
                           { c: "#a855f7", l: "媒介" },
                           { c: "#06b6d4", l: "仕入" },
