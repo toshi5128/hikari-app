@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.113-shared-owner-badge";
+const APP_VERSION = "2026-06-03-v8.114-excluded-flag";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3543,13 +3543,18 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const _sharedBadgeHtml = _isShared
         ? `<span style="background:#ef4444;color:#fff;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;margin-left:4px;">👥 共有者あり</span>`
         : "";
+      // 🆕 v8.114: 対象外バッジ（excluded フラグ・所有者なし時のみ）
+      const _isExcludedPin = !!(it.coordsManual && it.address && !_ownerStr.trim() && it.raw && it.raw.excluded === true);
+      const _excludedBadgeHtml = _isExcludedPin
+        ? `<span style="background:#94a3b8;color:#fff;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;margin-left:4px;">🚫 対象外</span>`
+        : "";
       marker.bindPopup(`
         <div style="font-family:'Noto Sans JP',sans-serif;min-width:180px;">
           <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${popupTitle.slice(0, 50)}</div>
           ${_whoWhenHtml}
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">👤 ${it.ownerName}</div>` : ""}
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
-          <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_sharedBadgeHtml}</div>
+          <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_excludedBadgeHtml}${_sharedBadgeHtml}</div>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
       `);
@@ -11475,18 +11480,22 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     }
   };
 
-  // 🆕 v8.100→v8.111: 現地ピン3段階集計（地番待ち / 謄本待ち / DM準備済）
-  //   1. 地番待ち   = coordsManual && !address
-  //   2. 謄本待ち   = coordsManual && address && !owner
-  //   3. DM準備済   = coordsManual && address && owner
+  // 🆕 v8.100→v8.111→v8.114: 現地ピン4状態集計
+  //   優先順位:
+  //   1. 🟡 地番待ち   = coordsManual && !address
+  //   2. 📨 DM準備済   = coordsManual && address && hasOwner       （hasOwner 最優先）
+  //   3. 🚫 対象外     = coordsManual && address && !hasOwner && excluded
+  //   4. ⏳ 謄本待ち   = coordsManual && address && !hasOwner && !excluded
   const pendingPinSummary = useMemo(() => {
     const onsiteAll = (data.jiage || []).filter(j => !!j.coordsManual);
     const hasOwner = (j) => !!((j.owner && String(j.owner).trim()) || (j.ownerName && String(j.ownerName).trim()));
     const pendingPins = onsiteAll.filter(j => !j.address || String(j.address).trim() === "");
     const confirmedPins = onsiteAll.filter(j => j.address && String(j.address).trim() !== "");
-    // 🆕 v8.111: 確定済みを2分割
-    const lookupPendingPins = confirmedPins.filter(j => !hasOwner(j));
+    // 🆕 v8.114: hasOwner 最優先で DM準備済 → 残りを excluded で分割
     const dmReadyPins = confirmedPins.filter(j => hasOwner(j));
+    const noOwnerPins = confirmedPins.filter(j => !hasOwner(j));
+    const excludedPins = noOwnerPins.filter(j => j.excluded === true);
+    const lookupPendingPins = noOwnerPins.filter(j => j.excluded !== true);
     const byAssignee = {};
     pendingPins.forEach(p => {
       const a = p.assignee || "(未割当)";
@@ -11507,6 +11516,11 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       const a = p.assignee || "(未割当)";
       dmReadyByAssignee[a] = (dmReadyByAssignee[a] || 0) + 1;
     });
+    const excludedByAssignee = {};
+    excludedPins.forEach(p => {
+      const a = p.assignee || "(未割当)";
+      excludedByAssignee[a] = (excludedByAssignee[a] || 0) + 1;
+    });
     const _todayDS = new Date().toDateString();
     let todayTotalCount = 0;
     onsiteAll.forEach(j => {
@@ -11520,11 +11534,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       todayTotal: todayTotalCount,
       confirmedTotal: confirmedPins.length,
       confirmedByAssignee,
-      // 🆕 v8.111
       lookupPendingTotal: lookupPendingPins.length,
       lookupPendingByAssignee,
       dmReadyTotal: dmReadyPins.length,
       dmReadyByAssignee,
+      // 🆕 v8.114
+      excludedTotal: excludedPins.length,
+      excludedByAssignee,
     };
   }, [data.jiage]);
 
@@ -11713,14 +11729,17 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       alert(`地番が確定しているピンがありません。\n（全${all.length}件すべて地番待ち）\n\n地図上の🟡ピンをタップして地番を入力すると確定します`);
       return;
     }
-    // 🆕 v8.112: 謄本待ち（所有者なし）のみ出力
-    const lookupPending = confirmed.filter(j => !hasOwner(j));
-    const dmReadyCount = confirmed.length - lookupPending.length;
+    // 🆕 v8.112→v8.114: 謄本待ち（所有者なし・対象外でない）のみ出力
+    const noOwnerConfirmed = confirmed.filter(j => !hasOwner(j));
+    const excludedConfirmed = noOwnerConfirmed.filter(j => j.excluded === true);
+    const lookupPending = noOwnerConfirmed.filter(j => j.excluded !== true);
+    const dmReadyCount = confirmed.length - noOwnerConfirmed.length;
+    const excludedCount = excludedConfirmed.length;
     if (lookupPending.length === 0) {
       const lines = [
         "📭 謄本待ちの現地ピンがありません",
         "",
-        `（地番待ち ${pendingLotCount}件、DM準備済 ${dmReadyCount}件 は除外）`,
+        `（地番待ち ${pendingLotCount}件、🚫対象外 ${excludedCount}件、📨DM準備済 ${dmReadyCount}件 は除外）`,
         "",
         "新しく地番を確定したピンができたら、ここから謄本取得用CSVを出力できます",
       ];
@@ -11756,6 +11775,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       `✅ 謄本待ち ${lookupPending.length}件 を CSV 出力しました`,
       `   ファイル名: tohon_machi_${ts}.csv`,
     ];
+    if (excludedCount > 0) lines.push(`   🚫 対象外 ${excludedCount}件 は除外（謄本取得済・本人居住等）`);
     if (dmReadyCount > 0) lines.push(`   📨 DM準備済 ${dmReadyCount}件 は除外（謄本取得済み）`);
     if (pendingLotCount > 0) lines.push(`   🟡 地番待ち ${pendingLotCount}件 は除外（地番未入力）`);
     lines.push("");
@@ -11846,6 +11866,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
           } else if (h === "ID" || h === "id" || lower === "id" || lower === "appid" || lower === "app_id") {
             // 🆕 v8.108: アプリ側の現地ピンID（マージの最優先キー）
             if (mapping.appId === undefined) mapping.appId = i;
+          } else if (h === "判定" || h === "区分" || lower === "judge" || lower === "category") {
+            // 🆕 v8.114: 対象外/送付 判定列
+            if (mapping.judge === undefined) mapping.judge = i;
           } else if (h.includes("ステータス") || h.includes("状態") || h.includes("状況")) {
             if (mapping.status === undefined) mapping.status = i;
           } else if (h.includes("住所") || h.includes("所在")) {
@@ -11931,9 +11954,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       // 🆕 v8.108: appId(アプリ側の現地ピンID)を取り込み（マージの最優先キー）
       const appIdRaw = get("appId");
       const appId = appIdRaw ? String(appIdRaw).trim() : null;
+      // 🆕 v8.114: judge（判定）取り込み
+      const judgeRaw = get("judge");
+      const judge = judgeRaw ? String(judgeRaw).trim() : null;
       newItems.push({
         id: uid++,
         appId, // 🆕 v8.108
+        judge, // 🆕 v8.114
         bmPage: get("bmPage"),
         address,
         owner: get("owner"),
@@ -12106,11 +12133,25 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         }
         // === フルマージ: 現地ピン or appId 一致 ===
         const next = { ...j };
-        // 🆕 v8.108: owner と ownerName 両方に同じ値を入れる（地図ポップアップ・詳細・重複判定の表示一致）
+        // 🆕 v8.114: 判定=対象外 で所有者空なら excluded:true をセット（owner は変更しない）
+        //   ※ 所有者が入っている場合は対象外であっても通常マージ（hasOwner 最優先）
         const newOwner = it.owner && String(it.owner).trim();
+        const isExcludedJudge = it.judge && (String(it.judge).indexOf("対象外") >= 0 || String(it.judge).toLowerCase() === "excluded");
+        if (isExcludedJudge && !newOwner) {
+          next.excluded = true;
+          next.excludedReason = "本人居住";
+          next.updatedAt = Date.now();
+          return next; // owner/ownerAddr を一切触らずに終了
+        }
+        // 🆕 v8.108: owner と ownerName 両方に同じ値を入れる（地図ポップアップ・詳細・重複判定の表示一致）
         if (newOwner) {
           next.owner = newOwner;
           next.ownerName = newOwner;
+          // 🆕 v8.114: 所有者が入ったら excluded を解除（DM準備済へ）
+          if (next.excluded) {
+            delete next.excluded;
+            delete next.excludedReason;
+          }
         }
         if (it.ownerAddr && String(it.ownerAddr).trim()) {
           next.ownerAddr = it.ownerAddr;
@@ -12217,13 +12258,14 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       if (!raw.coordsManual) return false;
       if (!item.address || String(item.address).trim() === "") return false;
     }
-    // 🆕 v8.111: 謄本待ち（地番済み・所有者なし）
+    // 🆕 v8.111→v8.114: 謄本待ち（地番済み・所有者なし・対象外でない）
     if (quickFilter === "lookup_pending") {
       const raw = item.raw || {};
       if (!raw.coordsManual) return false;
       if (!item.address || String(item.address).trim() === "") return false;
       const hasOwner = (raw.owner && String(raw.owner).trim()) || (raw.ownerName && String(raw.ownerName).trim());
       if (hasOwner) return false;
+      if (raw.excluded === true) return false;
     }
     // 🆕 v8.111: DM準備済（地番＋所有者）
     if (quickFilter === "dm_ready") {
@@ -12232,6 +12274,15 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       if (!item.address || String(item.address).trim() === "") return false;
       const hasOwner = (raw.owner && String(raw.owner).trim()) || (raw.ownerName && String(raw.ownerName).trim());
       if (!hasOwner) return false;
+    }
+    // 🆕 v8.114: 対象外（地番済み・所有者なし・excluded）
+    if (quickFilter === "excluded") {
+      const raw = item.raw || {};
+      if (!raw.coordsManual) return false;
+      if (!item.address || String(item.address).trim() === "") return false;
+      const hasOwner = (raw.owner && String(raw.owner).trim()) || (raw.ownerName && String(raw.ownerName).trim());
+      if (hasOwner) return false;
+      if (raw.excluded !== true) return false;
     }
     // 🆕 v8.99: 今日立てたピンのみ
     if (quickFilter === "today_pin") {
@@ -13218,6 +13269,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           {pendingPinSummary.lookupPendingTotal > 0 && (
                             <span style={{ fontSize: 10, color: "#f97316", fontWeight: 700 }}>/ ⏳謄本待 {pendingPinSummary.lookupPendingTotal}件</span>
                           )}
+                          {pendingPinSummary.excludedTotal > 0 && (
+                            <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700 }}>/ 🚫対象外 {pendingPinSummary.excludedTotal}件</span>
+                          )}
                           {pendingPinSummary.dmReadyTotal > 0 && (
                             <span style={{ fontSize: 10, color: C.success, fontWeight: 700 }}>/ 📨DM準備 {pendingPinSummary.dmReadyTotal}件</span>
                           )}
@@ -13275,7 +13329,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                                   }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
                               );
                             })}
-                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite" || quickFilter === "lookup_pending" || quickFilter === "dm_ready") && (
+                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite" || quickFilter === "lookup_pending" || quickFilter === "dm_ready" || quickFilter === "excluded") && (
                             <button onClick={() => { setFilterMember("__ALL__"); setQuickFilter(null); }}
                               style={{
                                 background: "transparent", color: C.muted,
@@ -13317,6 +13371,49 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                                       else { setFilterMember(assignee); setQuickFilter("lookup_pending"); }
                                     }}
                                     title={isFiltered ? "解除" : `${assignee} の謄本待ちだけ表示`}
+                                    style={{
+                                      background: isFiltered ? color : color + "22",
+                                      color: isFiltered ? "#fff" : color,
+                                      border: `1.5px solid ${color}`,
+                                      borderRadius: 12, padding: "3px 10px",
+                                      fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                                );
+                              })}
+                          </div>
+                        )}
+                        {/* 🆕 v8.114: 対象外（謄本取得済・本人居住等）担当者別 */}
+                        {pendingPinSummary.excludedTotal > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
+                            {(() => {
+                              const isAll = quickFilter === "excluded" && filterMember === "__ALL__";
+                              return (
+                                <button onClick={() => {
+                                  if (isAll) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                                  else { setQuickFilter("excluded"); setFilterMember("__ALL__"); }
+                                }}
+                                  title={isAll ? "解除" : "対象外（謄本取得済・本人居住等）の現地ピンだけ表示"}
+                                  style={{
+                                    background: isAll ? "#94a3b8" : "#94a3b822",
+                                    color: isAll ? "#fff" : "#94a3b8",
+                                    border: `1.5px solid #94a3b8`,
+                                    borderRadius: 12, padding: "3px 10px",
+                                    fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                  }}>{isAll ? "✓ " : ""}🚫 対象外: {pendingPinSummary.excludedTotal}件</button>
+                              );
+                            })()}
+                            {Object.entries(pendingPinSummary.excludedByAssignee)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([assignee, count]) => {
+                                const color = MEMBER_COLORS[assignee] || C.muted;
+                                const isFiltered = filterMember === assignee && quickFilter === "excluded";
+                                return (
+                                  <button key={"exc-" + assignee}
+                                    onClick={() => {
+                                      if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
+                                      else { setFilterMember(assignee); setQuickFilter("excluded"); }
+                                    }}
+                                    title={isFiltered ? "解除" : `${assignee} の対象外だけ表示`}
                                     style={{
                                       background: isFiltered ? color : color + "22",
                                       color: isFiltered ? "#fff" : color,
@@ -13412,6 +13509,45 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                                     onClick={() => {
                                       if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
                                       else { setFilterMember(assignee); setQuickFilter("lookup_pending"); }
+                                    }} style={{
+                                      background: isFiltered ? color : color + "22",
+                                      color: isFiltered ? "#fff" : color,
+                                      border: `1.5px solid ${color}`,
+                                      borderRadius: 12, padding: "3px 10px",
+                                      fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                                );
+                              })}
+                          </div>
+                        )}
+                        {/* 🆕 v8.114: 0件時でも対象外を担当者別表示 */}
+                        {pendingPinSummary.excludedTotal > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4 }}>
+                            {(() => {
+                              const isAll = quickFilter === "excluded" && filterMember === "__ALL__";
+                              return (
+                                <button onClick={() => {
+                                  if (isAll) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                                  else { setQuickFilter("excluded"); setFilterMember("__ALL__"); }
+                                }} style={{
+                                  background: isAll ? "#94a3b8" : "#94a3b822",
+                                  color: isAll ? "#fff" : "#94a3b8",
+                                  border: `1.5px solid #94a3b8`,
+                                  borderRadius: 12, padding: "3px 10px",
+                                  fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                }}>{isAll ? "✓ " : ""}🚫 対象外: {pendingPinSummary.excludedTotal}件</button>
+                              );
+                            })()}
+                            {Object.entries(pendingPinSummary.excludedByAssignee)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([assignee, count]) => {
+                                const color = MEMBER_COLORS[assignee] || C.muted;
+                                const isFiltered = filterMember === assignee && quickFilter === "excluded";
+                                return (
+                                  <button key={"exc0-" + assignee}
+                                    onClick={() => {
+                                      if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
+                                      else { setFilterMember(assignee); setQuickFilter("excluded"); }
                                     }} style={{
                                       background: isFiltered ? color : color + "22",
                                       color: isFiltered ? "#fff" : color,
@@ -13554,6 +13690,14 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   <Tag label={item.type === "jiage" ? "📍地上げ" : "👤所有者"} color={item.type === "jiage" ? C.accent : C.purple} />
                   <StatusTag status={item.status} />
                   <MemberTag name={item.assignee} />
+                  {/* 🆕 v8.114: 対象外バッジ */}
+                  {(() => {
+                    const _raw = item.raw || {};
+                    const _hasOwner = (_raw.owner && String(_raw.owner).trim()) || (_raw.ownerName && String(_raw.ownerName).trim());
+                    return _raw.coordsManual && _raw.address && !_hasOwner && _raw.excluded === true
+                      ? <Tag label="🚫 対象外" color="#94a3b8" />
+                      : null;
+                  })()}
                   {/* 🆕 v8.113: 共有者ありバッジ */}
                   {(((item.ownerName || "").includes("・")) || ((item.memo || "").includes("【共有者あり】"))) && (
                     <Tag label="👥 共有者あり" color={C.danger} />
@@ -13660,6 +13804,14 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   <StatusTag status={item.status} />
                   {item.subStatus && <Tag label={item.subStatus} color={item.dm === "未" ? C.muted : C.accent} />}
                   <MemberTag name={item.assignee} />
+                  {/* 🆕 v8.114: 対象外バッジ */}
+                  {(() => {
+                    const _raw = item.raw || {};
+                    const _hasOwner = (_raw.owner && String(_raw.owner).trim()) || (_raw.ownerName && String(_raw.ownerName).trim());
+                    return _raw.coordsManual && _raw.address && !_hasOwner && _raw.excluded === true
+                      ? <Tag label="🚫 対象外" color="#94a3b8" />
+                      : null;
+                  })()}
                   {/* 🆕 v8.113: 共有者ありバッジ */}
                   {(((item.ownerName || "").includes("・")) || ((item.memo || "").includes("【共有者あり】"))) && (
                     <Tag label="👥 共有者あり" color={C.danger} />
@@ -13813,6 +13965,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         // 🆕 v8.101: 地番待ち判定とタイトル組み立て
         const _raw = selected.item.raw || {};
         const _isPendingLot = !!(_raw.coordsManual && (!selected.item.address || String(selected.item.address).trim() === ""));
+        // 🆕 v8.114: 対象外判定
+        const _hasOwnerSel = !!((_raw.owner && String(_raw.owner).trim()) || (_raw.ownerName && String(_raw.ownerName).trim()));
+        const _isExcluded = !!(_raw.coordsManual && _raw.address && String(_raw.address).trim() !== "" && !_hasOwnerSel && _raw.excluded === true);
         const _sheetTitle = selected.item.address && selected.item.address.trim()
           ? selected.item.address
           : (_raw.landmark ? `🟡 ${_raw.landmark}（地番待ち）` : "🟡 地番待ち");
@@ -13823,6 +13978,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             <Tag label={selected.item.type === "jiage" ? "📍地上げ" : "👤所有者アタック"} color={selected.item.type === "jiage" ? C.accent : C.purple} />
             {_raw.coordsManual && <Tag label="📍現地ピン" color="#fbbf24" />}
             {_isPendingLot ? <Tag label="🟡 地番待ち" color="#fbbf24" /> : <StatusTag status={selected.item.status} />}
+            {/* 🆕 v8.114: 対象外バッジ */}
+            {_isExcluded && <Tag label="🚫 対象外" color="#94a3b8" />}
             <MemberTag name={selected.item.assignee} />
             {/* 🆕 v8.113: 共有者ありバッジ */}
             {(() => {
@@ -13880,6 +14037,53 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               <div style={{ fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: _isPendingLot ? 8 : 0 }}>
                 座標: {typeof _raw.lat === "number" ? _raw.lat.toFixed(6) : "?"}, {typeof _raw.lng === "number" ? _raw.lng.toFixed(6) : "?"}
               </div>
+              {/* 🆕 v8.114: 対象外フラグの手動トグル（謄本待ち or 対象外 のときに表示） */}
+              {!_isPendingLot && !_hasOwnerSel && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.borderDim}` }}>
+                  {_raw.excluded === true ? (
+                    <button onClick={() => {
+                      if (!window.confirm("対象外を解除しますか？\n（謄本待ちに戻ります＝次回のCSV出力に含まれます）")) return;
+                      setData(d => ({
+                        ...d,
+                        jiage: (d.jiage || []).map(j => {
+                          if (j.id !== selected.item.rawId) return j;
+                          const next = { ...j };
+                          delete next.excluded;
+                          delete next.excludedReason;
+                          next.updatedAt = Date.now();
+                          return next;
+                        }),
+                      }));
+                      setSelected(null);
+                      alert("✅ 対象外を解除しました。⏳謄本待ちに戻ります。");
+                    }} style={{
+                      width: "100%", background: "#94a3b822", color: "#94a3b8",
+                      border: `1.5px solid #94a3b8`, borderRadius: 8, padding: "8px 12px",
+                      cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                    }}>↩️ 対象外を解除（謄本待ちに戻す）</button>
+                  ) : (
+                    <button onClick={() => {
+                      if (!window.confirm("このピンを🚫対象外にしますか？\n（謄本取得済み・本人居住など、DMの対象外として扱います。CSV出力から除外されます。）")) return;
+                      setData(d => ({
+                        ...d,
+                        jiage: (d.jiage || []).map(j => {
+                          if (j.id !== selected.item.rawId) return j;
+                          return { ...j, excluded: true, excludedReason: "本人居住", updatedAt: Date.now() };
+                        }),
+                      }));
+                      setSelected(null);
+                      alert("🚫 対象外に設定しました。CSV出力から除外されます。");
+                    }} style={{
+                      width: "100%", background: "transparent", color: "#94a3b8",
+                      border: `1.5px solid #94a3b8`, borderRadius: 8, padding: "8px 12px",
+                      cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                    }}>🚫 対象外にする（謄本取得済・本人居住）</button>
+                  )}
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+                    💡 対象外にすると「📥謄本待ちCSV出力」から除外され、再課金を防げます
+                  </div>
+                </div>
+              )}
               {_isPendingLot && (
                 <div style={{ marginTop: 4 }}>
                   <div style={{ fontSize: 11, color: C.text, marginBottom: 6, lineHeight: 1.5 }}>
