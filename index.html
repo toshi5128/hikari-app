@@ -31,6 +31,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::
 <div id="root"><div id="hikari-loading" style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:'Noto Sans JP',sans-serif;flex-direction:column;gap:14px;padding:20px;text-align:center"><div style="font-size:36px">🏠</div><div style="font-size:18px;color:#0ea5e9;font-weight:700">ひかり不動産</div><div style="font-size:13px;color:#475569" id="hikari-loading-msg">読み込み中...</div><div style="width:200px;height:4px;background:#1a2535;border-radius:2px;overflow:hidden"><div style="width:0;height:100%;background:#0ea5e9;animation:hikariProgress 30s linear forwards" id="hikari-progress-bar"></div></div><button onclick="window.__showHikariRecovery__&&window.__showHikariRecovery__()" style="background:none;border:1px solid ${C.borderDim};color:#475569;padding:8px 16px;border-radius:8px;font-size:11px;cursor:pointer;font-family:inherit;margin-top:20px">読み込みが終わらない場合</button></div></div>
 <style>@keyframes hikariProgress{0%{width:0}100%{width:100%}}
 @keyframes hikariGoldPulse{0%,100%{box-shadow:0 0 15px rgba(252,211,77,0.35),inset 0 0 20px rgba(252,211,77,0.06)}50%{box-shadow:0 0 35px rgba(252,211,77,0.7),inset 0 0 40px rgba(252,211,77,0.12)}}
+@keyframes hikariRipple{0%{transform:scale(0.3);opacity:0.85}100%{transform:scale(3);opacity:0}}
+@keyframes hikariRippleCore{0%{transform:scale(0.5);opacity:1}100%{transform:scale(1.5);opacity:0}}
 @keyframes hikariGoldFlow{0%{background-position:0% 0%}100%{background-position:200% 0%}}
 @keyframes hikariGoldSparkle{0%,100%{transform:scale(1) rotate(0deg);opacity:1}50%{transform:scale(1.15) rotate(8deg);opacity:0.85}}
 @keyframes hikariGoldBadgePop{0%{transform:scale(0) rotate(-15deg)}60%{transform:scale(1.15) rotate(5deg)}100%{transform:scale(1) rotate(0deg)}}
@@ -136,7 +138,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-04-v8.130-legend-5sections";
+const APP_VERSION = "2026-06-04-v8.131-fix-popup-and-colors-and-ripple";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -438,16 +440,16 @@ const STATUS_GROUPS = [
 const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入"];
 // 🆕 v8.87: 地上げステータスの色分け（一目で判別できるように）
 const JIAGE_STATUS_COLORS = {
-  // 🆕 v8.126→v8.129: グレー3段階を明確化
-  "未訪問": "#9ca3af",     // クールグレー（中）
-  "初訪": "#0ea5e9",       // スカイブルー
-  "再訪": "#1d4ed8",       // 濃ブルー
-  "見込み": "#0d9488",     // ティール（訪問OKの緑と区別）
-  "中長期見込": "#eab308", // 黄土（地番待ちの明黄と区別）
-  "見込無し": "#1f2937",   // ダークスレート（ほぼ黒・要修正鮮赤と区別）
-  "交渉中": "#c026d3",     // フューシア
-  "媒介": "#a855f7",       // パープル
-  "仕入": "#06b6d4",       // 明シアン
+  // 🆕 v8.131: 16色フル差別化（被りなし）
+  "未訪問": "#1e40af",     // 紺青
+  "初訪": "#38bdf8",       // 水色
+  "再訪": "#0e7490",       // シアン濃
+  "見込み": "#ec4899",     // ピンク（独自系統）
+  "中長期見込": "#0d9488", // ティール
+  "見込無し": "#111827",   // ほぼ黒
+  "交渉中": "#c026d3",     // マゼンタ
+  "媒介": "#7c3aed",       // バイオレット
+  "仕入": "#ca8a04",       // ゴールド
 };
 // 🆕 仲介案件：媒介の種類とフェーズ
 const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
@@ -3455,31 +3457,31 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       return typeof lat === "number" && typeof lng === "number" && !isNaN(lat) && !isNaN(lng);
     });
     // 色判定
-    // 🆕 v8.126→v8.129: 判別しやすい色相＋グレー3段階明確化
+    // 🆕 v8.131: 16色フル差別化
     const colorByStatus = (status) => {
-      if (status === "NG" || status === "断られた") return "#7f1d1d";       // 暗赤茶
-      if (status === "見込み" || status === "見込" || status === "興味あり" || status === "検討中") return "#0d9488"; // ティール
-      if (status === "交渉中") return "#c026d3";                            // フューシア
-      if (status === "中長期見込") return "#eab308";                         // 黄土
-      if (status === "初訪") return "#0ea5e9";                              // スカイブルー
-      if (status === "再訪") return "#1d4ed8";                              // 濃ブルー
-      if (status === "訪問済") return "#1d4ed8";                            // 濃ブルー
-      if (status === "見込無し") return "#1f2937";                          // ダークスレート（ほぼ黒）
-      if (status === "不在") return "#d97706";                              // 茶寄りオレンジ
-      if (status === "居住している") return "#64748b";                       // 中グレー
-      if (status === "仕入" || status === "仕入れ完了") return "#06b6d4";   // 明シアン
-      if (status === "媒介") return "#a855f7";                              // パープル
-      return "#9ca3af"; // 未訪問など: クールグレー（中）
+      if (status === "NG" || status === "断られた") return "#7f1d1d";
+      if (status === "見込み" || status === "見込" || status === "興味あり" || status === "検討中") return "#ec4899"; // ピンク
+      if (status === "交渉中") return "#c026d3";        // マゼンタ
+      if (status === "中長期見込") return "#0d9488";  // ティール
+      if (status === "初訪") return "#38bdf8";          // 水色
+      if (status === "再訪") return "#0e7490";              // シアン濃
+      if (status === "訪問済") return "#0e7490";            // シアン濃
+      if (status === "見込無し") return "#111827";      // ほぼ黒
+      if (status === "不在") return "#92400e";               // 茶
+      if (status === "居住している") return "#cbd5e1";     // ライトグレー
+      if (status === "仕入" || status === "仕入れ完了") return "#ca8a04";  // ゴールド
+      if (status === "媒介") return "#7c3aed";            // バイオレット
+      return "#1e40af"; // 未訪問: 紺青
     };
     // 🆕 v8.125: rawヘルパー（allItems経由なら it.raw が元データ、直接渡しなら it 自身）
     const _raw = (it) => (it && it.raw) || it || {};
-    // 🆕 v8.125→v8.129: 現地ピン5状態（グレー3段階明確化版）
+    // 🆕 v8.131: 現地ピン5状態（16色フル差別化）
     const ONSITE_COLORS = {
-      pendingLot:    "#fde047",  // 🟡 地番待ち（明るい黄）
-      lookupPending: "#fb923c",  // ⏳ 謄本待ち（鮮オレンジ）
-      excluded:      "#cbd5e1",  // 🚫 対象外（ライトグレー・最も明るい）
-      lookupFailed:  "#dc2626",  // 🔧 要修正（鮮赤）
-      dmReady:       "#22c55e",  // 🚪 訪問OK（明緑）
+      pendingLot:    "#fde047",  // 🟡 地番待ち
+      lookupPending: "#f97316",  // ⏳ 謄本待ち
+      excluded:      "#cbd5e1",  // 🚫 対象外
+      lookupFailed:  "#dc2626",  // 🔧 要修正
+      dmReady:       "#16a34a",  // 🚪 訪問OK
     };
     const _ownerExists = (r) => !!((r.owner && String(r.owner).trim()) || (r.ownerName && String(r.ownerName).trim()));
     const colorForOnsite = (r) => {
@@ -3606,7 +3608,12 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       marker.on("popupopen", () => {
         setTimeout(() => {
           const btn = document.getElementById("pin-detail-btn");
-          if (btn) btn.onclick = () => onPinClick && onPinClick(it);
+          if (btn) btn.onclick = (ev) => {
+            // 🆕 v8.131: クリックバブリングで BottomSheet 即閉じバグを防ぐ
+            if (ev) { try { ev.stopPropagation(); ev.preventDefault(); } catch (er) {} }
+            // setTimeout(0) で React イベントループから切り離す
+            setTimeout(() => { onPinClick && onPinClick(it); }, 0);
+          };
         }, 10);
       });
       markersRef.current.push(marker);
@@ -3690,21 +3697,36 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     let startLatLng = null;
     let cancelled = false;
 
+    let rippleEl = null;
+    const removeRipple = () => {
+      if (rippleEl && rippleEl.parentNode) {
+        try { rippleEl.parentNode.removeChild(rippleEl); } catch (er) {}
+      }
+      rippleEl = null;
+    };
     const onTouchStart = (e) => {
       if (!e.touches || e.touches.length !== 1) return;
       const t = e.touches[0];
       startX = t.clientX;
       startY = t.clientY;
       cancelled = false;
-      // クライアント座標 → 地図座標
       try {
         const rect = mapRef.current.getBoundingClientRect();
         const containerPoint = L.point(t.clientX - rect.left, t.clientY - rect.top);
         startLatLng = map.containerPointToLatLng(containerPoint);
+        // 🆕 v8.131: 長押し中の青いリップルアニメーションを表示（Googleマップ風）
+        removeRipple();
+        rippleEl = document.createElement("div");
+        rippleEl.style.cssText = `position:absolute;left:${t.clientX - rect.left - 40}px;top:${t.clientY - rect.top - 40}px;width:80px;height:80px;pointer-events:none;z-index:9999;`;
+        rippleEl.innerHTML = `
+          <div style="position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle,rgba(59,130,246,0.55) 0%,rgba(59,130,246,0) 70%);animation:hikariRipple ${LONG_PRESS_MS}ms ease-out forwards;"></div>
+          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:20px;border-radius:50%;background:#3b82f6;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.4);animation:hikariRippleCore ${LONG_PRESS_MS}ms ease-out forwards;"></div>
+        `;
+        mapRef.current.appendChild(rippleEl);
       } catch (er) { startLatLng = null; }
       pressTimer = setTimeout(() => {
+        removeRipple();
         if (cancelled || !startLatLng) return;
-        // iOS の選択メニュー等を抑止
         try { e.preventDefault && e.preventDefault(); } catch (er) {}
         onMapLongPress(startLatLng.lat, startLatLng.lng);
       }, LONG_PRESS_MS);
@@ -3716,10 +3738,12 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         cancelled = true;
         clearTimeout(pressTimer);
         pressTimer = null;
+        removeRipple();
       }
     };
     const onTouchEnd = () => {
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      removeRipple();
     };
 
     const container = mapRef.current;
@@ -3988,15 +4012,24 @@ function StatusTag({ status }) {
 function MemberTag({ name }) { return <Tag label={name} color={MEMBER_COLORS[name] || C.muted} />; }
 
 function BottomSheet({ title, onClose, children }) {
+  // 🆕 v8.131: マウント直後の誤クリック誤発火を防ぐガード（300ms）
+  const mountedAtRef = React.useRef(Date.now());
+  const safeClose = (ev) => {
+    if (Date.now() - mountedAtRef.current < 300) {
+      // 直後のクリックバブリング由来は無視
+      return;
+    }
+    if (typeof onClose === "function") onClose(ev);
+  };
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 400, display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={onClose}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 400, display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={safeClose}>
       <div style={{ background: C.cardBg, borderRadius: "20px 20px 0 0", maxHeight: "92vh", overflowY: "auto", padding: "0 0 40px" }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 4px" }}>
           <div style={{ width: 36, height: 4, background: C.borderDim, borderRadius: 2 }} />
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 20px 16px" }}>
           <div style={{ fontSize: 17, fontWeight: 700, color: C.text }}>{title}</div>
-          <button onClick={onClose} style={{
+          <button onClick={() => { if (typeof onClose === "function") onClose(); }} style={{
             background: C.danger + "22",
             border: `1.5px solid ${C.danger}`,
             color: C.danger,
@@ -13452,16 +13485,25 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
 
           {/* 🗺️ Leaflet地図表示 */}
           {(() => {
-            const itemsWithCoord = filtered.filter(i => {
-              const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
-              const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
-              return typeof lat === "number" && typeof lng === "number";
-            });
-            const itemsNoCoord = filtered.filter(i => {
-              const addr = mapPinTarget === "ownerAddr" ? i.ownerAddress : i.address;
-              const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
-              return !!addr && (typeof lat !== "number");
-            });
+            // 🆕 v8.131: 内側で計算してた配列を React.useMemo に置き換えて参照同一性を保つ
+            //   → LeafletMap の useEffect([items]) が無駄発火しなくなる
+            //   → ピンタップで開いたポップアップが勝手に消える問題を解消
+            const itemsWithCoord = React.useMemo(
+              () => filtered.filter(i => {
+                const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
+                const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
+                return typeof lat === "number" && typeof lng === "number";
+              }),
+              [filtered, mapPinTarget]
+            );
+            const itemsNoCoord = React.useMemo(
+              () => filtered.filter(i => {
+                const addr = mapPinTarget === "ownerAddr" ? i.ownerAddress : i.address;
+                const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
+                return !!addr && (typeof lat !== "number");
+              }),
+              [filtered, mapPinTarget]
+            );
             
             return (
               <div style={{ marginBottom: 14 }}>
@@ -14054,29 +14096,30 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                         return (
                           <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 16px" }}>
                             <Sec title="[未訪問/初期接触]" items={[
-                              { c: "#1d4ed8", e: "🔵", l: "未訪問" },
-                              { c: "#60a5fa", e: "🩵", l: "初訪" },
+                              { c: "#1e40af", e: "🔵", l: "未訪問" },
+                              { c: "#38bdf8", e: "🩵", l: "初訪" },
                             ]} />
                             <Sec title="[交渉・手続き中]" items={[
                               { c: "#fde047", e: "🟡", l: "地番待ち" },
-                              { c: "#fb923c", e: "⏳", l: "謄本待ち" },
+                              { c: "#f97316", e: "⏳", l: "謄本待ち" },
                               { c: "#9ca3af", e: "🔧", l: "要修正" },
-                              { c: "#dc2626", e: "🔴", l: "交渉中 🤝" },
+                              { c: "#c026d3", e: "🔴", l: "交渉中 🤝" },
                             ]} />
                             <Sec title="[見込みあり]" items={[
-                              { c: "#86efac", e: "🟢", l: "見込み 📈" },
-                              { c: "#15803d", e: "🟢", l: "中長期見込 ⛳" },
+                              { c: "#ec4899", e: "💗", l: "見込み 📈" },
+                              { c: "#0d9488", e: "🟢", l: "中長期見込 ⛳" },
                             ]} />
                             <Sec title="[訪問・成果あり]" items={[
-                              { c: "#22c55e", e: "✅", l: "訪問OK" },
-                              { c: "#a855f7", e: "🟣", l: "媒介" },
-                              { c: "#0ea5e9", e: "🕐", l: "再訪/訪問" },
-                              { c: "#7c3aed", e: "🟣", l: "仕入 💰" },
+                              { c: "#16a34a", e: "✅", l: "訪問OK" },
+                              { c: "#7c3aed", e: "🟣", l: "媒介" },
+                              { c: "#0e7490", e: "🕐", l: "再訪/訪問" },
+                              { c: "#ca8a04", e: "🟡", l: "仕入 💰" },
                             ]} />
                             <Sec title="[その他]" items={[
                               { c: "#cbd5e1", e: "⬜", l: "対象外" },
-                              { c: "#1f2937", e: "⚫", l: "見込無し" },
+                              { c: "#111827", e: "⚫", l: "見込無し" },
                               { c: "#92400e", e: "🚪", l: "不在" },
+                              { c: "#dc2626", e: "🔧", l: "要修正" },
                               { c: "#7f1d1d", e: "❌", l: "NG" },
                             ]} />
                           </div>
