@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-04-v8.124-rollback-pincolor";
+const APP_VERSION = "2026-06-04-v8.125-pin-color-5states-v2";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3467,22 +3467,44 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       if (status === "媒介") return "#a855f7";
       return "#94a3b8";
     };
-    // 🆕 v8.98: 地番待ち判定（coordsManual かつ address 空）
-    const isPendingLot = (it) => !!(it && it.coordsManual && (!it.address || String(it.address).trim() === ""));
-    // 🆕 v8.99: 今日立てたピン判定（createdAt が今日のローカル日付）
+    // 🆕 v8.125: rawヘルパー（allItems経由なら it.raw が元データ、直接渡しなら it 自身）
+    const _raw = (it) => (it && it.raw) || it || {};
+    // 🆕 v8.125: 現地ピン5状態 色定義
+    const ONSITE_COLORS = {
+      pendingLot:    "#fbbf24",  // 🟡 地番待ち
+      lookupPending: "#f97316",  // ⏳ 謄本待ち
+      excluded:      "#94a3b8",  // 🚫 対象外
+      lookupFailed:  "#ef4444",  // 🔧 要修正
+      dmReady:       "#22c55e",  // 🚪 訪問OK
+    };
+    const _ownerExists = (r) => !!((r.owner && String(r.owner).trim()) || (r.ownerName && String(r.ownerName).trim()));
+    const colorForOnsite = (r) => {
+      if (!r.address || !String(r.address).trim()) return ONSITE_COLORS.pendingLot;
+      if (_ownerExists(r)) return ONSITE_COLORS.dmReady;
+      if (r.excluded === true) return ONSITE_COLORS.excluded;
+      if (r.lookupFailed === true) return ONSITE_COLORS.lookupFailed;
+      return ONSITE_COLORS.lookupPending;
+    };
+    // 🆕 v8.98→v8.125: 地番待ち判定（raw経由）
+    const isPendingLot = (it) => {
+      const r = _raw(it);
+      return !!(r && r.coordsManual && (!r.address || String(r.address).trim() === ""));
+    };
+    // 🆕 v8.99→v8.125: 今日立てたピン判定（raw経由）
     const _todayStr = new Date().toDateString();
     const isCreatedToday = (it) => {
-      if (!it || !it.createdAt) return false;
-      try { return new Date(it.createdAt).toDateString() === _todayStr; }
+      const r = _raw(it);
+      if (!r || !r.createdAt) return false;
+      try { return new Date(r.createdAt).toDateString() === _todayStr; }
       catch (e) { return false; }
     };
-    // 🆕 v8.41: 30日以内にポスティングした案件は 📬 オーバーレイ
+    // 🆕 v8.41→v8.125: 30日以内にポスティングした案件（raw経由）
     const _todayMs = Date.now();
     const _postedRecently = (it) => {
-      const log = (it && it.visitLog) || [];
+      const r = _raw(it);
+      const log = (r && r.visitLog) || [];
       const posted = log.filter(v => v && v.posted && v.date);
       if (posted.length === 0) return false;
-      // 最新の posted エントリの日付差を見る
       const latest = posted.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
       const days = Math.floor((_todayMs - new Date(latest.date + "T00:00:00").getTime()) / 86400000);
       return days >= 0 && days <= 30;
@@ -3490,8 +3512,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     validItems.forEach(it => {
       const lat = pinTarget === "ownerAddr" ? it.ownerLat : it.lat;
       const lng = pinTarget === "ownerAddr" ? it.ownerLng : it.lng;
+      // 🆕 v8.125: raw 経由参照（リネーム避けるため別名 _r で導入）
+      const _r = _raw(it);
       const pendingLot = isPendingLot(it);
-      const color = pendingLot ? "#fbbf24" : colorByStatus(it.status);
+      // 🆕 v8.125: 現地ピンなら5状態色、それ以外はステータス色
+      const color = (_r && _r.coordsManual)
+        ? colorForOnsite(_r)
+        : colorByStatus(it.status);
       const showPost = _postedRecently(it);
       // 🆕 v8.99→v8.104: 「今日かつ地番待ち」のみ halo + 「今日」バッジで強調
       //   （確定したら halo は消える → 現地ピンは未処理ToDoという位置づけ）
@@ -3518,21 +3545,29 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         iconAnchor: [anchor, anchor],
       });
       const marker = L.marker([lat, lng], { icon }).addTo(map);
-      // 🆕 v8.98: ポップアップ表示は地番優先、なければ目印住所、なければ「(地番待ち)」
-      const popupTitle = (it.address && it.address.trim()) || (it.landmark && `📍 ${it.landmark}（地番待ち）`) || "(地番未入力)";
-      const statusLabel = pendingLot ? "🟡 地番待ち" : it.status;
-      // 🆕 v8.103: 現地ピンには「誰が・いつ」を強調表示
-      const _isOnsite = !!it.coordsManual;
+      // 🆕 v8.98→v8.125: ポップアップ表示は地番優先（raw経由 landmark）
+      const popupTitle = (it.address && String(it.address).trim()) || (_r.landmark && `📍 ${_r.landmark}（地番待ち）`) || "(地番未入力)";
+      // 🆕 v8.125: 現地ピン5状態ラベル
+      const _isOnsite = !!(_r && _r.coordsManual);  // ← 変数名維持（3561行で使用中）
+      const statusLabel = (() => {
+        if (!_isOnsite) return it.status;
+        if (pendingLot) return "🟡 地番待ち";
+        if (_ownerExists(_r)) return "🚪 訪問OK";
+        if (_r.excluded === true) return "🚫 対象外";
+        if (_r.lookupFailed === true) return "🔧 要修正";
+        return "⏳ 謄本待ち";
+      })();
+      // 🆕 v8.103→v8.125: 現地ピンには「誰が・いつ」を強調表示（raw経由）
       const _whoWhenHtml = (() => {
-        if (!_isOnsite || !it.createdAt) return "";
+        if (!_isOnsite || !_r.createdAt) return "";
         try {
-          const d = new Date(it.createdAt);
+          const d = new Date(_r.createdAt);
           const mo = d.getMonth() + 1;
           const da = d.getDate();
           const dow = ["日","月","火","水","木","金","土"][d.getDay()];
           const hh = String(d.getHours()).padStart(2, "0");
           const mm = String(d.getMinutes()).padStart(2, "0");
-          const who = it.assignee || "(担当未割当)";
+          const who = _r.assignee || it.assignee || "(担当未割当)";
           return `<div style="background:#fbbf2422;border:1px solid #fbbf2466;border-radius:6px;padding:4px 8px;margin:4px 0;font-size:11px;color:#fbbf24;font-weight:800;">📍 ${mo}/${da}(${dow}) ${hh}:${mm} — <span style="color:#fff;background:#fbbf24;padding:1px 6px;border-radius:4px;">${who}</span> が立てた</div>`;
         } catch (e) { return ""; }
       })();
@@ -13883,19 +13918,23 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       )}
                     </div>
 
-                    {/* ピン色凡例 */}
+                    {/* 🆕 v8.125: ピン色凡例（5状態追加） */}
                     <div style={{ marginTop: 8, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 10px" }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 5, fontWeight: 700 }}>🎨 ピン色凡例</div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 10 }}>
                         {[
-                          { c: "#94a3b8", l: "未訪問" },
+                          { c: "#fbbf24", l: "🟡 地番待ち" },
+                          { c: "#f97316", l: "⏳ 謄本待ち" },
+                          { c: "#94a3b8", l: "🚫 対象外 / 未訪問" },
+                          { c: "#ef4444", l: "🔧 要修正 / NG" },
+                          { c: "#22c55e", l: "🚪 訪問OK" },
                           { c: "#3b82f6", l: "初訪/再訪" },
                           { c: "#10b981", l: "見込み" },
-                          { c: "#fbbf24", l: "中長期見込 / 🟡地番待ち" },
+                          { c: "#fbbf24", l: "中長期見込" },
                           { c: "#64748b", l: "見込無し" },
                           { c: "#a855f7", l: "媒介" },
                           { c: "#06b6d4", l: "仕入" },
-                          { c: "#f97316", l: "📬 30日以内に投函" },
+                          { c: "#f59e0b", l: "不在" },
                         ].map(it => (
                           <span key={it.l} style={{ display: "flex", alignItems: "center", gap: 3 }}>
                             <span style={{ width: 10, height: 10, borderRadius: "50%", background: it.c, border: "1.5px solid white" }} />
