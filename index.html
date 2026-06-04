@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.112-csv-lookup-only";
+const APP_VERSION = "2026-06-03-v8.113-shared-owner-badge";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3536,13 +3536,20 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           return `<div style="background:#fbbf2422;border:1px solid #fbbf2466;border-radius:6px;padding:4px 8px;margin:4px 0;font-size:11px;color:#fbbf24;font-weight:800;">📍 ${mo}/${da}(${dow}) ${hh}:${mm} — <span style="color:#fff;background:#fbbf24;padding:1px 6px;border-radius:4px;">${who}</span> が立てた</div>`;
         } catch (e) { return ""; }
       })();
+      // 🆕 v8.113: 共有者あり判定（所有者名に「・」含む or メモに【共有者あり】）
+      const _ownerStr = String(it.ownerName || "");
+      const _memoStr = String(it.memo || "");
+      const _isShared = _ownerStr.includes("・") || _memoStr.includes("【共有者あり】");
+      const _sharedBadgeHtml = _isShared
+        ? `<span style="background:#ef4444;color:#fff;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;margin-left:4px;">👥 共有者あり</span>`
+        : "";
       marker.bindPopup(`
         <div style="font-family:'Noto Sans JP',sans-serif;min-width:180px;">
           <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${popupTitle.slice(0, 50)}</div>
           ${_whoWhenHtml}
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">👤 ${it.ownerName}</div>` : ""}
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
-          <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span></div>
+          <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_sharedBadgeHtml}</div>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
       `);
@@ -13547,6 +13554,10 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   <Tag label={item.type === "jiage" ? "📍地上げ" : "👤所有者"} color={item.type === "jiage" ? C.accent : C.purple} />
                   <StatusTag status={item.status} />
                   <MemberTag name={item.assignee} />
+                  {/* 🆕 v8.113: 共有者ありバッジ */}
+                  {(((item.ownerName || "").includes("・")) || ((item.memo || "").includes("【共有者あり】"))) && (
+                    <Tag label="👥 共有者あり" color={C.danger} />
+                  )}
                   {overdue && <Tag label="⚠ 期限切れ" color={C.danger} />}
                   <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11 }}>{item.nextDate ? `次回 ${item.nextDate}` : ""}</span>
                 </div>
@@ -13649,6 +13660,10 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   <StatusTag status={item.status} />
                   {item.subStatus && <Tag label={item.subStatus} color={item.dm === "未" ? C.muted : C.accent} />}
                   <MemberTag name={item.assignee} />
+                  {/* 🆕 v8.113: 共有者ありバッジ */}
+                  {(((item.ownerName || "").includes("・")) || ((item.memo || "").includes("【共有者あり】"))) && (
+                    <Tag label="👥 共有者あり" color={C.danger} />
+                  )}
                   {item.history.length > 0 && <Tag label={`履歴${item.history.length}件`} color={C.muted} />}
                   {overdue && <Tag label="⚠ 期限切れ" color={C.danger} />}
                   <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11 }}>{item.nextDate ? `次回 ${item.nextDate}` : ""}</span>
@@ -13809,6 +13824,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             {_raw.coordsManual && <Tag label="📍現地ピン" color="#fbbf24" />}
             {_isPendingLot ? <Tag label="🟡 地番待ち" color="#fbbf24" /> : <StatusTag status={selected.item.status} />}
             <MemberTag name={selected.item.assignee} />
+            {/* 🆕 v8.113: 共有者ありバッジ */}
+            {(() => {
+              const _ownerStr = String(_raw.owner || _raw.ownerName || selected.item.ownerName || "");
+              const _memoStr = String(_raw.memo || selected.item.memo || "");
+              const _isShared = _ownerStr.includes("・") || _memoStr.includes("【共有者あり】");
+              return _isShared ? <Tag label="👥 共有者あり" color={C.danger} /> : null;
+            })()}
           </div>
 
           {/* 🆕 v8.101: 現地ピン情報パネル（landmark / 座標 / 地番待ち CTA） */}
