@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-03-v8.116-visit-ok-label";
+const APP_VERSION = "2026-06-03-v8.117-manual-pin-search";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3669,7 +3669,43 @@ function ManualPinMap({ address, onCancel, onSelect }) {
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
   const markerRef = React.useRef(null);
+  const suggestMarkerRef = React.useRef(null); // 🆕 v8.117: 検索結果の提案マーカー
   const [pickedLatLng, setPickedLatLng] = React.useState(null);
+  const [searchInput, setSearchInput] = React.useState(address || ""); // 🆕 v8.117
+  const [searchLoading, setSearchLoading] = React.useState(false); // 🆕 v8.117
+
+  // 🆕 v8.117: 検索ハンドラ（地名→ジオコ→地図パン＋提案マーカー）
+  const showSuggestAt = (lat, lng) => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (suggestMarkerRef.current) {
+      try { map.removeLayer(suggestMarkerRef.current); } catch (e) {}
+    }
+    const suggestIcon = L.divIcon({
+      className: "manual-pin-suggest",
+      html: `<div style="background:#3b82f6;width:18px;height:18px;border-radius:50%;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);opacity:0.85;"></div>`,
+      iconSize: [18, 18], iconAnchor: [9, 9],
+    });
+    suggestMarkerRef.current = L.marker([lat, lng], { icon: suggestIcon, interactive: false }).addTo(map);
+    map.setView([lat, lng], 16);
+  };
+  const handleSearch = async () => {
+    const q = (searchInput || "").trim();
+    if (!q) return;
+    setSearchLoading(true);
+    try {
+      const result = await geocodeAddress(q);
+      if (result && typeof result.lat === "number") {
+        showSuggestAt(result.lat, result.lng);
+      } else {
+        alert(`「${q}」の場所が見つかりませんでした。\n別の書き方でお試しください（例: 「埼玉県小川町」「比企郡小川町」）`);
+      }
+    } catch (e) {
+      alert(`検索に失敗しました: ${(e && e.message) || e}`);
+    } finally {
+      setSearchLoading(false);
+    }
+  };
 
   React.useEffect(() => {
     if (!mapRef.current || mapInstanceRef.current) return;
@@ -3690,6 +3726,17 @@ function ManualPinMap({ address, onCancel, onSelect }) {
       markerRef.current = L.marker(e.latlng, { icon }).addTo(map);
       setPickedLatLng(e.latlng);
     });
+    // 🆕 v8.117: モーダルを開いた瞬間に address を自動ジオコ → そこへ飛ぶ
+    if (address && String(address).trim()) {
+      (async () => {
+        try {
+          const result = await geocodeAddress(String(address).trim());
+          if (result && typeof result.lat === "number" && mapInstanceRef.current) {
+            showSuggestAt(result.lat, result.lng);
+          }
+        } catch (e) { /* 失敗時は静かに無視 */ }
+      })();
+    }
     return () => {
       try { map.remove(); } catch (e) {}
       mapInstanceRef.current = null;
@@ -3700,7 +3747,34 @@ function ManualPinMap({ address, onCancel, onSelect }) {
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 500, display: "flex", flexDirection: "column" }}>
       <div style={{ padding: "12px 16px", background: C.panelBg, borderBottom: `1px solid ${C.borderDim}` }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 4 }}>📍 マップをタップして位置を指定</div>
-        <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.4 }}>住所: {address}</div>
+        <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.4, marginBottom: 8 }}>住所: {address}</div>
+        {/* 🆕 v8.117: 住所/地名で検索して地図ジャンプ */}
+        <div style={{ display: "flex", gap: 6 }}>
+          <input
+            type="text"
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") handleSearch(); }}
+            placeholder="🔍 住所・地名で検索（例: 深谷市本田、小川町）"
+            style={{
+              flex: 1, background: "#0a0f1a", border: `1px solid ${C.borderDim}`,
+              borderRadius: 6, padding: "6px 10px", color: "#fff",
+              fontSize: 12, fontFamily: "inherit",
+            }}
+          />
+          <button onClick={handleSearch}
+            disabled={searchLoading || !searchInput.trim()}
+            style={{
+              background: "#0ea5e9", color: "#fff", border: "none",
+              borderRadius: 6, padding: "6px 12px",
+              cursor: searchLoading || !searchInput.trim() ? "not-allowed" : "pointer",
+              fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+              opacity: searchLoading || !searchInput.trim() ? 0.5 : 1,
+            }}>{searchLoading ? "🔄" : "移動"}</button>
+        </div>
+        <div style={{ fontSize: 10, color: "#64748b", marginTop: 4, lineHeight: 1.5 }}>
+          💡 青い点 = 検索ヒット位置（参考）／オレンジ点 = タップで指定した採用位置
+        </div>
       </div>
       <div ref={mapRef} style={{ flex: 1 }} />
       <div style={{ padding: "12px 16px", background: C.panelBg, borderTop: `1px solid ${C.borderDim}`, display: "flex", gap: 10 }}>
