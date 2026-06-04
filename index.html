@@ -138,7 +138,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-04-v8.133-popup-persist-and-inline-search";
+const APP_VERSION = "2026-06-04-v8.134-pin-emoji-and-status-filter-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3529,10 +3529,33 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         ? colorForOnsite(_r)
         : colorByStatus(it.status);
       const showPost = _postedRecently(it);
+      // 🆕 v8.134: 状態別の絵文字マップ（_isOnsite はまだ未定義なので _r.coordsManual を直接見る）
+      const emojiForPin = (() => {
+        if (_r && _r.coordsManual) {
+          if (pendingLot) return "⏰";
+          if (_ownerExists(_r)) return "✅";  // 訪問OK
+          if (_r.excluded === true) return "🚫";
+          if (_r.lookupFailed === true) return "🔧";
+          return "⏳";  // 謄本待ち
+        }
+        const s = it.status;
+        if (s === "未訪問") return "🏠";
+        if (s === "初訪") return "👋";
+        if (s === "再訪" || s === "訪問済") return "🔁";
+        if (s === "見込み" || s === "見込" || s === "興味あり" || s === "検討中") return "💗";
+        if (s === "中長期見込") return "🌱";
+        if (s === "交渉中") return "🤝";
+        if (s === "媒介") return "📋";
+        if (s === "仕入" || s === "仕入れ完了") return "💰";
+        if (s === "不在") return "🚪";
+        if (s === "見込無し") return "❌";
+        if (s === "NG" || s === "断られた") return "⛔";
+        if (s === "居住している") return "🏡";
+        return "📍";
+      })();
       // 🆕 v8.99→v8.104: 「今日かつ地番待ち」のみ halo + 「今日」バッジで強調
-      //   （確定したら halo は消える → 現地ピンは未処理ToDoという位置づけ）
       const createdToday = isCreatedToday(it) && pendingLot;
-      const outerSize = createdToday ? 42 : 22;
+      const outerSize = createdToday ? 42 : 26;
       const innerOffset = createdToday ? 10 : 0;
       const anchor = outerSize / 2;
       const haloHtml = createdToday
@@ -3542,9 +3565,11 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         ? `<div style="position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);background:#fbbf24;color:#000;font-size:8px;padding:1px 5px;border-radius:5px;font-weight:800;border:1.5px solid white;white-space:nowrap;line-height:1.1;box-shadow:0 1px 3px rgba(0,0,0,0.4);">今日</div>`
         : "";
       const innerBorder = createdToday ? "2.5px solid #fbbf24" : "2.5px solid white";
-      const innerPinHtml = `<div style="position:absolute;top:${innerOffset}px;left:${innerOffset}px;width:22px;height:22px;">
-        <div style="background:${color};width:22px;height:22px;border-radius:50%;border:${innerBorder};box-shadow:0 1px 4px rgba(0,0,0,0.5);box-sizing:border-box;"></div>
-        ${pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#fbbf24;color:#000;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;font-weight:800;">?</div>` : ""}
+      // 🆕 v8.134: 色付き丸の中央に絵文字を描画
+      const innerPinHtml = `<div style="position:absolute;top:${innerOffset}px;left:${innerOffset}px;width:26px;height:26px;">
+        <div style="background:${color};width:26px;height:26px;border-radius:50%;border:${innerBorder};box-shadow:0 1px 4px rgba(0,0,0,0.5);box-sizing:border-box;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;">
+          <span style="filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white);">${emojiForPin}</span>
+        </div>
         ${showPost && !pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#f97316;color:#fff;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">📬</div>` : ""}
       </div>`;
       const icon = L.divIcon({
@@ -13442,8 +13467,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               }}>
                 <span style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   🚦 状況で絞り込み
-                  {hasSelection && !statusExpanded && (
+                  {(hasSelection || (quickFilter && ["pending_lot","lookup_pending","excluded","lookup_failed","dm_ready"].includes(quickFilter))) && !statusExpanded && (
                     <span style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                      {quickFilter && ["pending_lot","lookup_pending","excluded","lookup_failed","dm_ready"].includes(quickFilter) && (
+                        <span style={{ background: ({pending_lot:"#fde047",lookup_pending:"#f97316",excluded:"#cbd5e1",lookup_failed:"#dc2626",dm_ready:"#16a34a"})[quickFilter], color: ["pending_lot","excluded"].includes(quickFilter) ? "#000" : "#fff", padding: "2px 7px", borderRadius: 6, fontSize: 10, fontWeight: 700 }}>
+                          {({pending_lot:"🟡 地番待ち",lookup_pending:"⏳ 謄本待ち",excluded:"🚫 対象外",lookup_failed:"🔧 要修正",dm_ready:"🚪 訪問OK"})[quickFilter]}
+                        </span>
+                      )}
                       {filterStatuses.map(st => (
                         <span key={st} style={{ background: stColor(st), color: "#fff", padding: "2px 7px", borderRadius: 6, fontSize: 10, fontWeight: 700 }}>
                           {st}
@@ -13458,6 +13488,36 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               {/* 展開時のチップ */}
               {statusExpanded && (
                 <div style={{ padding: "0 10px 10px" }}>
+                  {/* 🆕 v8.134: 📍 ピン状態セクション（現地ピン5状態） */}
+                  <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 5, letterSpacing: "0.02em" }}>📍 ピン状態</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+                    {[
+                      { key: "pending_lot",    label: "🟡 地番待ち",  color: "#fde047", count: pendingPinSummary.total },
+                      { key: "lookup_pending", label: "⏳ 謄本待ち",  color: "#f97316", count: pendingPinSummary.lookupPendingTotal },
+                      { key: "excluded",       label: "🚫 対象外",   color: "#cbd5e1", count: pendingPinSummary.excludedTotal },
+                      { key: "lookup_failed",  label: "🔧 要修正",   color: "#dc2626", count: pendingPinSummary.lookupFailedTotal },
+                      { key: "dm_ready",       label: "🚪 訪問OK",   color: "#16a34a", count: pendingPinSummary.dmReadyTotal },
+                    ].map(p => {
+                      const isActive = quickFilter === p.key;
+                      const isLight = ["#fde047","#cbd5e1"].includes(p.color);
+                      return (
+                        <button key={p.key} onClick={() => {
+                          setQuickFilter(prev => prev === p.key ? null : p.key);
+                          setFilterMember("__ALL__");
+                        }} style={{
+                          padding: "5px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+                          background: isActive ? p.color : C.bg,
+                          color: isActive ? (isLight ? "#000" : "#fff") : (p.count > 0 ? p.color : C.muted),
+                          border: `1.5px solid ${isActive ? p.color : (p.count > 0 ? p.color + "55" : C.borderDim)}`,
+                          fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: isActive ? 800 : 400,
+                        }}>
+                          {isActive ? "✓ " : ""}{p.label} <span style={{ opacity: 0.7, fontSize: 10 }}>{p.count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {/* 📋 営業ステータスセクション */}
+                  <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 5, letterSpacing: "0.02em" }}>📋 営業ステータス</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                     {ATTACK_STATUSES.map(st => {
                       const isActive = filterStatuses.includes(st);
@@ -13482,7 +13542,14 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                         padding: "5px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
                         background: "transparent", color: C.muted, border: `1.5px solid ${C.borderDim}`,
                         fontFamily: "inherit",
-                      }}>✕ 解除</button>
+                      }}>✕ 営業ステータス解除</button>
+                    )}
+                    {quickFilter && ["pending_lot","lookup_pending","excluded","lookup_failed","dm_ready"].includes(quickFilter) && (
+                      <button onClick={() => setQuickFilter(null)} style={{
+                        padding: "5px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11,
+                        background: "transparent", color: C.muted, border: `1.5px solid ${C.borderDim}`,
+                        fontFamily: "inherit",
+                      }}>✕ ピン状態解除</button>
                     )}
                   </div>
                 </div>
