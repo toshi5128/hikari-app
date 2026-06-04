@@ -136,7 +136,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-04-v8.125-pin-color-5states-v2";
+const APP_VERSION = "2026-06-04-v8.126-distinct-colors";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -438,15 +438,16 @@ const STATUS_GROUPS = [
 const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入"];
 // 🆕 v8.87: 地上げステータスの色分け（一目で判別できるように）
 const JIAGE_STATUS_COLORS = {
-  "未訪問": "#94a3b8",     // グレー
+  // 🆕 v8.126: 現地ピン5状態と被らない色相帯に
+  "未訪問": "#475569",     // 濃グレー（対象外の薄グレーと区別）
   "初訪": "#0ea5e9",       // スカイブルー
-  "再訪": "#2563eb",       // ブルー
-  "見込み": "#22c55e",     // グリーン
-  "中長期見込": "#fbbf24", // アンバー
-  "見込無し": "#ef4444",   // レッド（NG）
-  "交渉中": "#f97316",     // オレンジ
+  "再訪": "#1d4ed8",       // 濃ブルー
+  "見込み": "#0d9488",     // ティール（訪問OKの緑と区別）
+  "中長期見込": "#eab308", // 黄土（地番待ちの明黄と区別）
+  "見込無し": "#7f1d1d",   // 暗赤茶（要修正の鮮赤と区別）
+  "交渉中": "#c026d3",     // フューシア（被らない強色）
   "媒介": "#a855f7",       // パープル
-  "仕入": "#06b6d4",       // シアン
+  "仕入": "#06b6d4",       // 明シアン
 };
 // 🆕 仲介案件：媒介の種類とフェーズ
 const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
@@ -3454,28 +3455,31 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       return typeof lat === "number" && typeof lng === "number" && !isNaN(lat) && !isNaN(lng);
     });
     // 色判定
+    // 🆕 v8.126: 現地ピン5状態と判別しやすい色相に統一
     const colorByStatus = (status) => {
-      if (status === "NG" || status === "断られた") return "#ef4444";
-      if (status === "見込み" || status === "見込" || status === "興味あり" || status === "検討中" || status === "交渉中") return "#10b981";
-      if (status === "中長期見込") return "#fbbf24";
-      if (status === "初訪" || status === "再訪") return "#3b82f6";
-      if (status === "見込無し") return "#64748b";
-      if (status === "不在") return "#f59e0b";
-      if (status === "訪問済") return "#3b82f6";
-      if (status === "居住している") return "#64748b";
-      if (status === "仕入" || status === "仕入れ完了") return "#06b6d4";
-      if (status === "媒介") return "#a855f7";
-      return "#94a3b8";
+      if (status === "NG" || status === "断られた") return "#7f1d1d";       // 暗赤茶（要修正の鮮赤と区別）
+      if (status === "見込み" || status === "見込" || status === "興味あり" || status === "検討中") return "#0d9488"; // ティール（訪問OKの緑と区別）
+      if (status === "交渉中") return "#c026d3";                            // フューシア
+      if (status === "中長期見込") return "#eab308";                         // 黄土（地番待ち明黄と区別）
+      if (status === "初訪") return "#0ea5e9";                              // スカイブルー
+      if (status === "再訪") return "#1d4ed8";                              // 濃ブルー
+      if (status === "訪問済") return "#1d4ed8";                            // 濃ブルー（再訪と同系）
+      if (status === "見込無し") return "#334155";                          // 暗グレー
+      if (status === "不在") return "#d97706";                              // 茶寄りオレンジ（謄本待ちと区別）
+      if (status === "居住している") return "#64748b";                       // 中グレー
+      if (status === "仕入" || status === "仕入れ完了") return "#06b6d4";   // 明シアン
+      if (status === "媒介") return "#a855f7";                              // パープル
+      return "#475569"; // 未訪問など: 濃グレー（対象外の薄グレーと区別）
     };
     // 🆕 v8.125: rawヘルパー（allItems経由なら it.raw が元データ、直接渡しなら it 自身）
     const _raw = (it) => (it && it.raw) || it || {};
-    // 🆕 v8.125: 現地ピン5状態 色定義
+    // 🆕 v8.125→v8.126: 現地ピン5状態 色定義（判別しやすい強コントラスト）
     const ONSITE_COLORS = {
-      pendingLot:    "#fbbf24",  // 🟡 地番待ち
-      lookupPending: "#f97316",  // ⏳ 謄本待ち
-      excluded:      "#94a3b8",  // 🚫 対象外
-      lookupFailed:  "#ef4444",  // 🔧 要修正
-      dmReady:       "#22c55e",  // 🚪 訪問OK
+      pendingLot:    "#fde047",  // 🟡 地番待ち（明るい黄）
+      lookupPending: "#fb923c",  // ⏳ 謄本待ち（鮮オレンジ）
+      excluded:      "#94a3b8",  // 🚫 対象外（薄グレー）
+      lookupFailed:  "#dc2626",  // 🔧 要修正（鮮赤）
+      dmReady:       "#22c55e",  // 🚪 訪問OK（明緑）
     };
     const _ownerExists = (r) => !!((r.owner && String(r.owner).trim()) || (r.ownerName && String(r.ownerName).trim()));
     const colorForOnsite = (r) => {
@@ -13918,23 +13922,27 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       )}
                     </div>
 
-                    {/* 🆕 v8.125: ピン色凡例（5状態追加） */}
+                    {/* 🆕 v8.125→v8.126: ピン色凡例（判別しやすい色に統一） */}
                     <div style={{ marginTop: 8, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 10px" }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 5, fontWeight: 700 }}>🎨 ピン色凡例</div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 10 }}>
                         {[
-                          { c: "#fbbf24", l: "🟡 地番待ち" },
-                          { c: "#f97316", l: "⏳ 謄本待ち" },
-                          { c: "#94a3b8", l: "🚫 対象外 / 未訪問" },
-                          { c: "#ef4444", l: "🔧 要修正 / NG" },
+                          { c: "#fde047", l: "🟡 地番待ち" },
+                          { c: "#fb923c", l: "⏳ 謄本待ち" },
+                          { c: "#94a3b8", l: "🚫 対象外" },
+                          { c: "#dc2626", l: "🔧 要修正" },
                           { c: "#22c55e", l: "🚪 訪問OK" },
-                          { c: "#3b82f6", l: "初訪/再訪" },
-                          { c: "#10b981", l: "見込み" },
-                          { c: "#fbbf24", l: "中長期見込" },
-                          { c: "#64748b", l: "見込無し" },
+                          { c: "#475569", l: "未訪問" },
+                          { c: "#0ea5e9", l: "初訪" },
+                          { c: "#1d4ed8", l: "再訪/訪問済" },
+                          { c: "#0d9488", l: "見込み" },
+                          { c: "#eab308", l: "中長期見込" },
+                          { c: "#334155", l: "見込無し" },
+                          { c: "#c026d3", l: "交渉中" },
                           { c: "#a855f7", l: "媒介" },
                           { c: "#06b6d4", l: "仕入" },
-                          { c: "#f59e0b", l: "不在" },
+                          { c: "#d97706", l: "不在" },
+                          { c: "#7f1d1d", l: "NG" },
                         ].map(it => (
                           <span key={it.l} style={{ display: "flex", alignItems: "center", gap: 3 }}>
                             <span style={{ width: 10, height: 10, borderRadius: "50%", background: it.c, border: "1.5px solid white" }} />
