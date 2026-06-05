@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.7-week-colors-continuous-line";
+const APP_VERSION = "2026-06-05-v9.9-distance-only";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3971,32 +3971,60 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         if (seg.pts.length < 2) return;
         const latlngs = seg.pts.map(p => [p.lat, p.lng]);
         const color = WEEK_COLORS[seg.weekRel % WEEK_COLORS.length];
-        // 🆕 v9.7: 線をさらに太く・濃く（連続性最大化）
         const polyline = L.polyline(latlngs, {
           color,
           weight: 7,
           opacity: 0.92,
-          smoothFactor: 0.5,  // ほぼ間引かない＝忠実
+          smoothFactor: 0.5,
           lineCap: "round",
           lineJoin: "round",
           renderer: L.canvas(),
           interactive: true,
         }).addTo(map);
-
-        // 週表示用ラベル（YYYY 第N週）
         const weekYear = Math.floor(seg.weekIdx / 100);
         const weekNum = seg.weekIdx % 100;
         const memberColor = memberColorsLocal[member] || "#64748b";
+        // セグメントの距離を計算
+        let segDist = 0;
+        for (let i = 1; i < seg.pts.length; i++) {
+          const a = seg.pts[i-1], b = seg.pts[i];
+          segDist += haversineQuick(a, b);
+        }
+        const segDistStr = segDist >= 1000 ? `${(segDist/1000).toFixed(2)}km` : `${Math.round(segDist)}m`;
         polyline.bindPopup(`
           <div style="font-family:'Noto Sans JP',sans-serif;min-width:140px;font-size:12px;">
             <div style="font-weight:700;margin-bottom:4px;">👤 <span style="background:${memberColor};color:#fff;padding:2px 8px;border-radius:4px;">${member}</span></div>
             <div style="color:#64748b;">📅 ${weekYear}年 第${weekNum}週</div>
             <div style="display:inline-block;width:14px;height:14px;border-radius:3px;background:${color};margin-top:4px;vertical-align:middle;"></div>
-            <span style="color:#64748b;font-size:11px;margin-left:4px;">${seg.pts.length}点</span>
+            <span style="color:#64748b;font-size:11px;margin-left:4px;">${segDistStr}</span>
           </div>
         `);
         trackLayersRef.current.push(polyline);
       });
+
+      // 🆕 v9.8: 開始・終了マーカー（メンバー全体の始点と終点）
+      const startPt = valid[0];
+      const endPt = valid[valid.length - 1];
+      const startIcon = L.divIcon({
+        className: "hikari-track-start",
+        html: `<div style="width:18px;height:18px;border-radius:50%;background:#10b981;border:3px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:900;color:#fff;line-height:1;">▶</div>`,
+        iconSize: [18, 18], iconAnchor: [9, 9],
+      });
+      const endIcon = L.divIcon({
+        className: "hikari-track-end",
+        html: `<div style="width:18px;height:18px;border-radius:50%;background:#dc2626;border:3px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:900;color:#fff;line-height:1;">■</div>`,
+        iconSize: [18, 18], iconAnchor: [9, 9],
+      });
+      const startMarker = L.marker([startPt.lat, startPt.lng], { icon: startIcon, zIndexOffset: 500 }).addTo(map);
+      const endMarker = L.marker([endPt.lat, endPt.lng], { icon: endIcon, zIndexOffset: 500 }).addTo(map);
+      const fmtTs = (ts) => {
+        try { const d = new Date(ts); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+        catch (e) { return ""; }
+      };
+      const memberColor = memberColorsLocal[member] || "#64748b";
+      startMarker.bindPopup(`<div style="font-family:'Noto Sans JP',sans-serif;font-size:12px;"><b>▶ 開始</b><br>👤 <span style="background:${memberColor};color:#fff;padding:1px 6px;border-radius:3px;">${member}</span><br>📅 ${fmtTs(startPt.ts)}</div>`);
+      endMarker.bindPopup(`<div style="font-family:'Noto Sans JP',sans-serif;font-size:12px;"><b>■ 終了</b><br>👤 <span style="background:${memberColor};color:#fff;padding:1px 6px;border-radius:3px;">${member}</span><br>📅 ${fmtTs(endPt.ts)}</div>`);
+      trackLayersRef.current.push(startMarker, endMarker);
     });
   }, [
     tracks ? Object.entries(tracks).map(([m, pts]) => `${m}:${(pts || []).length}`).join("|") : "",
@@ -11993,9 +12021,17 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const today = useTodayDate();
   // 🆕 v9.0: 探索ルートトラッカー state
   const [trackRecording, setTrackRecording] = useState(false);  // 自分の記録ON/OFF（端末ローカル）
-  const [trackShowSelf, setTrackShowSelf] = useState(true);     // 自分の軌跡を表示するか
-  const [trackShowTeam, setTrackShowTeam] = useState(false);    // チーム全員の軌跡を表示するか
-  const [trackPeriod, setTrackPeriod] = useState("today");      // "today" | "all"
+  // 🆕 v9.8: 期間フィルタ拡張 ("today" | "yesterday" | "7days" | "30days" | "all" | "date")
+  const [trackPeriod, setTrackPeriod] = useState("today");
+  const [trackPickedDate, setTrackPickedDate] = useState("");  // "YYYY-MM-DD"
+  // 🆕 v9.8: メンバー別表示ON/OFF（デフォルトは自分のみ）
+  const [trackVisibleMembers, setTrackVisibleMembers] = useState(() => currentUser ? [currentUser] : []);
+  React.useEffect(() => {
+    // currentUser が後から取れた場合に追従
+    if (currentUser && trackVisibleMembers.length === 0) {
+      setTrackVisibleMembers([currentUser]);
+    }
+  }, [currentUser]);
   const trackLastSavedRef = React.useRef(0);                    // 最後に記録したタイムスタンプ（ms）
   const trackLastPosRef = React.useRef(null);                   // 最後に記録した位置 {lat, lng}
   // 🆕 v9.3: watchPosition のクロージャに最新値を渡すため ref で同期
@@ -12014,24 +12050,59 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
     return 2 * R * Math.asin(Math.sqrt(h));
   };
-  // 表示用 tracks をフィルタ
+  // 🆕 v9.8: 期間フィルタの範囲を計算
+  const trackPeriodRange = React.useMemo(() => {
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const todayTs = todayStart.getTime();
+    const dayMs = 86400000;
+    if (trackPeriod === "today")     return { lo: todayTs, hi: todayTs + dayMs };
+    if (trackPeriod === "yesterday") return { lo: todayTs - dayMs, hi: todayTs };
+    if (trackPeriod === "7days")     return { lo: todayTs - 6 * dayMs, hi: Infinity };
+    if (trackPeriod === "30days")    return { lo: todayTs - 29 * dayMs, hi: Infinity };
+    if (trackPeriod === "date" && trackPickedDate) {
+      try {
+        const d = new Date(trackPickedDate + "T00:00:00");
+        const t = d.getTime();
+        return { lo: t, hi: t + dayMs };
+      } catch (e) {}
+    }
+    return { lo: 0, hi: Infinity }; // "all" or "date" without selection
+  }, [trackPeriod, trackPickedDate]);
+  // 🆕 v9.8: メンバーフィルタ＋期間フィルタを適用
   const visibleTracks = React.useMemo(() => {
     const all = (data && data.tracks) || {};
     const result = {};
-    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-    const todayTs = todayStart.getTime();
     Object.entries(all).forEach(([member, points]) => {
-      // 表示対象メンバー判定
-      const isSelf = member === currentUser;
-      if (isSelf && !trackShowSelf) return;
-      if (!isSelf && !trackShowTeam) return;
-      const filtered = (points || []).filter(p => p && typeof p.lat === "number" && typeof p.lng === "number");
-      result[member] = trackPeriod === "today"
-        ? filtered.filter(p => (p.ts || 0) >= todayTs)
-        : filtered;
+      if (!trackVisibleMembers.includes(member)) return;
+      const filtered = (points || [])
+        .filter(p => p && typeof p.lat === "number" && typeof p.lng === "number")
+        .filter(p => {
+          const ts = p.ts || 0;
+          return ts >= trackPeriodRange.lo && ts < trackPeriodRange.hi;
+        });
+      if (filtered.length > 0) result[member] = filtered;
     });
     return result;
-  }, [data && data.tracks, currentUser, trackShowSelf, trackShowTeam, trackPeriod]);
+  }, [data && data.tracks, trackVisibleMembers, trackPeriodRange]);
+  // 🆕 v9.8: 走行距離計算（メートル）
+  const trackDistanceMeters = React.useMemo(() => {
+    let total = 0;
+    Object.values(visibleTracks).forEach(pts => {
+      for (let i = 1; i < pts.length; i++) {
+        total += haversineMeters(pts[i-1], pts[i]);
+      }
+    });
+    return total;
+  }, [visibleTracks]);
+  // 自分の距離（visibleTracks に自分が含まれる場合のみ）
+  const myDistanceMeters = React.useMemo(() => {
+    const mine = visibleTracks[currentUser] || [];
+    let total = 0;
+    for (let i = 1; i < mine.length; i++) {
+      total += haversineMeters(mine[i-1], mine[i]);
+    }
+    return total;
+  }, [visibleTracks, currentUser]);
   // 🆕 通知タップでハイライトする ID
   const [highlightJiageId, setHighlightJiageId] = useState(null);
   const [highlightOwnerId, setHighlightOwnerId] = useState(null);
@@ -14068,37 +14139,85 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                         color: "#fff", border: "none",
                       }}>{trackRecording ? "⏹ 停止" : "▶ 記録開始"}</button>
                     </div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, fontSize: 10, marginBottom: 4 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer", color: C.muted }}>
-                        <input type="checkbox" checked={trackShowSelf} onChange={e => setTrackShowSelf(e.target.checked)} />
-                        自分
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer", color: C.muted }}>
-                        <input type="checkbox" checked={trackShowTeam} onChange={e => setTrackShowTeam(e.target.checked)} />
-                        チーム全員
-                      </label>
-                      <div style={{ display: "flex", gap: 3, marginLeft: "auto" }}>
+                    {/* 🆕 v9.8: メンバー別チップ */}
+                    <div style={{ marginTop: 6, marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>👥 表示メンバー</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {MEMBERS.filter(m => !m.includes("・")).map(m => {
+                          const active = trackVisibleMembers.includes(m);
+                          const memberColor = MEMBER_COLORS[m] || C.muted;
+                          const hasData = ((data && data.tracks && data.tracks[m]) || []).length > 0;
+                          return (
+                            <button key={m} onClick={() => {
+                              setTrackVisibleMembers(prev => prev.includes(m) ? prev.filter(x => x !== m) : [...prev, m]);
+                            }} style={{
+                              padding: "3px 8px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                              background: active ? memberColor : "transparent",
+                              color: active ? "#fff" : (hasData ? memberColor : C.muted),
+                              border: `1.5px solid ${active ? memberColor : (hasData ? memberColor + "66" : C.borderDim)}`,
+                              fontWeight: active ? 700 : 400,
+                              opacity: hasData ? 1 : 0.5,
+                            }}>{active ? "✓ " : ""}{m === currentUser ? `自分(${m})` : m}</button>
+                          );
+                        })}
+                        <button onClick={() => setTrackVisibleMembers(MEMBERS.filter(m => !m.includes("・")))} style={{
+                          padding: "3px 8px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                          background: "transparent", color: C.muted, border: `1px dashed ${C.borderDim}`,
+                        }}>全員ON</button>
+                        <button onClick={() => setTrackVisibleMembers(currentUser ? [currentUser] : [])} style={{
+                          padding: "3px 8px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                          background: "transparent", color: C.muted, border: `1px dashed ${C.borderDim}`,
+                        }}>自分のみ</button>
+                        <button onClick={() => setTrackVisibleMembers([])} style={{
+                          padding: "3px 8px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                          background: "transparent", color: C.muted, border: `1px dashed ${C.borderDim}`,
+                        }}>全解除</button>
+                      </div>
+                    </div>
+                    {/* 🆕 v9.8: 期間フィルタ拡張 */}
+                    <div style={{ marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>📅 期間</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                         {[
-                          { k: "today", l: "今日" },
-                          { k: "all", l: "全期間" },
+                          { k: "today",     l: "今日" },
+                          { k: "yesterday", l: "昨日" },
+                          { k: "7days",     l: "7日" },
+                          { k: "30days",    l: "30日" },
+                          { k: "all",       l: "全期間" },
+                          { k: "date",      l: "📅 日付指定" },
                         ].map(p => (
                           <button key={p.k} onClick={() => setTrackPeriod(p.k)} style={{
-                            padding: "2px 8px", borderRadius: 10, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                            padding: "3px 8px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
                             background: trackPeriod === p.k ? "#3b82f6" : "transparent",
                             color: trackPeriod === p.k ? "#fff" : C.muted,
                             border: `1px solid ${trackPeriod === p.k ? "#3b82f6" : C.borderDim}`,
+                            fontWeight: trackPeriod === p.k ? 700 : 400,
                           }}>{p.l}</button>
                         ))}
                       </div>
+                      {trackPeriod === "date" && (
+                        <input
+                          type="date"
+                          value={trackPickedDate}
+                          onChange={e => setTrackPickedDate(e.target.value)}
+                          style={{
+                            marginTop: 4, padding: "4px 8px",
+                            background: isLightMode ? "#e2e8f0" : "#1e293b",
+                            color: C.text,
+                            border: `1.5px solid ${isLightMode ? "#94a3b8" : "#475569"}`,
+                            borderRadius: 6, fontSize: 11, fontFamily: "inherit",
+                          }}
+                        />
+                      )}
                     </div>
                     {(() => {
-                      const myCount = ((data && data.tracks && data.tracks[currentUser]) || []).length;
-                      const totalCount = Object.values((data && data.tracks) || {}).reduce((a, p) => a + (p || []).length, 0);
                       const gpsOk = currentLoc && typeof currentLoc.lat === "number";
+                      const formatKm = m => m >= 1000 ? `${(m/1000).toFixed(2)}km` : `${Math.round(m)}m`;
                       return (
                         <div style={{ fontSize: 10, color: C.text, lineHeight: 1.5, padding: "4px 0", borderTop: `1px dashed ${C.borderDim}`, marginTop: 4 }}>
-                          {/* 🆕 v9.4: デバッグ情報を画面表示 */}
-                          <div>📊 自分: <b style={{ color: trackRecording ? "#3b82f6" : C.text }}>{myCount}点</b> / 全員: <b>{totalCount}点</b></div>
+                          {/* 🆕 v9.9: 点数表示を削除、距離だけ */}
+                          <div>🚶 自分の距離: <b style={{ color: trackRecording ? "#3b82f6" : C.text }}>{formatKm(myDistanceMeters)}</b></div>
+                          <div>👥 表示中の総距離: <b>{formatKm(trackDistanceMeters)}</b></div>
                           <div style={{ color: gpsOk ? C.success : C.danger, fontWeight: 700 }}>
                             🛰️ GPS: {gpsOk ? `OK (±${Math.round(currentLoc.accuracy || 0)}m)` : "未取得"}
                           </div>
@@ -14108,7 +14227,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           <div style={{ color: trackRecording ? "#3b82f6" : C.muted, fontWeight: 700 }}>
                             🎙 記録: {trackRecording ? "ON（GPS自動追従中）" : "OFF"}
                           </div>
-                          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>💡 週ごとに色変化（青→緑→紫→橙→桃→水→黄→赤）・線タップで担当者・週表示</div>
+                          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>💡 週ごとに色変化・▶始点/■終点・線タップで担当者表示</div>
                         </div>
                       );
                     })()}
