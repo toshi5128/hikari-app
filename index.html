@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.2-hide-map-buttons-on-detail";
+const APP_VERSION = "2026-06-05-v9.3-track-closure-fix-and-autofollow";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3495,7 +3495,7 @@ function Tag({ label, color }) {
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
 }
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation }) {
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
   const markersRef = React.useRef([]);
@@ -3989,7 +3989,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         interactive: false,
       }).addTo(map);
     }
-  }, [currentLocation]);
+    // 🆕 v9.3: 探索ルート記録中など、autoFollowLocation=true なら現在地に地図を自動 pan
+    if (autoFollowLocation) {
+      try {
+        map.panTo([lat, lng], { animate: true, duration: 0.6 });
+      } catch (e) {}
+    }
+  }, [currentLocation, autoFollowLocation]);
 
   // 🆕 v8.95: 現在地センタリング（centerOnLocationKey 変化で発火）
   React.useEffect(() => {
@@ -11919,6 +11925,11 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [trackPeriod, setTrackPeriod] = useState("today");      // "today" | "all"
   const trackLastSavedRef = React.useRef(0);                    // 最後に記録したタイムスタンプ（ms）
   const trackLastPosRef = React.useRef(null);                   // 最後に記録した位置 {lat, lng}
+  // 🆕 v9.3: watchPosition のクロージャに最新値を渡すため ref で同期
+  const trackRecordingRef = React.useRef(false);
+  React.useEffect(() => { trackRecordingRef.current = trackRecording; }, [trackRecording]);
+  const currentUserRef = React.useRef(currentUser);
+  React.useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
   // 距離計算（簡易・ハバーサイン公式）
   const haversineMeters = (a, b) => {
     if (!a || !b) return Infinity;
@@ -12157,27 +12168,33 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         const accuracy = pos.coords.accuracy;
         setCurrentLoc({ lat, lng, accuracy });
         setGpsError(null);
-        // 🆕 v9.0: 探索ルート記録（ON時のみ・10m以上 ＋ 30秒以上経過の条件）
-        if (trackRecording && currentUser) {
+        // 🆕 v9.0→v9.3: 探索ルート記録（ref で常に最新の trackRecording を参照・クロージャバグ修正）
+        const recordingNow = trackRecordingRef.current;
+        const userNow = currentUserRef.current;
+        if (recordingNow && userNow) {
           const nowMs = Date.now();
           const lastTs = trackLastSavedRef.current || 0;
           const lastPos = trackLastPosRef.current;
-          const enoughTime = (nowMs - lastTs) >= 30000;
+          // 🆕 v9.3: 初回は時間条件なしで即記録（テストしやすく）
+          //   2点目以降は 15秒経過 ＆ 10m移動 で記録
+          const isFirst = !lastPos;
+          const enoughTime = isFirst || (nowMs - lastTs) >= 15000;
           const dist = lastPos ? haversineMeters(lastPos, { lat, lng }) : Infinity;
           if (enoughTime && dist >= 10) {
             trackLastSavedRef.current = nowMs;
             trackLastPosRef.current = { lat, lng };
             setData(d => {
               const prevTracks = (d && d.tracks) || {};
-              const prevForUser = prevTracks[currentUser] || [];
+              const prevForUser = prevTracks[userNow] || [];
               return {
                 ...d,
                 tracks: {
                   ...prevTracks,
-                  [currentUser]: [...prevForUser, { ts: nowMs, lat, lng }],
+                  [userNow]: [...prevForUser, { ts: nowMs, lat, lng }],
                 },
               };
             });
+            console.log(`[v9.3] track point added: ${userNow} (${lat.toFixed(5)}, ${lng.toFixed(5)}) dist=${dist.toFixed(1)}m`);
           }
         }
       },
@@ -13950,11 +13967,28 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                         if (!currentUser) { alert("先にログインしてください"); return; }
                         if (trackRecording) {
                           setTrackRecording(false);
+                          console.log("[v9.4] track recording: OFF");
                         } else {
-                          if (!window.confirm("探索ルートの記録を開始します。\n位置情報を30秒間隔で記録します（10m以上移動した時のみ）。\n業務終了時は必ずOFFにしてください。")) return;
+                          if (!window.confirm("探索ルートの記録を開始します。\n位置情報を15秒間隔・5m以上移動で記録します。\n業務終了時は必ずOFFにしてください。")) return;
                           trackLastSavedRef.current = 0;
                           trackLastPosRef.current = null;
                           setTrackRecording(true);
+                          console.log("[v9.4] track recording: ON");
+                          // 🆕 v9.4: 現在地が既に取れていれば即1点目を記録（待たずに線の起点を確定）
+                          if (currentLoc && typeof currentLoc.lat === "number") {
+                            const nowMs = Date.now();
+                            trackLastSavedRef.current = nowMs;
+                            trackLastPosRef.current = { lat: currentLoc.lat, lng: currentLoc.lng };
+                            setData(d => {
+                              const prevTracks = (d && d.tracks) || {};
+                              const prevForUser = prevTracks[currentUser] || [];
+                              return {
+                                ...d,
+                                tracks: { ...prevTracks, [currentUser]: [...prevForUser, { ts: nowMs, lat: currentLoc.lat, lng: currentLoc.lng }] },
+                              };
+                            });
+                            console.log(`[v9.4] initial point added: ${currentUser} (${currentLoc.lat.toFixed(5)}, ${currentLoc.lng.toFixed(5)})`);
+                          }
                         }
                       }} style={{
                         padding: "5px 12px", borderRadius: 14, cursor: "pointer", fontSize: 11, fontWeight: 800, fontFamily: "inherit",
@@ -14459,6 +14493,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       onCenterLocation={(pendingPin || selected) ? undefined : (() => { if (currentLoc) setCenterLocKey(Date.now()); else alert("⚠️ 現在地がまだ取れていません"); })}
                       onFitBounds={(pendingPin || selected) ? undefined : (() => setFitBoundsKey(Date.now()))}
                       hideZoomControl={!!(pendingPin || selected)}
+                      autoFollowLocation={trackRecording && !pendingPin && !selected}
                       tracks={visibleTracks}
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
