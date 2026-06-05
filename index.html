@@ -138,7 +138,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-04-v8.145-data-protection-policy";
+const APP_VERSION = "2026-06-05-v9.1-assignee-from-visitlog";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -437,7 +437,7 @@ const STATUS_GROUPS = [
   { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
-const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入"];
+const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "NG"];
 // 🆕 v8.87: 地上げステータスの色分け（一目で判別できるように）
 const JIAGE_STATUS_COLORS = {
   // 🆕 v8.131: 16色フル差別化（被りなし）
@@ -450,6 +450,8 @@ const JIAGE_STATUS_COLORS = {
   "交渉中": "#c026d3",     // マゼンタ
   "媒介": "#7c3aed",       // バイオレット
   "仕入": "#ca8a04",       // ゴールド
+  // 🆕 v9.1: NG（訪問禁止）ステータス追加
+  "NG": "#7f1d1d",         // 暗赤茶
 };
 // 🆕 仲介案件：媒介の種類とフェーズ
 const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
@@ -757,6 +759,65 @@ function migrateClearDemoJiageNextVisitV883(d) {
   return {
     ...next,
     migrations: { ...(d.migrations || {}), v883_clear_demo_jiage_nextvisit: Date.now() },
+  };
+}
+
+// 🆕 v9.1: 訪問記録ベースの担当者修正 migration
+//   ・visitLog[].recordedBy を集計
+//   ・ユニーク訪問者が {"谷津"} のみ → assignee="谷津" に変更
+//   ・複数人が訪問してる物件 や 現地ピン(coordsManual:true) は触らない
+//   ・status は触らない（凡例NGステータスへの変換も今回は対象が0件なので保留）
+//   ・data.migrations.v91_assignee_from_visitlog で 1 回限り
+function migrateAssigneeFromVisitLogV91(d) {
+  if (!d || typeof d !== "object") return d;
+  let changedCount = 0;
+  const changedSummary = [];
+  const now = Date.now();
+  const nextJiage = (Array.isArray(d.jiage) ? d.jiage : []).map(j => {
+    if (!j || j.id == null) return j;
+    // 現地ピンは触らない（CHECK 7: ユーザー手動入力データ保護）
+    if (j.coordsManual === true) return j;
+    const log = Array.isArray(j.visitLog) ? j.visitLog : [];
+    if (log.length === 0) return j;
+    // visitLog の recordedBy をユニーク集計
+    const recorders = new Set();
+    log.forEach(entry => {
+      if (entry && typeof entry === "object" && entry.recordedBy) {
+        recorders.add(entry.recordedBy);
+      }
+    });
+    // 谷津のみが訪問してる かつ assignee が谷津でない 場合のみ変更
+    if (recorders.size === 1 && recorders.has("谷津") && j.assignee !== "谷津") {
+      changedCount++;
+      changedSummary.push(`${(j.address || "(無住所)").slice(0, 30)}: ${j.assignee || "(未割当)"} → 谷津`);
+      return {
+        ...j,
+        assignee: "谷津",
+        _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), assignee: now },
+        updatedAt: now,
+      };
+    }
+    return j;
+  });
+  console.log(`[v9.1] visitLog ベースの担当変更: ${changedCount}件`);
+  if (changedCount > 0) {
+    console.log("[v9.1] 変更詳細:");
+    changedSummary.slice(0, 20).forEach(s => console.log(`  ${s}`));
+  }
+  // activityLog にも残す（証跡）
+  const logEntry = {
+    id: `migrate-v91-${now}`,
+    timestamp: new Date(now).toISOString(),
+    action: "migrate",
+    target: "jiage",
+    description: `v9.1 訪問記録ベースで担当を谷津に統一: ${changedCount}件`,
+  };
+  const newActivityLog = [logEntry, ...(Array.isArray(d.activityLog) ? d.activityLog : [])].slice(0, 200);
+  return {
+    ...d,
+    jiage: nextJiage,
+    activityLog: newActivityLog,
+    migrations: { ...(d.migrations || {}), v91_assignee_from_visitlog: now },
   };
 }
 
@@ -3031,6 +3092,20 @@ function MainApp({ onLock, onSwitchUser }) {
     setData(d => migrateClearDemoJiageNextVisitV883(d));
   }, [data]);
 
+  // 🆕 v9.1: visitLog ベースで担当者を谷津に統一する migration
+  const v91MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v91MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v91_assignee_from_visitlog) {
+      v91MigratedRef.current = true;
+      return;
+    }
+    v91MigratedRef.current = true;
+    console.log("[v9.1] visitLog ベースの担当変更 migration を実行します…");
+    setData(d => migrateAssigneeFromVisitLogV91(d));
+  }, [data]);
+
   const setData = updater => {
     setDataRaw(prev => {
       let next = typeof updater === "function" ? updater(prev) : updater;
@@ -3419,7 +3494,7 @@ function Tag({ label, color }) {
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
 }
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks }) {
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
   const markersRef = React.useRef([]);
@@ -3822,6 +3897,36 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       if (pressTimer) clearTimeout(pressTimer);
     };
   }, [onMapLongPress]);
+
+  // 🆕 v9.0: 探索ルート（軌跡）描画用 layer 配列
+  const trackLayersRef = React.useRef([]);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    // 既存ポリラインを削除
+    trackLayersRef.current.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
+    trackLayersRef.current = [];
+    if (!tracks || typeof tracks !== "object") return;
+    const memberColorsLocal = (typeof MEMBER_COLORS !== "undefined" && MEMBER_COLORS) || {};
+    Object.entries(tracks).forEach(([member, points]) => {
+      if (!Array.isArray(points) || points.length < 2) return;
+      const latlngs = points
+        .filter(p => p && typeof p.lat === "number" && typeof p.lng === "number")
+        .map(p => [p.lat, p.lng]);
+      if (latlngs.length < 2) return;
+      const color = memberColorsLocal[member] || "#3b82f6";
+      const polyline = L.polyline(latlngs, {
+        color, weight: 4, opacity: 0.65,
+        smoothFactor: 1.5,
+        renderer: L.canvas(),
+        interactive: false,
+      }).addTo(map);
+      trackLayersRef.current.push(polyline);
+    });
+  }, [
+    // 軌跡の内容ハッシュで再描画判定
+    tracks ? Object.entries(tracks).map(([m, pts]) => `${m}:${(pts || []).length}`).join("|") : "",
+  ]);
 
   // 🆕 v8.129: 長押し位置に赤いピン（Googleマップ風）を表示
   //   pendingPinLocation = { lat, lng } | null
@@ -11806,6 +11911,42 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const today = useTodayDate();
+  // 🆕 v9.0: 探索ルートトラッカー state
+  const [trackRecording, setTrackRecording] = useState(false);  // 自分の記録ON/OFF（端末ローカル）
+  const [trackShowSelf, setTrackShowSelf] = useState(true);     // 自分の軌跡を表示するか
+  const [trackShowTeam, setTrackShowTeam] = useState(false);    // チーム全員の軌跡を表示するか
+  const [trackPeriod, setTrackPeriod] = useState("today");      // "today" | "all"
+  const trackLastSavedRef = React.useRef(0);                    // 最後に記録したタイムスタンプ（ms）
+  const trackLastPosRef = React.useRef(null);                   // 最後に記録した位置 {lat, lng}
+  // 距離計算（簡易・ハバーサイン公式）
+  const haversineMeters = (a, b) => {
+    if (!a || !b) return Infinity;
+    const R = 6371000;
+    const toRad = d => d * Math.PI / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+    const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  };
+  // 表示用 tracks をフィルタ
+  const visibleTracks = React.useMemo(() => {
+    const all = (data && data.tracks) || {};
+    const result = {};
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const todayTs = todayStart.getTime();
+    Object.entries(all).forEach(([member, points]) => {
+      // 表示対象メンバー判定
+      const isSelf = member === currentUser;
+      if (isSelf && !trackShowSelf) return;
+      if (!isSelf && !trackShowTeam) return;
+      const filtered = (points || []).filter(p => p && typeof p.lat === "number" && typeof p.lng === "number");
+      result[member] = trackPeriod === "today"
+        ? filtered.filter(p => (p.ts || 0) >= todayTs)
+        : filtered;
+    });
+    return result;
+  }, [data && data.tracks, currentUser, trackShowSelf, trackShowTeam, trackPeriod]);
   // 🆕 通知タップでハイライトする ID
   const [highlightJiageId, setHighlightJiageId] = useState(null);
   const [highlightOwnerId, setHighlightOwnerId] = useState(null);
@@ -12010,12 +12151,34 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     if (watchIdRef.current !== null) return;
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
-        setCurrentLoc({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        });
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const accuracy = pos.coords.accuracy;
+        setCurrentLoc({ lat, lng, accuracy });
         setGpsError(null);
+        // 🆕 v9.0: 探索ルート記録（ON時のみ・10m以上 ＋ 30秒以上経過の条件）
+        if (trackRecording && currentUser) {
+          const nowMs = Date.now();
+          const lastTs = trackLastSavedRef.current || 0;
+          const lastPos = trackLastPosRef.current;
+          const enoughTime = (nowMs - lastTs) >= 30000;
+          const dist = lastPos ? haversineMeters(lastPos, { lat, lng }) : Infinity;
+          if (enoughTime && dist >= 10) {
+            trackLastSavedRef.current = nowMs;
+            trackLastPosRef.current = { lat, lng };
+            setData(d => {
+              const prevTracks = (d && d.tracks) || {};
+              const prevForUser = prevTracks[currentUser] || [];
+              return {
+                ...d,
+                tracks: {
+                  ...prevTracks,
+                  [currentUser]: [...prevForUser, { ts: nowMs, lat, lng }],
+                },
+              };
+            });
+          }
+        }
       },
       (err) => {
         console.warn("[GPS]", err.code, err.message);
@@ -13776,6 +13939,62 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       ※ PCでは右クリックで同じ動作
                     </div>
                   </div>
+                  {/* 🆕 v9.0: 探索ルートトラッカー */}
+                  <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${trackRecording ? "#3b82f6" : C.borderDim}`, background: trackRecording ? "#3b82f618" : (isLightMode ? "#f8fafc" : C.bg) }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: trackRecording ? "#3b82f6" : C.text }}>
+                        🛤 探索ルート {trackRecording ? "（記録中）" : ""}
+                      </span>
+                      <button onClick={() => {
+                        if (!currentUser) { alert("先にログインしてください"); return; }
+                        if (trackRecording) {
+                          setTrackRecording(false);
+                        } else {
+                          if (!window.confirm("探索ルートの記録を開始します。\n位置情報を30秒間隔で記録します（10m以上移動した時のみ）。\n業務終了時は必ずOFFにしてください。")) return;
+                          trackLastSavedRef.current = 0;
+                          trackLastPosRef.current = null;
+                          setTrackRecording(true);
+                        }
+                      }} style={{
+                        padding: "5px 12px", borderRadius: 14, cursor: "pointer", fontSize: 11, fontWeight: 800, fontFamily: "inherit",
+                        background: trackRecording ? "#ef4444" : "#3b82f6",
+                        color: "#fff", border: "none",
+                      }}>{trackRecording ? "⏹ 停止" : "▶ 記録開始"}</button>
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, fontSize: 10, marginBottom: 4 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer", color: C.muted }}>
+                        <input type="checkbox" checked={trackShowSelf} onChange={e => setTrackShowSelf(e.target.checked)} />
+                        自分
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer", color: C.muted }}>
+                        <input type="checkbox" checked={trackShowTeam} onChange={e => setTrackShowTeam(e.target.checked)} />
+                        チーム全員
+                      </label>
+                      <div style={{ display: "flex", gap: 3, marginLeft: "auto" }}>
+                        {[
+                          { k: "today", l: "今日" },
+                          { k: "all", l: "全期間" },
+                        ].map(p => (
+                          <button key={p.k} onClick={() => setTrackPeriod(p.k)} style={{
+                            padding: "2px 8px", borderRadius: 10, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                            background: trackPeriod === p.k ? "#3b82f6" : "transparent",
+                            color: trackPeriod === p.k ? "#fff" : C.muted,
+                            border: `1px solid ${trackPeriod === p.k ? "#3b82f6" : C.borderDim}`,
+                          }}>{p.l}</button>
+                        ))}
+                      </div>
+                    </div>
+                    {(() => {
+                      const myCount = ((data && data.tracks && data.tracks[currentUser]) || []).length;
+                      const totalCount = Object.values((data && data.tracks) || {}).reduce((a, p) => a + (p || []).length, 0);
+                      return (
+                        <div style={{ fontSize: 9, color: C.muted, lineHeight: 1.4 }}>
+                          📊 自分の軌跡: {myCount}点 / 全員: {totalCount}点 ・ 永久保存
+                          <div style={{ marginTop: 2 }}>💡 30秒間隔・10m以上移動で記録。営業終了時は ⏹停止 を押してください</div>
+                        </div>
+                      );
+                    })()}
+                  </div>
                   {gpsError && (
                     <div style={{ marginTop: 6, fontSize: 11, color: C.danger, lineHeight: 1.5 }}>⚠️ {gpsError}</div>
                   )}
@@ -14238,6 +14457,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       }}
                       onCenterLocation={() => { if (currentLoc) setCenterLocKey(Date.now()); else alert("⚠️ 現在地がまだ取れていません"); }}
                       onFitBounds={() => setFitBoundsKey(Date.now())}
+                      tracks={visibleTracks}
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span>📍 {itemsWithCoord.length}件のピンを表示中</span>
@@ -18508,31 +18728,4 @@ root.render(React.createElement(App));
       } catch (e) {
         console.warn('[Hikari v8.92] キャッシュ書き込み失敗 (容量不足など):', e);
       }
-      runCompiled(out);
-    } catch (e) {
-      console.error('[Hikari v8.92] Babel コンパイル失敗:', e);
-      setMsg('コンパイル失敗。ページを再読み込みしてください');
-    }
-  }
-  function loadBabelThenCompile() {
-    setMsg('コードを準備しています（初回のみ）...');
-    var s = document.createElement('script');
-    s.src = 'https://unpkg.com/@babel/standalone/babel.min.js';
-    s.onload = compile;
-    s.onerror = function() { setMsg('Babelの読み込みに失敗しました'); };
-    document.head.appendChild(s);
-  }
-  // ===== メイン分岐 =====
-  var cached = null;
-  try { cached = localStorage.getItem(cacheKey); } catch (e) {}
-  if (cached && cached.length > 10000) {
-    console.log('[Hikari v8.92] キャッシュ Hit (' + cacheKey + ', ' + cached.length + ' bytes) → Babel スキップ');
-    try {
-      runCompiled(cached);
-    } catch (e) {
-      console.error('[Hikari v8.92] キャッシュ実行失敗、再コンパイルします:', e);
-      try { localStorage.removeItem(cacheKey); } catch (e2) {}
-      loadBabelThenCompile();
-    }
-  } else {
-    console.log('[Hikari v8.92] キャッシュ Miss                                                                                       
+  
