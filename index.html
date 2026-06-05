@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.4-track-debug-and-instant-record";
+const APP_VERSION = "2026-06-05-v9.5-track-smoother-line";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3916,9 +3916,16 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         .map(p => [p.lat, p.lng]);
       if (latlngs.length < 2) return;
       const color = memberColorsLocal[member] || "#3b82f6";
+      // 🆕 v9.5: 線を太く・端を丸く・繋ぎ目も丸くして連続性を強調
+      //   weight 4→6 (太く), opacity 0.65→0.85 (はっきり)
+      //   lineCap/lineJoin "round" でブロック感を消す → 点が離れても線として見える
       const polyline = L.polyline(latlngs, {
-        color, weight: 4, opacity: 0.65,
-        smoothFactor: 1.5,
+        color,
+        weight: 6,
+        opacity: 0.85,
+        smoothFactor: 1,
+        lineCap: "round",
+        lineJoin: "round",
         renderer: L.canvas(),
         interactive: false,
       }).addTo(map);
@@ -12168,19 +12175,19 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         const accuracy = pos.coords.accuracy;
         setCurrentLoc({ lat, lng, accuracy });
         setGpsError(null);
-        // 🆕 v9.0→v9.4: 探索ルート記録（閾値 5m / 15秒 ・デバッグログ充実）
+        // 🆕 v9.0→v9.5: 探索ルート記録（閾値 3m / 8秒 ・線が連続して見えるよう密に）
         const recordingNow = trackRecordingRef.current;
         const userNow = currentUserRef.current;
-        console.log(`[v9.4] GPS tick: lat=${lat.toFixed(5)} lng=${lng.toFixed(5)} acc=${accuracy?.toFixed?.(0)||"?"}m recording=${recordingNow} user=${userNow}`);
+        console.log(`[v9.5] GPS tick: lat=${lat.toFixed(5)} lng=${lng.toFixed(5)} acc=${accuracy?.toFixed?.(0)||"?"}m recording=${recordingNow} user=${userNow}`);
         if (recordingNow && userNow) {
           const nowMs = Date.now();
           const lastTs = trackLastSavedRef.current || 0;
           const lastPos = trackLastPosRef.current;
           const isFirst = !lastPos;
-          const enoughTime = isFirst || (nowMs - lastTs) >= 15000;
+          // 🆕 v9.5: 閾値を 5m/15秒 → 3m/8秒 に更に緩和（連続した線として見える）
+          const enoughTime = isFirst || (nowMs - lastTs) >= 8000;
           const dist = lastPos ? haversineMeters(lastPos, { lat, lng }) : Infinity;
-          // 🆕 v9.4: 閾値を 10m → 5m に緩和（家の周りでも記録されやすく）
-          if (enoughTime && dist >= 5) {
+          if (enoughTime && dist >= 3) {
             trackLastSavedRef.current = nowMs;
             trackLastPosRef.current = { lat, lng };
             setData(d => {
@@ -12191,9 +12198,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                 tracks: { ...prevTracks, [userNow]: [...prevForUser, { ts: nowMs, lat, lng }] },
               };
             });
-            console.log(`[v9.4] ✅ track point added: ${userNow} (${lat.toFixed(5)}, ${lng.toFixed(5)}) dist=${dist.toFixed(1)}m`);
+            console.log(`[v9.5] ✅ track point added: ${userNow} (${lat.toFixed(5)}, ${lng.toFixed(5)}) dist=${dist.toFixed(1)}m`);
           } else {
-            console.log(`[v9.4] ⏭  skip: time_ok=${enoughTime} dist=${dist.toFixed(1)}m (need >=5m & 15s)`);
+            console.log(`[v9.5] ⏭  skip: time_ok=${enoughTime} dist=${dist.toFixed(1)}m (need >=3m & 8s)`);
           }
         }
       },
@@ -13968,7 +13975,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           setTrackRecording(false);
                           console.log("[v9.4] track recording: OFF");
                         } else {
-                          if (!window.confirm("探索ルートの記録を開始します。\n位置情報を15秒間隔・5m以上移動で記録します。\n業務終了時は必ずOFFにしてください。")) return;
+                          if (!window.confirm("探索ルートの記録を開始します。\n位置情報を8秒間隔・3m以上移動で記録します（連続線として見えるよう密に）。\n業務終了時は必ずOFFにしてください。")) return;
                           trackLastSavedRef.current = 0;
                           trackLastPosRef.current = null;
                           setTrackRecording(true);
@@ -14035,7 +14042,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           <div style={{ color: trackRecording ? "#3b82f6" : C.muted, fontWeight: 700 }}>
                             🎙 記録: {trackRecording ? "ON（GPS自動追従中）" : "OFF"}
                           </div>
-                          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>💡 15秒間隔・5m以上移動で記録。F12コンソールに [v9.4] ログが出ます</div>
+                          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>💡 8秒間隔・3m以上移動で記録（連続線）。F12コンソールに [v9.5] ログが出ます</div>
                         </div>
                       );
                     })()}
