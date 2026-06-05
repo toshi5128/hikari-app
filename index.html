@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.5-track-smoother-line";
+const APP_VERSION = "2026-06-05-v9.7-week-colors-continuous-line";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3899,40 +3899,106 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     };
   }, [onMapLongPress]);
 
-  // 🆕 v9.0: 探索ルート（軌跡）描画用 layer 配列
+  // 🆕 v9.0→v9.7: 探索ルート描画 — 週ごと色分け＋線タップで担当者表示
   const trackLayersRef = React.useRef([]);
+  // 🆕 v9.7: 週ごとの色（8色ローテ・判別しやすい色相）
+  const WEEK_COLORS = [
+    "#3b82f6", // 1週目: 青
+    "#10b981", // 2週目: 緑
+    "#a855f7", // 3週目: 紫
+    "#f97316", // 4週目: オレンジ
+    "#ec4899", // 5週目: ピンク
+    "#06b6d4", // 6週目: シアン
+    "#eab308", // 7週目: 黄
+    "#dc2626", // 8週目: 赤
+  ];
+  // ISO 暦週ベースで「週インデックス」を取得（年またぎ対応）
+  const getWeekIndex = (ts) => {
+    if (!ts) return 0;
+    const d = new Date(ts);
+    // YYYY-WW 形式の安定ハッシュ
+    const onejan = new Date(d.getFullYear(), 0, 1);
+    const dayOfYear = Math.floor((d - onejan) / 86400000) + 1;
+    const week = Math.ceil(dayOfYear / 7);
+    return d.getFullYear() * 100 + week;
+  };
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    // 既存ポリラインを削除
     trackLayersRef.current.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
     trackLayersRef.current = [];
     if (!tracks || typeof tracks !== "object") return;
     const memberColorsLocal = (typeof MEMBER_COLORS !== "undefined" && MEMBER_COLORS) || {};
+
+    // 表示中の最古の週を「1週目」として相対インデックス化（古いほど暗い色を避け、青から開始）
+    // 全 tracks から週インデックスをユニーク収集 → 古い順にソート → 0,1,2... を割り当て
+    const allWeekIdx = new Set();
+    Object.values(tracks).forEach(pts => {
+      (pts || []).forEach(p => { if (p && p.ts) allWeekIdx.add(getWeekIndex(p.ts)); });
+    });
+    const sortedWeeks = Array.from(allWeekIdx).sort((a, b) => a - b);
+    const weekToRelative = new Map(sortedWeeks.map((w, i) => [w, i]));
+
     Object.entries(tracks).forEach(([member, points]) => {
       if (!Array.isArray(points) || points.length < 2) return;
-      const latlngs = points
+      const valid = points
         .filter(p => p && typeof p.lat === "number" && typeof p.lng === "number")
-        .map(p => [p.lat, p.lng]);
-      if (latlngs.length < 2) return;
-      const color = memberColorsLocal[member] || "#3b82f6";
-      // 🆕 v9.5: 線を太く・端を丸く・繋ぎ目も丸くして連続性を強調
-      //   weight 4→6 (太く), opacity 0.65→0.85 (はっきり)
-      //   lineCap/lineJoin "round" でブロック感を消す → 点が離れても線として見える
-      const polyline = L.polyline(latlngs, {
-        color,
-        weight: 6,
-        opacity: 0.85,
-        smoothFactor: 1,
-        lineCap: "round",
-        lineJoin: "round",
-        renderer: L.canvas(),
-        interactive: false,
-      }).addTo(map);
-      trackLayersRef.current.push(polyline);
+        .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      if (valid.length < 2) return;
+
+      // 🆕 v9.7: 各点に週インデックスを付与し、週単位でセグメント化
+      const withWeek = valid.map(p => {
+        const rel = weekToRelative.get(getWeekIndex(p.ts)) || 0;
+        return { ...p, weekRel: rel, weekIdx: getWeekIndex(p.ts) };
+      });
+
+      const segments = [];
+      let cur = null;
+      withWeek.forEach(p => {
+        if (!cur || cur.weekRel !== p.weekRel) {
+          cur = { weekRel: p.weekRel, weekIdx: p.weekIdx, pts: [] };
+          segments.push(cur);
+          // 線を途切れさせないため、前セグメントの末尾を新セグメントの先頭に共有
+          if (segments.length > 1) {
+            const prev = segments[segments.length - 2];
+            cur.pts.push(prev.pts.slice(-1)[0]);
+          }
+        }
+        cur.pts.push(p);
+      });
+
+      segments.forEach(seg => {
+        if (seg.pts.length < 2) return;
+        const latlngs = seg.pts.map(p => [p.lat, p.lng]);
+        const color = WEEK_COLORS[seg.weekRel % WEEK_COLORS.length];
+        // 🆕 v9.7: 線をさらに太く・濃く（連続性最大化）
+        const polyline = L.polyline(latlngs, {
+          color,
+          weight: 7,
+          opacity: 0.92,
+          smoothFactor: 0.5,  // ほぼ間引かない＝忠実
+          lineCap: "round",
+          lineJoin: "round",
+          renderer: L.canvas(),
+          interactive: true,
+        }).addTo(map);
+
+        // 週表示用ラベル（YYYY 第N週）
+        const weekYear = Math.floor(seg.weekIdx / 100);
+        const weekNum = seg.weekIdx % 100;
+        const memberColor = memberColorsLocal[member] || "#64748b";
+        polyline.bindPopup(`
+          <div style="font-family:'Noto Sans JP',sans-serif;min-width:140px;font-size:12px;">
+            <div style="font-weight:700;margin-bottom:4px;">👤 <span style="background:${memberColor};color:#fff;padding:2px 8px;border-radius:4px;">${member}</span></div>
+            <div style="color:#64748b;">📅 ${weekYear}年 第${weekNum}週</div>
+            <div style="display:inline-block;width:14px;height:14px;border-radius:3px;background:${color};margin-top:4px;vertical-align:middle;"></div>
+            <span style="color:#64748b;font-size:11px;margin-left:4px;">${seg.pts.length}点</span>
+          </div>
+        `);
+        trackLayersRef.current.push(polyline);
+      });
     });
   }, [
-    // 軌跡の内容ハッシュで再描画判定
     tracks ? Object.entries(tracks).map(([m, pts]) => `${m}:${(pts || []).length}`).join("|") : "",
   ]);
 
@@ -12175,19 +12241,19 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         const accuracy = pos.coords.accuracy;
         setCurrentLoc({ lat, lng, accuracy });
         setGpsError(null);
-        // 🆕 v9.0→v9.5: 探索ルート記録（閾値 3m / 8秒 ・線が連続して見えるよう密に）
+        // 🆕 v9.0→v9.7: 探索ルート記録（閾値 2m / 3秒 ・本当に連続した線にする）
         const recordingNow = trackRecordingRef.current;
         const userNow = currentUserRef.current;
-        console.log(`[v9.5] GPS tick: lat=${lat.toFixed(5)} lng=${lng.toFixed(5)} acc=${accuracy?.toFixed?.(0)||"?"}m recording=${recordingNow} user=${userNow}`);
+        console.log(`[v9.7] GPS tick: lat=${lat.toFixed(5)} lng=${lng.toFixed(5)} acc=${accuracy?.toFixed?.(0)||"?"}m recording=${recordingNow} user=${userNow}`);
         if (recordingNow && userNow) {
           const nowMs = Date.now();
           const lastTs = trackLastSavedRef.current || 0;
           const lastPos = trackLastPosRef.current;
           const isFirst = !lastPos;
-          // 🆕 v9.5: 閾値を 5m/15秒 → 3m/8秒 に更に緩和（連続した線として見える）
-          const enoughTime = isFirst || (nowMs - lastTs) >= 8000;
+          // 🆕 v9.7: 3秒経過 ＆ 2m移動 で記録（事実上の連続線）
+          const enoughTime = isFirst || (nowMs - lastTs) >= 3000;
           const dist = lastPos ? haversineMeters(lastPos, { lat, lng }) : Infinity;
-          if (enoughTime && dist >= 3) {
+          if (enoughTime && dist >= 2) {
             trackLastSavedRef.current = nowMs;
             trackLastPosRef.current = { lat, lng };
             setData(d => {
@@ -12198,9 +12264,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                 tracks: { ...prevTracks, [userNow]: [...prevForUser, { ts: nowMs, lat, lng }] },
               };
             });
-            console.log(`[v9.5] ✅ track point added: ${userNow} (${lat.toFixed(5)}, ${lng.toFixed(5)}) dist=${dist.toFixed(1)}m`);
+            console.log(`[v9.7] ✅ track point added: ${userNow} (${lat.toFixed(5)}, ${lng.toFixed(5)}) dist=${dist.toFixed(1)}m`);
           } else {
-            console.log(`[v9.5] ⏭  skip: time_ok=${enoughTime} dist=${dist.toFixed(1)}m (need >=3m & 8s)`);
+            console.log(`[v9.7] ⏭  skip: time_ok=${enoughTime} dist=${dist.toFixed(1)}m (need >=2m & 3s)`);
           }
         }
       },
@@ -12210,7 +12276,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         else if (err.code === 2) setGpsError("GPS信号が取得できません（屋内・地下など）");
         else setGpsError("位置情報の取得がタイムアウトしました");
       },
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 30000 }
     );
     return () => {
       if (watchIdRef.current !== null) {
@@ -13975,7 +14041,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           setTrackRecording(false);
                           console.log("[v9.4] track recording: OFF");
                         } else {
-                          if (!window.confirm("探索ルートの記録を開始します。\n位置情報を8秒間隔・3m以上移動で記録します（連続線として見えるよう密に）。\n業務終了時は必ずOFFにしてください。")) return;
+                          if (!window.confirm("探索ルートの記録を開始します。\n位置情報を3秒間隔・2m以上移動で記録（事実上の連続線）。\n業務終了時は必ずOFFにしてください。")) return;
                           trackLastSavedRef.current = 0;
                           trackLastPosRef.current = null;
                           setTrackRecording(true);
@@ -14042,10 +14108,52 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           <div style={{ color: trackRecording ? "#3b82f6" : C.muted, fontWeight: 700 }}>
                             🎙 記録: {trackRecording ? "ON（GPS自動追従中）" : "OFF"}
                           </div>
-                          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>💡 8秒間隔・3m以上移動で記録（連続線）。F12コンソールに [v9.5] ログが出ます</div>
+                          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>💡 週ごとに色変化（青→緑→紫→橙→桃→水→黄→赤）・線タップで担当者・週表示</div>
                         </div>
                       );
                     })()}
+                    {/* 🆕 v9.6: 自分の軌跡を削除するボタン */}
+                    <div style={{ display: "flex", gap: 6, marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
+                      <button onClick={() => {
+                        if (!currentUser) { alert("先にログインしてください"); return; }
+                        const myCount = ((data && data.tracks && data.tracks[currentUser]) || []).length;
+                        if (myCount === 0) { alert("削除する軌跡がありません"); return; }
+                        const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+                        const todayCount = ((data && data.tracks && data.tracks[currentUser]) || []).filter(p => (p.ts || 0) >= todayStart.getTime()).length;
+                        if (todayCount === 0) { alert("今日の軌跡はありません"); return; }
+                        if (!window.confirm(`今日の自分の軌跡 ${todayCount}点 を削除します。\n（他の人の軌跡や過去の軌跡は影響しません）\n戻せません。よろしいですか？`)) return;
+                        setData(d => {
+                          const prev = (d && d.tracks) || {};
+                          const userArr = prev[currentUser] || [];
+                          const kept = userArr.filter(p => (p.ts || 0) < todayStart.getTime());
+                          return { ...d, tracks: { ...prev, [currentUser]: kept } };
+                        });
+                        // ローカル ref もリセット（次の記録の起点を再計算するため）
+                        trackLastSavedRef.current = 0;
+                        trackLastPosRef.current = null;
+                      }} style={{
+                        flex: 1, padding: "5px 8px", borderRadius: 6, cursor: "pointer", fontSize: 10, fontWeight: 700, fontFamily: "inherit",
+                        background: "transparent", color: "#f97316", border: `1.5px solid #f97316aa`,
+                      }}>🗑 今日の軌跡を削除</button>
+                      <button onClick={() => {
+                        if (!currentUser) { alert("先にログインしてください"); return; }
+                        const myCount = ((data && data.tracks && data.tracks[currentUser]) || []).length;
+                        if (myCount === 0) { alert("削除する軌跡がありません"); return; }
+                        if (!window.confirm(`自分の全期間の軌跡 ${myCount}点 を完全に削除します。\n（他の人の軌跡は影響しません）\n戻せません。本当によろしいですか？`)) return;
+                        if (!window.confirm("もう一度確認します。\n本当に過去の全軌跡を消しますか？\n(キャンセル推奨)")) return;
+                        setData(d => {
+                          const prev = (d && d.tracks) || {};
+                          const next = { ...prev };
+                          delete next[currentUser];
+                          return { ...d, tracks: next };
+                        });
+                        trackLastSavedRef.current = 0;
+                        trackLastPosRef.current = null;
+                      }} style={{
+                        flex: 1, padding: "5px 8px", borderRadius: 6, cursor: "pointer", fontSize: 10, fontWeight: 700, fontFamily: "inherit",
+                        background: "transparent", color: "#dc2626", border: `1.5px solid #dc2626aa`,
+                      }}>🗑 全軌跡を削除</button>
+                    </div>
                   </div>
                   {gpsError && (
                     <div style={{ marginTop: 6, fontSize: 11, color: C.danger, lineHeight: 1.5 }}>⚠️ {gpsError}</div>
