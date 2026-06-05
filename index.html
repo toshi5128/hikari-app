@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.3-track-closure-fix-and-autofollow";
+const APP_VERSION = "2026-06-05-v9.4-track-debug-and-instant-record";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -12168,19 +12168,19 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         const accuracy = pos.coords.accuracy;
         setCurrentLoc({ lat, lng, accuracy });
         setGpsError(null);
-        // 🆕 v9.0→v9.3: 探索ルート記録（ref で常に最新の trackRecording を参照・クロージャバグ修正）
+        // 🆕 v9.0→v9.4: 探索ルート記録（閾値 5m / 15秒 ・デバッグログ充実）
         const recordingNow = trackRecordingRef.current;
         const userNow = currentUserRef.current;
+        console.log(`[v9.4] GPS tick: lat=${lat.toFixed(5)} lng=${lng.toFixed(5)} acc=${accuracy?.toFixed?.(0)||"?"}m recording=${recordingNow} user=${userNow}`);
         if (recordingNow && userNow) {
           const nowMs = Date.now();
           const lastTs = trackLastSavedRef.current || 0;
           const lastPos = trackLastPosRef.current;
-          // 🆕 v9.3: 初回は時間条件なしで即記録（テストしやすく）
-          //   2点目以降は 15秒経過 ＆ 10m移動 で記録
           const isFirst = !lastPos;
           const enoughTime = isFirst || (nowMs - lastTs) >= 15000;
           const dist = lastPos ? haversineMeters(lastPos, { lat, lng }) : Infinity;
-          if (enoughTime && dist >= 10) {
+          // 🆕 v9.4: 閾値を 10m → 5m に緩和（家の周りでも記録されやすく）
+          if (enoughTime && dist >= 5) {
             trackLastSavedRef.current = nowMs;
             trackLastPosRef.current = { lat, lng };
             setData(d => {
@@ -12188,13 +12188,12 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               const prevForUser = prevTracks[userNow] || [];
               return {
                 ...d,
-                tracks: {
-                  ...prevTracks,
-                  [userNow]: [...prevForUser, { ts: nowMs, lat, lng }],
-                },
+                tracks: { ...prevTracks, [userNow]: [...prevForUser, { ts: nowMs, lat, lng }] },
               };
             });
-            console.log(`[v9.3] track point added: ${userNow} (${lat.toFixed(5)}, ${lng.toFixed(5)}) dist=${dist.toFixed(1)}m`);
+            console.log(`[v9.4] ✅ track point added: ${userNow} (${lat.toFixed(5)}, ${lng.toFixed(5)}) dist=${dist.toFixed(1)}m`);
+          } else {
+            console.log(`[v9.4] ⏭  skip: time_ok=${enoughTime} dist=${dist.toFixed(1)}m (need >=5m & 15s)`);
           }
         }
       },
@@ -14022,10 +14021,21 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                     {(() => {
                       const myCount = ((data && data.tracks && data.tracks[currentUser]) || []).length;
                       const totalCount = Object.values((data && data.tracks) || {}).reduce((a, p) => a + (p || []).length, 0);
+                      const gpsOk = currentLoc && typeof currentLoc.lat === "number";
                       return (
-                        <div style={{ fontSize: 9, color: C.muted, lineHeight: 1.4 }}>
-                          📊 自分の軌跡: {myCount}点 / 全員: {totalCount}点 ・ 永久保存
-                          <div style={{ marginTop: 2 }}>💡 30秒間隔・10m以上移動で記録。営業終了時は ⏹停止 を押してください</div>
+                        <div style={{ fontSize: 10, color: C.text, lineHeight: 1.5, padding: "4px 0", borderTop: `1px dashed ${C.borderDim}`, marginTop: 4 }}>
+                          {/* 🆕 v9.4: デバッグ情報を画面表示 */}
+                          <div>📊 自分: <b style={{ color: trackRecording ? "#3b82f6" : C.text }}>{myCount}点</b> / 全員: <b>{totalCount}点</b></div>
+                          <div style={{ color: gpsOk ? C.success : C.danger, fontWeight: 700 }}>
+                            🛰️ GPS: {gpsOk ? `OK (±${Math.round(currentLoc.accuracy || 0)}m)` : "未取得"}
+                          </div>
+                          <div style={{ color: currentUser ? C.text : C.danger }}>
+                            👤 ログイン: <b>{currentUser || "未ログイン"}</b>
+                          </div>
+                          <div style={{ color: trackRecording ? "#3b82f6" : C.muted, fontWeight: 700 }}>
+                            🎙 記録: {trackRecording ? "ON（GPS自動追従中）" : "OFF"}
+                          </div>
+                          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>💡 15秒間隔・5m以上移動で記録。F12コンソールに [v9.4] ログが出ます</div>
                         </div>
                       );
                     })()}
