@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.11-haversine-fix";
+const APP_VERSION = "2026-06-05-v9.12-onsite-status-emoji";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3622,29 +3622,42 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         ? colorForOnsite(_r)
         : colorByStatus(it.status);
       const showPost = _postedRecently(it);
-      // 🆕 v8.134: 状態別の絵文字マップ（_isOnsite はまだ未定義なので _r.coordsManual を直接見る）
+      // 🆕 v8.134→v9.12: 状態別の絵文字マップ
+      //   現地ピンでも、 所有者判明（hasOwner）後は訪問活動の status を反映するよう改修
       const emojiForPin = (() => {
+        const s = it.status;
+        // 共通: ステータス→絵文字のヘルパー
+        const statusEmoji = (st) => {
+          if (st === "初訪") return "👋";
+          if (st === "再訪" || st === "訪問済") return "🔁";
+          if (st === "見込み" || st === "見込" || st === "興味あり" || st === "検討中") return "💗";
+          if (st === "中長期見込") return "🌱";
+          if (st === "交渉中") return "🤝";
+          if (st === "媒介") return "📋";
+          if (st === "仕入" || st === "仕入れ完了") return "💰";
+          if (st === "不在") return "🚪";
+          if (st === "見込無し") return "❌";
+          if (st === "NG" || st === "断られた") return "⛔";
+          if (st === "居住している") return "🏡";
+          return null;
+        };
+        // 現地ピン
         if (_r && _r.coordsManual) {
           if (pendingLot) return "⏰";
-          if (_ownerExists(_r)) return "✅";  // 訪問OK
+          // 所有者判明後は訪問status を反映（未訪問なら ✅ で訪問OK 待機）
+          if (_ownerExists(_r)) {
+            if (!s || s === "未訪問") return "✅";  // 訪問OK・未着手
+            const e = statusEmoji(s);
+            return e || "✅";
+          }
           if (_r.excluded === true) return "🚫";
           if (_r.lookupFailed === true) return "🔧";
           return "⏳";  // 謄本待ち
         }
-        const s = it.status;
+        // 通常物件（インポート etc）
         if (s === "未訪問") return "🏠";
-        if (s === "初訪") return "👋";
-        if (s === "再訪" || s === "訪問済") return "🔁";
-        if (s === "見込み" || s === "見込" || s === "興味あり" || s === "検討中") return "💗";
-        if (s === "中長期見込") return "🌱";
-        if (s === "交渉中") return "🤝";
-        if (s === "媒介") return "📋";
-        if (s === "仕入" || s === "仕入れ完了") return "💰";
-        if (s === "不在") return "🚪";
-        if (s === "見込無し") return "❌";
-        if (s === "NG" || s === "断られた") return "⛔";
-        if (s === "居住している") return "🏡";
-        return "📍";
+        const e = statusEmoji(s);
+        return e || "📍";
       })();
       // 🆕 v8.99→v8.104: 「今日かつ地番待ち」のみ halo + 「今日」バッジで強調
       const createdToday = isCreatedToday(it) && pendingLot;
