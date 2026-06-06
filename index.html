@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.18-pin-photos-phase1";
+const APP_VERSION = "2026-06-07-v9.18.1-pin-photos-all-pins";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4057,7 +4057,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">👤 ${it.ownerName}</div>` : ""}
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
           <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_excludedBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
-          ${_isOnsite ? `<button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を撮る/見る</button>` : ""}
+          <button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を撮る/見る</button>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
       `, { autoClose: false, closeOnClick: false });
@@ -15684,6 +15684,41 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             })()}
           </div>
 
+          {/* 🆕 v9.18: ピン写真セクション（全ピン共通、 現地ピン以外も含む） */}
+          {(() => {
+            const _pid = _raw.id || selected.item.rawId;
+            if (!_pid) return null;
+            return (
+              <div style={{ background: C.bg, border: `1.5px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+                <PinPhotoSection
+                  pinId={_pid}
+                  photos={((data.pinPhotos || {})[_pid]) || []}
+                  viewer={(typeof getCurrentUser === "function" && getCurrentUser()) || ""}
+                  onAdded={(p) => {
+                    setData(d => {
+                      const _now = Date.now();
+                      const all = { ...(d.pinPhotos || {}) };
+                      const arr = Array.isArray(all[_pid]) ? all[_pid].slice() : [];
+                      arr.push(p);
+                      all[_pid] = arr;
+                      return { ...d, pinPhotos: all, _pinPhotosUpdatedAt: _now };
+                    });
+                  }}
+                  onRemoved={(path) => {
+                    setData(d => {
+                      const _now = Date.now();
+                      const all = { ...(d.pinPhotos || {}) };
+                      const arr = Array.isArray(all[_pid]) ? all[_pid].filter(p => p && p.path !== path) : [];
+                      if (arr.length) all[_pid] = arr;
+                      else delete all[_pid];
+                      return { ...d, pinPhotos: all, _pinPhotosUpdatedAt: _now };
+                    });
+                  }}
+                />
+              </div>
+            );
+          })()}
+
           {/* 🆕 v8.101: 現地ピン情報パネル（landmark / 座標 / 地番待ち CTA） */}
           {/* 🆕 v8.103: 立てた日時・立てた人を明示 */}
           {_raw.coordsManual && (
@@ -15731,32 +15766,6 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               <div style={{ fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: _isPendingLot ? 8 : 0 }}>
                 座標: {typeof _raw.lat === "number" ? _raw.lat.toFixed(6) : "?"}, {typeof _raw.lng === "number" ? _raw.lng.toFixed(6) : "?"}
               </div>
-              {/* 🆕 v9.18: ピン写真セクション（撮影・サムネ・削除） */}
-              <PinPhotoSection
-                pinId={_raw.id}
-                photos={((data.pinPhotos || {})[_raw.id]) || []}
-                viewer={(typeof getCurrentUser === "function" && getCurrentUser()) || ""}
-                onAdded={(p) => {
-                  setData(d => {
-                    const _now = Date.now();
-                    const all = { ...(d.pinPhotos || {}) };
-                    const arr = Array.isArray(all[_raw.id]) ? all[_raw.id].slice() : [];
-                    arr.push(p);
-                    all[_raw.id] = arr;
-                    return { ...d, pinPhotos: all, _pinPhotosUpdatedAt: _now };
-                  });
-                }}
-                onRemoved={(path) => {
-                  setData(d => {
-                    const _now = Date.now();
-                    const all = { ...(d.pinPhotos || {}) };
-                    const arr = Array.isArray(all[_raw.id]) ? all[_raw.id].filter(p => p && p.path !== path) : [];
-                    if (arr.length) all[_raw.id] = arr;
-                    else delete all[_raw.id];
-                    return { ...d, pinPhotos: all, _pinPhotosUpdatedAt: _now };
-                  });
-                }}
-              />
               {/* 🆕 v8.114: 対象外フラグの手動トグル（謄本待ち or 対象外 のときに表示） */}
               {!_isPendingLot && !_hasOwnerSel && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.borderDim}` }}>
