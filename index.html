@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.12-onsite-status-emoji";
+const APP_VERSION = "2026-06-05-v9.13-companion-visit-and-dedupe";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -760,6 +760,78 @@ function migrateClearDemoJiageNextVisitV883(d) {
   return {
     ...next,
     migrations: { ...(d.migrations || {}), v883_clear_demo_jiage_nextvisit: Date.now() },
+  };
+}
+
+// 🆕 v9.13: 過去の重複 visitLog（同行のはずが二重カウント）を統合する migration
+//   ・同じピン × 同じ日付 × 時刻±10分 × 違う recordedBy のペアを検出
+//   ・最古の方を残し、後方の recordedBy を withMembers に追加（最大2人）
+//   ・後方のエントリは削除
+//   ・data.migrations.v913_dedupe_visit_log で 1 回限り
+function migrateDedupeVisitLogV913(d) {
+  if (!d || typeof d !== "object") return d;
+  const toMin = (t) => {
+    if (!t || typeof t !== "string") return null;
+    const [h, m] = t.split(":").map(Number);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return h * 60 + m;
+  };
+  let mergedCount = 0;
+  const mergeArrLog = (log) => {
+    if (!Array.isArray(log) || log.length < 2) return log;
+    const sorted = [...log].sort((a, b) => (a.id || 0) - (b.id || 0));
+    const keep = [];
+    const removedIds = new Set();
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i];
+      if (removedIds.has(a.id)) continue;
+      const aMin = toMin(a.time);
+      let withSet = new Set(Array.isArray(a.withMembers) ? a.withMembers : []);
+      for (let j = i + 1; j < sorted.length; j++) {
+        const b = sorted[j];
+        if (removedIds.has(b.id)) continue;
+        if (a.date !== b.date) continue;
+        if (!a.recordedBy || !b.recordedBy || a.recordedBy === b.recordedBy) continue;
+        const bMin = toMin(b.time);
+        if (aMin == null || bMin == null) continue;
+        if (Math.abs(aMin - bMin) > 10) continue;
+        // 統合
+        withSet.add(b.recordedBy);
+        if (Array.isArray(b.withMembers)) b.withMembers.forEach(m => withSet.add(m));
+        removedIds.add(b.id);
+        mergedCount++;
+      }
+      const arr = Array.from(withSet).filter(m => m && m !== a.recordedBy).slice(0, 2);
+      keep.push({ ...a, withMembers: arr });
+    }
+    return keep;
+  };
+  const nextJiage = (Array.isArray(d.jiage) ? d.jiage : []).map(j => {
+    if (!j || !Array.isArray(j.visitLog) || j.visitLog.length < 2) return j;
+    const next = mergeArrLog(j.visitLog);
+    return { ...j, visitLog: next };
+  });
+  const nextOwners = (Array.isArray(d.owners) ? d.owners : []).map(o => {
+    if (!o || !Array.isArray(o.visitLog) || o.visitLog.length < 2) return o;
+    const next = mergeArrLog(o.visitLog);
+    return { ...o, visitLog: next };
+  });
+  const now = Date.now();
+  console.log(`[v9.13] 訪問ログ重複統合: ${mergedCount}件 (同行として統合)`);
+  const logEntry = {
+    id: `migrate-v913-${now}`,
+    timestamp: new Date(now).toISOString(),
+    action: "migrate",
+    target: "visitLog",
+    description: `v9.13 同行訪問の重複統合: ${mergedCount}件`,
+  };
+  const newActivityLog = [logEntry, ...(Array.isArray(d.activityLog) ? d.activityLog : [])].slice(0, 200);
+  return {
+    ...d,
+    jiage: nextJiage,
+    owners: nextOwners,
+    activityLog: newActivityLog,
+    migrations: { ...(d.migrations || {}), v913_dedupe_visit_log: now },
   };
 }
 
@@ -3105,6 +3177,20 @@ function MainApp({ onLock, onSwitchUser }) {
     v91MigratedRef.current = true;
     console.log("[v9.1] visitLog ベースの担当変更 migration を実行します…");
     setData(d => migrateAssigneeFromVisitLogV91(d));
+  }, [data]);
+
+  // 🆕 v9.13: 過去の重複 visitLog（同行のはずが二重カウント）を統合する migration
+  const v913MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v913MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v913_dedupe_visit_log) {
+      v913MigratedRef.current = true;
+      return;
+    }
+    v913MigratedRef.current = true;
+    console.log("[v9.13] 訪問ログ重複統合 migration を実行します…");
+    setData(d => migrateDedupeVisitLogV913(d));
   }, [data]);
 
   const setData = updater => {
@@ -13309,6 +13395,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         return item.status || (prevVisits > 0 ? "再訪" : "初訪");
       })(),
       assignee: item.assignee || MEMBERS[0],
+      // 🆕 v9.13: 同行者（最大2人）
+      withMembers: [],
     });
   };
 
@@ -13325,6 +13413,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       memo: visit.memo || "",
       status: item.status || "",
       assignee: visit.recordedBy || item.assignee || MEMBERS[0],
+      // 🆕 v9.13: 同行者を編集モードでも復元
+      withMembers: Array.isArray(visit.withMembers) ? visit.withMembers : [],
       posted: !!visit.posted,
       // 編集モードのフラグ：このフィールドが設定されていれば既存エントリの更新になる
       editingId: visit.id,
@@ -13368,6 +13458,10 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     if (!visitRecordTarget || !visitForm) return;
     const isEdit = !!visitForm.editingId;
     const dow = new Date(visitForm.date).getDay(); // 0=日
+    // 🆕 v9.13: 同行者を取り込み（最大2人にトリム）
+    const withMembersArr = Array.isArray(visitForm.withMembers)
+      ? visitForm.withMembers.filter(m => m && m !== (visitForm.assignee || "")).slice(0, 2)
+      : [];
     const newEntry = {
       id: isEdit ? visitForm.editingId : Date.now(),
       date: visitForm.date,
@@ -13380,9 +13474,66 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       // 🆕 v8.41: ポスティング済フラグを保存
       posted: !!visitForm.posted,
       recordedBy: visitForm.assignee || (isEdit ? null : getCurrentUser()) || MEMBERS[0],
+      // 🆕 v9.13: 同行者
+      withMembers: withMembersArr,
       // 🆕 v8.47: 編集時刻（マージで他端末の古い版に負けないように）
       updatedAt: Date.now(),
     };
+    // 🆕 v9.13【案B】新規追加モードのみ：同じピン・同じ日付・±10分以内の既存ログを検知
+    if (!isEdit) {
+      const log = (visitRecordTarget.raw && visitRecordTarget.raw.visitLog) || visitRecordTarget.visitLog || [];
+      const toMin = (t) => {
+        if (!t || typeof t !== "string") return null;
+        const [h, m] = t.split(":").map(Number);
+        if (Number.isNaN(h) || Number.isNaN(m)) return null;
+        return h * 60 + m;
+      };
+      const newMin = toMin(newEntry.time);
+      const candidates = newMin == null ? [] : log.filter(v => {
+        if (!v || v.date !== newEntry.date) return false;
+        if (v.recordedBy === newEntry.recordedBy) return false; // 自分自身の重複は別件として
+        const vMin = toMin(v.time);
+        if (vMin == null) return false;
+        return Math.abs(vMin - newMin) <= 10;
+      });
+      if (candidates.length > 0) {
+        const other = candidates[0];
+        const confirmMerge = window.confirm(
+          `⚠️ ${other.recordedBy} さんが ${other.date} ${other.time} に同じ物件で訪問記録を入力しています。\n\n` +
+          `これは同行訪問ですか？\n\n` +
+          `[OK] 同行として既存記録に統合（あなたは同行者として追加）\n` +
+          `[キャンセル] 別の訪問として新規記録する`
+        );
+        if (confirmMerge) {
+          // 既存ログに自分を同行者として追加（最大2人）
+          const myName = newEntry.recordedBy;
+          const prevWith = Array.isArray(other.withMembers) ? other.withMembers : [];
+          const mergedWith = prevWith.includes(myName) ? prevWith : [...prevWith, myName].slice(0, 2);
+          const mergedEntry = { ...other, withMembers: mergedWith, updatedAt: Date.now() };
+          const targetType = visitRecordTarget.type;
+          const targetId = visitRecordTarget.rawId || visitRecordTarget.id;
+          setData(d => {
+            const arr = targetType === "jiage" ? "jiage" : "owners";
+            return {
+              ...d,
+              [arr]: (d[arr] || []).map(x => {
+                if (x.id !== targetId) return x;
+                return { ...x, visitLog: (x.visitLog || []).map(v => v.id === other.id ? mergedEntry : v) };
+              }),
+            };
+          });
+          setSelected(s => {
+            if (!s) return s;
+            const newLog = (s.item.raw?.visitLog || []).map(v => v.id === other.id ? mergedEntry : v);
+            return { ...s, item: { ...s.item, raw: { ...s.item.raw, visitLog: newLog } } };
+          });
+          setVisitRecordTarget(null);
+          setVisitForm(null);
+          return;
+        }
+        // キャンセル → 通常の新規追加処理を続行
+      }
+    }
     // 🆕 v8.47: 編集モードはエントリの更新だけ。カウンター加算や親ステータス変更はしない。
     if (isEdit) {
       const targetType = visitRecordTarget.type;
@@ -15473,7 +15624,14 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                           </div>
                         )}
                         {v.memo && <div style={{ marginTop: 4, fontSize: 10, color: C.muted, paddingLeft: 4 }}>📝 {v.memo}</div>}
-                        {v.recordedBy && <div style={{ marginTop: 2, fontSize: 9, color: "#475569", paddingLeft: 4 }}>記録: {v.recordedBy}</div>}
+                        {v.recordedBy && (
+                          <div style={{ marginTop: 2, fontSize: 9, color: "#475569", paddingLeft: 4 }}>
+                            記録: {v.recordedBy}
+                            {Array.isArray(v.withMembers) && v.withMembers.length > 0 && (
+                              <span style={{ marginLeft: 4, color: "#7c3aed" }}>👥 同行: {v.withMembers.join("・")}</span>
+                            )}
+                          </div>
+                        )}
                         {/* 🆕 v8.47: 詳細(編集)・削除ボタン */}
                         <div style={{ display: "flex", gap: 6, marginTop: 6, paddingLeft: 4 }}>
                           <button onClick={() => openEditVisit(selected.item, v)} style={{
@@ -15918,6 +16076,38 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             </div>
           )}
 
+          {/* 🆕 v9.13: 同行者選択（最大2人・自分以外から選択） */}
+          <Field label="👥 同行者（最大2人・任意）">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {MEMBERS.filter(m => !m.includes("・") && m !== (visitForm.assignee || "")).map(m => {
+                const selected = Array.isArray(visitForm.withMembers) && visitForm.withMembers.includes(m);
+                const memberColor = MEMBER_COLORS[m] || C.muted;
+                const reachedMax = Array.isArray(visitForm.withMembers) && visitForm.withMembers.length >= 2 && !selected;
+                return (
+                  <button key={m} type="button" onClick={() => {
+                    setVisitForm(p => {
+                      const prev = Array.isArray(p.withMembers) ? p.withMembers : [];
+                      if (prev.includes(m)) return { ...p, withMembers: prev.filter(x => x !== m) };
+                      if (prev.length >= 2) { alert("同行者は最大2人までです"); return p; }
+                      return { ...p, withMembers: [...prev, m] };
+                    });
+                  }} disabled={reachedMax} style={{
+                    padding: "4px 10px", borderRadius: 14,
+                    cursor: reachedMax ? "not-allowed" : "pointer",
+                    fontSize: 11, fontFamily: "inherit",
+                    background: selected ? memberColor : "transparent",
+                    color: selected ? "#fff" : (reachedMax ? C.muted : memberColor),
+                    border: `1.5px solid ${selected ? memberColor : (reachedMax ? C.borderDim : memberColor + "66")}`,
+                    fontWeight: selected ? 700 : 400,
+                    opacity: reachedMax ? 0.4 : 1,
+                  }}>{selected ? "✓ " : ""}{m}</button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 9, color: C.muted, marginTop: 4 }}>
+              💡 同行者を選ぶと1回の訪問として記録され、訪問回数が二重計上されません
+            </div>
+          </Field>
           {/* メモ */}
           <Field label="📝 メモ（任意）">
             <textarea style={{ ...inp, height: 60, resize: "vertical" }}
@@ -19005,30 +19195,4 @@ root.render(React.createElement(App));
   var cacheKey = 'hikari_compiled_' + version + '_' + fastHash(src);
   function setMsg(m) {
     var el = document.getElementById('hikari-loading-msg');
-    if (el && !window.__hikariReactStarted__) el.textContent = m;
-  }
-  function runCompiled(code) {
-    // 間接evalでグローバルスコープ実行（React/ReactDOM が見える）
-    (0, eval)(code);
-  }
-  function compile() {
-    setMsg('コードを準備中（初回のみ・少々お待ちください）...');
-    try {
-      var t0 = Date.now();
-      var out = Babel.transform(src, { presets: ['react'], compact: true }).code;
-      var dt = Date.now() - t0;
-      console.log('[Hikari v8.92] Babel コンパイル完了 ' + dt + 'ms (' + out.length + ' bytes)');
-      // 古い版を掃除して新しいキャッシュを書き込み
-      try {
-        for (var i = localStorage.length - 1; i >= 0; i--) {
-          var k = localStorage.key(i);
-          if (k && k.indexOf('hikari_compiled_') === 0 && k !== cacheKey) {
-            localStorage.removeItem(k);
-          }
-        }
-        localStorage.setItem(cacheKey, out);
-        console.log('[Hikari v8.92] キャッシュ書き込み成功 (' + cacheKey + ')');
-      } catch (e) {
-        console.warn('[Hikari v8.92] キャッシュ書き込み失敗 (容量不足など):', e);
-      }
-  
+    if (el 
