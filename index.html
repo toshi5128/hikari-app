@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.16-popup-status-label-fix";
+const APP_VERSION = "2026-06-05-v9.17-onsite-pin-color-by-status";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3666,9 +3666,14 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       dmReady:       "#16a34a",  // 🚪 訪問OK
     };
     const _ownerExists = (r) => !!((r.owner && String(r.owner).trim()) || (r.ownerName && String(r.ownerName).trim()));
-    const colorForOnsite = (r) => {
+    // 🆕 v8.125→v9.17: 所有者あり時は status を反映（NG→暗赤、見込み→ピンク 等）
+    const colorForOnsite = (r, status) => {
       if (!r.address || !String(r.address).trim()) return ONSITE_COLORS.pendingLot;
-      if (_ownerExists(r)) return ONSITE_COLORS.dmReady;
+      if (_ownerExists(r)) {
+        // 訪問が進んでる場合は status の色を反映（初訪/再訪/見込み/NG など）
+        if (status && status !== "未訪問") return colorByStatus(status);
+        return ONSITE_COLORS.dmReady;  // 未訪問は訪問OK色（緑）
+      }
       if (r.excluded === true) return ONSITE_COLORS.excluded;
       if (r.lookupFailed === true) return ONSITE_COLORS.lookupFailed;
       return ONSITE_COLORS.lookupPending;
@@ -3703,9 +3708,9 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       // 🆕 v8.125: raw 経由参照（リネーム避けるため別名 _r で導入）
       const _r = _raw(it);
       const pendingLot = isPendingLot(it);
-      // 🆕 v8.125: 現地ピンなら5状態色、それ以外はステータス色
+      // 🆕 v8.125→v9.17: 現地ピンも所有者あり時は status色 を反映
       const color = (_r && _r.coordsManual)
-        ? colorForOnsite(_r)
+        ? colorForOnsite(_r, it.status)
         : colorByStatus(it.status);
       const showPost = _postedRecently(it);
       // 🆕 v8.134→v9.12: 状態別の絵文字マップ
