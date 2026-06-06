@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.13-companion-visit-and-dedupe";
+const APP_VERSION = "2026-06-05-v9.14-counter-detail-list";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -11061,6 +11061,94 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                   <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>現在の値</div>
                   <div style={{ fontSize: 32, fontWeight: 800, color: cat.color }}>{curVal}</div>
                 </div>
+                {/* 🆕 v9.14: 該当する訪問記録の一覧 */}
+                {(() => {
+                  // この item に紐付く visitLog エントリを抽出
+                  //   - result マッピング: home=面談, ignore=居留守, absent=地上不在, rejected=訪問禁止
+                  //   - status マッピング: 初訪/再訪/見込み/中長期見込/見込無し/交渉中/媒介/仕入 など
+                  //   - posted=true → ポスティング
+                  const RESULT_TO_ITEM = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止" };
+                  const STATUS_TO_ITEM = { "再訪": "地上再訪", "仕入": "地上仕入" };
+                  const matchesItem = (v, parentStatus) => {
+                    // ポスティング
+                    if (item === "ポスティング" && v.posted) return true;
+                    // 訪問結果
+                    if (RESULT_TO_ITEM[v.result] === item) return true;
+                    // ステータス(保存時の status と一致するもの)
+                    // 注意: visitLog のエントリ自体には status は持たない設計のため、
+                    //   親 jiage/owner の現在 status からは近似しかできない（自動加算は記録時点）
+                    //   そのため、 status系項目（初訪/再訪/...）の表示は「同じ日に当該メンバーが記録した」エントリで近似する
+                    const parentS = parentStatus || "";
+                    if (parentS && (STATUS_TO_ITEM[parentS] || parentS) === item) return true;
+                    return false;
+                  };
+                  const matchedRows = [];
+                  (data.jiage || []).forEach(j => {
+                    (j.visitLog || []).forEach(v => {
+                      if (!v || v.date !== selectedDate) return;
+                      // recordedBy が一致 or 同行者として参加
+                      const isRecorder = v.recordedBy === selectedMember;
+                      const isCompanion = Array.isArray(v.withMembers) && v.withMembers.includes(selectedMember);
+                      if (!isRecorder && !isCompanion) return;
+                      if (!matchesItem(v, j.status)) return;
+                      matchedRows.push({ type: "jiage", item: j, visit: v, role: isRecorder ? "主" : "同行" });
+                    });
+                  });
+                  (data.owners || []).forEach(o => {
+                    (o.visitLog || []).forEach(v => {
+                      if (!v || v.date !== selectedDate) return;
+                      const isRecorder = v.recordedBy === selectedMember;
+                      const isCompanion = Array.isArray(v.withMembers) && v.withMembers.includes(selectedMember);
+                      if (!isRecorder && !isCompanion) return;
+                      if (!matchesItem(v, o.status)) return;
+                      matchedRows.push({ type: "owner", item: o, visit: v, role: isRecorder ? "主" : "同行" });
+                    });
+                  });
+                  return (
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 8 }}>
+                        📋 該当する訪問記録（{matchedRows.length}件）
+                      </div>
+                      {matchedRows.length === 0 ? (
+                        <div style={{ fontSize: 11, color: C.muted, padding: 12, background: C.bg, borderRadius: 8, textAlign: "center" }}>
+                          該当する記録が見つかりません<br />
+                          <span style={{ fontSize: 9 }}>（手動でカウントだけ +1 された場合や、 別ステータスから集計された場合もあります）</span>
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 280, overflowY: "auto" }}>
+                          {matchedRows.map((row, idx) => {
+                            const it = row.item;
+                            const v = row.visit;
+                            const ownerName = it.owner || it.ownerName || "(所有者不明)";
+                            const resultDef = VISIT_RESULTS.find(r => r.key === v.result);
+                            return (
+                              <div key={idx} style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 10px" }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    🏠 {(it.address || "(無住所)").slice(0, 30)}
+                                  </div>
+                                  <span style={{ background: row.role === "主" ? cat.color : "#7c3aed", color: "#fff", padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, flexShrink: 0 }}>
+                                    {row.role === "主" ? "📝 主記録" : "👥 同行"}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>
+                                  👤 {ownerName} / ⏱ {v.time || "??:??"}
+                                  {resultDef && <span style={{ marginLeft: 6, color: resultDef.color, fontWeight: 700 }}>{resultDef.label}</span>}
+                                </div>
+                                {Array.isArray(v.withMembers) && v.withMembers.length > 0 && (
+                                  <div style={{ fontSize: 9, color: "#7c3aed", marginBottom: 3 }}>👥 同行: {v.withMembers.join("・")}</div>
+                                )}
+                                {v.memo && (
+                                  <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.4, background: C.cardBg, padding: "4px 6px", borderRadius: 4, marginTop: 3 }}>📝 {v.memo}</div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
                   <button onClick={() => apply(curVal - 1)} disabled={curVal === 0} style={{
                     ...btnStyle("ghost"), padding: "12px", fontSize: 14, fontWeight: 700,
