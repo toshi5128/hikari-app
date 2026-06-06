@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.14-counter-detail-list";
+const APP_VERSION = "2026-06-05-v9.15-track-discontinuity-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4060,19 +4060,35 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         return { ...p, weekRel: rel, weekIdx: getWeekIndex(p.ts) };
       });
 
+      // 🆕 v9.15: 不連続検知（停止→別エリア再開時のジャンプ線を消す）
+      //   - 時間差 5分以上 → 不連続（停止していたとみなす）
+      //   - 距離 100m以上 → 不連続（GPSの瞬間飛びor別エリアへ移動）
+      const DISCONTINUITY_MS = 5 * 60 * 1000;
+      const DISCONTINUITY_M = 100;
       const segments = [];
       let cur = null;
+      let prevPt = null;
       withWeek.forEach(p => {
-        if (!cur || cur.weekRel !== p.weekRel) {
+        // 直前ポイントとの不連続判定
+        let isDiscontinuous = false;
+        if (prevPt) {
+          const dt = Math.abs((p.ts || 0) - (prevPt.ts || 0));
+          const dist = haversineQuick(prevPt, p);
+          if (dt > DISCONTINUITY_MS || dist > DISCONTINUITY_M) isDiscontinuous = true;
+        }
+        // 週切り替わり or 不連続なら新セグメント開始
+        if (!cur || cur.weekRel !== p.weekRel || isDiscontinuous) {
           cur = { weekRel: p.weekRel, weekIdx: p.weekIdx, pts: [] };
           segments.push(cur);
-          // 線を途切れさせないため、前セグメントの末尾を新セグメントの先頭に共有
-          if (segments.length > 1) {
+          // 線を途切れさせない目的の末尾共有は、 連続している場合のみ実施
+          // 不連続なら共有しない＝線が切れる（これが今回の目的）
+          if (segments.length > 1 && !isDiscontinuous) {
             const prev = segments[segments.length - 2];
             cur.pts.push(prev.pts.slice(-1)[0]);
           }
         }
         cur.pts.push(p);
+        prevPt = p;
       });
 
       segments.forEach(seg => {
