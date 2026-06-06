@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-05-v9.17-onsite-pin-color-by-status";
+const APP_VERSION = "2026-06-07-v9.18-pin-photos-phase1";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1173,6 +1173,81 @@ const SUPABASE_URL = "https://ckcykbvislsjwvkizkqc.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrY3lrYnZpc2xzand2a2l6a3FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0Njk1MzIsImV4cCI6MjA5NDA0NTUzMn0.Yf2EnNHRi6M5mwaaNFwBATNZb8jVBG3LsFxMt6eDfH8";
 const DATA_ID = "hikari_main";
 
+// ===================== 📷 v9.18: ピン写真ストレージ =====================
+// Supabase Storage bucket: hikari-photos (Public)
+// path: pins/<pinId>/<timestamp>.jpg
+const PIN_PHOTOS_BUCKET = "hikari-photos";
+
+// canvas で長辺 1600px / JPEG 0.7 に圧縮 → Blob を返す
+async function compressImageFile(file, maxEdge = 1600, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    try {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            let { width: w, height: h } = img;
+            if (w > h && w > maxEdge) { h = Math.round(h * maxEdge / w); w = maxEdge; }
+            else if (h >= w && h > maxEdge) { w = Math.round(w * maxEdge / h); h = maxEdge; }
+            const cv = document.createElement("canvas");
+            cv.width = w; cv.height = h;
+            const ctx = cv.getContext("2d");
+            ctx.drawImage(img, 0, 0, w, h);
+            cv.toBlob((blob) => {
+              if (blob) resolve(blob); else reject(new Error("toBlob returned null"));
+            }, "image/jpeg", quality);
+          } catch (er) { reject(er); }
+        };
+        img.onerror = () => reject(new Error("画像の読込に失敗しました"));
+        img.src = e.target.result;
+      };
+      reader.onerror = () => reject(new Error("ファイル読み込みに失敗しました"));
+      reader.readAsDataURL(file);
+    } catch (er) { reject(er); }
+  });
+}
+
+// Supabase Storage に upload。 success 時は { url, path } を返す
+async function uploadPinPhoto(pinId, file) {
+  if (!pinId) throw new Error("pinId required");
+  const blob = await compressImageFile(file, 1600, 0.7);
+  const ts = Date.now();
+  const rand = Math.random().toString(36).slice(2, 8);
+  const path = `pins/${pinId}/${ts}_${rand}.jpg`;
+  const url = `${SUPABASE_URL}/storage/v1/object/${PIN_PHOTOS_BUCKET}/${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + SUPABASE_KEY,
+      "apikey": SUPABASE_KEY,
+      "Content-Type": "image/jpeg",
+      "x-upsert": "true",
+    },
+    body: blob,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error("upload failed " + res.status + " " + text.slice(0, 200));
+  }
+  const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${PIN_PHOTOS_BUCKET}/${path}`;
+  return { url: publicUrl, path, takenAt: ts, bytes: blob.size };
+}
+
+async function deletePinPhoto(path) {
+  if (!path) return;
+  const url = `${SUPABASE_URL}/storage/v1/object/${PIN_PHOTOS_BUCKET}/${path}`;
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: { "Authorization": "Bearer " + SUPABASE_KEY, "apikey": SUPABASE_KEY },
+  });
+  // 404 は既に消されている扱いで OK
+  if (!res.ok && res.status !== 404) {
+    const text = await res.text().catch(() => "");
+    throw new Error("delete failed " + res.status + " " + text.slice(0, 200));
+  }
+}
+
 // ===================== Web Push 設定 =====================
 // VAPID 公開鍵（このアプリ専用に生成済み）
 const VAPID_PUBLIC_KEY = "BLnPVy446VC9z9PW9KtspyDNUBp39TS85uro26wWfDcR4GB9QflyZkc0uJtzHkD3rxXYzzoWfjcBTkH3gT3HOYI";
@@ -1358,6 +1433,8 @@ const DEFAULT_DATA = {
   stocks: [],
   approaches: [],
   jiage: [],
+  // 🆕 v9.18: ピン写真 { [pinId]: [{ url, path, takenAt, takenBy }, ...] }
+  pinPhotos: {},
   owners: [],
   yakusho: [],
   sekisan: [],
@@ -2896,6 +2973,31 @@ function MainApp({ onLock, onSwitchUser }) {
       }
     }
 
+    // 🆕 v9.18: pinPhotos = { [pinId]: [{url,path,takenAt,takenBy},...] }
+    //   ・両端末の pinId エントリを union（path で dedupe）
+    //   ・Phase 1 では削除復活防止 tombstone は未実装（Phase 2 で）
+    //   ・写真は追記のみのデータなので「両端末から消えた」ケースは別端末のキャッシュからだけ復活する
+    if (local && (local.pinPhotos || merged.pinPhotos)) {
+      const remotePhotos = (merged && merged.pinPhotos) || {};
+      const localPhotos = local.pinPhotos || {};
+      const mergedPhotos = {};
+      const allPinIds = new Set([...Object.keys(remotePhotos), ...Object.keys(localPhotos)]);
+      allPinIds.forEach(pinId => {
+        const r = Array.isArray(remotePhotos[pinId]) ? remotePhotos[pinId] : [];
+        const l = Array.isArray(localPhotos[pinId]) ? localPhotos[pinId] : [];
+        const seen = new Set();
+        const out = [];
+        [...l, ...r].forEach(p => {
+          const key = p && (p.path || p.url);
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          out.push(p);
+        });
+        if (out.length) mergedPhotos[pinId] = out;
+      });
+      merged.pinPhotos = mergedPhotos;
+    }
+
     // 🆕 マージ後の全体に対しても反響重複を掃除（mergeItems を通らないパスでも確実に dedup）
     return applyViewingsDedup(merged);
   };
@@ -3580,6 +3682,128 @@ function SekisanNInp({ fkey, placeholder, suffix, form, setForm }) {
 function Tag({ label, color }) {
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>;
 }
+
+// 📷 v9.18: ピン写真セクション（撮影・サムネ表示・削除）
+//   ・props: pinId, photos (array), viewer (撮影者名), onAdded(photo), onRemoved(path)
+//   ・photos[i] = { url, path, takenAt, takenBy }
+//   ・ユーザー入力データ保護: 写真追加/削除以外の状態（visitLog/status/memo）は触らない
+function PinPhotoSection({ pinId, photos, viewer, onAdded, onRemoved }) {
+  const [uploading, setUploading] = React.useState(false);
+  const [err, setErr] = React.useState("");
+  const fileRef = React.useRef(null);
+  const list = Array.isArray(photos) ? photos : [];
+
+  const handleFiles = async (files) => {
+    if (!files || !files.length) return;
+    setErr("");
+    for (const f of Array.from(files)) {
+      if (!f || !/^image\//i.test(f.type || "")) {
+        setErr("画像ファイルを選択してください");
+        continue;
+      }
+      setUploading(true);
+      try {
+        const result = await uploadPinPhoto(pinId, f);
+        const photo = { ...result, takenBy: viewer || "" };
+        onAdded && onAdded(photo);
+      } catch (e) {
+        console.error("[PinPhoto] upload failed", e);
+        setErr("アップロードに失敗: " + (e && e.message ? e.message : String(e)));
+      } finally {
+        setUploading(false);
+      }
+    }
+    // クリア（同じファイル再選択を許可）
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const handleDelete = async (p) => {
+    if (!p || !p.path) return;
+    if (!window.confirm("この写真を削除しますか？\n（端末に保存された画像は消えません）")) return;
+    try {
+      await deletePinPhoto(p.path);
+    } catch (e) {
+      // 削除APIエラーでも、 ローカル一覧からは消す（ゾンビ防止）
+      console.warn("[PinPhoto] storage delete failed (continuing):", e);
+    }
+    onRemoved && onRemoved(p.path);
+  };
+
+  const fmtTaken = (ts) => {
+    if (!ts) return "";
+    try {
+      const d = new Date(ts);
+      const mo = d.getMonth() + 1;
+      const da = d.getDate();
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      return `${mo}/${da} ${hh}:${mm}`;
+    } catch (e) { return ""; }
+  };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${"#cbd5e155"}` }}>
+      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, fontWeight: 700 }}>
+        📷 写真 {list.length > 0 ? `(${list.length}枚)` : ""}
+      </div>
+      {list.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 8 }}>
+          {list.map((p, i) => (
+            <div key={(p.path || p.url || i) + "_" + i} style={{ position: "relative", aspectRatio: "1 / 1", borderRadius: 8, overflow: "hidden", border: "1px solid #cbd5e155", background: "#0001" }}>
+              <a href={p.url} target="_blank" rel="noopener noreferrer" style={{ display: "block", width: "100%", height: "100%" }}>
+                <img src={p.url} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+              </a>
+              <button
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDelete(p); }}
+                style={{
+                  position: "absolute", top: 2, right: 2, width: 22, height: 22,
+                  borderRadius: "50%", border: "none", background: "rgba(0,0,0,0.6)", color: "#fff",
+                  fontSize: 12, fontWeight: 800, cursor: "pointer", padding: 0, lineHeight: "22px",
+                }}
+                aria-label="写真を削除"
+              >✕</button>
+              {(p.takenAt || p.takenBy) && (
+                <div style={{
+                  position: "absolute", bottom: 0, left: 0, right: 0,
+                  background: "linear-gradient(to top, rgba(0,0,0,0.7), transparent)",
+                  color: "#fff", fontSize: 9, padding: "8px 4px 3px", lineHeight: 1.2,
+                }}>
+                  {p.takenBy && <div style={{ fontWeight: 700 }}>{p.takenBy}</div>}
+                  {p.takenAt && <div>{fmtTaken(p.takenAt)}</div>}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        multiple
+        style={{ display: "none" }}
+        onChange={(e) => handleFiles(e.target.files)}
+      />
+      <button
+        onClick={() => { if (fileRef.current && !uploading) fileRef.current.click(); }}
+        disabled={uploading}
+        style={{
+          width: "100%", padding: "8px 12px", borderRadius: 8,
+          border: `1.5px solid ${uploading ? "#94a3b8" : "#3b82f6"}`,
+          background: uploading ? "#94a3b822" : "#3b82f622",
+          color: uploading ? "#94a3b8" : "#3b82f6",
+          fontSize: 12, fontWeight: 800, cursor: uploading ? "wait" : "pointer",
+          fontFamily: "inherit",
+        }}
+      >
+        {uploading ? "⏳ アップロード中..." : "📷 写真を撮る/選ぶ"}
+      </button>
+      {err && <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444" }}>{err}</div>}
+    </div>
+  );
+}
+
 // 🗺️ Leafletマップコンポーネント
 function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
@@ -3833,6 +4057,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">👤 ${it.ownerName}</div>` : ""}
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
           <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_excludedBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
+          ${_isOnsite ? `<button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を撮る/見る</button>` : ""}
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
       `, { autoClose: false, closeOnClick: false });
@@ -3842,6 +4067,12 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         setTimeout(() => {
           const btn = document.getElementById("pin-detail-btn");
           if (btn) btn.onclick = (ev) => {
+            if (ev) { try { ev.stopPropagation(); ev.preventDefault(); } catch (er) {} }
+            setTimeout(() => { onPinClick && onPinClick(it); }, 0);
+          };
+          // 🆕 v9.18: 📷 写真ボタン → 同じく詳細を開く（写真セクションが見える）
+          const photoBtn = document.getElementById("pin-photo-btn");
+          if (photoBtn) photoBtn.onclick = (ev) => {
             if (ev) { try { ev.stopPropagation(); ev.preventDefault(); } catch (er) {} }
             setTimeout(() => { onPinClick && onPinClick(it); }, 0);
           };
@@ -15500,6 +15731,32 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
               <div style={{ fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: _isPendingLot ? 8 : 0 }}>
                 座標: {typeof _raw.lat === "number" ? _raw.lat.toFixed(6) : "?"}, {typeof _raw.lng === "number" ? _raw.lng.toFixed(6) : "?"}
               </div>
+              {/* 🆕 v9.18: ピン写真セクション（撮影・サムネ・削除） */}
+              <PinPhotoSection
+                pinId={_raw.id}
+                photos={((data.pinPhotos || {})[_raw.id]) || []}
+                viewer={(typeof getCurrentUser === "function" && getCurrentUser()) || ""}
+                onAdded={(p) => {
+                  setData(d => {
+                    const _now = Date.now();
+                    const all = { ...(d.pinPhotos || {}) };
+                    const arr = Array.isArray(all[_raw.id]) ? all[_raw.id].slice() : [];
+                    arr.push(p);
+                    all[_raw.id] = arr;
+                    return { ...d, pinPhotos: all, _pinPhotosUpdatedAt: _now };
+                  });
+                }}
+                onRemoved={(path) => {
+                  setData(d => {
+                    const _now = Date.now();
+                    const all = { ...(d.pinPhotos || {}) };
+                    const arr = Array.isArray(all[_raw.id]) ? all[_raw.id].filter(p => p && p.path !== path) : [];
+                    if (arr.length) all[_raw.id] = arr;
+                    else delete all[_raw.id];
+                    return { ...d, pinPhotos: all, _pinPhotosUpdatedAt: _now };
+                  });
+                }}
+              />
               {/* 🆕 v8.114: 対象外フラグの手動トグル（謄本待ち or 対象外 のときに表示） */}
               {!_isPendingLot && !_hasOwnerSel && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.borderDim}` }}>
