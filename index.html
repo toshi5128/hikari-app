@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.24-gps-batch-buffer";
+const APP_VERSION = "2026-06-07-v9.25-photo-at-pin-creation";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3843,10 +3843,11 @@ function Tag({ label, color }) {
 }
 
 // 📷 v9.18: ピン写真セクション（撮影・サムネ表示・削除）
-//   ・props: pinId, photos (array), viewer (撮影者名), onAdded(photo), onRemoved(path)
+//   ・props: pinId, photos (array), viewer (撮影者名), onAdded(photo), onRemoved(path), viewOnly
 //   ・photos[i] = { url, path, takenAt, takenBy }
 //   ・ユーザー入力データ保護: 写真追加/削除以外の状態（visitLog/status/memo）は触らない
-function PinPhotoSection({ pinId, photos, viewer, onAdded, onRemoved }) {
+//   ・🆕 v9.25: viewOnly=true で撮影ボタン非表示（詳細BottomSheet 用）
+function PinPhotoSection({ pinId, photos, viewer, onAdded, onRemoved, viewOnly = false }) {
   const [uploading, setUploading] = React.useState(false);
   const [err, setErr] = React.useState("");
   const fileRef = React.useRef(null);
@@ -3935,29 +3936,96 @@ function PinPhotoSection({ pinId, photos, viewer, onAdded, onRemoved }) {
           ))}
         </div>
       )}
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        multiple
-        style={{ display: "none" }}
-        onChange={(e) => handleFiles(e.target.files)}
-      />
-      <button
-        onClick={() => { if (fileRef.current && !uploading) fileRef.current.click(); }}
-        disabled={uploading}
+      {!viewOnly && (
+        <>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => handleFiles(e.target.files)}
+          />
+          <button
+            onClick={() => { if (fileRef.current && !uploading) fileRef.current.click(); }}
+            disabled={uploading}
+            style={{
+              width: "100%", padding: "8px 12px", borderRadius: 8,
+              border: `1.5px solid ${uploading ? "#94a3b8" : "#3b82f6"}`,
+              background: uploading ? "#94a3b822" : "#3b82f622",
+              color: uploading ? "#94a3b8" : "#3b82f6",
+              fontSize: 12, fontWeight: 800, cursor: uploading ? "wait" : "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            {uploading ? "⏳ アップロード中..." : "📷 写真を撮る/選ぶ"}
+          </button>
+        </>
+      )}
+      {viewOnly && list.length === 0 && (
+        <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center", padding: "8px" }}>
+          写真はまだありません
+        </div>
+      )}
+      {err && <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444" }}>{err}</div>}
+    </div>
+  );
+}
+
+// 📷 v9.25: ピン登録モーダル用の写真撮影セクション（保存前）
+//   ・ピンID がまだない段階で撮影 → blob を親 state にバッファ
+//   ・ピン保存ボタンで一括 upload
+//   ・撮影 + サムネ + ✕削除
+function PendingPhotoSection({ photos, onAdd, onRemove }) {
+  const [err, setErr] = React.useState("");
+  const fileRef = React.useRef(null);
+  const list = Array.isArray(photos) ? photos : [];
+
+  const handleFiles = async (files) => {
+    if (!files || !files.length) return;
+    setErr("");
+    for (const f of Array.from(files)) {
+      if (!f || !/^image\//i.test(f.type || "")) { setErr("画像を選択してください"); continue; }
+      try {
+        // 🆕 v9.25: ピン保存時にまとめて uploadPinPhoto (圧縮も中で行う) で送る
+        //   ここでは preview 用 URL だけ作る ( File は保持 )
+        const previewUrl = URL.createObjectURL(f);
+        onAdd && onAdd({ file: f, previewUrl, takenAt: Date.now() });
+      } catch (e) {
+        setErr("画像処理に失敗: " + (e && e.message ? e.message : String(e)));
+      }
+    }
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  return (
+    <div style={{ marginTop: 10, marginBottom: 14, padding: 12, background: "#0f172a08", border: "1px solid #cbd5e155", borderRadius: 10 }}>
+      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 8, fontWeight: 700 }}>
+        📷 写真 {list.length > 0 ? `(${list.length}枚)` : "（任意）"}
+      </div>
+      {list.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 10 }}>
+          {list.map((p, i) => (
+            <div key={i} style={{ position: "relative", aspectRatio: "1 / 1", borderRadius: 8, overflow: "hidden", border: "1px solid #cbd5e155", background: "#0001" }}>
+              <img src={p.previewUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+              <button
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemove && onRemove(i); }}
+                style={{ position: "absolute", top: 2, right: 2, width: 22, height: 22, borderRadius: "50%", border: "none", background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: 12, fontWeight: 800, cursor: "pointer", padding: 0, lineHeight: "22px" }}
+                aria-label="写真を削除"
+              >✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple style={{ display: "none" }} onChange={(e) => handleFiles(e.target.files)} />
+      <button onClick={() => fileRef.current && fileRef.current.click()}
         style={{
-          width: "100%", padding: "8px 12px", borderRadius: 8,
-          border: `1.5px solid ${uploading ? "#94a3b8" : "#3b82f6"}`,
-          background: uploading ? "#94a3b822" : "#3b82f622",
-          color: uploading ? "#94a3b8" : "#3b82f6",
-          fontSize: 12, fontWeight: 800, cursor: uploading ? "wait" : "pointer",
-          fontFamily: "inherit",
+          width: "100%", padding: "10px 12px", borderRadius: 8,
+          border: "1.5px solid #10b981", background: "#10b98122", color: "#10b981",
+          fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
         }}
-      >
-        {uploading ? "⏳ アップロード中..." : "📷 写真を撮る/選ぶ"}
-      </button>
+      >📷 写真を撮る / 選ぶ</button>
       {err && <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444" }}>{err}</div>}
     </div>
   );
@@ -4216,7 +4284,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">👤 ${it.ownerName}</div>` : ""}
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
           <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_excludedBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
-          <button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を撮る/見る</button>
+          <button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を見る</button>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
       `, { autoClose: false, closeOnClick: false });
@@ -12833,6 +12901,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [pendingPin, setPendingPin] = useState(null); // {lat, lng}（地番フォーム表示用）
   const [centerLocKey, setCenterLocKey] = useState(0); // 現在地センタリング trigger
   const [pinForm, setPinForm] = useState({ address: "", landmark: "", assignee: "", memo: "" });
+  // 🆕 v9.25: ピン保存前に撮影した写真を Blob で保持 → 保存時に一括 upload
+  const [pendingPinPhotos, setPendingPinPhotos] = useState([]);
   const [landmarkLoading, setLandmarkLoading] = useState(false); // 🆕 v8.98: 逆ジオコ実行中
   const [gpsError, setGpsError] = useState(null);
   const watchIdRef = React.useRef(null);
@@ -13120,6 +13190,36 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       }
       return { ...d, jiage, approaches };
     });
+    // 🆕 v9.25: ピン保存後に写真を非同期 upload (fire-and-forget)
+    //   ・既存の uploadPinPhoto で 1600px JPEG 圧縮 + Storage 保存
+    //   ・成功した分だけ data.pinPhotos[newId] に追加
+    if (pendingPinPhotos.length > 0) {
+      const viewer = (typeof getCurrentUser === "function" && getCurrentUser()) || "";
+      const photosCopy = pendingPinPhotos.slice();
+      Promise.all(photosCopy.map(async (p) => {
+        try {
+          const result = await uploadPinPhoto(newId, p.file);
+          return { ...result, takenBy: viewer, takenAt: p.takenAt || result.takenAt };
+        } catch (e) {
+          console.warn("[v9.25] photo upload failed for new pin", e);
+          return null;
+        }
+      })).then(results => {
+        const ok = results.filter(r => r);
+        if (ok.length > 0) {
+          setData(d => {
+            const all = { ...(d.pinPhotos || {}) };
+            const arr = Array.isArray(all[newId]) ? all[newId].slice() : [];
+            ok.forEach(p => arr.push(p));
+            all[newId] = arr;
+            return { ...d, pinPhotos: all };
+          });
+        }
+        // preview URL は upload 後に revoke
+        photosCopy.forEach(p => { try { URL.revokeObjectURL(p.previewUrl); } catch (e) {} });
+      });
+    }
+    setPendingPinPhotos([]);
     setPendingPin(null);
     setPinForm({ address: "", landmark: "", assignee: "", memo: "" });
     setPlacementMode(false);
@@ -15833,8 +15933,23 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
           <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginTop: 4, marginBottom: 8 }}>
             💡 地番が空のままでもピンは作れます。地図上で<b style={{ color: "#fbbf24" }}>🟡 地番待ち</b>として表示され、後でブルーマップを見ながら地番を入れて確定できます。
           </div>
+          {/* 🆕 v9.25: ピン保存前の写真撮影 */}
+          <PendingPhotoSection
+            photos={pendingPinPhotos}
+            onAdd={(p) => setPendingPinPhotos(prev => [...prev, p])}
+            onRemove={(idx) => setPendingPinPhotos(prev => {
+              const p = prev[idx];
+              if (p && p.previewUrl) { try { URL.revokeObjectURL(p.previewUrl); } catch (e) {} }
+              return prev.filter((_, i) => i !== idx);
+            })}
+          />
           <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={cancelPendingPin}>キャンセル</button>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => {
+              // キャンセル: blob URL を全部 revoke
+              pendingPinPhotos.forEach(p => { if (p && p.previewUrl) { try { URL.revokeObjectURL(p.previewUrl); } catch (e) {} } });
+              setPendingPinPhotos([]);
+              cancelPendingPin();
+            }}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2 }} onClick={saveOnsitePin}>📍 ピンを保存</button>
           </div>
         </BottomSheet>
@@ -15886,6 +16001,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                   pinId={_pid}
                   photos={((data.pinPhotos || {})[_pid]) || []}
                   viewer={(typeof getCurrentUser === "function" && getCurrentUser()) || ""}
+                  viewOnly={true}
                   onAdded={(p) => {
                     setData(d => {
                       const _now = Date.now();
