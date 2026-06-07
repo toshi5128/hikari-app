@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.41.2-fab-above-zoom-control";
+const APP_VERSION = "2026-06-07-v9.42-jiage-scroll-restore-robust";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13357,13 +13357,42 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     setViewModeRaw(v);
     try { localStorage.setItem(JIAGE_VIEW_MODE_KEY, v); } catch (e) {}
   };
-  // mount 時にスクロール位置を復元、 unmount 時に最新の scrollY を保存
+  // 🆕 v9.42: scroll 位置を保存・復元 ( 在庫タブからの戻りも対応 )
+  //   ・unmount 時保存だけだと、 タブ切替直前に DOM 高さが変わるケースで 0 が保存される
+  //   ・scroll イベントで都度保存 ( throttle 200ms ) し、 unmount 時にも最終保存
+  //   ・復元は段階的に複数回 try ( 在庫タブ unmount で DOM 高さが伸びるタイミング差を吸収 )
   React.useEffect(() => {
+    let restored = false;
+    const tryRestore = (y) => {
+      if (y <= 0) return;
+      const delays = [30, 100, 250, 500, 1000];
+      delays.forEach(d => setTimeout(() => {
+        try {
+          // 既にユーザーが手動でスクロールしていたら諦める
+          if (restored && Math.abs(window.scrollY - y) < 20) return;
+          window.scrollTo(0, y);
+          if (Math.abs(window.scrollY - y) < 20) restored = true;
+        } catch (e) {}
+      }, d));
+    };
     try {
       const y = Number(sessionStorage.getItem(JIAGE_SCROLL_KEY) || 0);
-      if (y > 0) setTimeout(() => { try { window.scrollTo(0, y); } catch (e) {} }, 30);
+      tryRestore(y);
     } catch (e) {}
+    // scroll イベントで都度保存 ( throttle 200ms )
+    let saveTimer = null;
+    const onScroll = () => {
+      if (saveTimer) return;
+      saveTimer = setTimeout(() => {
+        saveTimer = null;
+        try { sessionStorage.setItem(JIAGE_SCROLL_KEY, String(window.scrollY || 0)); } catch (e) {}
+      }, 200);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
     return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+      // 最終保存 ( unmount 時 )
       try { sessionStorage.setItem(JIAGE_SCROLL_KEY, String(window.scrollY || 0)); } catch (e) {}
     };
   }, []);
