@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.18.1-pin-photos-all-pins";
+const APP_VERSION = "2026-06-07-v9.19-tap-sound";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1172,6 +1172,61 @@ const JUDGMENTS = [
 const SUPABASE_URL = "https://ckcykbvislsjwvkizkqc.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrY3lrYnZpc2xzand2a2l6a3FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0Njk1MzIsImV4cCI6MjA5NDA0NTUzMn0.Yf2EnNHRi6M5mwaaNFwBATNZb8jVBG3LsFxMt6eDfH8";
 const DATA_ID = "hikari_main";
+
+// ===================== 🔊 v9.19: ボタンタップ効果音 =====================
+// Web Audio API で短いクリック音を生成 (外部ファイル不要、 軽量)
+// localStorage で ON/OFF (デフォルト ON)
+const TAP_SOUND_KEY = "hikari_tap_sound";
+let _tapAudioCtx = null;
+function _getTapAudioCtx() {
+  if (_tapAudioCtx) return _tapAudioCtx;
+  try {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return null;
+    _tapAudioCtx = new Ctor();
+    return _tapAudioCtx;
+  } catch (e) { return null; }
+}
+function isTapSoundEnabled() {
+  // デフォルト ON。 明示的に "0" が入ってる時だけ OFF
+  return localStorage.getItem(TAP_SOUND_KEY) !== "0";
+}
+function setTapSoundEnabled(on) {
+  try { localStorage.setItem(TAP_SOUND_KEY, on ? "1" : "0"); } catch (e) {}
+}
+function playTapSound() {
+  if (!isTapSoundEnabled()) return;
+  const ctx = _getTapAudioCtx();
+  if (!ctx) return;
+  try {
+    // suspended (iOS 等) なら resume
+    if (ctx.state === "suspended") ctx.resume();
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(800, now);
+    osc.frequency.exponentialRampToValueAtTime(400, now + 0.06);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.15, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.08);
+  } catch (e) {}
+}
+// 全 button / role=button タップで自動的に音を鳴らす
+if (typeof document !== "undefined") {
+  document.addEventListener("click", function(ev) {
+    const t = ev.target;
+    if (!t || typeof t.closest !== "function") return;
+    const btn = t.closest('button, [role="button"], a.btn');
+    if (!btn) return;
+    // disabled ボタンは鳴らさない
+    if (btn.disabled || btn.getAttribute("aria-disabled") === "true") return;
+    playTapSound();
+  }, true);
+}
 
 // ===================== 📷 v9.18: ピン写真ストレージ =====================
 // Supabase Storage bucket: hikari-photos (Public)
