@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.28-light-tracks-during-recording";
+const APP_VERSION = "2026-06-07-v9.29-no-sync-during-recording";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3134,8 +3134,13 @@ function MainApp({ onLock, onSwitchUser }) {
 
   // ポーリング：30秒ごとに最新データを取得（v9.21: 15秒→30秒に変更でメモリ/通信負荷半減）
   // ただし「自分が30秒以内に保存した」or「ユーザーが入力中」の時はスキップして、編集中のデータが消えないようにする
+  // 🆕 v9.29: 探索中 ( trackRecording=true ) は polling 全停止
+  //   ・800KB fetch + parse + merge + localStorage save が古い端末で 数秒固まる → メモリスパイク → 落ちる
+  //   ・探索中は他端末の更新を見る必要なし
+  //   ・探索停止後にすぐ次の polling tick で同期される
   useEffect(() => {
     const timer = setInterval(() => {
+      if (window.__hikariTrackRecording__) return; // 🆕 v9.29: 探索中は polling skip
       if (Date.now() - lastLocalSaveRef.current < 30000) return; // 直近の自分の保存はスキップ
       if (isUserEditing()) return; // 入力中はスキップ
       loadFromSupabase().then(remote => {
@@ -3594,6 +3599,17 @@ function MainApp({ onLock, onSwitchUser }) {
         return prev; // prev を返して再レンダリングも防ぐ
       }
 
+      // 🆕 v9.29: 探索中 ( trackRecording=true ) は Supabase save 全部 skip
+      //   ・探索中の re-save が古い端末でメモリスパイク → 落ちる主因
+      //   ・localStorage には保存 ( 端末側のデータは消えない )
+      //   ・探索停止時 or visibilitychange で強制 flush ( v9.22 既存ロジック )
+      if (window.__hikariTrackRecording__) {
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) {}
+        lastLocalSaveRef.current = now;
+        try { localStorage.setItem(LAST_SAVE_KEY, String(now)); } catch (e) {}
+        pendingTrackFlushRef.current = next; // 後で flush
+        return next;
+      }
       // 🆕 v9.22: 探索ルートの GPS 記録だけの変更は 30秒スロットルする
       //   理由: GPS 3秒ごとに 800KB upload → メモリ圧迫でアプリが落ちる事故が多発
       //   ・localStorage には即時保存
@@ -12717,7 +12733,22 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const trackLastPosRef = React.useRef(null);                   // 最後に記録した位置 {lat, lng}
   // 🆕 v9.3: watchPosition のクロージャに最新値を渡すため ref で同期
   const trackRecordingRef = React.useRef(false);
-  React.useEffect(() => { trackRecordingRef.current = trackRecording; }, [trackRecording]);
+  React.useEffect(() => {
+    trackRecordingRef.current = trackRecording;
+    // 🆕 v9.29: window グローバルにも同期 → polling / setData で参照
+    window.__hikariTrackRecording__ = trackRecording;
+    // 探索停止時 ( true → false ) に pendingTrackFlushRef を強制 flush
+    if (!trackRecording && pendingTrackFlushRef.current) {
+      const pending = pendingTrackFlushRef.current;
+      pendingTrackFlushRef.current = null;
+      try {
+        saveToSupabase(pending).then(() => {
+          lastTracksSaveRef.current = Date.now();
+          console.log("[v9.29] 探索停止 → 蓄積データを Supabase に flush");
+        }).catch(() => {});
+      } catch (e) {}
+    }
+  }, [trackRecording]);
   const currentUserRef = React.useRef(currentUser);
   React.useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
   // 🆕 v9.24: GPS 記録の batch buffer — setData を呼ばないでここに溜める
