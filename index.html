@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.21-polling-throttle";
+const APP_VERSION = "2026-06-07-v9.22-gps-save-throttle";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2862,6 +2862,9 @@ function MainApp({ onLock, onSwitchUser }) {
   // 🆕 直近の自分保存時刻を localStorage で永続化（強制更新後も5分ガードが効くように）
   const LAST_SAVE_KEY = "hikari_last_save";
   const lastLocalSaveRef = useRef(Number(localStorage.getItem(LAST_SAVE_KEY) || 0));
+  // 🆕 v9.22: tracks save throttle 用 ( GPS 探索中の頻繁 save 抑制 )
+  const lastTracksSaveRef = useRef(0);
+  const pendingTrackFlushRef = useRef(null); // throttle 中の最新 next を保持、 visibilitychange で flush
 
   // ローカル(キャッシュ)とリモートを賢くマージする関数
   // 🔧 削除IDトラッキング方式：
@@ -3147,6 +3150,34 @@ function MainApp({ onLock, onSwitchUser }) {
       });
     }, 30000); // 🆕 v9.21: 15s → 30s
     return () => clearInterval(timer);
+  }, []);
+
+  // 🆕 v9.22: 画面非表示 ( アプリ閉じる / バックグラウンド ) 時に
+  //   throttle で skip された最新 tracks を強制 flush
+  //   → アプリ閉じ直前のデータも確実に Supabase に届く
+  useEffect(() => {
+    const flush = () => {
+      const pending = pendingTrackFlushRef.current;
+      if (!pending) return;
+      pendingTrackFlushRef.current = null;
+      lastTracksSaveRef.current = Date.now();
+      try {
+        // sendBeacon は使えない ( Supabase REST に必要なヘッダが付かない )
+        // 通常の saveToSupabase を fire-and-forget で
+        saveToSupabase(pending).catch(() => {});
+        console.log("[v9.22] visibilitychange flush: tracks pushed to Supabase");
+      } catch (e) {}
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flush();
+    });
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", flush);
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+    };
   }, []);
 
   // 🆕 毎日のアラート通知：当日まだ未送信なら、ログインユーザー本人の担当アラートをまとめてプッシュ
@@ -3558,6 +3589,46 @@ function MainApp({ onLock, onSwitchUser }) {
       if (!hasActualChange) {
         console.log("[setData] 実質変更なし、Supabase保存スキップ");
         return prev; // prev を返して再レンダリングも防ぐ
+      }
+
+      // 🆕 v9.22: 探索ルートの GPS 記録だけの変更は 30秒スロットルする
+      //   理由: GPS 3秒ごとに 800KB upload → メモリ圧迫でアプリが落ちる事故が多発
+      //   ・localStorage には即時保存
+      //   ・Supabase save だけ throttle ( 30秒に1回 )
+      //   ・visibilitychange で画面非表示時に強制 flush するので、アプリ閉じ時のデータも安全
+      const _tracksOnlyChange = (() => {
+        try {
+          // tracks が変わったか
+          if ((next.tracks || null) === (prev.tracks || null)) return false;
+          // tracks 以外のすべてのキーが prev と同じ参照か
+          const allKeys = new Set([...Object.keys(prev || {}), ...Object.keys(next || {})]);
+          for (const k of allKeys) {
+            if (k === "tracks") continue;
+            if (k === "_pinPhotosUpdatedAt" || k === "_tracksRecoveredAt" || k === "updatedAt") continue;
+            if (next[k] !== prev[k]) return false; // tracks 以外に変化あり → 即 save
+          }
+          return true;
+        } catch (e) { return false; }
+      })();
+      const _trackThrottleMs = 30000;
+      if (_tracksOnlyChange) {
+        if ((now - (lastTracksSaveRef.current || 0)) < _trackThrottleMs) {
+          // throttle: localStorage には保存、 Supabase save スキップ
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+          // 念のため lastLocalSaveRef も更新 (polling skip 維持)
+          lastLocalSaveRef.current = now;
+          try { localStorage.setItem(LAST_SAVE_KEY, String(now)); } catch {}
+          // 後で flush できるように pending を覚える
+          pendingTrackFlushRef.current = next;
+          console.log("[v9.22] tracks-only change throttled (Supabase save skipped)");
+          return next;
+        }
+        // throttle 経過 → save 実行 + flush ref クリア
+        lastTracksSaveRef.current = now;
+        pendingTrackFlushRef.current = null;
+      } else {
+        // tracks 以外の変化 → どっちみち save するので flush ref はクリア
+        pendingTrackFlushRef.current = null;
       }
 
       // 自分の保存時刻を記録（ポーリング上書き防止用）
