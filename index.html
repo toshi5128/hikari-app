@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.25-photo-at-pin-creation";
+const APP_VERSION = "2026-06-07-v9.26-currentloc-throttle";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -12898,6 +12898,10 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   // 🆕 v8.95: 現地ピン機能
   const [placementMode, setPlacementMode] = useState(false); // 地図タップ待機モード
   const [currentLoc, setCurrentLoc] = useState(null); // {lat, lng, accuracy}
+  // 🆕 v9.26: setCurrentLoc を throttle して Leaflet re-render を抑制
+  //   GPS が 1秒ごとに setState → useEffect が毎秒 → marker/circle 毎秒再生成 → メモリリーク → アプリ落ち
+  //   対策: 3秒以上経過 OR 5m以上動いた時だけ setCurrentLoc を実行
+  const lastCurrentLocRef = React.useRef({ ts: 0, lat: 0, lng: 0 });
   const [pendingPin, setPendingPin] = useState(null); // {lat, lng}（地番フォーム表示用）
   const [centerLocKey, setCenterLocKey] = useState(0); // 現在地センタリング trigger
   const [pinForm, setPinForm] = useState({ address: "", landmark: "", assignee: "", memo: "" });
@@ -13033,7 +13037,20 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
         const accuracy = pos.coords.accuracy;
-        setCurrentLoc({ lat, lng, accuracy });
+        // 🆕 v9.26: setCurrentLoc を throttle (3秒以上 or 5m以上で更新)
+        //   Leaflet marker/circle 再描画コストを 1/3 に削減 → メモリ pressure 緩和
+        {
+          const last = lastCurrentLocRef.current;
+          const nowTs = Date.now();
+          const dt = nowTs - (last.ts || 0);
+          const dist = last.ts ? haversineMeters(last, { lat, lng }) : Infinity;
+          if (dt < 3000 && dist < 5) {
+            // skip - 直前 currentLoc を再利用
+          } else {
+            lastCurrentLocRef.current = { ts: nowTs, lat, lng };
+            setCurrentLoc({ lat, lng, accuracy });
+          }
+        }
         setGpsError(null);
         // 🆕 v9.24: GPS 記録は ref バッファに溜めるだけ、 setData は呼ばない
         //   ・setData → re-render → 800KB save の連鎖を完全に断つ
