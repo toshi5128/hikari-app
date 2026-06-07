@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.34-dynamic-areas-from-address";
+const APP_VERSION = "2026-06-07-v9.35-map-rotation-heading-up";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4837,12 +4837,92 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     } catch (e) {}
   }, [centerOnLocationKey]);
 
+  // 🆕 v9.35: 地図回転 ( ノースアップ / ヘディングアップ )
+  const [headingMode, setHeadingMode] = React.useState("north"); // "north" | "heading"
+  const lastValidHeadingRef = React.useRef(0);
+  const _curHeading = (currentLocation && typeof currentLocation.heading === "number" && !isNaN(currentLocation.heading))
+    ? currentLocation.heading
+    : lastValidHeadingRef.current;
+  if (currentLocation && typeof currentLocation.heading === "number" && !isNaN(currentLocation.heading)) {
+    lastValidHeadingRef.current = currentLocation.heading;
+  }
+  const mapBearing = headingMode === "heading" ? _curHeading : 0;
   return (
     <div style={{ position: "relative" }} className={hideZoomControl ? "hikari-hide-zoom" : ""}>
       <div
         ref={mapRef}
-        style={{ height, width: "100%", borderRadius: 12, border: `1px solid ${C.borderDim}` }}
+        style={{
+          height, width: "100%", borderRadius: 12, border: `1px solid ${C.borderDim}`,
+          transform: `rotate(${-mapBearing}deg)`,
+          transition: "transform 0.4s ease-out",
+        }}
       />
+      {/* 🆕 v9.35: 北矢印 ( 左下 ) — 地図の現在の向きを示す */}
+      <button
+        onClick={() => setHeadingMode(m => m === "north" ? "heading" : "north")}
+        title={headingMode === "north" ? "ノースアップ ( 上が北 )" : "ヘディングアップ ( 進行方向が上 )"}
+        style={{
+          position: "absolute",
+          top: 10, right: 10,
+          zIndex: 600,
+          width: 44, height: 44,
+          borderRadius: "50%",
+          background: "rgba(15,23,42,0.92)",
+          border: "1px solid rgba(255,255,255,0.12)",
+          color: "#fff",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+          fontFamily: "inherit",
+          padding: 0,
+        }}
+      >
+        <div style={{
+          width: 28, height: 28, position: "relative",
+          transform: `rotate(${mapBearing}deg)`,
+          transition: "transform 0.4s ease-out",
+        }}>
+          <div style={{
+            position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)",
+            width: 0, height: 0,
+            borderLeft: "6px solid transparent",
+            borderRight: "6px solid transparent",
+            borderBottom: "12px solid #ef4444",
+          }} />
+          <div style={{
+            position: "absolute", bottom: 0, left: "50%", transform: "translateX(-50%)",
+            width: 0, height: 0,
+            borderLeft: "6px solid transparent",
+            borderRight: "6px solid transparent",
+            borderTop: "12px solid #94a3b8",
+          }} />
+          <div style={{
+            position: "absolute", top: -2, left: "50%", transform: "translateX(-50%)",
+            fontSize: 8, fontWeight: 800, color: "#ef4444",
+            marginTop: -10,
+          }}>N</div>
+        </div>
+      </button>
+      {/* 🆕 v9.35: モード表示ラベル ( 北矢印の下 ) */}
+      <div style={{
+        position: "absolute",
+        top: 58, right: 10,
+        zIndex: 600,
+        background: "rgba(15,23,42,0.85)",
+        color: "#fff",
+        fontSize: 9,
+        fontWeight: 700,
+        padding: "3px 8px",
+        borderRadius: 10,
+        pointerEvents: "none",
+        fontFamily: "inherit",
+        letterSpacing: 0.5,
+      }}>
+        {headingMode === "north" ? "北固定" : "進行方向↑"}
+      </div>
+
       {/* 🆕 v8.133→v8.137: Googleマップ風の地図内固定検索バー（pendingPinLocation中は非表示） */}
       {searchProps && !pendingPinLocation && (
         <div style={{
@@ -13199,17 +13279,24 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         const lng = pos.coords.longitude;
         const accuracy = pos.coords.accuracy;
         // 🆕 v9.26: setCurrentLoc を throttle (3秒以上 or 5m以上で更新)
-        //   Leaflet marker/circle 再描画コストを 1/3 に削減 → メモリ pressure 緩和
+        //   🆕 v9.35: heading 変化 20度以上でも update ( 方向転換時にすぐ反映 )
         {
           const last = lastCurrentLocRef.current;
           const nowTs = Date.now();
           const dt = nowTs - (last.ts || 0);
           const dist = last.ts ? haversineMeters(last, { lat, lng }) : Infinity;
-          if (dt < 3000 && dist < 5) {
-            // skip - 直前 currentLoc を再利用
+          const newH = (typeof pos.coords.heading === "number" && !isNaN(pos.coords.heading)) ? pos.coords.heading : null;
+          const lastH = (typeof last.heading === "number") ? last.heading : null;
+          let headingDelta = Infinity;
+          if (newH != null && lastH != null) {
+            const d = Math.abs(newH - lastH);
+            headingDelta = Math.min(d, 360 - d);
+          }
+          if (dt < 3000 && dist < 5 && headingDelta < 20) {
+            // skip
           } else {
-            lastCurrentLocRef.current = { ts: nowTs, lat, lng };
-            setCurrentLoc({ lat, lng, accuracy });
+            lastCurrentLocRef.current = { ts: nowTs, lat, lng, heading: newH };
+            setCurrentLoc({ lat, lng, accuracy, heading: newH });
           }
         }
         setGpsError(null);
