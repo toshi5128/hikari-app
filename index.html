@@ -22,6 +22,13 @@
 <!-- Leaflet for in-app map -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- 🆕 v9.46.4: pdf.js for 登記簿 ・ レインズ PDF 自動抽出 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  if (window.pdfjsLib) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  }
+</script>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#04080f;color:#e2e8f0;font-family:'Noto Sans JP',sans-serif}body.light-mode{background:#f1f5f9 !important;color:#0f172a !important}body.light-mode [style*="background: #0d1422"],body.light-mode [style*="background:#0d1422"]{background:#ffffff !important}body.light-mode [style*="background: #04080f"]{background:#f1f5f9 !important}body.light-mode [style*="background: #0a0f1a"]{background:#f8fafc !important}body.light-mode [style*="border: 1px solid ${C.borderDim}"]{border-color:#cbd5e1 !important}body.light-mode input,body.light-mode select,body.light-mode textarea{background:#ffffff !important;color:#0f172a !important;border-color:#cbd5e1 !important}body.light-mode option{background:#ffffff !important;color:#0f172a !important}input,select,textarea,button{font-family:inherit}
 input[type="date"],input[type="time"]{color-scheme:dark}
 input[type="date"]::-webkit-calendar-picker-indicator,input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(0.7) sepia(1) saturate(5) hue-rotate(175deg) brightness(1.2);cursor:pointer;opacity:1;padding:4px;border-radius:4px}
@@ -141,7 +148,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.46.2-assessment-step-ui";
+const APP_VERSION = "2026-06-08-v9.46.4-pdf-extract-tokibo-reins";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15006,7 +15013,117 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       assignee: j.assignee || "",
       ownerName: j.ownerName || "",
       memo: "",
+      // 🆕 v9.46.4: PDF 抽出結果
+      legalDoc: null,    // { fileName, raw, fields: {landArea, buildingArea, builtYear, structure} }
+      legalParsing: false,
+      reins: null,       // { fileName, rows: [{addr, age, land, building, price, date}] }
+      reinsParsing: false,
     });
+  };
+
+  // 🆕 v9.46.4: 登記簿 PDF からテキスト抽出 → 正規表現で自動抽出
+  const handleLegalDocUpload = async (file) => {
+    if (!file || !window.pdfjsLib) {
+      alert("PDF読み込みに必要なライブラリが未ロードです。 ページを再読込してください。");
+      return;
+    }
+    setAssessmentForm(f => ({ ...f, legalParsing: true }));
+    try {
+      const buf = await file.arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+      let raw = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const tc = await page.getTextContent();
+        raw += tc.items.map(it => it.str).join(" ") + "\n";
+      }
+      // 正規表現で要素抽出
+      const fields = {};
+      // 地積 ( 土地面積 )
+      const mLand = raw.match(/地\s*積[\s\S]{0,30}?(\d+(?:\.\d+)?)\s*(?:m|㎡|平方)/);
+      if (mLand) fields.landArea = mLand[1];
+      // 床面積 ( 1階 / 2階 / 合計 )
+      const mFloor = [...raw.matchAll(/(\d+(?:\.\d+)?)\s*(?:m|㎡)/g)].map(m => parseFloat(m[1])).filter(n => n > 5 && n < 1000);
+      if (mFloor.length >= 2) {
+        // 1階 + 2階の合計が建物床面積想定 ( 2階建ての場合 )
+        fields.buildingArea = (mFloor[1] + (mFloor[2] || 0)).toFixed(2);
+      }
+      // 新築年月日 ( 元号 → 西暦変換 )
+      const mEra = raw.match(/(昭和|平成|令和)\s*(\d+)\s*年/);
+      if (mEra) {
+        const base = mEra[1] === "昭和" ? 1925 : mEra[1] === "平成" ? 1988 : 2018;
+        fields.builtYear = String(base + parseInt(mEra[2]));
+      }
+      // 構造
+      const mStruct = raw.match(/(木造|鉄筋コンクリート造|鉄骨造|鉄筋鉄骨造|軽量鉄骨造)[^\s]*/);
+      if (mStruct) fields.structure = mStruct[0];
+
+      setAssessmentForm(f => ({
+        ...f,
+        legalParsing: false,
+        legalDoc: { fileName: file.name, raw: raw.slice(0, 2000), fields },
+        // 抽出値で空欄を埋める ( 既存入力は上書きしない )
+        landArea: f.landArea || fields.landArea || "",
+        buildingArea: f.buildingArea || fields.buildingArea || "",
+        builtYear: f.builtYear || fields.builtYear || "",
+        structure: (f.structure === "木造2階建" && fields.structure) ? fields.structure : f.structure,
+      }));
+    } catch (e) {
+      console.error("[登記簿PDF抽出] エラー:", e);
+      setAssessmentForm(f => ({ ...f, legalParsing: false }));
+      alert("PDFの読み込みに失敗しました: " + e.message);
+    }
+  };
+
+  // 🆕 v9.46.4: レインズ成約事例 PDF からテーブル抽出
+  const handleReinsUpload = async (file) => {
+    if (!file || !window.pdfjsLib) {
+      alert("PDF読み込みに必要なライブラリが未ロードです。 ページを再読込してください。");
+      return;
+    }
+    setAssessmentForm(f => ({ ...f, reinsParsing: true }));
+    try {
+      const buf = await file.arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+      let raw = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const tc = await page.getTextContent();
+        raw += tc.items.map(it => it.str).join(" ") + "\n";
+      }
+      // レインズ事例の典型パターンを抽出
+      // 例: 「熊谷市〇〇 築XX年 土地XXm² 建物XXm² XXXX万円 2026/01」 のような順序を想定
+      const rows = [];
+      // 価格パターン: 数字+万円
+      const priceMatches = [...raw.matchAll(/(\d{3,5})\s*万円?/g)];
+      // 築年数パターン: 築XX年
+      const ageMatches = [...raw.matchAll(/築\s*(\d{1,2})\s*年/g)];
+      // 面積パターン: XX.XX m² or ㎡
+      const areaMatches = [...raw.matchAll(/(\d+(?:\.\d+)?)\s*(?:m|㎡)/g)];
+      // 所在地パターン: 〇〇市〇〇
+      const addrMatches = [...raw.matchAll(/([一-龥ぁ-んァ-ヶ]{2,5}市[一-龥ぁ-んァ-ヶー]{1,8})/g)];
+      // 単純化: 各 配列を順番に組み合わせる ( 最大 6 行 )
+      const maxRows = Math.min(6, priceMatches.length, ageMatches.length);
+      for (let i = 0; i < maxRows; i++) {
+        rows.push({
+          addr: (addrMatches[i] && addrMatches[i][1]) || "—",
+          age: ageMatches[i] ? `築${ageMatches[i][1]}年` : "—",
+          land: areaMatches[i * 2] ? `${areaMatches[i * 2][1]}㎡` : "—",
+          building: areaMatches[i * 2 + 1] ? `${areaMatches[i * 2 + 1][1]}㎡` : "—",
+          price: priceMatches[i] ? `${priceMatches[i][1]} 万円` : "—",
+          date: "—",
+        });
+      }
+      setAssessmentForm(f => ({
+        ...f,
+        reinsParsing: false,
+        reins: { fileName: file.name, rows, rawLen: raw.length },
+      }));
+    } catch (e) {
+      console.error("[レインズPDF抽出] エラー:", e);
+      setAssessmentForm(f => ({ ...f, reinsParsing: false }));
+      alert("PDFの読み込みに失敗しました: " + e.message);
+    }
   };
 
   // 🆕 v9.46: 査定書 HTML を生成 ( 新タブで開く )
@@ -15025,6 +15142,20 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     const today = new Date();
     const dateStr = `${today.getFullYear()}年 ${today.getMonth() + 1}月 ${today.getDate()}日`;
     const docNo = `HK-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}-${Math.floor(Math.random() * 900 + 100)}`;
+    // 🆕 v9.46.4: レインズ事例セクション
+    const reinsRows = (form.reins && form.reins.rows && form.reins.rows.length > 0) ? form.reins.rows : null;
+    const reinsSection = reinsRows ? `
+<div class="sec">■ レインズ 成約事例 ( アップロードPDFから自動抽出 )</div>
+<div class="card">
+<p class="bt">国交省指定の取引データベース「レインズ」 から、 本物件と類似条件の <b>実際の成約価格</b> を反映しています。</p>
+<table class="t">
+<tr><th>所在地</th><th>築年数</th><th>土地面積</th><th>建物面積</th><th>成約価格</th><th>成約日</th></tr>
+${reinsRows.map(r => `<tr><td>${r.addr}</td><td style="text-align:center">${r.age}</td><td style="text-align:center">${r.land}</td><td style="text-align:center">${r.building}</td><td style="text-align:center;color:#dc2626;font-weight:700">${r.price}</td><td style="text-align:center">${r.date}</td></tr>`).join("")}
+<tr class="hi"><td><b>本物件 ( 想定 )</b></td><td style="text-align:center"><b>築${age}年</b></td><td style="text-align:center"><b>${landArea > 0 ? landArea.toFixed(2) + "㎡" : "—"}</b></td><td style="text-align:center"><b>${buildingArea > 0 ? buildingArea.toFixed(2) + "㎡" : "—"}</b></td><td style="text-align:center"><b>${buyPrice > 0 ? buyPrice.toLocaleString() + " 万円" : "—"}</b></td><td style="text-align:center">—</td></tr>
+</table>
+<p class="note">※ 出典: レインズ取引情報 ( REINS Market Information ) ・ 売主様アップロード PDF から自動抽出</p>
+</div>
+` : "";
     const html = `<!DOCTYPE html>
 <html lang="ja"><head><meta charset="UTF-8"><title>査定書 - ${form.address}</title>
 <style>
@@ -15082,7 +15213,7 @@ p.bt{font-size:12px;padding:12px 22px;line-height:1.9;color:#334155}
 <tr><th>新築年月日</th><td>${builtYearNum > 0 ? builtYearNum + "年 → 築" + age + "年" : "—"}</td></tr>
 </table>
 </div>
-
+${reinsSection}
 <div class="sec orange">■ 解体 ・ 諸費用 シミュレーション ( 土地売却時 )</div>
 <div class="card">
 <table class="t">
@@ -17339,29 +17470,63 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             </div>
           </div>
 
-          {/* Step 2: 登記簿アップロード ( Phase 2 ) */}
-          <div style={stepCard(false)}>
-            <div><span style={stepNum(false)}>2</span><b style={{ fontSize: 13, color: C.text }}>登記簿謄本 PDF をアップロード</b>
-              <span style={{ marginLeft: 8, fontSize: 9, background: C.warn, color: "#fff", padding: "2px 6px", borderRadius: 8, fontWeight: 800 }}>Phase 2 予定</span>
+          {/* Step 2: 登記簿アップロード */}
+          <div style={stepCard(true)}>
+            <div><span style={stepNum(true)}>2</span><b style={{ fontSize: 13, color: C.text }}>登記簿謄本 PDF をアップロード</b>
+              {assessmentForm.legalDoc && <span style={{ marginLeft: 8, fontSize: 9, background: C.success, color: "#fff", padding: "2px 6px", borderRadius: 8, fontWeight: 800 }}>✅ 取込済</span>}
             </div>
             <div style={stepBody}>
-              <div style={{ border: `2px dashed ${C.borderDim}`, borderRadius: 8, padding: 12, textAlign: "center", color: C.muted, fontSize: 11, background: C.bg }}>
-                📎 PDF アップロード ( 機能準備中 )
-              </div>
-              <div style={{ marginTop: 4, fontSize: 10 }}>面積 ・ 構造 ・ 築年数を自動抽出します ( 現在は下の Step 4 で手動入力 )</div>
+              <label style={{
+                display: "block",
+                border: `2px dashed ${assessmentForm.legalDoc ? C.success : "#0ea5e966"}`,
+                borderRadius: 8, padding: 12, textAlign: "center",
+                color: assessmentForm.legalDoc ? C.success : "#0ea5e9",
+                fontSize: 11, background: assessmentForm.legalDoc ? C.success + "11" : "#0ea5e911",
+                cursor: assessmentForm.legalParsing ? "wait" : "pointer", fontWeight: 700,
+              }}>
+                {assessmentForm.legalParsing ? "⏳ 解析中..." :
+                  assessmentForm.legalDoc ? `✅ ${assessmentForm.legalDoc.fileName}` : "📎 タップして PDF を選択"}
+                <input type="file" accept="application/pdf" style={{ display: "none" }}
+                  onChange={e => { if (e.target.files[0]) handleLegalDocUpload(e.target.files[0]); e.target.value = ""; }} />
+              </label>
+              <div style={{ marginTop: 4, fontSize: 10 }}>面積 ・ 構造 ・ 築年数を自動抽出して Step 4 に反映します</div>
+              {assessmentForm.legalDoc && assessmentForm.legalDoc.fields && (
+                <div style={{ marginTop: 6, padding: 8, background: C.success + "11", borderRadius: 6, fontSize: 10, color: C.text }}>
+                  📊 <b>抽出結果</b>:
+                  {assessmentForm.legalDoc.fields.landArea && <> 土地: {assessmentForm.legalDoc.fields.landArea}㎡</>}
+                  {assessmentForm.legalDoc.fields.buildingArea && <> / 建物: {assessmentForm.legalDoc.fields.buildingArea}㎡</>}
+                  {assessmentForm.legalDoc.fields.builtYear && <> / 新築: {assessmentForm.legalDoc.fields.builtYear}年</>}
+                  {assessmentForm.legalDoc.fields.structure && <> / 構造: {assessmentForm.legalDoc.fields.structure}</>}
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Step 3: レインズアップロード ( Phase 2 ) */}
-          <div style={stepCard(false)}>
-            <div><span style={stepNum(false)}>3</span><b style={{ fontSize: 13, color: C.text }}>レインズ成約事例 PDF</b>
-              <span style={{ marginLeft: 8, fontSize: 9, background: C.warn, color: "#fff", padding: "2px 6px", borderRadius: 8, fontWeight: 800 }}>Phase 2 予定</span>
+          {/* Step 3: レインズアップロード */}
+          <div style={stepCard(true)}>
+            <div><span style={stepNum(true)}>3</span><b style={{ fontSize: 13, color: C.text }}>レインズ成約事例 PDF</b>
+              {assessmentForm.reins && <span style={{ marginLeft: 8, fontSize: 9, background: C.success, color: "#fff", padding: "2px 6px", borderRadius: 8, fontWeight: 800 }}>✅ {assessmentForm.reins.rows.length}件</span>}
             </div>
             <div style={stepBody}>
-              <div style={{ border: `2px dashed ${C.borderDim}`, borderRadius: 8, padding: 12, textAlign: "center", color: C.muted, fontSize: 11, background: C.bg }}>
-                📎 PDF アップロード ( 機能準備中 )
-              </div>
-              <div style={{ marginTop: 4, fontSize: 10 }}>類似条件の成約事例を自動抽出して査定書に反映します</div>
+              <label style={{
+                display: "block",
+                border: `2px dashed ${assessmentForm.reins ? C.success : "#0ea5e966"}`,
+                borderRadius: 8, padding: 12, textAlign: "center",
+                color: assessmentForm.reins ? C.success : "#0ea5e9",
+                fontSize: 11, background: assessmentForm.reins ? C.success + "11" : "#0ea5e911",
+                cursor: assessmentForm.reinsParsing ? "wait" : "pointer", fontWeight: 700,
+              }}>
+                {assessmentForm.reinsParsing ? "⏳ 解析中..." :
+                  assessmentForm.reins ? `✅ ${assessmentForm.reins.fileName} ( ${assessmentForm.reins.rows.length}件抽出 )` : "📎 タップして PDF を選択"}
+                <input type="file" accept="application/pdf" style={{ display: "none" }}
+                  onChange={e => { if (e.target.files[0]) handleReinsUpload(e.target.files[0]); e.target.value = ""; }} />
+              </label>
+              <div style={{ marginTop: 4, fontSize: 10 }}>類似条件の成約事例を抽出して 査定書 にテーブルとして反映します</div>
+              {assessmentForm.reins && assessmentForm.reins.rows.length === 0 && (
+                <div style={{ marginTop: 6, padding: 8, background: C.warn + "22", borderRadius: 6, fontSize: 10, color: C.warn }}>
+                  ⚠️ PDF から事例を抽出できませんでした。 査定書には反映されません ( 査定書 PDF の構造が複雑な場合があります )。
+                </div>
+              )}
             </div>
           </div>
 
