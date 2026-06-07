@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.40-jiage-view-mode-and-scroll-persistence";
+const APP_VERSION = "2026-06-07-v9.41-map-filter-fab";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16011,6 +16011,145 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       })()}
                       tracks={trackRecording ? null : visibleTracks}
                     />
+                    {/* 🆕 v9.41: 地図内フローティング絞り込み ( FAB + 展開パネル ) */}
+                    {(() => {
+                      const stColor = (st) => JIAGE_STATUS_COLORS[st]
+                        || (st === "NG" || st === "断られた" || st === "お断り" ? "#ef4444"
+                        : st === "訪問済" ? C.success
+                        : st === "不在" ? C.warn
+                        : st === "見込" || st === "興味あり" || st === "検討中" ? C.accent
+                        : st === "仕入れ完了" ? "#06b6d4"
+                        : st === "居住している" ? "#64748b"
+                        : C.muted);
+                      const pinStateKeys = ["pending_lot","lookup_pending","excluded","lookup_failed","dm_ready"];
+                      const activePinFilter = quickFilter && pinStateKeys.includes(quickFilter) ? 1 : 0;
+                      const totalSelected = filterStatuses.length + activePinFilter;
+                      return (
+                        <>
+                          {/* FAB */}
+                          <button
+                            onClick={() => setMapFilterOpen(v => !v)}
+                            style={{
+                              position: "absolute",
+                              right: 12,
+                              bottom: 200,
+                              zIndex: 600,
+                              width: 56, height: 56,
+                              borderRadius: "50%",
+                              background: "#fff",
+                              border: "1px solid rgba(0,0,0,0.12)",
+                              boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                              cursor: "pointer",
+                              display: "flex", flexDirection: "column",
+                              alignItems: "center", justifyContent: "center",
+                              fontFamily: "inherit", padding: 0,
+                              color: C.accent,
+                            }}
+                            title="絞り込み"
+                          >
+                            <span style={{ fontSize: 20, lineHeight: 1 }}>🚦</span>
+                            <span style={{ fontSize: 8, color: C.muted, marginTop: 1, fontWeight: 700, letterSpacing: 0.4 }}>絞り込み</span>
+                            {totalSelected > 0 && (
+                              <span style={{
+                                position: "absolute", top: -4, right: -4,
+                                background: "#dc2626", color: "#fff",
+                                fontSize: 10, fontWeight: 800,
+                                minWidth: 18, height: 18, borderRadius: 9,
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                border: "2px solid #fff", padding: "0 4px",
+                              }}>{totalSelected}</span>
+                            )}
+                          </button>
+                          {/* 展開パネル */}
+                          {mapFilterOpen && (
+                            <div style={{
+                              position: "absolute",
+                              right: 76,
+                              bottom: 200,
+                              zIndex: 600,
+                              width: 280,
+                              maxHeight: "60vh",
+                              overflowY: "auto",
+                              background: C.cardBg,
+                              border: `1px solid ${C.borderDim}`,
+                              borderRadius: 14,
+                              boxShadow: "0 8px 32px rgba(0,0,0,0.25)",
+                              padding: 14,
+                            }}>
+                              <div style={{
+                                display: "flex", justifyContent: "space-between", alignItems: "center",
+                                marginBottom: 10, paddingBottom: 8, borderBottom: `1px solid ${C.borderDim}`,
+                              }}>
+                                <h3 style={{ fontSize: 13, fontWeight: 800, color: C.text, margin: 0 }}>🚦 絞り込み</h3>
+                                <button onClick={() => setMapFilterOpen(false)} style={{
+                                  width: 24, height: 24, borderRadius: "50%",
+                                  background: "transparent", border: "none", color: C.muted,
+                                  fontSize: 16, cursor: "pointer", padding: 0,
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  fontFamily: "inherit",
+                                }}>✕</button>
+                              </div>
+                              <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}>📍 ピン状態</div>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
+                                {[
+                                  { key: "pending_lot",    label: "🟡 地番待ち",  color: "#fde047", count: pendingPinSummary.total },
+                                  { key: "lookup_pending", label: "⏳ 謄本待ち",  color: "#f97316", count: pendingPinSummary.lookupPendingTotal },
+                                  { key: "excluded",       label: "🚫 対象外",   color: "#cbd5e1", count: pendingPinSummary.excludedTotal },
+                                  { key: "lookup_failed",  label: "🔧 要修正",   color: "#dc2626", count: pendingPinSummary.lookupFailedTotal },
+                                  { key: "dm_ready",       label: "🚪 訪問OK",   color: "#16a34a", count: pendingPinSummary.dmReadyTotal },
+                                ].map(p => {
+                                  const isActive = quickFilter === p.key;
+                                  const isLight = ["#fde047","#cbd5e1"].includes(p.color);
+                                  return (
+                                    <button key={p.key} onClick={() => {
+                                      setQuickFilter(prev => prev === p.key ? null : p.key);
+                                      setFilterMember("__ALL__");
+                                    }} style={{
+                                      padding: "4px 9px", borderRadius: 14, cursor: "pointer", fontSize: 11,
+                                      background: isActive ? p.color : C.bg,
+                                      color: isActive ? (isLight ? "#000" : "#fff") : (p.count > 0 ? p.color : C.muted),
+                                      border: `1.5px solid ${isActive ? p.color : (p.count > 0 ? p.color + "55" : C.borderDim)}`,
+                                      fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: isActive ? 800 : 600,
+                                    }}>
+                                      {isActive ? "✓ " : ""}{p.label} <span style={{ opacity: 0.8, fontSize: 9, marginLeft: 3 }}>{p.count}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}>📋 営業ステータス</div>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                                {ATTACK_STATUSES.map(st => {
+                                  const isActive = filterStatuses.includes(st);
+                                  const count = (data.jiage || []).filter(j => j.status === st).length;
+                                  const color = stColor(st);
+                                  return (
+                                    <button key={st} onClick={() => {
+                                      setFilterStatuses(prev => prev.includes(st) ? prev.filter(s => s !== st) : [...prev, st]);
+                                    }} style={{
+                                      padding: "4px 9px", borderRadius: 14, cursor: "pointer", fontSize: 11,
+                                      background: isActive ? color : C.bg,
+                                      color: isActive ? "#fff" : (count > 0 ? color : C.muted),
+                                      border: `1.5px solid ${isActive ? color : (count > 0 ? color + "55" : C.borderDim)}`,
+                                      fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: isActive ? 800 : 600,
+                                    }}>
+                                      {isActive ? "✓ " : ""}{st} <span style={{ opacity: 0.8, fontSize: 9, marginLeft: 3 }}>{count}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              {totalSelected > 0 && (
+                                <button onClick={() => { setFilterStatuses([]); setQuickFilter(null); }} style={{
+                                  marginTop: 10, width: "100%", padding: "7px 10px",
+                                  background: "transparent", border: `1px solid ${C.borderDim}`,
+                                  color: C.muted, borderRadius: 8,
+                                  fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                }}>✕ 絞り込み全解除</button>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span>📍 {itemsWithCoord.length}件のピンを表示中</span>
                       {itemsNoCoord.length > 0 && (
