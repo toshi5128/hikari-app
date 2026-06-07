@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.29.1-rollback-to-v9.28";
+const APP_VERSION = "2026-06-07-v9.30-live-polyline-direct-dom";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3134,8 +3134,12 @@ function MainApp({ onLock, onSwitchUser }) {
 
   // ポーリング：30秒ごとに最新データを取得（v9.21: 15秒→30秒に変更でメモリ/通信負荷半減）
   // ただし「自分が30秒以内に保存した」or「ユーザーが入力中」の時はスキップして、編集中のデータが消えないようにする
+  // 🆕 v9.29.2: 探索中 ( trackRecording=true ) は polling 全停止
+  //   理由: 800KB fetch + parse + merge + localStorage save が古い端末で 1〜2秒固まる → メモリスパイク
   useEffect(() => {
     const timer = setInterval(() => {
+      // 🆕 v9.29.2: 探索中は polling 自体を skip ( fetch しない )
+      try { if (window.__hikariTrackRecording__) return; } catch (e) {}
       if (Date.now() - lastLocalSaveRef.current < 30000) return; // 直近の自分の保存はスキップ
       if (isUserEditing()) return; // 入力中はスキップ
       loadFromSupabase().then(remote => {
@@ -4076,6 +4080,65 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   // 🆕 v8.133: 開いてるポップアップの ID を記憶（再生成後に復元）
   const openPopupIdRef = React.useRef(null);
 
+  // 🆕 v9.30: ライブ polyline - 探索中に GPS callback から DOM 直接更新
+  //   ・React state を経由しない → re-render ゼロ → 軽量
+  //   ・GPS 2秒間隔で点が伸びる
+  //   ・autoFollowLocation の時だけ生成 ( 探索中の地図画面 )
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (!autoFollowLocation) {
+      // 探索 OFF or 別画面 → ライブ polyline を消す
+      if (livePolylineRef.current) {
+        try { map.removeLayer(livePolylineRef.current); } catch (e) {}
+        livePolylineRef.current = null;
+      }
+      livePolylinePointsRef.current = [];
+      try { window.__hikariLivePolyline__ = null; } catch (e) {}
+      return;
+    }
+    // ライブ polyline を 1 本作成
+    if (!livePolylineRef.current) {
+      livePolylinePointsRef.current = [];
+      livePolylineRef.current = L.polyline([], {
+        color: "#3b82f6",
+        weight: 6,
+        opacity: 0.92,
+        smoothFactor: 0.5,
+        lineCap: "round",
+        lineJoin: "round",
+        renderer: L.canvas(),
+        interactive: false,
+      }).addTo(map);
+    }
+    // window 経由で GPS callback から直接アクセス可能にする
+    try {
+      window.__hikariLivePolyline__ = {
+        addPoint: (lat, lng) => {
+          try {
+            livePolylinePointsRef.current.push([lat, lng]);
+            // 直近 600 点で上限 ( ≒20 分 @ 2秒間隔 )。 古いのは間引いて memory 制御
+            if (livePolylinePointsRef.current.length > 600) {
+              livePolylinePointsRef.current = livePolylinePointsRef.current.filter((_, i) => i % 2 === 0);
+            }
+            if (livePolylineRef.current) {
+              livePolylineRef.current.setLatLngs(livePolylinePointsRef.current);
+            }
+          } catch (e) {}
+        },
+        reset: () => {
+          livePolylinePointsRef.current = [];
+          if (livePolylineRef.current) {
+            try { livePolylineRef.current.setLatLngs([]); } catch (e) {}
+          }
+        },
+      };
+    } catch (e) {}
+    return () => {
+      try { window.__hikariLivePolyline__ = null; } catch (e) {}
+    };
+  }, [autoFollowLocation]);
+
   // マーカー更新
   React.useEffect(() => {
     const map = mapInstanceRef.current;
@@ -4478,6 +4541,9 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
 
   // 🆕 v9.0→v9.7: 探索ルート描画 — 週ごと色分け＋線タップで担当者表示
   const trackLayersRef = React.useRef([]);
+  // 🆕 v9.30: 探索中のライブ polyline ( 1 本だけ、 React 経由せず DOM 直接更新で軽量 )
+  const livePolylineRef = React.useRef(null);
+  const livePolylinePointsRef = React.useRef([]);
   // 🆕 v9.7: 週ごとの色（8色ローテ・判別しやすい色相）
   const WEEK_COLORS = [
     "#3b82f6", // 1週目: 青
@@ -12717,7 +12783,11 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const trackLastPosRef = React.useRef(null);                   // 最後に記録した位置 {lat, lng}
   // 🆕 v9.3: watchPosition のクロージャに最新値を渡すため ref で同期
   const trackRecordingRef = React.useRef(false);
-  React.useEffect(() => { trackRecordingRef.current = trackRecording; }, [trackRecording]);
+  React.useEffect(() => {
+    trackRecordingRef.current = trackRecording;
+    // 🆕 v9.29.2: window グローバルにも同期 → polling useEffect で参照
+    try { window.__hikariTrackRecording__ = trackRecording; } catch (e) {}
+  }, [trackRecording]);
   const currentUserRef = React.useRef(currentUser);
   React.useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
   // 🆕 v9.24: GPS 記録の batch buffer — setData を呼ばないでここに溜める
@@ -13084,7 +13154,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
           const lastTs = trackLastSavedRef.current || 0;
           const lastPos = trackLastPosRef.current;
           const isFirst = !lastPos;
-          const enoughTime = isFirst || (nowMs - lastTs) >= 3000;
+          // 🆕 v9.30: 3秒 → 2秒に短縮 ( ユーザー要望: 走ったところにすぐ点 )
+          const enoughTime = isFirst || (nowMs - lastTs) >= 2000;
           const dist = lastPos ? haversineMeters(lastPos, { lat, lng }) : Infinity;
           if (enoughTime && dist >= 2) {
             trackLastSavedRef.current = nowMs;
@@ -13092,6 +13163,12 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             // バッファに追加 ( setData なし )
             if (!gpsBatchRef.current[userNow]) gpsBatchRef.current[userNow] = [];
             gpsBatchRef.current[userNow].push({ ts: nowMs, lat, lng });
+            // 🆕 v9.30: ライブ polyline に直接ポイント追加 ( React state を経由しない、 軽量 )
+            try {
+              if (window.__hikariLivePolyline__ && window.__hikariLivePolyline__.addPoint) {
+                window.__hikariLivePolyline__.addPoint(lat, lng);
+              }
+            } catch (e) {}
           }
         }
       },
@@ -15587,7 +15664,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       onFitBounds={(pendingPin || selected) ? undefined : (() => setFitBoundsKey(Date.now()))}
                       hideZoomControl={!!(pendingPin || selected)}
                       autoFollowLocation={trackRecording && !pendingPin && !selected}
-                      tracks={trackRecording ? recordingLightTracks : visibleTracks}
+                      tracks={trackRecording ? null : visibleTracks}
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span>📍 {itemsWithCoord.length}件のピンを表示中</span>
