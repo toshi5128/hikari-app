@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.31-remove-phone-attack";
+const APP_VERSION = "2026-06-07-v9.32-keep-live-polyline-on-pin";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4036,7 +4036,7 @@ function PendingPhotoSection({ photos, onAdd, onRemove }) {
 }
 
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -4083,11 +4083,11 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   // 🆕 v9.30: ライブ polyline - 探索中に GPS callback から DOM 直接更新
   //   ・React state を経由しない → re-render ゼロ → 軽量
   //   ・GPS 2秒間隔で点が伸びる
-  //   ・autoFollowLocation の時だけ生成 ( 探索中の地図画面 )
+  //   ・🆕 v9.32: liveRecording (=trackRecording) で管理。 ピン立てや詳細表示中も消えない
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    if (!autoFollowLocation) {
+    if (!liveRecording) {
       // 探索 OFF or 別画面 → ライブ polyline を消す
       if (livePolylineRef.current) {
         try { map.removeLayer(livePolylineRef.current); } catch (e) {}
@@ -4137,7 +4137,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     return () => {
       try { window.__hikariLivePolyline__ = null; } catch (e) {}
     };
-  }, [autoFollowLocation]);
+  }, [liveRecording]);
 
   // マーカー更新
   React.useEffect(() => {
@@ -15664,6 +15664,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       onFitBounds={(pendingPin || selected) ? undefined : (() => setFitBoundsKey(Date.now()))}
                       hideZoomControl={!!(pendingPin || selected)}
                       autoFollowLocation={trackRecording && !pendingPin && !selected}
+                      liveRecording={trackRecording}
                       tracks={trackRecording ? null : visibleTracks}
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
