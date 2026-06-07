@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.26-currentloc-throttle";
+const APP_VERSION = "2026-06-07-v9.28-light-tracks-during-recording";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -12805,6 +12805,27 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     });
     return result;
   }, [data && data.tracks, trackVisibleMembers, trackPeriodRange]);
+  // 🆕 v9.28: 探索中の軽量化描画 — 自分の今日分だけ、5点に1点間引き
+  //   ・「どこ通ったか分かる」 を保ちながら、 描画ポイント数を 1/10 程度に減らす
+  //   ・メモリ pressure を下げる ( 長島端末対策 )
+  const recordingLightTracks = React.useMemo(() => {
+    if (!trackRecording || !currentUser) return null;
+    const all = (data && data.tracks) || {};
+    const myPts = Array.isArray(all[currentUser]) ? all[currentUser] : [];
+    // 今日 00:00 以降のポイントだけ
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const todayTs = todayStart.getTime();
+    const todayPts = myPts.filter(p => p && typeof p.lat === "number" && (p.ts || 0) >= todayTs);
+    // 5点に1点間引き ( 線が荒くなるが、 どこ通ったかは分かる)
+    //   ただし最後の 20点は間引かずに描画 ( 現在地に近い軌跡は密に )
+    const tailKeep = 20;
+    const head = todayPts.slice(0, Math.max(0, todayPts.length - tailKeep));
+    const tail = todayPts.slice(Math.max(0, todayPts.length - tailKeep));
+    const headSparse = head.filter((_, i) => i % 5 === 0);
+    const merged = [...headSparse, ...tail];
+    if (merged.length === 0) return null;
+    return { [currentUser]: merged };
+  }, [trackRecording, data && data.tracks, currentUser]);
   // 🆕 v9.8: 走行距離計算（メートル）
   const trackDistanceMeters = React.useMemo(() => {
     let total = 0;
@@ -15566,7 +15587,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       onFitBounds={(pendingPin || selected) ? undefined : (() => setFitBoundsKey(Date.now()))}
                       hideZoomControl={!!(pendingPin || selected)}
                       autoFollowLocation={trackRecording && !pendingPin && !selected}
-                      tracks={visibleTracks}
+                      tracks={trackRecording ? recordingLightTracks : visibleTracks}
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span>📍 {itemsWithCoord.length}件のピンを表示中</span>
