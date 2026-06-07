@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.23-keep-login-on-reload";
+const APP_VERSION = "2026-06-07-v9.24-gps-batch-buffer";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -12652,6 +12652,46 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   React.useEffect(() => { trackRecordingRef.current = trackRecording; }, [trackRecording]);
   const currentUserRef = React.useRef(currentUser);
   React.useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
+  // 🆕 v9.24: GPS 記録の batch buffer — setData を呼ばないでここに溜める
+  //   30秒タイマー and visibilitychange で一括 flush → setData → save
+  const gpsBatchRef = React.useRef({});
+  // 30秒ごとに batch を data.tracks に flush
+  React.useEffect(() => {
+    const flushBatch = () => {
+      const batch = gpsBatchRef.current;
+      const keys = Object.keys(batch);
+      if (keys.length === 0) return;
+      gpsBatchRef.current = {}; // クリア
+      let totalAdded = 0;
+      keys.forEach(m => { totalAdded += (batch[m] || []).length; });
+      if (totalAdded === 0) return;
+      console.log(`[v9.24] gps batch flush: ${totalAdded} points across ${keys.length} member(s)`);
+      setData(d => {
+        const prev = (d && d.tracks) || {};
+        const next = { ...prev };
+        keys.forEach(m => {
+          const cur = Array.isArray(next[m]) ? next[m] : [];
+          next[m] = [...cur, ...(batch[m] || [])];
+        });
+        return { ...d, tracks: next };
+      });
+    };
+    const t = setInterval(flushBatch, 30000);
+    // visibilitychange / pagehide / beforeunload で強制 flush
+    const onHide = () => flushBatch();
+    const onVis = () => { if (document.visibilityState === "hidden") flushBatch(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onHide);
+    window.addEventListener("beforeunload", onHide);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("beforeunload", onHide);
+      // unmount 時にも残りを flush
+      flushBatch();
+    };
+  }, []);
   // 距離計算（簡易・ハバーサイン公式）
   const haversineMeters = (a, b) => {
     if (!a || !b) return Infinity;
@@ -12925,32 +12965,25 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         const accuracy = pos.coords.accuracy;
         setCurrentLoc({ lat, lng, accuracy });
         setGpsError(null);
-        // 🆕 v9.0→v9.7: 探索ルート記録（閾値 2m / 3秒 ・本当に連続した線にする）
+        // 🆕 v9.24: GPS 記録は ref バッファに溜めるだけ、 setData は呼ばない
+        //   ・setData → re-render → 800KB save の連鎖を完全に断つ
+        //   ・別 useEffect の 30秒タイマーが一括 flush
+        //   ・これでアプリ落ち事故を完全に防ぐ
         const recordingNow = trackRecordingRef.current;
         const userNow = currentUserRef.current;
-        console.log(`[v9.7] GPS tick: lat=${lat.toFixed(5)} lng=${lng.toFixed(5)} acc=${accuracy?.toFixed?.(0)||"?"}m recording=${recordingNow} user=${userNow}`);
         if (recordingNow && userNow) {
           const nowMs = Date.now();
           const lastTs = trackLastSavedRef.current || 0;
           const lastPos = trackLastPosRef.current;
           const isFirst = !lastPos;
-          // 🆕 v9.7: 3秒経過 ＆ 2m移動 で記録（事実上の連続線）
           const enoughTime = isFirst || (nowMs - lastTs) >= 3000;
           const dist = lastPos ? haversineMeters(lastPos, { lat, lng }) : Infinity;
           if (enoughTime && dist >= 2) {
             trackLastSavedRef.current = nowMs;
             trackLastPosRef.current = { lat, lng };
-            setData(d => {
-              const prevTracks = (d && d.tracks) || {};
-              const prevForUser = prevTracks[userNow] || [];
-              return {
-                ...d,
-                tracks: { ...prevTracks, [userNow]: [...prevForUser, { ts: nowMs, lat, lng }] },
-              };
-            });
-            console.log(`[v9.7] ✅ track point added: ${userNow} (${lat.toFixed(5)}, ${lng.toFixed(5)}) dist=${dist.toFixed(1)}m`);
-          } else {
-            console.log(`[v9.7] ⏭  skip: time_ok=${enoughTime} dist=${dist.toFixed(1)}m (need >=2m & 3s)`);
+            // バッファに追加 ( setData なし )
+            if (!gpsBatchRef.current[userNow]) gpsBatchRef.current[userNow] = [];
+            gpsBatchRef.current[userNow].push({ ts: nowMs, lat, lng });
           }
         }
       },
