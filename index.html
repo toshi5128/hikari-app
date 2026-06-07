@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.19-tap-sound";
+const APP_VERSION = "2026-06-07-v9.20-tracks-permanent-union-merge";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3026,6 +3026,36 @@ function MainApp({ onLock, onSwitchUser }) {
           }, 1000);
         }
       }
+    }
+
+    // 🆕 v9.20: tracks = { [memberName]: [{ts, lat, lng}, ...] }
+    //   ⚠️ 重大バグ修正: 以前は remote の空 tracks で local が上書きされて探索ルートが消える事故があった
+    //   ・両端末の member 配列を union (ts で dedupe)
+    //   ・local 優先 (自分の進行中の探索ルートを絶対に消さない)
+    //   ・どちらかが空でも、 もう片方の値で残る
+    //   ・全期間のデータが永久保存される
+    if (local && (local.tracks || merged.tracks)) {
+      const remoteTr = (merged && merged.tracks) || {};
+      const localTr = local.tracks || {};
+      const mergedTr = {};
+      const allMembers = new Set([...Object.keys(remoteTr), ...Object.keys(localTr)]);
+      allMembers.forEach(member => {
+        const r = Array.isArray(remoteTr[member]) ? remoteTr[member] : [];
+        const l = Array.isArray(localTr[member]) ? localTr[member] : [];
+        const seen = new Set();
+        const out = [];
+        // local を先に積む = 自分の最新ポイントを必ず保護
+        [...l, ...r].forEach(p => {
+          if (!p || typeof p.ts !== "number") return;
+          if (seen.has(p.ts)) return;
+          seen.add(p.ts);
+          out.push(p);
+        });
+        // ts 昇順でソート (描画安定化)
+        out.sort((a, b) => a.ts - b.ts);
+        if (out.length) mergedTr[member] = out;
+      });
+      merged.tracks = mergedTr;
     }
 
     // 🆕 v9.18: pinPhotos = { [pinId]: [{url,path,takenAt,takenBy},...] }
