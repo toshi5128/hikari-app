@@ -14984,6 +14984,202 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     }
   };
 
+  // 🆕 v9.46: 査定書作成モーダルを開く
+  const openAssessment = (item) => {
+    if (!item) return;
+    const j = item.raw || {};
+    // ピンに記録済みの情報からデフォルト値を作る ( ユーザー入力データは触らない )
+    setAssessmentTarget({ item });
+    setAssessmentForm({
+      address: j.address || "",
+      landArea: "",      // ㎡
+      buildingArea: "",  // ㎡
+      builtYear: "",     // 例: "1998"
+      structure: "木造2階建",
+      buyPrice: "",      // 当社買取価格 ( 万円 )
+      demolishUnit: "6", // 解体費 坪単価 ( 万円 )
+      residual: "30",    // 残置物 ( 万円 )
+      survey: "50",      // 確定測量 ( 万円 )
+      stampReg: "4",     // 印紙 ・ 登記 ( 万円 )
+      assignee: j.assignee || "",
+      ownerName: j.ownerName || "",
+      memo: "",
+    });
+  };
+
+  // 🆕 v9.46: 査定書 HTML を生成 ( 新タブで開く )
+  const generateAndOpenAssessment = (form) => {
+    const num = v => parseFloat(String(v).replace(/,/g, "")) || 0;
+    const landArea = num(form.landArea);
+    const buildingArea = num(form.buildingArea);
+    const tsubo = buildingArea > 0 ? (buildingArea / 3.30578) : 0;
+    const landTsubo = landArea > 0 ? (landArea / 3.30578) : 0;
+    const demolish = Math.round(tsubo * num(form.demolishUnit));
+    const buyPrice = num(form.buyPrice);
+    const broker = buyPrice > 0 ? Math.round(buyPrice * 0.03 + 6 + Math.round((buyPrice * 0.03 + 6) * 0.1)) : 66;
+    const totalCost = demolish + num(form.residual) + num(form.survey) + broker + num(form.stampReg);
+    const builtYearNum = parseInt(form.builtYear) || 0;
+    const age = builtYearNum > 0 ? (new Date().getFullYear() - builtYearNum) : 0;
+    const today = new Date();
+    const dateStr = `${today.getFullYear()}年 ${today.getMonth() + 1}月 ${today.getDate()}日`;
+    const docNo = `HK-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}-${Math.floor(Math.random() * 900 + 100)}`;
+    const html = `<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><title>査定書 - ${form.address}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Hiragino Sans","Yu Gothic",sans-serif;background:#f1f5f9;color:#1e293b;line-height:1.7;padding:20px 0}
+.doc{max-width:900px;margin:0 auto;background:#fff;box-shadow:0 2px 20px rgba(0,0,0,0.08);border-radius:8px;overflow:hidden}
+.hero{background:linear-gradient(135deg,#1e3a8a,#1e40af);color:#fff;padding:32px 28px 28px}
+.hero .lbl{font-size:11px;opacity:.8;letter-spacing:.2em}
+.hero h1{font-size:26px;margin:8px 0 4px;font-weight:800;letter-spacing:.05em}
+.hero .subt{font-size:13px;opacity:.9}
+.hero .meta{margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px 24px;font-size:11px}
+.hero .corp{margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,.2);font-size:11px;opacity:.9}
+.sec{background:#1e3a8a;color:#fff;padding:10px 18px;font-size:14px;font-weight:700;margin-top:28px}
+.sec.green{background:linear-gradient(135deg,#16a34a,#15803d)}
+.sec.orange{background:linear-gradient(135deg,#d97706,#b45309)}
+.sec.red{background:linear-gradient(135deg,#dc2626,#ea580c)}
+.card{padding:16px 20px}
+table.t{width:100%;border-collapse:collapse;font-size:11px}
+table.t th{background:#334155;color:#fff;padding:7px 8px;border:1px solid #cbd5e1;font-weight:700}
+table.t td{padding:7px 8px;border:1px solid #e2e8f0}
+table.t tr.hi{background:#fef3c7;font-weight:700}
+.price-final{background:linear-gradient(135deg,#1e3a8a,#1e40af 50%,#3730a3);padding:40px 24px;margin-top:24px;color:#fff;text-align:center}
+.price-final .amt-box{background:linear-gradient(135deg,#fef3c7,#fde68a);color:#78350f;display:inline-block;padding:28px 60px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+.price-final .amt{font-size:56px;font-weight:900}
+.price-final .conds{display:grid;grid-template-columns:repeat(2,1fr);gap:10px 30px;max-width:580px;margin:24px auto 0;text-align:left;font-size:12px}
+.footer{background:#1e293b;color:#fff;padding:18px 24px;font-size:11px}
+p.bt{font-size:12px;padding:12px 22px;line-height:1.9;color:#334155}
+.note{font-size:10px;color:#64748b;padding:6px 22px 12px}
+.box{background:#fef3c7;border-left:4px solid #d97706;padding:10px 14px;font-size:11px;color:#78350f;margin:10px 20px;border-radius:4px}
+.print-btn{position:fixed;top:20px;right:20px;background:#0ea5e9;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.2);z-index:1000}
+@media print{.print-btn{display:none}body{background:#fff;padding:0}.doc{box-shadow:none;border-radius:0;max-width:100%}}
+</style></head><body>
+<button class="print-btn" onclick="window.print()">🖨 PDFとして保存 / 印刷</button>
+<div class="doc">
+<div class="hero">
+<div class="lbl">PROPERTY ASSESSMENT REPORT</div>
+<h1>不動産査定書</h1>
+<div class="subt">— 売却 ・ 買取総合判断資料 —</div>
+<div class="meta">
+<div><b>査定物件:</b><br>${form.address || "( 住所未入力 )"}</div>
+<div><b>査定日:</b><br>${dateStr}</div>
+<div><b>査定対象者:</b><br>${form.ownerName || "—"} 様</div>
+<div><b>査定書 No.:</b><br>${docNo}</div>
+</div>
+<div class="corp">合同会社ひかり不動産 / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号 / 担当: ${form.assignee || "—"}</div>
+</div>
+
+<div class="sec">■ 物件概要</div>
+<div class="card">
+<table class="t">
+<tr><th style="width:30%">所在地</th><td>${form.address || "—"}</td></tr>
+<tr><th>土地面積</th><td>${landArea > 0 ? landArea.toFixed(2) + " ㎡ ( " + landTsubo.toFixed(2) + " 坪 )" : "—"}</td></tr>
+<tr><th>建物構造</th><td>${form.structure || "—"}</td></tr>
+<tr><th>建物床面積</th><td>${buildingArea > 0 ? buildingArea.toFixed(2) + " ㎡ ( " + tsubo.toFixed(2) + " 坪 )" : "—"}</td></tr>
+<tr><th>新築年月日</th><td>${builtYearNum > 0 ? builtYearNum + "年 → 築" + age + "年" : "—"}</td></tr>
+</table>
+</div>
+
+<div class="sec orange">■ 解体 ・ 諸費用 シミュレーション ( 土地売却時 )</div>
+<div class="card">
+<table class="t">
+<tr><th>項目</th><th style="width:30%">金額</th></tr>
+<tr><td>解体費 ( ${tsubo.toFixed(2)}坪 × 坪${form.demolishUnit}万 )</td><td style="text-align:right">約 ${demolish.toLocaleString()} 万円</td></tr>
+<tr><td>残置物処分</td><td style="text-align:right">約 ${num(form.residual).toLocaleString()} 万円</td></tr>
+<tr><td>確定測量 ( 境界確定 )</td><td style="text-align:right">約 ${num(form.survey).toLocaleString()} 万円</td></tr>
+<tr><td>仲介手数料 ( 3% + 6万 + 税 )</td><td style="text-align:right">約 ${broker.toLocaleString()} 万円</td></tr>
+<tr><td>印紙代 ・ 登記関連</td><td style="text-align:right">約 ${num(form.stampReg).toLocaleString()} 万円</td></tr>
+<tr class="hi"><td>諸費用 合計</td><td style="text-align:right">約 ${totalCost.toLocaleString()} 万円</td></tr>
+</table>
+<div class="box">📌 上記の諸費用は、 仲介で土地として売却される場合に <b>売主様がご負担</b> される費用です。 当社買取の場合は <b>すべて当社負担 ( 諸費用 0円 )</b> となります。</div>
+</div>
+
+<div class="sec green">■ 当社からのご提案: 3つのプラン</div>
+<div class="card">
+<table class="t">
+<tr><th>プラン</th><th>初期収入</th><th>諸費用</th><th>手取り / 累計</th><th>期間</th></tr>
+<tr style="background:#dcfce7;color:#14532d;font-weight:700">
+<td>A. 当社買取 ✅</td>
+<td style="text-align:center">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万" : "—"}</td>
+<td style="text-align:center">0 円</td>
+<td style="text-align:center">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万 ( 即現金 )" : "—"}</td>
+<td style="text-align:center">1 週間</td>
+</tr>
+<tr>
+<td>B. 仲介 ( 解体 → 土地 )</td>
+<td style="text-align:center">${buyPrice > 0 ? "想定 " + buyPrice.toLocaleString() + " 万前後" : "—"}</td>
+<td style="text-align:center">-${totalCost.toLocaleString()} 万</td>
+<td style="text-align:center">${buyPrice > 0 ? (buyPrice - totalCost).toLocaleString() + " 万" : "—"}</td>
+<td style="text-align:center">3ヶ月以内</td>
+</tr>
+<tr style="background:#fef3c7">
+<td>C. 賃貸運用</td>
+<td style="text-align:center">月 7〜8 万</td>
+<td style="text-align:center">-250〜350 万 (リフォーム)</td>
+<td style="text-align:center">30年 約 2,000〜2,400 万</td>
+<td style="text-align:center">継続収入</td>
+</tr>
+</table>
+</div>
+
+<div class="sec">■ 「仕入れ ( 直接買取 )」 と 「仲介」 の違い</div>
+<div class="card">
+<table class="t">
+<tr><th>項目</th><th>仲介で売る場合</th><th>当社買取の場合</th></tr>
+<tr><td>売れるまでの期間</td><td>6ヶ月〜1年</td><td style="background:#dcfce7;color:#14532d;font-weight:700">最短 1〜2週間</td></tr>
+<tr><td>解体費</td><td>売主負担 ( 約 ${demolish.toLocaleString()}万 )</td><td style="background:#dcfce7;color:#14532d;font-weight:700">当社負担</td></tr>
+<tr><td>残置物処分</td><td>売主負担 ( 約 ${num(form.residual)}万 )</td><td style="background:#dcfce7;color:#14532d;font-weight:700">当社負担 ( 現況のままでOK )</td></tr>
+<tr><td>確定測量</td><td>売主負担 ( 約 ${num(form.survey)}万 )</td><td style="background:#dcfce7;color:#14532d;font-weight:700">当社負担</td></tr>
+<tr><td>仲介手数料</td><td>約 ${broker}万</td><td style="background:#dcfce7;color:#14532d;font-weight:700">0 円</td></tr>
+<tr><td>契約不適合責任</td><td>あり ( 後日トラブルリスク )</td><td style="background:#dcfce7;color:#14532d;font-weight:700">免責</td></tr>
+</table>
+</div>
+
+<div class="sec green">■ 当社からの 3つの約束</div>
+<div class="card">
+<p class="bt"><b>① 確定価格保証 — 後日減額は一切いたしません</b><br>本書記載の買取価格が、 そのまま決済時に振り込まれる金額です。</p>
+<p class="bt"><b>② 諸費用 ・ 売主様負担 0円</b><br>解体費 ・ 残置物処分 ・ 測量費 ・ 仲介手数料 ・ 抵当権抹消費用 など、 通常 売主様が負担される費用は すべて当社が負担いたします。</p>
+<p class="bt"><b>③ 査定根拠の完全開示</b><br>レインズ成約事例 ・ アットホーム在庫 ・ 路線価 ・ 公示地価 ・ 現地調査結果 — 査定に使った 全データを本書に明記しております。</p>
+</div>
+
+<div class="price-final">
+<div style="font-size:11px;opacity:.85;letter-spacing:.2em">FINAL ASSESSMENT</div>
+<div style="font-size:18px;font-weight:700;margin:4px 0">当社による 確定買取価格</div>
+<div style="font-size:12px;opacity:.85;margin-bottom:18px">${form.address || ""}</div>
+<div class="amt-box">
+<div class="amt">${buyPrice > 0 ? buyPrice.toLocaleString() : "—"} <span style="font-size:30px">万円</span></div>
+<div style="font-size:13px;font-weight:700;margin-top:4px">( 税込 ・ 諸費用 売主様負担 0円 )</div>
+</div>
+<div class="conds">
+<div>✅ 仲介手数料: 0 円</div><div>✅ 解体費: 当社負担</div>
+<div>✅ 残置物撤去: 当社負担</div><div>✅ 測量費: 当社負担</div>
+<div>✅ 最短 1〜2週間で決済</div><div>✅ 査定後 30日間 価格保証</div>
+</div>
+<div style="margin-top:22px;font-size:11px;opacity:.85">※ 本価格は、 査定後 30日間有効です。 ご家族とよくご相談ください。</div>
+</div>
+
+<div class="footer">
+<div style="font-weight:800;font-size:14px;margin-bottom:6px">合同会社ひかり不動産</div>
+<div style="opacity:.85;line-height:1.7">
+〒360-0203 埼玉県熊谷市籠原南 1丁目 225<br>
+TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
+担当: ${form.assignee || "—"} / Email: shimoda.5128@gmail.com
+</div>
+</div>
+
+</div></body></html>`;
+    // 新しいタブで開く
+    const w = window.open("", "_blank");
+    if (!w) {
+      alert("ポップアップがブロックされました。 ブラウザの設定でポップアップを許可してください。");
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  };
+
   const promoteToSekisan = (item) => {
     const j = item.raw;
     const alreadyExists = (data.sekisan || []).some(s => s.address === j.address && s.fromJiageId === j.id);
@@ -17076,6 +17272,22 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
               住所・担当者を引き継いで「仕入検討積算表」を新規作成します
             </div>
+
+            {/* 🆕 v9.46: 査定書作成ボタン */}
+            <div style={{ position: "relative", marginTop: 14 }}>
+              <span style={{
+                position: "absolute", top: -6, right: -6, background: "#dc2626",
+                color: "#fff", fontSize: 9, fontWeight: 800, padding: "2px 6px",
+                borderRadius: 10, zIndex: 1,
+              }}>NEW</span>
+              <button onClick={() => openAssessment(selected.item)} style={{
+                width: "100%", padding: "13px", background: "#0ea5e922", border: "1px solid #0ea5e966",
+                color: "#0ea5e9", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+              }}>📄 査定書を作成する</button>
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                ピン情報・諸費用計算から査定書を自動生成 ( 新タブで表示・印刷OK )
+              </div>
+            </div>
           </div>
 
           {/* 編集・削除（誰でも可） */}
@@ -17086,6 +17298,109 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         </BottomSheet>
         );
       })()}
+
+      {/* 🆕 v9.46: 査定書作成モーダル */}
+      {assessmentTarget && assessmentForm && (
+        <BottomSheet title="📄 査定書 作成" onClose={() => { setAssessmentTarget(null); setAssessmentForm(null); }}>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.7 }}>
+            <b style={{ color: C.text }}>{assessmentForm.address || "( 住所未設定 )"}</b><br />
+            担当: {assessmentForm.assignee || "—"} {assessmentForm.ownerName ? `/ 所有者: ${assessmentForm.ownerName} 様` : ""}
+          </div>
+
+          <div style={{ background: "#0ea5e911", border: "1px solid #0ea5e933", borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: C.text, lineHeight: 1.7 }}>
+            💡 必要な情報を入力すると、 諸費用 ・ 手取り比較 ・ 3つのプランを自動計算した <b>査定書</b> が新しいタブで開きます。 そこから印刷 ( ブラウザの「PDFとして保存」 ) も可能です。
+          </div>
+
+          <Field label="物件住所">
+            <input style={inp} value={assessmentForm.address}
+              onChange={e => setAssessmentForm(f => ({ ...f, address: e.target.value }))}
+              placeholder="埼玉県熊谷市..." />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="土地面積 (㎡)">
+              <input style={inp} type="text" inputMode="decimal" value={assessmentForm.landArea}
+                onChange={e => setAssessmentForm(f => ({ ...f, landArea: e.target.value }))}
+                placeholder="152.30" />
+            </Field>
+            <Field label="建物床面積 (㎡)">
+              <input style={inp} type="text" inputMode="decimal" value={assessmentForm.buildingArea}
+                onChange={e => setAssessmentForm(f => ({ ...f, buildingArea: e.target.value }))}
+                placeholder="118.00" />
+            </Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="新築年 (西暦)">
+              <input style={inp} type="text" inputMode="numeric" value={assessmentForm.builtYear}
+                onChange={e => setAssessmentForm(f => ({ ...f, builtYear: e.target.value }))}
+                placeholder="1998" />
+            </Field>
+            <Field label="建物構造">
+              <input style={inp} value={assessmentForm.structure}
+                onChange={e => setAssessmentForm(f => ({ ...f, structure: e.target.value }))}
+                placeholder="木造2階建" />
+            </Field>
+          </div>
+
+          <div style={{ borderTop: `1px solid ${C.borderDim}`, marginTop: 14, paddingTop: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.warn, marginBottom: 10 }}>💰 査定金額 ・ 諸費用</div>
+
+            <Field label="当社買取価格 (万円)">
+              <input style={inp} type="text" inputMode="numeric" value={assessmentForm.buyPrice}
+                onChange={e => setAssessmentForm(f => ({ ...f, buyPrice: e.target.value }))}
+                placeholder="1800" />
+            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="解体費 坪単価 (万円)">
+                <input style={inp} type="text" inputMode="decimal" value={assessmentForm.demolishUnit}
+                  onChange={e => setAssessmentForm(f => ({ ...f, demolishUnit: e.target.value }))}
+                  placeholder="6" />
+              </Field>
+              <Field label="残置物処分 (万円)">
+                <input style={inp} type="text" inputMode="numeric" value={assessmentForm.residual}
+                  onChange={e => setAssessmentForm(f => ({ ...f, residual: e.target.value }))}
+                  placeholder="30" />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="確定測量 (万円)">
+                <input style={inp} type="text" inputMode="numeric" value={assessmentForm.survey}
+                  onChange={e => setAssessmentForm(f => ({ ...f, survey: e.target.value }))}
+                  placeholder="50" />
+              </Field>
+              <Field label="印紙・登記 (万円)">
+                <input style={inp} type="text" inputMode="numeric" value={assessmentForm.stampReg}
+                  onChange={e => setAssessmentForm(f => ({ ...f, stampReg: e.target.value }))}
+                  placeholder="4" />
+              </Field>
+            </div>
+
+            {(() => {
+              const num = v => parseFloat(String(v).replace(/,/g, "")) || 0;
+              const ba = num(assessmentForm.buildingArea);
+              const tsubo = ba > 0 ? (ba / 3.30578) : 0;
+              const demolish = Math.round(tsubo * num(assessmentForm.demolishUnit));
+              const bp = num(assessmentForm.buyPrice);
+              const broker = bp > 0 ? Math.round(bp * 0.03 + 6 + Math.round((bp * 0.03 + 6) * 0.1)) : 0;
+              const total = demolish + num(assessmentForm.residual) + num(assessmentForm.survey) + broker + num(assessmentForm.stampReg);
+              return (
+                <div style={{ background: "#fef3c722", border: "1px solid #d9770644", borderRadius: 8, padding: 10, marginTop: 10, fontSize: 11, color: C.text, lineHeight: 1.7 }}>
+                  📊 <b>自動計算結果</b>:<br />
+                  ・ 解体費: {ba > 0 ? `${tsubo.toFixed(2)}坪 × 坪${assessmentForm.demolishUnit}万 = 約 ${demolish.toLocaleString()}万` : "建物面積を入力してください"}<br />
+                  ・ 仲介手数料: {bp > 0 ? `約 ${broker.toLocaleString()}万` : "買取価格を入力してください"}<br />
+                  ・ <b style={{ color: C.warn }}>諸費用 合計: 約 {total.toLocaleString()} 万円</b>
+                </div>
+              );
+            })()}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }}
+              onClick={() => { setAssessmentTarget(null); setAssessmentForm(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle(), flex: 1, background: "#0ea5e9", borderColor: "#0ea5e9" }}
+              onClick={() => generateAndOpenAssessment(assessmentForm)}>📄 査定書を表示</button>
+          </div>
+        </BottomSheet>
+      )}
 
       {/* 新規登録フォーム */}
       {showAdd && (
