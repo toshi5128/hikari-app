@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.35-map-rotation-heading-up";
+const APP_VERSION = "2026-06-07-v9.36-preload-live-polyline-on-restart";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4106,7 +4106,7 @@ function PendingPhotoSection({ photos, onAdd, onRemove }) {
 }
 
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -4169,8 +4169,12 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     }
     // ライブ polyline を 1 本作成
     if (!livePolylineRef.current) {
-      livePolylinePointsRef.current = [];
-      livePolylineRef.current = L.polyline([], {
+      // 🆕 v9.36: 起動時に「今日の過去ポイント」を pre-load してアプリ更新後も即時表示
+      const seed = Array.isArray(initialLivePoints)
+        ? initialLivePoints.filter(p => p && typeof p.lat === "number" && typeof p.lng === "number").map(p => [p.lat, p.lng])
+        : [];
+      livePolylinePointsRef.current = seed.slice();
+      livePolylineRef.current = L.polyline(seed, {
         color: "#3b82f6",
         weight: 6,
         opacity: 0.92,
@@ -15837,6 +15841,14 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
                       hideZoomControl={!!(pendingPin || selected)}
                       autoFollowLocation={trackRecording && !pendingPin && !selected}
                       liveRecording={trackRecording}
+                      initialLivePoints={(() => {
+                        // 🆕 v9.36: 探索中で起動時に「今日の自分の過去ポイント」を pre-load
+                        if (!trackRecording || !currentUser) return null;
+                        const mine = (data.tracks && data.tracks[currentUser]) || [];
+                        const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+                        const todayTs = todayStart.getTime();
+                        return mine.filter(p => p && typeof p.lat === "number" && (p.ts || 0) >= todayTs);
+                      })()}
                       tracks={trackRecording ? null : visibleTracks}
                     />
                     <div style={{ marginTop: 8, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
