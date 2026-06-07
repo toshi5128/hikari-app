@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.37-compass-with-locate-buttons";
+const APP_VERSION = "2026-06-07-v9.39-pin-delete-counter-and-recording-persistence";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1284,6 +1284,103 @@ if (typeof document !== "undefined") {
     if (btn.disabled || btn.getAttribute("aria-disabled") === "true") return;
     playTapSound();
   }, true);
+}
+
+// ===================== 📊 v9.38: 査定書 Excel 生成 =====================
+// 売主向けの査定書 (簡易査定) を Excel で出力
+//   ・物件基本情報 + 査定価格 (上限/標準/下限) + 周辺取引事例 + 会社情報
+//   ・SheetJS ( 既存 ) を使用
+//   ・「見込み」 以上のステータスでのみ作成可能
+const HIKARI_COMPANY_INFO = {
+  name: "株式会社ひかり不動産",
+  address: "",  // TODO: 設定画面で編集可能に
+  phone: "",
+  license: "",
+  email: "",
+};
+
+function fmtMoneyWan(yen) {
+  if (yen == null || yen === "" || isNaN(Number(yen))) return "";
+  const n = Number(yen);
+  if (n >= 100000000) return `${(n / 100000000).toFixed(2)}億円`;
+  if (n >= 10000) return `${(n / 10000).toLocaleString("ja-JP")}万円`;
+  return `${n.toLocaleString("ja-JP")}円`;
+}
+
+function generateAssessmentXLSX(pin, form, viewer) {
+  if (typeof XLSX === "undefined") {
+    alert("Excel 出力ライブラリが読み込まれていません。 ページを更新してください。");
+    return;
+  }
+  const today = new Date();
+  const dateStr = `${today.getFullYear()}年${today.getMonth() + 1}月${today.getDate()}日`;
+  const ownerName = String(pin.ownerName || pin.owner || "").trim();
+
+  // 配列形式でシート構築 ( aoa_to_sheet )
+  const rows = [
+    ["物件査定書"],
+    [""],
+    [`作成日: ${dateStr}`, "", "", `担当: ${viewer || ""}`],
+    [""],
+    ["■ 物件情報"],
+    ["所在地", pin.address || ""],
+    ["目印住所", pin.landmark || ""],
+    ["所有者", ownerName],
+    ["面積", form.area ? `${form.area} ㎡` : ""],
+    ["用途地域", form.landUse || ""],
+    ["接道", form.roadAccess || ""],
+    ["建物", form.building || ""],
+    ["その他特記事項", form.notes || ""],
+    [""],
+    ["■ 査定価格"],
+    ["上限価格", fmtMoneyWan(form.priceHigh)],
+    ["標準価格", fmtMoneyWan(form.priceMid)],
+    ["下限価格", fmtMoneyWan(form.priceLow)],
+    [""],
+    ["■ 査定根拠"],
+    [form.priceReason || ""],
+    [""],
+    ["■ 周辺取引事例"],
+    ["No.", "所在地", "面積(㎡)", "成約/売出", "価格", "成約日", "備考"],
+  ];
+  (form.comparables || []).forEach((c, i) => {
+    if (!c) return;
+    rows.push([
+      i + 1,
+      c.address || "",
+      c.area || "",
+      c.dealType || "",
+      c.price ? fmtMoneyWan(c.price) : "",
+      c.date || "",
+      c.notes || "",
+    ]);
+  });
+  rows.push([""]);
+  rows.push(["■ 会社情報"]);
+  rows.push(["会社名", HIKARI_COMPANY_INFO.name]);
+  if (HIKARI_COMPANY_INFO.address) rows.push(["所在地", HIKARI_COMPANY_INFO.address]);
+  if (HIKARI_COMPANY_INFO.phone) rows.push(["電話", HIKARI_COMPANY_INFO.phone]);
+  if (HIKARI_COMPANY_INFO.license) rows.push(["免許番号", HIKARI_COMPANY_INFO.license]);
+  rows.push([""]);
+  rows.push(["■ 担当者"]);
+  rows.push(["氏名", viewer || ""]);
+  rows.push([""]);
+  rows.push(["※ 本査定は、 現地調査・公示価格・近隣取引事例等を踏まえた当社の見解です。"]);
+  rows.push(["※ 実際の取引価格は市場状況により変動する可能性があります。"]);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  // 列幅
+  ws["!cols"] = [
+    { wch: 18 }, { wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 20 },
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "査定書");
+
+  // ファイル名
+  const safeAddr = String(pin.address || pin.landmark || "物件").replace(/[\\/:*?"<>|]/g, "_").slice(0, 30);
+  const fname = `査定書_${safeAddr}_${today.getFullYear()}${String(today.getMonth()+1).padStart(2,"0")}${String(today.getDate()).padStart(2,"0")}.xlsx`;
+  XLSX.writeFile(wb, fname);
 }
 
 // ===================== 📷 v9.18: ピン写真ストレージ =====================
@@ -4043,6 +4140,155 @@ function PinPhotoSection({ pinId, photos, viewer, onAdded, onRemoved, viewOnly =
         </div>
       )}
       {err && <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444" }}>{err}</div>}
+    </div>
+  );
+}
+
+// 📊 v9.38: 査定書作成 BottomSheet
+//   ・物件情報、 査定価格、 周辺事例を入力
+//   ・Excel ダウンロード
+function AssessmentSheet({ pin, viewer, onClose }) {
+  const inp = {
+    width: "100%", padding: "8px 10px", border: "1px solid #cbd5e155", borderRadius: 8,
+    fontSize: 13, fontFamily: "inherit", background: "#fff", color: "#0f172a", outline: "none",
+  };
+  const lbl = { fontSize: 11, fontWeight: 700, color: "#64748b", marginBottom: 4, display: "block" };
+  const sec = { fontSize: 13, fontWeight: 800, color: "#0284c7", marginTop: 16, marginBottom: 8, paddingBottom: 4, borderBottom: "1px solid #cbd5e155" };
+
+  const [form, setForm] = React.useState({
+    area: "",
+    landUse: "",
+    roadAccess: "",
+    building: "",
+    notes: "",
+    priceHigh: "",
+    priceMid: "",
+    priceLow: "",
+    priceReason: "",
+    comparables: [
+      { address: "", area: "", dealType: "成約", price: "", date: "", notes: "" },
+      { address: "", area: "", dealType: "成約", price: "", date: "", notes: "" },
+      { address: "", area: "", dealType: "成約", price: "", date: "", notes: "" },
+    ],
+  });
+
+  const updateField = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const updateComparable = (i, k, v) => setForm(f => {
+    const list = f.comparables.slice();
+    list[i] = { ...(list[i] || {}), [k]: v };
+    return { ...f, comparables: list };
+  });
+  const addComparable = () => setForm(f => ({
+    ...f,
+    comparables: [...f.comparables, { address: "", area: "", dealType: "成約", price: "", date: "", notes: "" }],
+  }));
+  const removeComparable = (i) => setForm(f => ({
+    ...f,
+    comparables: f.comparables.filter((_, idx) => idx !== i),
+  }));
+
+  const handleExport = () => {
+    try {
+      generateAssessmentXLSX(pin, form, viewer);
+    } catch (e) {
+      alert("Excel 出力に失敗: " + (e && e.message ? e.message : String(e)));
+    }
+  };
+
+  return (
+    <div style={{ padding: "0 4px" }}>
+      <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.5, marginBottom: 12 }}>
+        💡 「見込み」 以上の売主向けに、 査定書を Excel で出力します。 入力した内容はこの場限りで保存されません ( 都度入力 )。
+      </div>
+
+      <div style={sec}>■ 物件情報 ( アプリのデータ )</div>
+      <div style={{ background: "#0284c711", border: "1px solid #0284c733", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12, lineHeight: 1.6 }}>
+        <div><b>所在地:</b> {pin.address || "(空)"}</div>
+        <div><b>目印住所:</b> {pin.landmark || "(空)"}</div>
+        <div><b>所有者:</b> {pin.ownerName || pin.owner || "(空)"}</div>
+      </div>
+
+      <div style={sec}>■ 物件詳細 ( 査定用追加入力 )</div>
+      <label style={lbl}>面積 ( ㎡ )</label>
+      <input style={inp} type="text" inputMode="decimal" value={form.area} onChange={e => updateField("area", e.target.value)} placeholder="例: 132.50" />
+      <div style={{ height: 8 }} />
+      <label style={lbl}>用途地域</label>
+      <input style={inp} value={form.landUse} onChange={e => updateField("landUse", e.target.value)} placeholder="例: 第一種低層住居専用地域" />
+      <div style={{ height: 8 }} />
+      <label style={lbl}>接道</label>
+      <input style={inp} value={form.roadAccess} onChange={e => updateField("roadAccess", e.target.value)} placeholder="例: 北側 公道 5m" />
+      <div style={{ height: 8 }} />
+      <label style={lbl}>建物</label>
+      <input style={inp} value={form.building} onChange={e => updateField("building", e.target.value)} placeholder="例: 木造2階建 / 築20年 / 解体要" />
+      <div style={{ height: 8 }} />
+      <label style={lbl}>その他特記事項</label>
+      <textarea style={{ ...inp, minHeight: 50, fontFamily: "inherit" }} value={form.notes} onChange={e => updateField("notes", e.target.value)} placeholder="例: 角地、 南東向き、 駅徒歩10分" />
+
+      <div style={sec}>■ 査定価格</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+        <div>
+          <label style={lbl}>下限 ( 円 )</label>
+          <input style={inp} type="number" value={form.priceLow} onChange={e => updateField("priceLow", e.target.value)} placeholder="例: 18000000" />
+          <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>{fmtMoneyWan(form.priceLow)}</div>
+        </div>
+        <div>
+          <label style={lbl}>標準 ( 円 )</label>
+          <input style={inp} type="number" value={form.priceMid} onChange={e => updateField("priceMid", e.target.value)} placeholder="例: 22000000" />
+          <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>{fmtMoneyWan(form.priceMid)}</div>
+        </div>
+        <div>
+          <label style={lbl}>上限 ( 円 )</label>
+          <input style={inp} type="number" value={form.priceHigh} onChange={e => updateField("priceHigh", e.target.value)} placeholder="例: 26000000" />
+          <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>{fmtMoneyWan(form.priceHigh)}</div>
+        </div>
+      </div>
+      <div style={{ height: 10 }} />
+      <label style={lbl}>査定根拠 ( 自由記述 )</label>
+      <textarea style={{ ...inp, minHeight: 60, fontFamily: "inherit" }} value={form.priceReason} onChange={e => updateField("priceReason", e.target.value)} placeholder="例: 公示価格 ○○万円/㎡ × 面積 132.5㎡、 周辺取引事例の㎡単価平均、 角地補正 +5% を加味" />
+
+      <div style={sec}>■ 周辺取引事例 ( 3〜5件 )</div>
+      {form.comparables.map((c, i) => (
+        <div key={i} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: 10, marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "#475569" }}>事例 {i + 1}</div>
+            {form.comparables.length > 1 && (
+              <button onClick={() => removeComparable(i)} style={{ background: "none", border: "none", color: "#ef4444", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>✕ 削除</button>
+            )}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 6, marginBottom: 6 }}>
+            <input style={inp} value={c.address} onChange={e => updateComparable(i, "address", e.target.value)} placeholder="所在地" />
+            <input style={inp} type="number" value={c.area} onChange={e => updateComparable(i, "area", e.target.value)} placeholder="面積㎡" />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr 1fr", gap: 6, marginBottom: 6 }}>
+            <select style={inp} value={c.dealType} onChange={e => updateComparable(i, "dealType", e.target.value)}>
+              <option value="成約">成約</option>
+              <option value="売出">売出</option>
+            </select>
+            <input style={inp} type="number" value={c.price} onChange={e => updateComparable(i, "price", e.target.value)} placeholder="価格(円)" />
+            <input style={inp} value={c.date} onChange={e => updateComparable(i, "date", e.target.value)} placeholder="YYYY-MM" />
+          </div>
+          <input style={inp} value={c.notes} onChange={e => updateComparable(i, "notes", e.target.value)} placeholder="備考 (角地/駅近 等)" />
+        </div>
+      ))}
+      {form.comparables.length < 5 && (
+        <button onClick={addComparable} style={{
+          width: "100%", background: "transparent", border: "1.5px dashed #94a3b8", color: "#475569",
+          padding: "8px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
+          fontFamily: "inherit", marginTop: 4,
+        }}>＋ 事例を追加</button>
+      )}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+        <button onClick={onClose} style={{
+          flex: 1, padding: "12px", background: "transparent", border: "1.5px solid #cbd5e155", color: "#475569",
+          borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+        }}>キャンセル</button>
+        <button onClick={handleExport} style={{
+          flex: 2, padding: "12px", background: "#10b981", color: "#fff", border: "none",
+          borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+          boxShadow: "0 4px 12px -4px rgba(16,185,129,0.5)",
+        }}>📥 査定書 ( Excel ) をダウンロード</button>
+      </div>
     </div>
   );
 }
@@ -12900,7 +13146,18 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const today = useTodayDate();
   // 🆕 v9.0: 探索ルートトラッカー state
-  const [trackRecording, setTrackRecording] = useState(false);  // 自分の記録ON/OFF（端末ローカル）
+  // 🆕 v9.39: 探索 ON/OFF を localStorage に永続化 → 他タブに移動して戻っても継続
+  //   ・以前は useState(false) で、 JiageRoot アンマウント時に state が消えていた
+  //   ・停止ボタンを押すまで他画面に移動しても探索継続
+  const TRACK_RECORDING_KEY = "hikari_track_recording";
+  const [trackRecording, setTrackRecordingRaw] = useState(() => {
+    try { return localStorage.getItem(TRACK_RECORDING_KEY) === "1"; } catch (e) { return false; }
+  });
+  const setTrackRecording = (v) => {
+    const next = typeof v === "function" ? v(trackRecording) : v;
+    setTrackRecordingRaw(next);
+    try { localStorage.setItem(TRACK_RECORDING_KEY, next ? "1" : "0"); } catch (e) {}
+  };
   // 🆕 v9.8: 期間フィルタ拡張 ("today" | "yesterday" | "7days" | "30days" | "all" | "date")
   const [trackPeriod, setTrackPeriod] = useState("today");
   const [trackPickedDate, setTrackPickedDate] = useState("");  // "YYYY-MM-DD"
@@ -14216,7 +14473,31 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const handleDelete = item => {
     if (!window.confirm("削除しますか？")) return;
     if (item.type === "jiage") setData(d => {
-      const next = { ...d, jiage: d.jiage.filter(j => j.id !== item.rawId) };
+      let next = { ...d, jiage: d.jiage.filter(j => j.id !== item.rawId) };
+      // 🆕 v9.39: 現地ピン削除時は、 作成時に +1 した「新規地上」 カウンターを -1 して整合性維持
+      const raw = item.raw || {};
+      if (raw.coordsManual && raw.assignee && raw.createdAt) {
+        try {
+          const dt = new Date(raw.createdAt);
+          const y = dt.getFullYear();
+          const m = String(dt.getMonth() + 1).padStart(2, "0");
+          const dd = String(dt.getDate()).padStart(2, "0");
+          const dateStr = `${y}-${m}-${dd}`;
+          const target = (next.approaches || []).find(a => a && a.member === raw.assignee && a.date === dateStr);
+          if (target) {
+            const v = { ...(target.values || {}) };
+            const curN = Number(v["新規地上"]) || 0;
+            if (curN > 0) {
+              v["新規地上"] = curN - 1;
+              if (v["新規地上"] === 0) delete v["新規地上"];
+              next = {
+                ...next,
+                approaches: next.approaches.map(a => a.id === target.id ? { ...a, values: v, updatedAt: Date.now() } : a),
+              };
+            }
+          }
+        } catch (e) {}
+      }
       return appendLogAndNotify(next, "delete", "jiage", `${item.address || "(無住所)"}を削除`, item);
     });
     else setData(d => {
