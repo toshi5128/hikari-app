@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.32-keep-live-polyline-on-pin";
+const APP_VERSION = "2026-06-07-v9.33-auto-fill-jiage-areas";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -833,6 +833,39 @@ function migrateDedupeVisitLogV913(d) {
     activityLog: newActivityLog,
     migrations: { ...(d.migrations || {}), v913_dedupe_visit_log: now },
   };
+}
+
+// 🆕 v9.33: 地上げピンの「エリア未設定」を address/landmark から自動補完
+//   ・既に area が入ってるピンは絶対に触らない ( CHECK 7 保護 )
+//   ・空のもの ( "" or undefined ) だけ自動振り分け
+//   ・毎起動で実行 ( idempotent )。 新規ピンや新エリア追加でも自動補完される
+//   ・JIAGE_AREAS にないエリア名は「未設定」のまま ( 全く未知のエリアは安全に未振分)
+function autoFillJiageAreasV933(d) {
+  if (!d || !Array.isArray(d.jiage)) return d;
+  // JIAGE_AREAS は MainApp scope で定義されてるので、 ここでは関数として参照不可
+  // → グローバル定数として定義してあるので OK
+  if (typeof JIAGE_AREAS === "undefined" || !Array.isArray(JIAGE_AREAS)) return d;
+  let changedCount = 0;
+  const nextJiage = d.jiage.map(j => {
+    if (!j) return j;
+    // 既に area が入っていれば一切触らない ( ユーザー入力データ保護)
+    if (j.area && String(j.area).trim()) return j;
+    const src = String(j.address || "") + " " + String(j.landmark || "");
+    if (!src.trim()) return j;
+    const detected = JIAGE_AREAS.find(a => src.includes(a));
+    if (!detected) return j;
+    changedCount++;
+    const now = Date.now();
+    return {
+      ...j,
+      area: detected,
+      updatedAt: Math.max(Number(j.updatedAt) || 0, now),
+      _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), area: now },
+    };
+  });
+  if (changedCount === 0) return d; // 変更なし → 同一参照を返して setData の no-op を保証
+  console.log(`[v9.33] 地上げピンのエリア自動補完: ${changedCount} 件`);
+  return { ...d, jiage: nextJiage };
 }
 
 // 🆕 v9.1: 訪問記録ベースの担当者修正 migration
@@ -3416,6 +3449,18 @@ function MainApp({ onLock, onSwitchUser }) {
     v913MigratedRef.current = true;
     console.log("[v9.13] 訪問ログ重複統合 migration を実行します…");
     setData(d => migrateDedupeVisitLogV913(d));
+  }, [data]);
+
+  // 🆕 v9.33: 地上げピンのエリア自動補完
+  //   ・migration ではなく毎起動で実行 ( idempotent、 area が空のものだけ補完)
+  //   ・新規ピンや新エリア追加の際にも自動振り分けされる
+  //   ・既に area が入ってるピンは絶対に触らない ( ユーザー入力データ保護 )
+  const v933AreaFillTriedRef = useRef(false);
+  useEffect(() => {
+    if (v933AreaFillTriedRef.current) return;
+    if (!data || !Array.isArray(data.jiage)) return;
+    v933AreaFillTriedRef.current = true;
+    setData(d => autoFillJiageAreasV933(d));
   }, [data]);
 
   const setData = updater => {
