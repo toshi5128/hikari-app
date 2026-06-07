@@ -139,7 +139,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-07-v9.33-auto-fill-jiage-areas";
+const APP_VERSION = "2026-06-07-v9.34-dynamic-areas-from-address";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -835,15 +835,31 @@ function migrateDedupeVisitLogV913(d) {
   };
 }
 
+// 🆕 v9.34: 自治体名を address/landmark から抽出 ( 「川越市」 → 「川越」 等 )
+//   ・都道府県 prefix を skip して、 末尾「市/町/村/区」 + 直前の自治体名を抽出
+//   ・抽出失敗時は "" を返す
+//   ・JIAGE_AREAS に同じ自治体名があれば、 JIAGE_AREAS の値を返す ( 重複防止 )
+function extractMunicipalityArea(text) {
+  if (!text || typeof text !== "string") return "";
+  // パターン1: 「埼玉県川越市」 / 「川越市」 → 「川越」
+  // パターン2: 「埼玉県寄居町」 → 「寄居」
+  // 都道府県 ( 都/道/府/県 ) があれば skip
+  const m = text.match(/(?:[^\s]*?[都道府県])?([一-龯぀-ゟ゠-ヿ々ヶケ]+?)(市|町|村|区)/);
+  if (!m) return "";
+  const name = m[1];
+  if (!name || name.length < 1) return "";
+  // 「大字」「字」「番地」 等の混入をはじく
+  if (/^(大字|字)/.test(name)) return "";
+  return name;
+}
+
 // 🆕 v9.33: 地上げピンの「エリア未設定」を address/landmark から自動補完
 //   ・既に area が入ってるピンは絶対に触らない ( CHECK 7 保護 )
 //   ・空のもの ( "" or undefined ) だけ自動振り分け
-//   ・毎起動で実行 ( idempotent )。 新規ピンや新エリア追加でも自動補完される
-//   ・JIAGE_AREAS にないエリア名は「未設定」のまま ( 全く未知のエリアは安全に未振分)
+//   ・毎起動で実行 ( idempotent )
+//   🆕 v9.34: JIAGE_AREAS にマッチしなければ自治体名を抽出して新エリアとして振り分け
 function autoFillJiageAreasV933(d) {
   if (!d || !Array.isArray(d.jiage)) return d;
-  // JIAGE_AREAS は MainApp scope で定義されてるので、 ここでは関数として参照不可
-  // → グローバル定数として定義してあるので OK
   if (typeof JIAGE_AREAS === "undefined" || !Array.isArray(JIAGE_AREAS)) return d;
   let changedCount = 0;
   const nextJiage = d.jiage.map(j => {
@@ -852,7 +868,16 @@ function autoFillJiageAreasV933(d) {
     if (j.area && String(j.area).trim()) return j;
     const src = String(j.address || "") + " " + String(j.landmark || "");
     if (!src.trim()) return j;
-    const detected = JIAGE_AREAS.find(a => src.includes(a));
+    // ① まず JIAGE_AREAS に文字列マッチを試す
+    let detected = JIAGE_AREAS.find(a => src.includes(a));
+    // 🆕 v9.34: ② 失敗したら自治体名を抽出して新エリアにする
+    if (!detected) {
+      const municipality = extractMunicipalityArea(src);
+      if (municipality) {
+        // 抽出値が偶然 JIAGE_AREAS に含まれてれば既存値を使う ( 名寄せ )
+        detected = JIAGE_AREAS.find(a => a === municipality) || municipality;
+      }
+    }
     if (!detected) return j;
     changedCount++;
     const now = Date.now();
@@ -863,8 +888,8 @@ function autoFillJiageAreasV933(d) {
       _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), area: now },
     };
   });
-  if (changedCount === 0) return d; // 変更なし → 同一参照を返して setData の no-op を保証
-  console.log(`[v9.33] 地上げピンのエリア自動補完: ${changedCount} 件`);
+  if (changedCount === 0) return d;
+  console.log(`[v9.34] 地上げピンのエリア自動補完: ${changedCount} 件 ( 新エリア含む )`);
   return { ...d, jiage: nextJiage };
 }
 
@@ -14648,13 +14673,25 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         </div>
 
         {/* エリアフィルター */}
+        {/* 🆕 v9.34: 動的エリア ( JIAGE_AREAS にない自治体 ) も並べる */}
+        {(() => {
+          const dynamicAreas = (() => {
+            const set = new Set();
+            (data.jiage || []).forEach(j => {
+              const a = j && j.area && String(j.area).trim();
+              if (a && !JIAGE_AREAS.includes(a)) set.add(a);
+            });
+            return Array.from(set).sort();
+          })();
+          const allAreaTabs = ["すべて", ...JIAGE_AREAS, ...dynamicAreas, "未設定"];
+          return (
         <div style={{ display: "flex", gap: 6, marginBottom: 8, overflowX: "auto", paddingBottom: 2 }}>
-          {["すべて", ...JIAGE_AREAS, "未設定"].map(area => {
-            const count = area === "すべて" 
+          {allAreaTabs.map(area => {
+            const count = area === "すべて"
               ? Object.values(areaCounts).reduce((a, b) => a + b, 0)
               : area === "未設定"
-                ? (data.jiage || []).filter(j => !JIAGE_AREAS.includes(j.area)).length
-                : (areaCounts[area] || 0);
+                ? (data.jiage || []).filter(j => !j.area || !String(j.area).trim()).length
+                : (areaCounts[area] || (data.jiage || []).filter(j => j.area === area).length);
             return (
               <button key={area} onClick={() => setAreaFilter(area)} style={{
                 padding: "5px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12,
@@ -14666,10 +14703,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
             );
           })}
         </div>
+          );
+        })()}
 
         {/* エリア未設定がある場合の自動補正ボタン */}
+        {/* 🆕 v9.34: area が空のものだけを「未設定」 とみなす ( 動的エリアは未設定扱いしない ) */}
         {(() => {
-          const unsetItems = (data.jiage || []).filter(j => !JIAGE_AREAS.includes(j.area));
+          const unsetItems = (data.jiage || []).filter(j => !j.area || !String(j.area).trim());
           const fixableCount = unsetItems.filter(j => inferAreaFromAddress(j.address)).length;
           if (fixableCount === 0) return null;
           return (
