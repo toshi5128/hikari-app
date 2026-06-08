@@ -19,6 +19,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap" rel="stylesheet">
 <!-- SheetJS for Excel import -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- 🆕 v9.48.6: xlsx-js-style ( セル装飾対応 ・ SheetJS フォーク MIT ) - 標準SheetJSの後に読み込んで上書き -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <!-- Leaflet for in-app map -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -150,7 +152,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.48.5-property-type-select";
+const APP_VERSION = "2026-06-08-v9.48.6-styled-seisan-xlsx";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -21209,12 +21211,90 @@ function SeisanFormPage({ onBack }) {
     }
     if (form.notes) form.notes.split("\n").forEach(line => { if (line.trim()) rows.push(["・" + line]); });
 
+    // 🆕 v9.48.6: 各行の「種類」 ラベルでスタイル後付け ( xlsx-js-style 使用 )
+    // row 0: タイトル, row 1: 副題, row 2: 空行
+    // 以後: 行内容で判別
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    // 列幅 調整
-    ws["!cols"] = [{ wch: 38 }, { wch: 22 }, { wch: 22 }, { wch: 30 }];
+    ws["!cols"] = [{ wch: 42 }, { wch: 22 }, { wch: 22 }, { wch: 32 }];
+    ws["!rows"] = [{ hpt: 36 }, { hpt: 20 }];  // タイトル行 ・ 副題行 高さ
+
+    // 結合 ( タイトル ・ 副題 ・ セクションヘッダ 等を A:D で結合 )
+    const merges = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },  // タイトル
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 3 } },  // 副題
+    ];
+
+    // スタイル定義
+    const NAVY = "1E4E8C", PALE_BLUE = "D9E1F2", PALE_ORANGE = "FCE4D6", LIGHT_GRAY = "F2F2F2", BORDER_COLOR = "BFBFBF";
+    const thinBorder = { style: "thin", color: { rgb: BORDER_COLOR } };
+    const ALL_BORDER = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    const FONT = "Yu Gothic";
+
+    const styles = {
+      title: { font: { sz: 22, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
+      subtitle: { font: { sz: 10, name: FONT }, alignment: { horizontal: "center" } },
+      sectionHeader: { font: { sz: 13, bold: true, color: { rgb: "FFFFFF" }, name: FONT }, fill: { fgColor: { rgb: NAVY } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL_BORDER },
+      tableHeader: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: PALE_BLUE } }, alignment: { horizontal: "center", vertical: "center" }, border: ALL_BORDER },
+      label: { font: { sz: 11, name: FONT }, fill: { fgColor: { rgb: LIGHT_GRAY } }, alignment: { horizontal: "left", vertical: "center", wrapText: true }, border: ALL_BORDER },
+      cell: { font: { sz: 11, name: FONT }, alignment: { horizontal: "left", vertical: "center", wrapText: true }, border: ALL_BORDER },
+      yen: { font: { sz: 11, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL_BORDER, numFmt: '#,##0"円"' },
+      yenBold: { font: { sz: 12, bold: true, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL_BORDER, numFmt: '#,##0"円"', fill: { fgColor: { rgb: PALE_ORANGE } } },
+      totalLabel: { font: { sz: 12, bold: true, name: FONT }, alignment: { horizontal: "left", vertical: "center" }, border: ALL_BORDER, fill: { fgColor: { rgb: PALE_ORANGE } } },
+      subHeader: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: PALE_BLUE } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL_BORDER },
+      note: { font: { sz: 10, name: FONT }, alignment: { horizontal: "left", vertical: "top", wrapText: true } },
+    };
+
+    // 行ごとに種類を判別 → セルにスタイル適用
+    const range = XLSX.utils.decode_range(ws["!ref"]);
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      const row = rows[R] || [];
+      const firstCell = String(row[0] || "");
+      const isTitle = R === 0;
+      const isSubtitle = R === 1;
+      const isSectionHeader = firstCell.startsWith("■ ");
+      const isTableHeader = ["項目"].includes(firstCell) && (row[1] === "金額" || row[1] === "受取");
+      const isSubHeader = (firstCell.startsWith("【") && firstCell.endsWith("】")) || firstCell.startsWith("【") && firstCell.includes("様】");
+      const isTotalRow = ["小計", "差引　売主お手取り額", "買主 決済時お支払合計", "ひかり不動産 受領合計"].includes(firstCell);
+      const isNote = firstCell.startsWith("・");
+
+      // section header / subtitle / title は A:D を結合
+      if (isSectionHeader || isSubHeader) {
+        merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 3 } });
+      }
+      if (isNote) {
+        merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 3 } });
+      }
+
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const addr = XLSX.utils.encode_cell({ r: R, c: C });
+        let cell = ws[addr];
+        if (!cell) {
+          cell = { v: "", t: "s" };
+          ws[addr] = cell;
+        }
+        // スタイル適用
+        if (isTitle) cell.s = styles.title;
+        else if (isSubtitle) cell.s = styles.subtitle;
+        else if (isSectionHeader) cell.s = styles.sectionHeader;
+        else if (isTableHeader) cell.s = styles.tableHeader;
+        else if (isSubHeader) cell.s = styles.subHeader;
+        else if (isNote) cell.s = styles.note;
+        else if (isTotalRow) {
+          if (C === 0) cell.s = styles.totalLabel;
+          else if (typeof cell.v === "number") cell.s = styles.yenBold;
+          else cell.s = styles.totalLabel;
+        } else {
+          // 通常行
+          if (C === 0) cell.s = styles.label;
+          else if (typeof cell.v === "number") cell.s = styles.yen;
+          else cell.s = styles.cell;
+        }
+      }
+    }
+    ws["!merges"] = merges;
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "売買精算書");
-    const safeAddr = (form.propertyAddr || "物件").replace(/[\\/:*?"<>|]/g, "_").slice(0, 30);
     const safeSeller = (form.sellerName || "売主").replace(/[\\/:*?"<>|]/g, "_").slice(0, 20);
     const datePart = todayStr.replace(/-/g, "");
     const suffix = form.docType === "seller" ? "_売主用" : form.docType === "buyer" ? "_買主用" : "";
