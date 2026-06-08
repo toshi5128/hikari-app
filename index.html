@@ -152,7 +152,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.48.9-bank-include-checkbox";
+const APP_VERSION = "2026-06-08-v9.48.10-three-column-layout";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -21160,23 +21160,25 @@ function SeisanFormPage({ onBack }) {
 
     if (form.docType === "both" || form.docType === "seller") {
       rows.push(["■ 売主精算明細（" + form.sellerName + " 様）"]);
-      rows.push(["項目", "受取", "支払", "備考"]);
-      rows.push(["売買代金", price, "", depositApplied > 0 ? "( うち手付金 " + depositApplied.toLocaleString() + " 円は契約時受領済 )" : "買主より受領"]);
-      if (depositApplied > 0) rows.push(["うち 手付金（契約時受領済）", depositApplied, "", "売買代金の内訳"]);
-      if (buyerTax > 0) rows.push(["固定資産税・都市計画税 精算金（日割り）", buyerTax, "", "買主より受領"]);
-      if (feeS > 0) rows.push(["仲介手数料", "", feeS, "ひかり不動産へお支払い"]);
+      rows.push(["項目", "受取", "支払"]);
+      // 🆕 v9.48.10: D列削除 → 補足を項目名に括弧書きで統合
+      const note1 = depositApplied > 0 ? `（うち手付金 ${depositApplied.toLocaleString()}円は契約時受領済）` : "（買主より受領）";
+      rows.push([`売買代金 ${note1}`, price, ""]);
+      if (depositApplied > 0) rows.push([`うち 手付金（契約時受領済 ・ 売買代金の内訳）`, depositApplied, ""]);
+      if (buyerTax > 0) rows.push([`固定資産税・都市計画税 精算金（日割り ・ 買主より受領）`, buyerTax, ""]);
+      if (feeS > 0) rows.push([`仲介手数料（ひかり不動産へお支払い）`, "", feeS]);
       if (stampS > 0) {
         if (form.stampPaidSeller) {
-          rows.push(["収入印紙代（売買契約書 売主保管分に貼付）", "", 0, `✅ 支払い済み（${stampS.toLocaleString()}円 ・ 精算対象外）`]);
+          rows.push([`収入印紙代（✅ 支払い済み ${stampS.toLocaleString()}円 ・ 精算対象外）`, "", 0]);
         } else {
-          rows.push(["収入印紙代（売買契約書 売主保管分に貼付）", "", stampS, "ひかり不動産へ（立替分）"]);
+          rows.push([`収入印紙代（ひかり不動産へ ・ 立替分）`, "", stampS]);
         }
       }
       const recv = price + buyerTax;
       const pay = feeS + (form.stampPaidSeller ? 0 : stampS);
       rows.push(["小計", recv, pay]);
-      rows.push(["差引　売主お手取り額", recv - pay, "", "（受取－支払 ・ 手付金分含む総額）"]);
-      if (depositApplied > 0) rows.push(["うち 決済時受領額", recv - pay - depositApplied, "", "( 手付金 " + depositApplied.toLocaleString() + " 円は契約時既受領 )"]);
+      rows.push([`差引　売主お手取り額（受取－支払）`, recv - pay, ""]);
+      if (depositApplied > 0) rows.push([`うち 決済時受領額（手付金 ${depositApplied.toLocaleString()}円は契約時既受領）`, recv - pay - depositApplied, ""]);
       rows.push([]);
     }
 
@@ -21235,18 +21237,20 @@ function SeisanFormPage({ onBack }) {
     // row 0: タイトル, row 1: 副題, row 2: 空行
     // 以後: 行内容で判別
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    // 🆕 v9.48.7: 列幅 ( B列を大幅に広く、 1行に収まるように )
-    ws["!cols"] = [{ wch: 28 }, { wch: 46 }, { wch: 24 }, { wch: 36 }];
-    // 🆕 v9.48.7: 全行の高さを 20pt 固定 ・ タイトルだけ 36pt
+    // 🆕 v9.48.10: A〜C の 3列構成 ( D列削除 ) ・ A4縦に収まる列幅
+    ws["!cols"] = [{ wch: 32 }, { wch: 26 }, { wch: 26 }];
+    // 🆕 v9.48.10: 範囲を 3列 ( A〜C ) に制限 → D列以降を出力しない
+    ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length - 1, c: 2 } });
+    // 全行の高さ調整
     ws["!rows"] = [{ hpt: 36 }, { hpt: 18 }];
     for (let i = 2; i < rows.length; i++) {
       ws["!rows"][i] = { hpt: 20 };
     }
 
-    // 結合 ( タイトル ・ 副題 ・ セクションヘッダ 等を A:D で結合 )
+    // 🆕 v9.48.10: A〜C ( 3列 ) 構成。 結合は c:2 まで
     const merges = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },  // タイトル
-      { s: { r: 1, c: 0 }, e: { r: 1, c: 3 } },  // 副題
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 2 } },  // タイトル
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 2 } },  // 副題
     ];
 
     // スタイル定義
@@ -21286,10 +21290,10 @@ function SeisanFormPage({ onBack }) {
 
       // section header / subtitle / title は A:D を結合
       if (isSectionHeader || isSubHeader) {
-        merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 3 } });
+        merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 2 } });
       }
       if (isNote) {
-        merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 3 } });
+        merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 2 } });
       }
 
       for (let C = range.s.c; C <= range.e.c; C++) {
@@ -21319,6 +21323,20 @@ function SeisanFormPage({ onBack }) {
       }
     }
     ws["!merges"] = merges;
+
+    // 🆕 v9.48.10: A4印刷設定 ( 縦向き ・ 用紙幅にフィット ・ 余白狭め )
+    ws["!pageSetup"] = {
+      paperSize: 9,         // 9 = A4
+      orientation: "portrait",
+      fitToWidth: 1,
+      fitToHeight: 0,       // 高さは複数ページ可
+      scale: 100,
+    };
+    ws["!margins"] = {
+      left: 0.4, right: 0.4, top: 0.5, bottom: 0.5,
+      header: 0.3, footer: 0.3,
+    };
+    ws["!printOptions"] = { horizontalCentered: true };
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "売買精算書");
