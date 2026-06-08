@@ -152,7 +152,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.48.16-tax-statement-receipt";
+const APP_VERSION = "2026-06-08-v9.48.18-tax-statement-pdf-match";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -21684,26 +21684,36 @@ function generateTaxStatementXlsx(form, tax, num) {
   const sellerDays = tax.sellerDays;
   const buyerDays = tax.buyerDays;
 
-  // スタイル
+  // 🆕 v9.48.18: PDFサンプル準拠 ( 2のみ罫線あり、 区切り線、 下線、 点線枠 )
   const FONT = "Yu Gothic";
-  const NAVY = "1E4E8C";
-  const PALE_BLUE = "D9E1F2";
-  const PALE_ORANGE = "FCE4D6";
-  const thin = { style: "thin", color: { rgb: "BFBFBF" } };
+  const LIGHT_GRAY = "F2F2F2";
+  const thin = { style: "thin", color: { rgb: "000000" } };
   const ALL = { top: thin, bottom: thin, left: thin, right: thin };
+  const bottomThick = { bottom: { style: "medium", color: { rgb: "000000" } } };  // 区切り線用
+  const dashed = { style: "dashed", color: { rgb: "000000" } };
+  const DASHED_ALL = { top: dashed, bottom: dashed, left: dashed, right: dashed };
+  const underline = { bottom: thin };  // 名前用 下線
+
   const styles = {
-    title: { font: { sz: 18, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
-    sectionLabel: { font: { sz: 12, bold: true, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
-    tableHeader: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: PALE_BLUE } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL },
-    yen: { font: { sz: 11, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL, numFmt: '#,##0"円"' },
-    yenBold: { font: { sz: 12, bold: true, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL, numFmt: '#,##0"円"', fill: { fgColor: { rgb: PALE_ORANGE } } },
-    cellBold: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: PALE_BLUE } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL },
-    cell: { font: { sz: 11, name: FONT }, alignment: { horizontal: "left", vertical: "center", wrapText: true } },
-    receiptTitle: { font: { sz: 18, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
-    receiptYen: { font: { sz: 22, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
+    title: { font: { sz: 20, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
+    sectionLabel: { font: { sz: 13, bold: true, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
+    plain: { font: { sz: 11, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
+    tableLabel: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: LIGHT_GRAY } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL },
+    tableYen: { font: { sz: 11, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL, numFmt: '#,##0"円"' },
+    tableTotalLabel: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: LIGHT_GRAY } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL },
+    tableTotalYen: { font: { sz: 12, bold: true, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL, numFmt: '#,##0"円"' },
+    // 区切り線 ( セクション間 ) - 下罫線のみのセル
+    divider: { font: { sz: 6, name: FONT }, alignment: { horizontal: "center" }, border: bottomThick },
+    // 領収書
+    receiptTitle: { font: { sz: 20, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
+    // 買主名 ・ 下線つき (氏名のみに罫線を引きたいので名前セルだけ下線)
+    receiptName: { font: { sz: 14, bold: true, name: FONT }, alignment: { horizontal: "left", vertical: "center" }, border: underline },
+    receiptNameLabel: { font: { sz: 12, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
+    receiptNameSama: { font: { sz: 11, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
+    // 金額 ・ 点線枠
+    receiptYen: { font: { sz: 22, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" }, border: DASHED_ALL },
     receiptNote: { font: { sz: 10, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
-    receiptLabel: { font: { sz: 11, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
-    receiptName: { font: { sz: 13, bold: true, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
+    receiptLabel: { font: { sz: 11, name: FONT }, alignment: { horizontal: "right", vertical: "center" } },
   };
 
   const ws = {};
@@ -21711,49 +21721,75 @@ function generateTaxStatementXlsx(form, tax, num) {
   let R = 0;
   const cell = (r, c, v, s, t) => { ws[XLSX.utils.encode_cell({ r, c })] = { v, t: t || (typeof v === "number" ? "n" : "s"), s }; };
   const merge = (r1, c1, r2, c2) => merges.push({ s: { r: r1, c: c1 }, e: { r: r2, c: c2 } });
+  const fillRange = (r, c1, c2, s) => { for (let c = c1; c <= c2; c++) { const addr = XLSX.utils.encode_cell({ r, c }); if (!ws[addr]) ws[addr] = { v: "", t: "s", s }; } };
 
-  // タイトル
+  // タイトル ( 大きい中央寄せ )
   cell(R, 0, "固定資産税・都市計画税精算書", styles.title);
-  merge(R, 0, R, 2);
-  R += 2;
+  merge(R, 0, R, 3); R += 2;
 
-  // 1. 物件
+  // === 1. 物件 ===
   cell(R, 0, "1. 物件", styles.sectionLabel); R++;
-  cell(R, 0, "  " + (form.propertyType ? `${form.propertyType} ` : "") + (form.propertyAddr || ""), styles.cell);
-  merge(R, 0, R, 2); R += 2;
+  cell(R, 1, (form.propertyType ? `${form.propertyType} ` : "") + (form.propertyAddr || ""), styles.plain);
+  merge(R, 1, R, 3); R += 2;
 
-  // 2. 固定資産税 ・ 都市計画税 ( 表 )
+  // === 2. 固定資産税 ・ 都市計画税 ( 表 ) ===
   cell(R, 0, "2. 固定資産税・都市計画税", styles.sectionLabel); R++;
-  cell(R, 0, "固定資産税", styles.cellBold);
-  cell(R, 1, kotei, styles.yen); merge(R, 1, R, 2); R++;
-  cell(R, 0, "都市計画税", styles.cellBold);
-  cell(R, 1, toshi, styles.yen); merge(R, 1, R, 2); R++;
-  cell(R, 0, "合計", styles.cellBold);
-  cell(R, 1, yearTax, styles.yenBold); merge(R, 1, R, 2); R += 2;
+  cell(R, 0, "固定資産税", styles.tableLabel);
+  cell(R, 1, kotei, styles.tableYen);
+  fillRange(R, 2, 3, styles.tableYen);
+  merge(R, 1, R, 3); R++;
+  cell(R, 0, "都市計画税", styles.tableLabel);
+  cell(R, 1, toshi, styles.tableYen);
+  fillRange(R, 2, 3, styles.tableYen);
+  merge(R, 1, R, 3); R++;
+  cell(R, 0, "合計", styles.tableTotalLabel);
+  cell(R, 1, yearTax, styles.tableTotalYen);
+  fillRange(R, 2, 3, styles.tableTotalYen);
+  merge(R, 1, R, 3); R += 2;
 
-  // 3. 日数負担分
+  // === 3. 日数負担分 ===
   cell(R, 0, "3. 日数負担分", styles.sectionLabel); R++;
-  cell(R, 0, `  引渡日：${settleStr}`, styles.cell); merge(R, 0, R, 2); R++;
-  cell(R, 0, `  売主負担分日数：${sellerDays}日分 ／ 期間：${sellerPeriod}`, styles.cell); merge(R, 0, R, 2); R++;
-  cell(R, 0, `  買主負担分日数：${buyerDays}日分 ／ 期間：${buyerPeriod}`, styles.cell); merge(R, 0, R, 2); R += 2;
+  cell(R, 1, `引渡日：${settleStr}`, styles.plain); merge(R, 1, R, 3); R++;
+  cell(R, 1, `売主負担分日数：${sellerDays}日分 ／ 期間：${sellerPeriod}`, styles.plain); merge(R, 1, R, 3); R++;
+  cell(R, 1, `買主負担分日数：${buyerDays}日分 ／ 期間：${buyerPeriod}`, styles.plain); merge(R, 1, R, 3); R += 2;
 
-  // 4. 計算式 ・ 負担額
+  // === 4. 計算式及び税金の負担額 ===
   cell(R, 0, "4. 計算式及び税金の負担額", styles.sectionLabel); R++;
-  cell(R, 0, `  売主：${yearTax.toLocaleString()}円 × ${sellerDays}日 ／ ${yearDays}日 = ${sellerAmount.toLocaleString()}円`, styles.cell); merge(R, 0, R, 2); R++;
-  cell(R, 0, `  買主：${yearTax.toLocaleString()}円 × ${buyerDays}日 ／ ${yearDays}日 = ${buyerAmount.toLocaleString()}円`, styles.cell); merge(R, 0, R, 2); R += 3;
+  cell(R, 1, `売主：${yearTax.toLocaleString()}円 × ${sellerDays}日 ／ ${yearDays}日 = ${sellerAmount.toLocaleString()}円`, styles.plain); merge(R, 1, R, 3); R++;
+  cell(R, 1, `買主：${yearTax.toLocaleString()}円 × ${buyerDays}日 ／ ${yearDays}日 = ${buyerAmount.toLocaleString()}円`, styles.plain); merge(R, 1, R, 3); R += 2;
+
+  // === 区切り横線 ( 4 と 領収書 の間 ) ===
+  cell(R, 0, "", styles.divider);
+  fillRange(R, 1, 3, styles.divider);
+  merge(R, 0, R, 3); R += 2;
 
   // === 領収書 ===
-  cell(R, 0, "領収書", styles.receiptTitle); merge(R, 0, R, 2); R += 2;
-  cell(R, 0, `（買主） ${form.buyerName} 様`, styles.receiptName); merge(R, 0, R, 2); R += 2;
-  cell(R, 0, `¥${buyerAmount.toLocaleString()} −`, styles.receiptYen); merge(R, 0, R, 2); R++;
-  cell(R, 0, "但し、別紙不動産売買契約書に基づく固定資産税・都市計画税の精算金として", styles.receiptNote); merge(R, 0, R, 2); R++;
-  cell(R, 0, "年   月   日  上記正に領収いたしました。", styles.receiptNote); merge(R, 0, R, 2); R += 2;
-  cell(R, 0, "（売主）住所：埼玉県熊谷市籠原南1丁目225", styles.receiptLabel); merge(R, 0, R, 2); R++;
-  cell(R, 0, `氏名：${form.sellerName || "合同会社ひかり不動産"}　　　　㊞`, styles.receiptLabel); merge(R, 0, R, 2); R++;
+  cell(R, 0, "領収書", styles.receiptTitle); merge(R, 0, R, 3); R += 2;
 
-  ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: R - 1, c: 2 } });
-  ws["!cols"] = [{ wch: 26 }, { wch: 20 }, { wch: 30 }];
-  ws["!rows"] = [{ hpt: 32 }];
+  // (買主) 名前 様 - 名前部分のみに下線
+  cell(R, 0, "（買主）　", styles.receiptNameLabel);
+  cell(R, 1, ` ${form.buyerName} `, styles.receiptName);
+  cell(R, 2, " 様", styles.receiptNameSama);
+  R += 2;
+
+  // ¥金額 - 中央に点線枠
+  cell(R, 0, "", styles.plain);
+  cell(R, 1, `￥${buyerAmount.toLocaleString()} −`, styles.receiptYen);
+  fillRange(R, 2, 2, styles.receiptYen);
+  cell(R, 3, "", styles.plain);
+  merge(R, 1, R, 2); R++;
+  // 但し書き ( 中央 )
+  cell(R, 0, "但し、別紙不動産売買契約書に基づく固定資産税・都市計画税の精算金として", styles.receiptNote); merge(R, 0, R, 3); R++;
+  cell(R, 0, "年   月   日   上記正に領収いたしました。", styles.receiptNote); merge(R, 0, R, 3); R += 2;
+
+  // 売主住所 ・ 氏名 ( 右寄せ )
+  cell(R, 0, "（売主）住所：埼玉県熊谷市籠原南1丁目225", styles.receiptLabel); merge(R, 0, R, 3); R++;
+  cell(R, 0, `氏名：${form.sellerName || "合同会社ひかり不動産"}　　　　㊞`, styles.receiptLabel); merge(R, 0, R, 3); R++;
+
+  // 🆕 v9.48.18: PDFサンプル準拠の 4列構成 ( ラベル / 値1 / 値2 / 余白 )
+  ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: R - 1, c: 3 } });
+  ws["!cols"] = [{ wch: 18 }, { wch: 26 }, { wch: 28 }, { wch: 10 }];
+  ws["!rows"] = [{ hpt: 40 }];  // タイトル行 高め
   ws["!merges"] = merges;
   ws["!pageSetup"] = { paperSize: 9, orientation: "portrait", fitToWidth: 1, fitToHeight: 0, scale: 100 };
   ws["!margins"] = { left: 0.5, right: 0.5, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 };
