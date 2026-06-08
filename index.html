@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.47.10-remove-fake-numbers-child-section";
+const APP_VERSION = "2026-06-08-v9.48-shorui-seisan-sheet";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -20193,6 +20193,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
   if (subPage === "yakusho") return <YakushoPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "investors") return <InvestorListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
+  if (subPage === "shorui") return <ShoruiPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   const hasPin = !!getPin();
   const activityLog = data.activityLog || [];
   const notifPermission = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
@@ -20396,6 +20397,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       {[
         { key: "yakusho", icon: "🏛", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
         { key: "investors", icon: "💎", title: "投資家リスト", desc: "反響で「投資家」を選択した顧客を自動集約", count: (data.stocks || []).reduce((a, s) => a + (s.viewings || []).filter(v => v.purpose === "投資家").length, 0) },
+        { key: "shorui", icon: "📁", title: "書類関係", desc: "精算書ひな形・各種テンプレート", count: null },
       ].map(item => (
         <button key={item.key} onClick={() => setSubPage(item.key)} style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 20, marginBottom: 12, textAlign: "left", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 16, touchAction: "manipulation" }}>
           <span style={{ fontSize: 32 }}>{item.icon}</span>
@@ -20404,8 +20406,11 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
             <div style={{ color: C.muted, fontSize: 13 }}>{item.desc}</div>
           </div>
           <div style={{ textAlign: "right" }}>
-            <div style={{ color: C.accent, fontWeight: 700, fontSize: 18 }}>{item.count}</div>
-            <div style={{ color: C.muted, fontSize: 11 }}>件</div>
+            {item.count !== null && <>
+              <div style={{ color: C.accent, fontWeight: 700, fontSize: 18 }}>{item.count}</div>
+              <div style={{ color: C.muted, fontSize: 11 }}>件</div>
+            </>}
+            {item.count === null && <div style={{ color: C.muted, fontSize: 20 }}>›</div>}
           </div>
         </button>
       ))}
@@ -20983,6 +20988,365 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
           }} style={{ ...btnStyle("danger"), width: "100%", marginTop: 10, padding: "8px", fontSize: 12 }}>履歴を全削除</button>
         )}
       </div>
+    </div>
+  );
+}
+
+// 🆕 v9.48: 書類関係ページ ( メニュー: 精算書など )
+function ShoruiPage({ data, setData, onBack }) {
+  const [doc, setDoc] = useState(null); // null | "seisan"
+  if (doc === "seisan") return <SeisanFormPage onBack={() => setDoc(null)} />;
+  const items = [
+    { key: "seisan", icon: "💴", title: "売買精算書", desc: "売主 ・ 買主の精算明細を作成 → Excel出力", emoji: "" },
+    // 今後追加: 契約書 ・ 重要事項説明書 など
+  ];
+  return (
+    <div style={{ padding: "16px 16px 80px", maxWidth: 720, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>📁 書類関係</div>
+      </div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 16, lineHeight: 1.6 }}>
+        業務で使う各種書類のひな形を、 アプリ内で作成 ・ ダウンロードできます。
+      </div>
+      {items.map(item => (
+        <button key={item.key} onClick={() => setDoc(item.key)} style={{
+          width: "100%", background: C.cardBg, border: `1px solid ${C.borderDim}`,
+          borderRadius: 14, padding: 20, marginBottom: 12, textAlign: "left", cursor: "pointer",
+          fontFamily: "inherit", display: "flex", alignItems: "center", gap: 16,
+        }}>
+          <span style={{ fontSize: 32 }}>{item.icon}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 4 }}>{item.title}</div>
+            <div style={{ color: C.muted, fontSize: 13 }}>{item.desc}</div>
+          </div>
+          <div style={{ color: C.muted, fontSize: 20 }}>›</div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// 🆕 v9.48: 売買精算書 作成ページ ( 入力フォーム + Excel出力 )
+function SeisanFormPage({ onBack }) {
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const [form, setForm] = useState({
+    settlementDate: todayStr,            // 決済日 ( yyyy-mm-dd )
+    settlementTime: "13:00",             // 決済時刻
+    settlementPlace: "合同会社ひかり不動産 ( 埼玉県熊谷市籠原南1丁目225番 )",
+    propertyAddr: "",                    // 物件の表示
+    sellerName: "",                      // 売主
+    buyerName: "",                       // 買主
+    salePrice: "",                       // 売買代金 ( 円 )
+    annualTax: "",                       // 固定資産税 + 都市計画税 年税額 ( 円 )
+    // 仲介手数料 ( 売主 / 買主 別 )
+    brokerFeeFromSeller: "",
+    brokerFeeFromBuyer: "",
+    // 印紙代
+    stampForSeller: "500",
+    stampForBuyer: "500",
+    // 振込先 ( ひかり )
+    hikariBank: "埼玉信用組合", hikariBranch: "深谷支店", hikariKind: "普通",
+    hikariAccountNo: "", hikariAccountName: "ド)ヒカリフドウサン",
+    // 振込先 ( 売主 )
+    sellerBank: "", sellerBranch: "", sellerKind: "普通",
+    sellerAccountNo: "", sellerAccountName: "",
+    // 出力タイプ
+    docType: "both",                     // "both" | "seller" | "buyer"
+    notes: "",                           // 備考 ( 自由記述 )
+  });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const num = v => parseFloat(String(v).replace(/,/g, "")) || 0;
+
+  // 🆕 日割り計算 ( 1月1日基準 )
+  const calcTax = () => {
+    const yearTax = num(form.annualTax);
+    if (yearTax === 0 || !form.settlementDate) return null;
+    const settle = new Date(form.settlementDate + "T00:00:00");
+    const year = settle.getFullYear();
+    const jan1 = new Date(year, 0, 1);
+    const dec31 = new Date(year, 11, 31);
+    const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    const yearDays = isLeap ? 366 : 365;
+    // 売主負担: 1/1 〜 決済日前日
+    const sellerDays = Math.round((settle - jan1) / 86400000);
+    // 買主負担: 決済日 〜 12/31
+    const buyerDays = Math.round((dec31 - settle) / 86400000) + 1;
+    const buyerAmount = Math.round(yearTax * buyerDays / yearDays);
+    const sellerAmount = yearTax - buyerAmount;
+    return { yearTax, yearDays, sellerDays, buyerDays, buyerAmount, sellerAmount, isLeap };
+  };
+  const tax = calcTax();
+
+  // 仲介手数料 自動計算ボタン
+  const autoBrokerFee = () => {
+    const price = num(form.salePrice);
+    if (price === 0) { alert("先に売買代金を入力してください"); return; }
+    // 3% + 6万 + 消費税10%
+    const fee = Math.round((price * 0.03 + 60000) * 1.1);
+    setForm(f => ({ ...f, brokerFeeFromSeller: String(fee), brokerFeeFromBuyer: String(fee) }));
+  };
+
+  // Excel出力
+  const generateXlsx = () => {
+    if (typeof XLSX === "undefined") { alert("Excelライブラリが読み込めていません"); return; }
+    const fmtDate = (s) => {
+      if (!s) return "";
+      const d = new Date(s + "T00:00:00");
+      const y = d.getFullYear();
+      const wareki = y - 2018 + (y >= 2019 ? 0 : 0); // 令和換算
+      const reiwa = y - 2018;
+      return `${y}年${d.getMonth() + 1}月${d.getDate()}日（令和${reiwa}年${d.getMonth() + 1}月${d.getDate()}日）`;
+    };
+    const settleDateStr = fmtDate(form.settlementDate);
+    const todayDateStr = fmtDate(todayStr);
+    const price = num(form.salePrice);
+    const feeS = num(form.brokerFeeFromSeller);
+    const feeB = num(form.brokerFeeFromBuyer);
+    const stampS = num(form.stampForSeller);
+    const buyerTax = tax ? tax.buyerAmount : 0;
+
+    const rows = [];
+    rows.push([form.docType === "seller" ? "売買精算書（売主様用）" : form.docType === "buyer" ? "売買精算書（買主様用）" : "売買精算書"]);
+    rows.push([`作成日：${todayDateStr}　　仲介：合同会社ひかり不動産（埼玉県熊谷市籠原南1丁目225番）`]);
+    rows.push([]);
+    rows.push(["■ 取引概要"]);
+    rows.push(["決済日時", `${settleDateStr}　${form.settlementTime}　※契約・決済 同日`]);
+    rows.push(["決済場所", form.settlementPlace]);
+    rows.push(["物件の表示", form.propertyAddr]);
+    rows.push(["売主", form.sellerName + " 様"]);
+    rows.push(["買主", form.buyerName + " 様"]);
+    rows.push(["売買代金", price]);
+    rows.push([]);
+
+    if (form.docType === "both" || form.docType === "buyer") {
+      rows.push(["■ 買主精算明細（" + form.buyerName + " 様 お支払い）"]);
+      rows.push(["項目", "金額", "お支払先"]);
+      rows.push(["売買代金", price, form.sellerName + " 様"]);
+      if (buyerTax > 0) rows.push(["固定資産税・都市計画税 精算金（日割り）", buyerTax, form.sellerName + " 様"]);
+      if (feeB > 0) rows.push(["仲介手数料", feeB, "合同会社ひかり不動産"]);
+      rows.push(["買主 お支払合計", price + buyerTax + feeB]);
+      rows.push([]);
+    }
+
+    if (form.docType === "both" || form.docType === "seller") {
+      rows.push(["■ 売主精算明細（" + form.sellerName + " 様）"]);
+      rows.push(["項目", "受取", "支払", "備考"]);
+      rows.push(["売買代金", price, "", "買主より受領"]);
+      if (buyerTax > 0) rows.push(["固定資産税・都市計画税 精算金（日割り）", buyerTax, "", "買主より受領"]);
+      if (feeS > 0) rows.push(["仲介手数料", "", feeS, "ひかり不動産へお支払い"]);
+      if (stampS > 0) rows.push(["収入印紙代（売買契約書 売主保管分に貼付）", "", stampS, "ひかり不動産へ（立替分）"]);
+      const recv = price + buyerTax;
+      const pay = feeS + stampS;
+      rows.push(["小計", recv, pay]);
+      rows.push(["差引　売主お手取り額", recv - pay, "", "（受取－支払）"]);
+      rows.push([]);
+    }
+
+    if (form.docType === "both") {
+      rows.push(["■ 合同会社ひかり不動産 受領明細"]);
+      rows.push(["項目", "金額", "受領元"]);
+      if (feeS > 0) rows.push(["仲介手数料", feeS, "売主・" + form.sellerName + " 様 より"]);
+      if (feeB > 0) rows.push(["仲介手数料", feeB, "買主・" + form.buyerName + " 様 より"]);
+      rows.push(["ひかり不動産 受領合計", feeS + feeB]);
+      rows.push([]);
+    }
+
+    rows.push(["■ 振込先"]);
+    if (form.docType === "seller" || form.docType === "both") {
+      rows.push([`【${form.sellerName} 様】（お手取り金 お受取口座）`]);
+      rows.push(["金融機関名", form.sellerBank]);
+      rows.push(["支店名", form.sellerBranch]);
+      rows.push(["預金種別", form.sellerKind]);
+      rows.push(["口座番号", form.sellerAccountNo]);
+      rows.push(["口座名義", form.sellerAccountName]);
+      rows.push([]);
+    }
+    rows.push(["【合同会社ひかり不動産】（仲介手数料 お振込先）"]);
+    rows.push(["金融機関名", form.hikariBank]);
+    rows.push(["支店名", form.hikariBranch]);
+    rows.push(["預金種別", form.hikariKind]);
+    rows.push(["口座番号", form.hikariAccountNo]);
+    rows.push(["口座名義", form.hikariAccountName]);
+    rows.push([]);
+
+    rows.push(["■ 備考"]);
+    rows.push(["・本取引は、売買契約と決済を同日に行います。"]);
+    if (tax) rows.push([`・固定資産税・都市計画税は売主様が当年度分を全額納付済みのため、決済日を基準とした日割り精算とし、買主様のご負担額 ${tax.buyerAmount.toLocaleString()}円を売主様へお支払いいただきます。（年税額 ${tax.yearTax.toLocaleString()}円 × ${tax.buyerDays}日 ÷ ${tax.yearDays}日）`]);
+    if (stampS > 0) rows.push([`・売買契約書は2通作成し、各通に収入印紙 ${stampS}円を貼付します（売主様・買主様 各自${stampS}円ご負担）。売主様分はひかり不動産が立替・貼付いたします。`]);
+    if (form.notes) form.notes.split("\n").forEach(line => { if (line.trim()) rows.push(["・" + line]); });
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    // 列幅 調整
+    ws["!cols"] = [{ wch: 38 }, { wch: 22 }, { wch: 22 }, { wch: 30 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "売買精算書");
+    const safeAddr = (form.propertyAddr || "物件").replace(/[\\/:*?"<>|]/g, "_").slice(0, 30);
+    const safeSeller = (form.sellerName || "売主").replace(/[\\/:*?"<>|]/g, "_").slice(0, 20);
+    const datePart = todayStr.replace(/-/g, "");
+    const suffix = form.docType === "seller" ? "_売主用" : form.docType === "buyer" ? "_買主用" : "";
+    const fname = `売買精算書${suffix}_${safeSeller}_${datePart}.xlsx`;
+    XLSX.writeFile(wb, fname);
+  };
+
+  return (
+    <div style={{ padding: "16px 16px 80px", maxWidth: 720, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>💴 売買精算書 作成</div>
+      </div>
+
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 14, fontSize: 12, color: C.text, lineHeight: 1.7 }}>
+        💡 必要な情報を入力 → 「Excel ダウンロード」 で売買精算書 ( .xlsx ) が出力されます。 固定資産税は 1月1日基準で自動 日割り計算。
+      </div>
+
+      {/* 取引概要 */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>■ 取引概要</div>
+        <Field label="決済日">
+          <input style={inp} type="date" value={form.settlementDate} onChange={e => set("settlementDate", e.target.value)} />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="決済時刻">
+            <input style={inp} type="time" value={form.settlementTime} onChange={e => set("settlementTime", e.target.value)} />
+          </Field>
+          <Field label="出力対象">
+            <select style={inp} value={form.docType} onChange={e => set("docType", e.target.value)}>
+              <option value="both">両者用 ( フル )</option>
+              <option value="seller">売主用</option>
+              <option value="buyer">買主用</option>
+            </select>
+          </Field>
+        </div>
+        <Field label="決済場所">
+          <input style={inp} value={form.settlementPlace} onChange={e => set("settlementPlace", e.target.value)} />
+        </Field>
+        <Field label="物件の表示">
+          <input style={inp} value={form.propertyAddr} onChange={e => set("propertyAddr", e.target.value)}
+            placeholder="例: 児玉郡上里町大字七本木字三軒 2008番13" />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="売主 氏名">
+            <input style={inp} value={form.sellerName} onChange={e => set("sellerName", e.target.value)} placeholder="例: 針谷 祐司" />
+          </Field>
+          <Field label="買主 氏名 ・ 法人名">
+            <input style={inp} value={form.buyerName} onChange={e => set("buyerName", e.target.value)} placeholder="例: 株式会社ウーリー" />
+          </Field>
+        </div>
+        <Field label="売買代金 (円)">
+          <input style={inp} type="text" inputMode="numeric" value={form.salePrice}
+            onChange={e => set("salePrice", e.target.value)} placeholder="例: 600000" />
+        </Field>
+      </div>
+
+      {/* 固定資産税 日割り */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>■ 固定資産税 ・ 都市計画税 ( 1月1日基準 日割り )</div>
+        <Field label="年税額 ( 固定資産税 + 都市計画税 合計 / 円 )">
+          <input style={inp} type="text" inputMode="numeric" value={form.annualTax}
+            onChange={e => set("annualTax", e.target.value)} placeholder="例: 21500" />
+        </Field>
+        {tax && (
+          <div style={{ background: C.success + "11", border: `1px solid ${C.success}44`, borderRadius: 8, padding: 10, marginTop: 8, fontSize: 11, color: C.text, lineHeight: 1.8 }}>
+            🗓 売主負担: <b>{tax.sellerDays}日</b> ( 1/1 〜 決済前日 ) ・ 売主負担額: <b>{tax.sellerAmount.toLocaleString()}円</b><br />
+            🗓 買主負担: <b>{tax.buyerDays}日</b> ( 決済日 〜 12/31 ) ・ 買主負担額: <b style={{ color: C.success }}>{tax.buyerAmount.toLocaleString()}円</b><br />
+            💴 年税額 {tax.yearTax.toLocaleString()}円 × {tax.buyerDays}日 ÷ {tax.yearDays}日 = {tax.buyerAmount.toLocaleString()}円 ( {tax.isLeap ? "うるう年" : "通常年"} )<br />
+            ➡️ 決済時に <b>買主が売主へ {tax.buyerAmount.toLocaleString()}円を精算</b> ( 売主が当年度分を全額納付済み前提 )
+          </div>
+        )}
+      </div>
+
+      {/* 仲介手数料 ・ 印紙 */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.warn }}>■ 仲介手数料 ・ 印紙代</div>
+          <button onClick={autoBrokerFee} style={{ ...btnStyle("ghost"), padding: "5px 10px", fontSize: 11 }}>自動計算</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="仲介手数料 ( 売主から / 円 )">
+            <input style={inp} type="text" inputMode="numeric" value={form.brokerFeeFromSeller}
+              onChange={e => set("brokerFeeFromSeller", e.target.value)} placeholder="例: 330000" />
+          </Field>
+          <Field label="仲介手数料 ( 買主から / 円 )">
+            <input style={inp} type="text" inputMode="numeric" value={form.brokerFeeFromBuyer}
+              onChange={e => set("brokerFeeFromBuyer", e.target.value)} placeholder="例: 330000" />
+          </Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="印紙代 売主分 (円)">
+            <input style={inp} type="text" inputMode="numeric" value={form.stampForSeller}
+              onChange={e => set("stampForSeller", e.target.value)} placeholder="500" />
+          </Field>
+          <Field label="印紙代 買主分 (円)">
+            <input style={inp} type="text" inputMode="numeric" value={form.stampForBuyer}
+              onChange={e => set("stampForBuyer", e.target.value)} placeholder="500" />
+          </Field>
+        </div>
+      </div>
+
+      {/* 振込先 */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>■ 振込先 ( 売主様 - お手取り金 受取口座 )</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="金融機関名">
+            <input style={inp} value={form.sellerBank} onChange={e => set("sellerBank", e.target.value)} placeholder="例: りそな銀行" />
+          </Field>
+          <Field label="支店名">
+            <input style={inp} value={form.sellerBranch} onChange={e => set("sellerBranch", e.target.value)} placeholder="例: 調布支店" />
+          </Field>
+          <Field label="預金種別">
+            <select style={inp} value={form.sellerKind} onChange={e => set("sellerKind", e.target.value)}>
+              <option>普通</option><option>当座</option><option>貯蓄</option>
+            </select>
+          </Field>
+          <Field label="口座番号">
+            <input style={inp} type="text" inputMode="numeric" value={form.sellerAccountNo}
+              onChange={e => set("sellerAccountNo", e.target.value)} placeholder="例: 3790953" />
+          </Field>
+        </div>
+        <Field label="口座名義">
+          <input style={inp} value={form.sellerAccountName} onChange={e => set("sellerAccountName", e.target.value)}
+            placeholder="例: 針谷 祐司（ハリガイ ユウジ）" />
+        </Field>
+
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginTop: 16, marginBottom: 10 }}>■ 振込先 ( ひかり不動産 - 仲介手数料 受取口座 )</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="金融機関名">
+            <input style={inp} value={form.hikariBank} onChange={e => set("hikariBank", e.target.value)} />
+          </Field>
+          <Field label="支店名">
+            <input style={inp} value={form.hikariBranch} onChange={e => set("hikariBranch", e.target.value)} />
+          </Field>
+          <Field label="預金種別">
+            <select style={inp} value={form.hikariKind} onChange={e => set("hikariKind", e.target.value)}>
+              <option>普通</option><option>当座</option><option>貯蓄</option>
+            </select>
+          </Field>
+          <Field label="口座番号">
+            <input style={inp} type="text" inputMode="numeric" value={form.hikariAccountNo}
+              onChange={e => set("hikariAccountNo", e.target.value)} placeholder="例: 0436895" />
+          </Field>
+        </div>
+        <Field label="口座名義">
+          <input style={inp} value={form.hikariAccountName} onChange={e => set("hikariAccountName", e.target.value)} />
+        </Field>
+      </div>
+
+      {/* 備考 */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>■ 備考 ( 任意 ・ 改行で複数行 )</div>
+        <textarea style={{ ...inp, height: 60, resize: "vertical" }} value={form.notes}
+          onChange={e => set("notes", e.target.value)}
+          placeholder="例: 振込手数料は売主様 ご負担" />
+      </div>
+
+      {/* 出力ボタン */}
+      <button onClick={generateXlsx} style={{
+        width: "100%", padding: 14, background: C.success, color: "#fff",
+        border: "none", borderRadius: 10, fontSize: 15, fontWeight: 800,
+        cursor: "pointer", fontFamily: "inherit", marginTop: 8,
+      }}>📥 Excel ダウンロード</button>
     </div>
   );
 }
