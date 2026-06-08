@@ -29,6 +29,8 @@
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   }
 </script>
+<!-- 🆕 v9.46.7: Tesseract.js for スキャンPDFのOCR ( 日本語 ) -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#04080f;color:#e2e8f0;font-family:'Noto Sans JP',sans-serif}body.light-mode{background:#f1f5f9 !important;color:#0f172a !important}body.light-mode [style*="background: #0d1422"],body.light-mode [style*="background:#0d1422"]{background:#ffffff !important}body.light-mode [style*="background: #04080f"]{background:#f1f5f9 !important}body.light-mode [style*="background: #0a0f1a"]{background:#f8fafc !important}body.light-mode [style*="border: 1px solid ${C.borderDim}"]{border-color:#cbd5e1 !important}body.light-mode input,body.light-mode select,body.light-mode textarea{background:#ffffff !important;color:#0f172a !important;border-color:#cbd5e1 !important}body.light-mode option{background:#ffffff !important;color:#0f172a !important}input,select,textarea,button{font-family:inherit}
 input[type="date"],input[type="time"]{color-scheme:dark}
 input[type="date"]::-webkit-calendar-picker-indicator,input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(0.7) sepia(1) saturate(5) hue-rotate(175deg) brightness(1.2);cursor:pointer;opacity:1;padding:4px;border-radius:4px}
@@ -148,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.46.6-improve-tokibo-regex-and-debug";
+const APP_VERSION = "2026-06-08-v9.46.7-ocr-fallback-for-scanned-tokibo";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15018,6 +15020,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       legalDocLandParsing: false,
       legalDocBuilding: null,  // { fileName, raw, fields: {buildingArea, builtYear, structure, kashuType, kasokuNo} }
       legalDocBuildingParsing: false,
+      ocrProgress: null, // { which: "land" | "building", page, totalPages, progress }
       // 用途地域 ・ 建ぺい率 ( 査定書反映用 )
       yotoChiki: "",
       kenpei: "",
@@ -15027,8 +15030,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     });
   };
 
-  // 🆕 v9.46.5: PDF から テキストを抽出 ( 共通ヘルパー )
-  const extractPdfText = async (file) => {
+  // 🆕 v9.46.5/v9.46.7: PDF から テキストを抽出 ( pdf.js → 空ならOCRにフォールバック )
+  const extractPdfText = async (file, opts = {}) => {
     if (!window.pdfjsLib) throw new Error("pdf.js が未ロードです");
     const buf = await file.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
@@ -15036,9 +15039,36 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const tc = await page.getTextContent();
-      // y 座標で行をまとめる ( 登記簿は項目別レイアウト )
-      const items = tc.items;
-      raw += items.map(it => it.str).join(" ") + "\n";
+      raw += tc.items.map(it => it.str).join(" ") + "\n";
+    }
+    // テキスト抽出が空 = スキャン PDF → OCR にフォールバック
+    if (raw.replace(/\s/g, "").length < 30) {
+      console.log("[OCR] テキスト抽出が空のため、 OCR モードに切替");
+      if (!window.Tesseract) throw new Error("Tesseract.js が未ロードです ( ページを再読込してください )");
+      if (opts.onOcrStart) opts.onOcrStart(pdf.numPages);
+      const worker = await window.Tesseract.createWorker("jpn", 1, {
+        logger: m => {
+          if (opts.onProgress && m.status === "recognizing text") {
+            opts.onProgress(m.progress);
+          }
+        },
+      });
+      let ocrText = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        if (opts.onPageStart) opts.onPageStart(i, pdf.numPages);
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 2.0 });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d");
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const { data: { text } } = await worker.recognize(canvas);
+        ocrText += text + "\n";
+      }
+      await worker.terminate();
+      raw = ocrText;
+      console.log("[OCR] 抽出完了 ・ 文字数:", raw.length);
     }
     return raw;
   };
@@ -15047,9 +15077,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   // 登記簿は「152 30」 「m² 152 30」 のように整数部と小数部が空白区切りで出ることが多い
   const handleLandDocUpload = async (file) => {
     if (!file) return;
-    setAssessmentForm(f => ({ ...f, legalDocLandParsing: true }));
+    setAssessmentForm(f => ({ ...f, legalDocLandParsing: true, ocrProgress: null }));
     try {
-      const raw = await extractPdfText(file);
+      const raw = await extractPdfText(file, {
+        onOcrStart: (totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "land", page: 1, totalPages, progress: 0 } })),
+        onPageStart: (page, totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "land", page, totalPages, progress: 0 } })),
+        onProgress: (p) => setAssessmentForm(f => f.ocrProgress ? ({ ...f, ocrProgress: { ...f.ocrProgress, progress: p } }) : f),
+      });
       const fields = {};
       // 地積抽出: 複数パターンを順に試行
       // パターン A: 「地積 ㎡ 152 30」 ( 空白区切り )
@@ -15085,6 +15119,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       setAssessmentForm(f => ({
         ...f,
         legalDocLandParsing: false,
+        ocrProgress: null,
         legalDocLand: { fileName: file.name, raw: raw.slice(0, 5000), fields },
         landArea: f.landArea || fields.landArea || "",
       }));
@@ -15093,7 +15128,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       }
     } catch (e) {
       console.error("[土地謄本PDF抽出] エラー:", e);
-      setAssessmentForm(f => ({ ...f, legalDocLandParsing: false }));
+      setAssessmentForm(f => ({ ...f, legalDocLandParsing: false, ocrProgress: null }));
       alert("PDFの読み込みに失敗しました: " + e.message);
     }
   };
@@ -15101,9 +15136,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   // 🆕 v9.46.6: 建物謄本 PDF から抽出 ( 登記簿の実テキスト構造に対応 )
   const handleBuildingDocUpload = async (file) => {
     if (!file) return;
-    setAssessmentForm(f => ({ ...f, legalDocBuildingParsing: true }));
+    setAssessmentForm(f => ({ ...f, legalDocBuildingParsing: true, ocrProgress: null }));
     try {
-      const raw = await extractPdfText(file);
+      const raw = await extractPdfText(file, {
+        onOcrStart: (totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "building", page: 1, totalPages, progress: 0 } })),
+        onPageStart: (page, totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "building", page, totalPages, progress: 0 } })),
+        onProgress: (p) => setAssessmentForm(f => f.ocrProgress ? ({ ...f, ocrProgress: { ...f.ocrProgress, progress: p } }) : f),
+      });
       const fields = {};
       // 階別床面積 ( 「1階 65 84」 「2階 52 16」 のパターン )
       const floorAreas = [];
@@ -15160,6 +15199,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       setAssessmentForm(f => ({
         ...f,
         legalDocBuildingParsing: false,
+        ocrProgress: null,
         legalDocBuilding: { fileName: file.name, raw: raw.slice(0, 5000), fields },
         buildingArea: f.buildingArea || fields.buildingArea || "",
         builtYear: f.builtYear || fields.builtYear || "",
@@ -15170,7 +15210,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       }
     } catch (e) {
       console.error("[建物謄本PDF抽出] エラー:", e);
-      setAssessmentForm(f => ({ ...f, legalDocBuildingParsing: false }));
+      setAssessmentForm(f => ({ ...f, legalDocBuildingParsing: false, ocrProgress: null }));
       alert("PDFの読み込みに失敗しました: " + e.message);
     }
   };
@@ -17843,6 +17883,22 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 </label>
               </div>
               <div style={{ marginTop: 6, fontSize: 10 }}>土地謄本 → 地積、 建物謄本 → 床面積 ・ 構造 ・ 築年 を自動抽出して Step 4 に反映します</div>
+              {assessmentForm.ocrProgress && (
+                <div style={{ marginTop: 8, padding: 10, background: "#0ea5e911", border: "1px solid #0ea5e966", borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#0ea5e9", marginBottom: 4 }}>
+                    📷 OCR 解析中 ( スキャンPDF のため画像認識を実施 )
+                  </div>
+                  <div style={{ fontSize: 10, color: C.text, marginBottom: 4 }}>
+                    ページ {assessmentForm.ocrProgress.page} / {assessmentForm.ocrProgress.totalPages} ・ {Math.round(assessmentForm.ocrProgress.progress * 100)}%
+                  </div>
+                  <div style={{ height: 6, background: C.bg, borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ height: "100%", background: "#0ea5e9", width: `${Math.round(assessmentForm.ocrProgress.progress * 100)}%`, transition: "width 0.3s" }} />
+                  </div>
+                  <div style={{ fontSize: 9, color: C.muted, marginTop: 4 }}>
+                    ※ 初回は OCR ライブラリ ( 約 10MB ) をダウンロードするため数十秒かかります。 2回目以降はキャッシュから瞬時に。
+                  </div>
+                </div>
+              )}
               {(assessmentForm.legalDocLand || assessmentForm.legalDocBuilding) && (
                 <div style={{ marginTop: 6, padding: 8, background: C.success + "11", borderRadius: 6, fontSize: 10, color: C.text, lineHeight: 1.6 }}>
                   📊 <b>抽出結果</b>:<br />
