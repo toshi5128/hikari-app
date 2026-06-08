@@ -152,7 +152,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.48.15-stamp-single-minus-row";
+const APP_VERSION = "2026-06-08-v9.48.16-tax-statement-receipt";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -21642,9 +21642,128 @@ function SeisanFormPage({ onBack }) {
         width: "100%", padding: 14, background: C.success, color: "#fff",
         border: "none", borderRadius: 10, fontSize: 15, fontWeight: 800,
         cursor: "pointer", fontFamily: "inherit", marginTop: 8,
-      }}>📥 Excel ダウンロード</button>
+      }}>📥 売買精算書 を Excel ダウンロード</button>
+
+      {/* 🆕 v9.48.16: 固都税精算書 + 領収書 のダウンロード */}
+      <button onClick={() => generateTaxStatementXlsx(form, tax, num)} style={{
+        width: "100%", padding: 14, background: "#0ea5e9", color: "#fff",
+        border: "none", borderRadius: 10, fontSize: 14, fontWeight: 800,
+        cursor: "pointer", fontFamily: "inherit", marginTop: 8,
+      }}>📥 固定資産税・都市計画税 精算書 + 領収書 を Excel ダウンロード</button>
+      <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+        💡 メインの売買精算書と同じデータ ( 物件 ・ 売主 ・ 買主 ・ 引渡日 ・ 固定資産税 ・ 都市計画税 ) から自動生成 → 領収書付き
+      </div>
     </div>
   );
+}
+
+// 🆕 v9.48.16: 固定資産税・都市計画税精算書 + 領収書 を生成
+function generateTaxStatementXlsx(form, tax, num) {
+  if (typeof XLSX === "undefined") { alert("Excelライブラリが読み込めていません"); return; }
+  if (!tax || tax.yearTax === 0) { alert("固定資産税・都市計画税が入力されていません"); return; }
+
+  const fmtDate = (s) => {
+    if (!s) return "";
+    const d = new Date(s + "T00:00:00");
+    return `${d.getFullYear()}年 ${d.getMonth() + 1}月 ${d.getDate()}日`;
+  };
+  const fmtDateMD = (year, monthIndex, day) => `${year}年${monthIndex + 1}月${day}日`;
+  const settle = new Date(form.settlementDate + "T00:00:00");
+  const year = settle.getFullYear();
+  const settleStr = fmtDate(form.settlementDate);
+  // 売主負担期間: 1/1 〜 引渡日前日
+  const sellerEnd = new Date(year, settle.getMonth(), settle.getDate() - 1);
+  const sellerPeriod = `${year}年1月1日〜${fmtDateMD(year, sellerEnd.getMonth(), sellerEnd.getDate())}`;
+  const buyerPeriod = `${fmtDateMD(year, settle.getMonth(), settle.getDate())}〜${year}年12月31日`;
+  const sellerAmount = tax.sellerAmount;
+  const buyerAmount = tax.buyerAmount;
+  const kotei = tax.kotei;
+  const toshi = tax.toshi;
+  const yearTax = tax.yearTax;
+  const yearDays = tax.yearDays;
+  const sellerDays = tax.sellerDays;
+  const buyerDays = tax.buyerDays;
+
+  // スタイル
+  const FONT = "Yu Gothic";
+  const NAVY = "1E4E8C";
+  const PALE_BLUE = "D9E1F2";
+  const PALE_ORANGE = "FCE4D6";
+  const thin = { style: "thin", color: { rgb: "BFBFBF" } };
+  const ALL = { top: thin, bottom: thin, left: thin, right: thin };
+  const styles = {
+    title: { font: { sz: 18, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
+    sectionLabel: { font: { sz: 12, bold: true, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
+    tableHeader: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: PALE_BLUE } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL },
+    yen: { font: { sz: 11, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL, numFmt: '#,##0"円"' },
+    yenBold: { font: { sz: 12, bold: true, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL, numFmt: '#,##0"円"', fill: { fgColor: { rgb: PALE_ORANGE } } },
+    cellBold: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: PALE_BLUE } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL },
+    cell: { font: { sz: 11, name: FONT }, alignment: { horizontal: "left", vertical: "center", wrapText: true } },
+    receiptTitle: { font: { sz: 18, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
+    receiptYen: { font: { sz: 22, bold: true, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
+    receiptNote: { font: { sz: 10, name: FONT }, alignment: { horizontal: "center", vertical: "center" } },
+    receiptLabel: { font: { sz: 11, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
+    receiptName: { font: { sz: 13, bold: true, name: FONT }, alignment: { horizontal: "left", vertical: "center" } },
+  };
+
+  const ws = {};
+  const merges = [];
+  let R = 0;
+  const cell = (r, c, v, s, t) => { ws[XLSX.utils.encode_cell({ r, c })] = { v, t: t || (typeof v === "number" ? "n" : "s"), s }; };
+  const merge = (r1, c1, r2, c2) => merges.push({ s: { r: r1, c: c1 }, e: { r: r2, c: c2 } });
+
+  // タイトル
+  cell(R, 0, "固定資産税・都市計画税精算書", styles.title);
+  merge(R, 0, R, 2);
+  R += 2;
+
+  // 1. 物件
+  cell(R, 0, "1. 物件", styles.sectionLabel); R++;
+  cell(R, 0, "  " + (form.propertyType ? `${form.propertyType} ` : "") + (form.propertyAddr || ""), styles.cell);
+  merge(R, 0, R, 2); R += 2;
+
+  // 2. 固定資産税 ・ 都市計画税 ( 表 )
+  cell(R, 0, "2. 固定資産税・都市計画税", styles.sectionLabel); R++;
+  cell(R, 0, "固定資産税", styles.cellBold);
+  cell(R, 1, kotei, styles.yen); merge(R, 1, R, 2); R++;
+  cell(R, 0, "都市計画税", styles.cellBold);
+  cell(R, 1, toshi, styles.yen); merge(R, 1, R, 2); R++;
+  cell(R, 0, "合計", styles.cellBold);
+  cell(R, 1, yearTax, styles.yenBold); merge(R, 1, R, 2); R += 2;
+
+  // 3. 日数負担分
+  cell(R, 0, "3. 日数負担分", styles.sectionLabel); R++;
+  cell(R, 0, `  引渡日：${settleStr}`, styles.cell); merge(R, 0, R, 2); R++;
+  cell(R, 0, `  売主負担分日数：${sellerDays}日分 ／ 期間：${sellerPeriod}`, styles.cell); merge(R, 0, R, 2); R++;
+  cell(R, 0, `  買主負担分日数：${buyerDays}日分 ／ 期間：${buyerPeriod}`, styles.cell); merge(R, 0, R, 2); R += 2;
+
+  // 4. 計算式 ・ 負担額
+  cell(R, 0, "4. 計算式及び税金の負担額", styles.sectionLabel); R++;
+  cell(R, 0, `  売主：${yearTax.toLocaleString()}円 × ${sellerDays}日 ／ ${yearDays}日 = ${sellerAmount.toLocaleString()}円`, styles.cell); merge(R, 0, R, 2); R++;
+  cell(R, 0, `  買主：${yearTax.toLocaleString()}円 × ${buyerDays}日 ／ ${yearDays}日 = ${buyerAmount.toLocaleString()}円`, styles.cell); merge(R, 0, R, 2); R += 3;
+
+  // === 領収書 ===
+  cell(R, 0, "領収書", styles.receiptTitle); merge(R, 0, R, 2); R += 2;
+  cell(R, 0, `（買主） ${form.buyerName} 様`, styles.receiptName); merge(R, 0, R, 2); R += 2;
+  cell(R, 0, `¥${buyerAmount.toLocaleString()} −`, styles.receiptYen); merge(R, 0, R, 2); R++;
+  cell(R, 0, "但し、別紙不動産売買契約書に基づく固定資産税・都市計画税の精算金として", styles.receiptNote); merge(R, 0, R, 2); R++;
+  cell(R, 0, "年   月   日  上記正に領収いたしました。", styles.receiptNote); merge(R, 0, R, 2); R += 2;
+  cell(R, 0, "（売主）住所：埼玉県熊谷市籠原南1丁目225", styles.receiptLabel); merge(R, 0, R, 2); R++;
+  cell(R, 0, `氏名：${form.sellerName || "合同会社ひかり不動産"}　　　　㊞`, styles.receiptLabel); merge(R, 0, R, 2); R++;
+
+  ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: R - 1, c: 2 } });
+  ws["!cols"] = [{ wch: 26 }, { wch: 20 }, { wch: 30 }];
+  ws["!rows"] = [{ hpt: 32 }];
+  ws["!merges"] = merges;
+  ws["!pageSetup"] = { paperSize: 9, orientation: "portrait", fitToWidth: 1, fitToHeight: 0, scale: 100 };
+  ws["!margins"] = { left: 0.5, right: 0.5, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 };
+  ws["!printOptions"] = { horizontalCentered: true };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "固都税精算書");
+  const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const safeBuyer = (form.buyerName || "買主").replace(/[\\/:*?"<>|]/g, "_").slice(0, 20);
+  XLSX.writeFile(wb, `固定資産税都市計画税精算書_${safeBuyer}_${todayStr}.xlsx`);
 }
 
 function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
