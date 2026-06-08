@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.48-shorui-seisan-sheet";
+const APP_VERSION = "2026-06-08-v9.48.1-split-kotei-toshi-tax";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -21039,7 +21039,8 @@ function SeisanFormPage({ onBack }) {
     sellerName: "",                      // 売主
     buyerName: "",                       // 買主
     salePrice: "",                       // 売買代金 ( 円 )
-    annualTax: "",                       // 固定資産税 + 都市計画税 年税額 ( 円 )
+    koteiTax: "",                        // 🆕 v9.48.1: 固定資産税 ( 円 ・ 単独 )
+    toshiTax: "",                        // 🆕 v9.48.1: 都市計画税 ( 円 ・ 単独 )
     // 仲介手数料 ( 売主 / 買主 別 )
     brokerFeeFromSeller: "",
     brokerFeeFromBuyer: "",
@@ -21059,9 +21060,11 @@ function SeisanFormPage({ onBack }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const num = v => parseFloat(String(v).replace(/,/g, "")) || 0;
 
-  // 🆕 日割り計算 ( 1月1日基準 )
+  // 🆕 v9.48.1: 固定資産税 + 都市計画税 → 合計 + 日割り計算 ( 1月1日基準 )
   const calcTax = () => {
-    const yearTax = num(form.annualTax);
+    const kotei = num(form.koteiTax);
+    const toshi = num(form.toshiTax);
+    const yearTax = kotei + toshi;
     if (yearTax === 0 || !form.settlementDate) return null;
     const settle = new Date(form.settlementDate + "T00:00:00");
     const year = settle.getFullYear();
@@ -21075,7 +21078,7 @@ function SeisanFormPage({ onBack }) {
     const buyerDays = Math.round((dec31 - settle) / 86400000) + 1;
     const buyerAmount = Math.round(yearTax * buyerDays / yearDays);
     const sellerAmount = yearTax - buyerAmount;
-    return { yearTax, yearDays, sellerDays, buyerDays, buyerAmount, sellerAmount, isLeap };
+    return { kotei, toshi, yearTax, yearDays, sellerDays, buyerDays, buyerAmount, sellerAmount, isLeap };
   };
   const tax = calcTax();
 
@@ -21173,7 +21176,7 @@ function SeisanFormPage({ onBack }) {
 
     rows.push(["■ 備考"]);
     rows.push(["・本取引は、売買契約と決済を同日に行います。"]);
-    if (tax) rows.push([`・固定資産税・都市計画税は売主様が当年度分を全額納付済みのため、決済日を基準とした日割り精算とし、買主様のご負担額 ${tax.buyerAmount.toLocaleString()}円を売主様へお支払いいただきます。（年税額 ${tax.yearTax.toLocaleString()}円 × ${tax.buyerDays}日 ÷ ${tax.yearDays}日）`]);
+    if (tax) rows.push([`・固定資産税・都市計画税は売主様が当年度分を全額納付済みのため、決済日を基準とした日割り精算とし、買主様のご負担額 ${tax.buyerAmount.toLocaleString()}円を売主様へお支払いいただきます。（年税額合計 ${tax.yearTax.toLocaleString()}円［固定資産税 ${tax.kotei.toLocaleString()}円 + 都市計画税 ${tax.toshi.toLocaleString()}円］ × ${tax.buyerDays}日 ÷ ${tax.yearDays}日）`]);
     if (stampS > 0) rows.push([`・売買契約書は2通作成し、各通に収入印紙 ${stampS}円を貼付します（売主様・買主様 各自${stampS}円ご負担）。売主様分はひかり不動産が立替・貼付いたします。`]);
     if (form.notes) form.notes.split("\n").forEach(line => { if (line.trim()) rows.push(["・" + line]); });
 
@@ -21243,10 +21246,25 @@ function SeisanFormPage({ onBack }) {
       {/* 固定資産税 日割り */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>■ 固定資産税 ・ 都市計画税 ( 1月1日基準 日割り )</div>
-        <Field label="年税額 ( 固定資産税 + 都市計画税 合計 / 円 )">
-          <input style={inp} type="text" inputMode="numeric" value={form.annualTax}
-            onChange={e => set("annualTax", e.target.value)} placeholder="例: 21500" />
-        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="固定資産税 ( 円 / 年 )">
+            <input style={inp} type="text" inputMode="numeric" value={form.koteiTax}
+              onChange={e => set("koteiTax", e.target.value)} placeholder="例: 10000" />
+          </Field>
+          <Field label="都市計画税 ( 円 / 年 )">
+            <input style={inp} type="text" inputMode="numeric" value={form.toshiTax}
+              onChange={e => set("toshiTax", e.target.value)} placeholder="例: 20000" />
+          </Field>
+        </div>
+        {/* 🆕 v9.48.1: 合計金額の自動表示 */}
+        {(num(form.koteiTax) + num(form.toshiTax)) > 0 && (
+          <div style={{ background: C.accent + "11", border: `1px solid ${C.accent}44`, borderRadius: 8, padding: 10, marginTop: 4, fontSize: 12, color: C.text }}>
+            🧮 <b>合計 ( 年税額 )</b>: <b style={{ color: C.accent, fontSize: 14 }}>{(num(form.koteiTax) + num(form.toshiTax)).toLocaleString()} 円</b>
+            <span style={{ color: C.muted, fontSize: 10, marginLeft: 8 }}>
+              ( 固定 {num(form.koteiTax).toLocaleString()} + 都計 {num(form.toshiTax).toLocaleString()} )
+            </span>
+          </div>
+        )}
         {tax && (
           <div style={{ background: C.success + "11", border: `1px solid ${C.success}44`, borderRadius: 8, padding: 10, marginTop: 8, fontSize: 11, color: C.text, lineHeight: 1.8 }}>
             🗓 売主負担: <b>{tax.sellerDays}日</b> ( 1/1 〜 決済前日 ) ・ 売主負担額: <b>{tax.sellerAmount.toLocaleString()}円</b><br />
