@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.47.5-normalize-raw-text";
+const APP_VERSION = "2026-06-08-v9.47.6-stamp-reg-in-yen";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15122,7 +15122,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       demolishUnit: "6", // 解体費 坪単価 ( 万円 )
       residual: "30",    // 残置物 ( 万円 )
       survey: "50",      // 確定測量 ( 万円 )
-      stampReg: "4",     // 印紙 ・ 登記 ( 万円 )
+      stampReg: "15000", // 🆕 v9.47.6: 印紙税 + 抹消登記関連 ( 円単位 ・ デフォルト 印紙1,000円 + 抹消登記 14,000円 想定)
       assignee: j.assignee || "",
       ownerName: j.ownerName || "",
       memo: "",
@@ -15653,7 +15653,10 @@ out body 30;`;
     const demolish = Math.round(tsubo * num(form.demolishUnit));
     const buyPrice = num(form.buyPrice);
     const broker = buyPrice > 0 ? Math.round(buyPrice * 0.03 + 6 + Math.round((buyPrice * 0.03 + 6) * 0.1)) : 66;
-    const totalCost = demolish + num(form.residual) + num(form.survey) + broker + num(form.stampReg);
+    // 🆕 v9.47.6: stampReg は円単位 → 万円換算で諸費用合計に加算
+    const stampRegYen = num(form.stampReg);
+    const stampRegMan = stampRegYen / 10000;
+    const totalCost = demolish + num(form.residual) + num(form.survey) + broker + stampRegMan;
     const builtYearNum = parseInt(form.builtYear) || 0;
     const age = builtYearNum > 0 ? (new Date().getFullYear() - builtYearNum) : 0;
     const today = new Date();
@@ -15824,7 +15827,7 @@ ${reinsSection}
 <tr><td>残置物処分</td><td style="text-align:right">約 ${num(form.residual).toLocaleString()} 万円</td></tr>
 <tr><td>確定測量 ( 境界確定 )</td><td style="text-align:right">約 ${num(form.survey).toLocaleString()} 万円</td></tr>
 <tr><td>仲介手数料 ( 3% + 6万 + 税 )</td><td style="text-align:right">約 ${broker.toLocaleString()} 万円</td></tr>
-<tr><td>印紙代 ・ 登記関連</td><td style="text-align:right">約 ${num(form.stampReg).toLocaleString()} 万円</td></tr>
+<tr><td>印紙税 + 抹消登記費用</td><td style="text-align:right">約 ${stampRegYen.toLocaleString()} 円</td></tr>
 <tr class="hi"><td>諸費用 合計</td><td style="text-align:right">約 ${totalCost.toLocaleString()} 万円</td></tr>
 </table>
 <div class="box">📌 上記の諸費用は、 仲介で土地として売却される場合に <b>売主様がご負担</b> される費用です。 当社買取の場合は <b>すべて当社負担 ( 諸費用 0円 )</b> となります。</div>
@@ -15857,7 +15860,7 @@ ${reinsSection}
 <div class="plan-body">
 <table class="t">
 <tr><th style="width:30%">想定 売却価格</th><td>① 中古戸建 そのまま: 想定 ${buyPrice > 0 ? Math.round(buyPrice * 0.75).toLocaleString() + "〜" + Math.round(buyPrice * 0.85).toLocaleString() : "—"} 万<br>② 解体 → 土地: ${buyPrice > 0 ? Math.round(buyPrice * 0.8).toLocaleString() + "〜" + buyPrice.toLocaleString() : "—"} 万</td></tr>
-<tr><th>諸費用 ( 売主負担 )</th><td>② 土地: 解体${demolish}万 + 残置物${num(form.residual)}万 + 測量${num(form.survey)}万 + 仲介${broker}万 + 登記${num(form.stampReg)}万 = <b>約 ${totalCost.toLocaleString()}万</b></td></tr>
+<tr><th>諸費用 ( 売主負担 )</th><td>② 土地: 解体${demolish}万 + 残置物${num(form.residual)}万 + 測量${num(form.survey)}万 + 仲介${broker}万 + 印紙税${stampRegYen.toLocaleString()}円 = <b>約 ${totalCost.toLocaleString()}万</b></td></tr>
 <tr><th>想定 手取り</th><td>${buyPrice > 0 ? "約 " + Math.round(buyMinus * 0.6).toLocaleString() + "〜" + buyMinus.toLocaleString() + " 万" : "—"}</td></tr>
 <tr><th>期間</th><td><b>3ヶ月以内に必ず売却</b> ( 当社方針 )</td></tr>
 <tr><th>こんな方に</th><td>「市場価格で売りたい」「期間に余裕がある」「価格を最優先で重視したい」 方</td></tr>
@@ -18586,10 +18589,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   onChange={e => setAssessmentForm(f => ({ ...f, survey: e.target.value }))}
                   placeholder="50" />
               </Field>
-              <Field label="印紙・登記 (万円)">
+              <Field label="印紙税 + 抹消登記 (円)">
                 <input style={inp} type="text" inputMode="numeric" value={assessmentForm.stampReg}
                   onChange={e => setAssessmentForm(f => ({ ...f, stampReg: e.target.value }))}
-                  placeholder="4" />
+                  placeholder="15000" />
               </Field>
             </div>
 
@@ -18600,12 +18603,16 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const demolish = Math.round(tsubo * num(assessmentForm.demolishUnit));
               const bp = num(assessmentForm.buyPrice);
               const broker = bp > 0 ? Math.round(bp * 0.03 + 6 + Math.round((bp * 0.03 + 6) * 0.1)) : 0;
-              const total = demolish + num(assessmentForm.residual) + num(assessmentForm.survey) + broker + num(assessmentForm.stampReg);
+              // 🆕 v9.47.6: stampReg は円単位 → 万円換算
+              const stampRegYen = num(assessmentForm.stampReg);
+              const stampRegMan = stampRegYen / 10000;
+              const total = demolish + num(assessmentForm.residual) + num(assessmentForm.survey) + broker + stampRegMan;
               return (
                 <div style={{ background: "#fef3c722", border: "1px solid #d9770644", borderRadius: 8, padding: 10, marginTop: 10, fontSize: 11, color: C.text, lineHeight: 1.7 }}>
                   📊 <b>自動計算結果</b>:<br />
                   ・ 解体費: {ba > 0 ? `${tsubo.toFixed(2)}坪 × 坪${assessmentForm.demolishUnit}万 = 約 ${demolish.toLocaleString()}万` : "建物面積を入力してください"}<br />
                   ・ 仲介手数料: {bp > 0 ? `約 ${broker.toLocaleString()}万` : "買取価格を入力してください"}<br />
+                  ・ 印紙税 + 登記: {stampRegYen.toLocaleString()} 円 ( {stampRegMan.toFixed(2)} 万円相当 )<br />
                   ・ <b style={{ color: C.warn }}>諸費用 合計: 約 {total.toLocaleString()} 万円</b>
                 </div>
               );
