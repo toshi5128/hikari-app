@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.47.7-rent-by-town-not-city";
+const APP_VERSION = "2026-06-08-v9.47.8-dynamic-rent-placeholder";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -18623,44 +18623,60 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               </Field>
             </div>
 
-            {/* 🆕 v9.47.7: 賃貸プラン C 用 ( 町名別の想定家賃 ・ 根拠 ) */}
-            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${C.borderDim}` }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#d97706", marginBottom: 8 }}>
-                🏘 プラン C 賃貸運用 ( 町名別の家賃相場 を 営業が調査して入力 )
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Field label="想定家賃 下限 (月額 ・ 万円)">
-                  <input style={inp} type="text" inputMode="decimal" value={assessmentForm.rentMonthlyMin}
-                    onChange={e => setAssessmentForm(f => ({ ...f, rentMonthlyMin: e.target.value }))}
-                    placeholder="7" />
-                </Field>
-                <Field label="想定家賃 上限 (月額 ・ 万円)">
-                  <input style={inp} type="text" inputMode="decimal" value={assessmentForm.rentMonthlyMax}
-                    onChange={e => setAssessmentForm(f => ({ ...f, rentMonthlyMax: e.target.value }))}
-                    placeholder="8" />
-                </Field>
-              </div>
-              <Field label="家賃根拠 ( アットホーム ・ ホームズで実調査した類似物件 )">
-                <textarea style={{ ...inp, height: 50, resize: "vertical" }} value={assessmentForm.rentBasis}
-                  onChange={e => setAssessmentForm(f => ({ ...f, rentBasis: e.target.value }))}
-                  placeholder="例: 熊谷市籠原南 3LDK 戸建 築20年 7.5万円 ( アットホーム調べ ) / 同エリア 3DK 戸建 築30年 6.8万円" />
-              </Field>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Field label="リフォーム費 下限 (万円)">
-                  <input style={inp} type="text" inputMode="numeric" value={assessmentForm.reformCostMin}
-                    onChange={e => setAssessmentForm(f => ({ ...f, reformCostMin: e.target.value }))}
-                    placeholder="250" />
-                </Field>
-                <Field label="リフォーム費 上限 (万円)">
-                  <input style={inp} type="text" inputMode="numeric" value={assessmentForm.reformCostMax}
-                    onChange={e => setAssessmentForm(f => ({ ...f, reformCostMax: e.target.value }))}
-                    placeholder="350" />
-                </Field>
-              </div>
-              <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.5 }}>
-                💡 アットホーム ・ ホームズ で 対象町名 + 戸建賃貸 + 築年数 で検索した結果を入力してください。 賃貸運用プラン C の査定書反映で使われます。
-              </div>
-            </div>
+            {/* 🆕 v9.47.7/v9.47.8: 賃貸プラン C 用 ( 町名別の想定家賃 ・ 根拠 ) */}
+            {(() => {
+              // 物件住所から町名を抽出 ( placeholder と説明で使う )
+              const extractTownLocal = (addr) => {
+                if (!addr) return "";
+                const m = addr.match(/([一-龥ぁ-んァ-ヶー]{2,8}市|[一-龥ぁ-んァ-ヶー]{2,5}郡[一-龥ぁ-んァ-ヶー]{2,5}[町村])([一-龥ぁ-んァ-ヶー大字字]{1,15}?)(?=[0-9一二三四五六七八九十○〇丁番号−-]|$)/);
+                if (m) return (m[1] + m[2]).replace(/大字|字/g, "");
+                const m2 = addr.match(/([一-龥ぁ-んァ-ヶー]{2,8}市)/);
+                return m2 ? m2[1] : "";
+              };
+              const town = extractTownLocal(assessmentForm.address) || "対象町名";
+              return (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${C.borderDim}` }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#d97706", marginBottom: 8 }}>
+                    🏘 プラン C 賃貸運用 ( <b style={{ color: C.text }}>{town}</b> の家賃相場 を 営業が調査して入力 )
+                  </div>
+                  <div style={{ fontSize: 10, color: C.accent, marginBottom: 8, padding: 6, background: C.accent + "11", borderRadius: 4, lineHeight: 1.5 }}>
+                    📝 検索手順: アットホーム ( https://www.athome.co.jp ) で「<b>{town}</b> + 戸建 + 賃貸 + 築年数」 で検索 → 類似物件 ( 築年数 ・ 面積が近い ) の月額家賃を 3〜5件 確認 → 下記に範囲入力
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="想定家賃 下限 (月額 ・ 万円)">
+                      <input style={inp} type="text" inputMode="decimal" value={assessmentForm.rentMonthlyMin}
+                        onChange={e => setAssessmentForm(f => ({ ...f, rentMonthlyMin: e.target.value }))}
+                        placeholder="例: 6.5" />
+                    </Field>
+                    <Field label="想定家賃 上限 (月額 ・ 万円)">
+                      <input style={inp} type="text" inputMode="decimal" value={assessmentForm.rentMonthlyMax}
+                        onChange={e => setAssessmentForm(f => ({ ...f, rentMonthlyMax: e.target.value }))}
+                        placeholder="例: 8.5" />
+                    </Field>
+                  </div>
+                  <Field label={`家賃根拠 ( ${town} で実調査した類似物件を記入 )`}>
+                    <textarea style={{ ...inp, height: 60, resize: "vertical" }} value={assessmentForm.rentBasis}
+                      onChange={e => setAssessmentForm(f => ({ ...f, rentBasis: e.target.value }))}
+                      placeholder={`例: ${town} 3LDK 戸建 築20年 7.5万円 ( アットホーム調べ )\n   ${town} 3DK 戸建 築30年 6.8万円`} />
+                  </Field>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="リフォーム費 下限 (万円)">
+                      <input style={inp} type="text" inputMode="numeric" value={assessmentForm.reformCostMin}
+                        onChange={e => setAssessmentForm(f => ({ ...f, reformCostMin: e.target.value }))}
+                        placeholder="250" />
+                    </Field>
+                    <Field label="リフォーム費 上限 (万円)">
+                      <input style={inp} type="text" inputMode="numeric" value={assessmentForm.reformCostMax}
+                        onChange={e => setAssessmentForm(f => ({ ...f, reformCostMax: e.target.value }))}
+                        placeholder="350" />
+                    </Field>
+                  </div>
+                  <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.5 }}>
+                    💡 賃貸運用プラン C の査定書反映で使われます。 入力しなければ プラン C は数値が空欄のまま表示されます。
+                  </div>
+                </div>
+              );
+            })()}
 
             {(() => {
               const num = v => parseFloat(String(v).replace(/,/g, "")) || 0;
