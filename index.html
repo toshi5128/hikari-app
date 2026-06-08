@@ -18240,12 +18240,45 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             );
           })()}
 
-          {/* Step 1: 物件情報 ( 自動取得済 ) */}
+          {/* Step 1: 物件情報 ( 自動取得済 ) + 周辺施設 ( Overpass API ) */}
           <div style={stepCard(true)}>
             <div><span style={stepNum(true)}>1</span><b style={{ fontSize: 13, color: C.text }}>物件情報 ✅ 自動取得済</b></div>
             <div style={stepBody}>
-              ピン座標 ・ 住所 ・ 担当者 を自動取得しました<br />
-              <span style={{ color: C.muted, fontSize: 10 }}>※ 周辺施設の自動取得 ( OpenStreetMap ) は Phase 2 で対応予定</span>
+              ピン座標 ・ 住所 ・ 担当者 を自動取得しました
+              {assessmentForm.lat && assessmentForm.lng ? (
+                <div style={{ marginTop: 6, fontSize: 10, color: C.muted }}>
+                  座標: {assessmentForm.lat.toFixed(6)}, {assessmentForm.lng.toFixed(6)}
+                </div>
+              ) : (
+                <div style={{ marginTop: 6, fontSize: 10, color: C.warn }}>
+                  ⚠️ このピンには座標が設定されていません → 周辺施設の自動取得ができません
+                </div>
+              )}
+              {/* 🆕 v9.47.3: 周辺施設の取得状況 */}
+              {assessmentForm.lat && assessmentForm.lng && (
+                <div style={{ marginTop: 8, padding: 8, background: C.bg, borderRadius: 6 }}>
+                  {assessmentForm.poisLoading ? (
+                    <div style={{ fontSize: 11, color: C.accent }}>⏳ 周辺施設を取得中... ( OpenStreetMap )</div>
+                  ) : assessmentForm.pois && assessmentForm.pois.length > 0 ? (
+                    <>
+                      <div style={{ fontSize: 11, color: C.success, fontWeight: 700, marginBottom: 4 }}>
+                        ✅ 周辺施設 {assessmentForm.pois.length} 件 取得済 ( 査定書に自動反映 )
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                        {assessmentForm.pois.slice(0, 8).map((p, i) => (
+                          <span key={i} style={{ fontSize: 9, color: C.text, background: C.cardBg, padding: "2px 6px", borderRadius: 8 }}>
+                            {p.cat} {p.name} <span style={{ color: C.muted }}>{p.distLabel}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 11, color: C.muted }}>
+                      📍 周辺施設の取得結果 0 件 ( Overpass API 接続失敗 or 周辺に登録施設なし )
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -18286,18 +18319,46 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 </label>
               </div>
               <div style={{ marginTop: 6, fontSize: 10 }}>土地謄本 → 地積、 建物謄本 → 床面積 ・ 構造 ・ 築年 を自動抽出して Step 4 に反映します</div>
-              {/* 🆕 v9.47.2: Gemini エラー表示 ( OCR にフォールバックされた原因 ) */}
-              {assessmentForm.geminiError && (
-                <div style={{
-                  marginTop: 8, padding: 10, background: C.danger + "22",
-                  border: `1px solid ${C.danger}66`, borderRadius: 8, fontSize: 11, color: C.danger,
-                }}>
-                  ⚠️ <b>{assessmentForm.geminiError}</b>
-                  <div style={{ marginTop: 4, fontSize: 10, color: C.text }}>
-                    対策案: ① API キーが正しく Google AI Studio で取得したものか確認 / ② キーに Generative Language API が有効か / ③ ブラウザのコンソール ( F12 ) で詳細エラーを確認
+              {/* 🆕 v9.47.2/v9.47.3: Gemini エラー表示 ( OCR にフォールバックされた原因 ) */}
+              {assessmentForm.geminiError && (() => {
+                const err = assessmentForm.geminiError;
+                const isKeyInvalid = /API key not valid|INVALID_ARGUMENT.*API key/i.test(err);
+                const isQuota = /quota|RESOURCE_EXHAUSTED/i.test(err);
+                return (
+                  <div style={{
+                    marginTop: 8, padding: 12, background: C.danger + "22",
+                    border: `1px solid ${C.danger}66`, borderRadius: 8, fontSize: 11,
+                  }}>
+                    <div style={{ color: C.danger, fontWeight: 800, marginBottom: 6 }}>
+                      {isKeyInvalid ? "🔑 Gemini API キーが無効です" : isQuota ? "⚠️ Gemini API 制限超過" : "⚠️ Gemini API 失敗 → OCR で再試行"}
+                    </div>
+                    {isKeyInvalid && (
+                      <div style={{ color: C.text, lineHeight: 1.8 }}>
+                        正しい API キーの取得方法:<br />
+                        1. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style={{ color: "#0ea5e9" }}>Google AI Studio</a> を開く ( Cloud Console ではない )<br />
+                        2. Google アカウントでログイン<br />
+                        3. 「Create API key」 をクリック → コピー ( <b>AIzaSy</b> で始まる文字列 )<br />
+                        4. モーダル上部「🔑 Gemini Vision API キー」 で「キー削除」 → 新キーを貼り付け<br />
+                        <div style={{ marginTop: 6, fontSize: 10, color: C.muted }}>
+                          ※ コピー時に前後にスペース ・ 改行が入らないように注意<br />
+                          ※ それでもダメな場合は、 Google Cloud Console で「Generative Language API」 が有効か確認
+                        </div>
+                      </div>
+                    )}
+                    {isQuota && (
+                      <div style={{ color: C.text, lineHeight: 1.8 }}>
+                        無料枠 ( 1日 1,500回 ) を超過した可能性があります。 翌日まで待つか、 別の Google アカウントで API キー再取得してください。
+                      </div>
+                    )}
+                    {!isKeyInvalid && !isQuota && (
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ cursor: "pointer", color: C.muted, fontSize: 10 }}>🔍 詳細エラー</summary>
+                        <pre style={{ background: "#000", color: "#f00", padding: 6, borderRadius: 4, fontSize: 9, marginTop: 4, whiteSpace: "pre-wrap" }}>{err}</pre>
+                      </details>
+                    )}
                   </div>
-                </div>
-              )}
+                );
+              })()}
               {assessmentForm.ocrProgress && (
                 <div style={{ marginTop: 8, padding: 10, background: "#0ea5e911", border: "1px solid #0ea5e966", borderRadius: 8 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "#0ea5e9", marginBottom: 4 }}>
