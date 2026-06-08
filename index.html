@@ -152,7 +152,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.48.6-styled-seisan-xlsx";
+const APP_VERSION = "2026-06-08-v9.48.7-fix-doctype-bank-sameday";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -21036,6 +21036,8 @@ function SeisanFormPage({ onBack }) {
   const [form, setForm] = useState({
     settlementDate: todayStr,            // 決済日 ( yyyy-mm-dd )
     settlementTime: "13:00",             // 決済時刻
+    sameDayContract: false,              // 🆕 v9.48.7: 契約と決済を同日にする
+    contractDate: "",                    // 🆕 v9.48.7: 契約日 ( 同日でない場合 )
     settlementPlace: "合同会社ひかり不動産 ( 埼玉県熊谷市籠原南1丁目225番 )",
     propertyType: "土地",                // 🆕 v9.48.5: 物件の種別 ( 土地 / 中古戸建 )
     propertyAddr: "",                    // 物件の表示
@@ -21121,12 +21123,16 @@ function SeisanFormPage({ onBack }) {
     const depositApplied = form.depositPaid && deposit > 0 ? deposit : 0;
     const balancePayment = price - depositApplied; // 決済時残金
 
+    // 🆕 v9.48.7: 契約日 ( 同日 or 別日 )
+    const contractDateStr = form.sameDayContract ? settleDateStr : fmtDate(form.contractDate);
+    const settleTimeHint = form.sameDayContract ? `${form.settlementTime}　※契約・決済 同日` : form.settlementTime;
     const rows = [];
     rows.push([form.docType === "seller" ? "売買精算書（売主様用）" : form.docType === "buyer" ? "売買精算書（買主様用）" : "売買精算書"]);
     rows.push([`作成日：${todayDateStr}　　仲介：合同会社ひかり不動産（埼玉県熊谷市籠原南1丁目225番）`]);
     rows.push([]);
     rows.push(["■ 取引概要"]);
-    rows.push(["決済日時", `${settleDateStr}　${form.settlementTime}　※契約・決済 同日`]);
+    if (!form.sameDayContract && form.contractDate) rows.push(["契約日", contractDateStr]);
+    rows.push(["決済日時", `${settleDateStr}　${settleTimeHint}`]);
     rows.push(["決済場所", form.settlementPlace]);
     rows.push(["物件の種別", form.propertyType || ""]);
     rows.push(["物件の表示", form.propertyAddr]);
@@ -21181,26 +21187,41 @@ function SeisanFormPage({ onBack }) {
       rows.push([]);
     }
 
-    rows.push(["■ 振込先"]);
-    if (form.docType === "seller" || form.docType === "both") {
-      rows.push([`【${form.sellerName} 様】（お手取り金 お受取口座）`]);
-      rows.push(["金融機関名", form.sellerBank]);
-      rows.push(["支店名", form.sellerBranch]);
-      rows.push(["預金種別", form.sellerKind]);
-      rows.push(["口座番号", form.sellerAccountNo]);
-      rows.push(["口座名義", form.sellerAccountName]);
-      rows.push([]);
+    // 🆕 v9.48.7: 振込先 - 入力済 ・ docType に応じて表示制御
+    const sellerBankFilled = !!(form.sellerBank || form.sellerBranch || form.sellerAccountNo || form.sellerAccountName);
+    const hikariBankFilled = !!(form.hikariBank || form.hikariBranch || form.hikariAccountNo || form.hikariAccountName);
+    const showSellerBank = (form.docType === "seller" || form.docType === "both") && sellerBankFilled;
+    const showHikariBank = hikariBankFilled && (feeS + feeB) > 0;
+
+    if (showSellerBank || showHikariBank) {
+      rows.push(["■ 振込先"]);
+      if (showSellerBank) {
+        rows.push([`【${form.sellerName} 様】（お手取り金 お受取口座）`]);
+        if (form.sellerBank) rows.push(["金融機関名", form.sellerBank]);
+        if (form.sellerBranch) rows.push(["支店名", form.sellerBranch]);
+        if (form.sellerKind) rows.push(["預金種別", form.sellerKind]);
+        if (form.sellerAccountNo) rows.push(["口座番号", form.sellerAccountNo]);
+        if (form.sellerAccountName) rows.push(["口座名義", form.sellerAccountName]);
+        rows.push([]);
+      }
+      if (showHikariBank) {
+        rows.push(["【合同会社ひかり不動産】"]);
+        if (form.hikariBank) rows.push(["金融機関名", form.hikariBank]);
+        if (form.hikariBranch) rows.push(["支店名", form.hikariBranch]);
+        if (form.hikariKind) rows.push(["預金種別", form.hikariKind]);
+        if (form.hikariAccountNo) rows.push(["口座番号", form.hikariAccountNo]);
+        if (form.hikariAccountName) rows.push(["口座名義", form.hikariAccountName]);
+        rows.push([]);
+      }
     }
-    rows.push(["【合同会社ひかり不動産】"]);
-    rows.push(["金融機関名", form.hikariBank]);
-    rows.push(["支店名", form.hikariBranch]);
-    rows.push(["預金種別", form.hikariKind]);
-    rows.push(["口座番号", form.hikariAccountNo]);
-    rows.push(["口座名義", form.hikariAccountName]);
-    rows.push([]);
 
     rows.push(["■ 備考"]);
-    rows.push(["・本取引は、売買契約と決済を同日に行います。"]);
+    // 🆕 v9.48.7: 同日決済の文言は チェック有り時のみ / 別日なら契約日と決済日を明記
+    if (form.sameDayContract) {
+      rows.push(["・本取引は、売買契約と決済を同日に行います。"]);
+    } else if (form.contractDate) {
+      rows.push([`・本取引の売買契約は ${contractDateStr}、 決済は ${settleDateStr} に行います。`]);
+    }
     if (depositApplied > 0) rows.push([`・手付金 ${depositApplied.toLocaleString()}円は売買契約時に売主様が受領済みのため、決済時の買主様お支払額は売買代金から手付金を控除した ${balancePayment.toLocaleString()}円となります。`]);
     else if (deposit > 0 && !form.depositPaid) rows.push([`・手付金 ${deposit.toLocaleString()}円は本決済日に売買代金と合わせてお支払いいただきます。`]);
     if (tax) rows.push([`・固定資産税・都市計画税は売主様が当年度分を全額納付済みのため、決済日を基準とした日割り精算とし、買主様のご負担額 ${tax.buyerAmount.toLocaleString()}円を売主様へお支払いいただきます。（年税額合計 ${tax.yearTax.toLocaleString()}円［固定資産税 ${tax.kotei.toLocaleString()}円 + 都市計画税 ${tax.toshi.toLocaleString()}円］ × ${tax.buyerDays}日 ÷ ${tax.yearDays}日）`]);
@@ -21215,8 +21236,13 @@ function SeisanFormPage({ onBack }) {
     // row 0: タイトル, row 1: 副題, row 2: 空行
     // 以後: 行内容で判別
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws["!cols"] = [{ wch: 42 }, { wch: 22 }, { wch: 22 }, { wch: 32 }];
-    ws["!rows"] = [{ hpt: 36 }, { hpt: 20 }];  // タイトル行 ・ 副題行 高さ
+    // 🆕 v9.48.7: 列幅 ( B列を大幅に広く、 1行に収まるように )
+    ws["!cols"] = [{ wch: 28 }, { wch: 46 }, { wch: 24 }, { wch: 36 }];
+    // 🆕 v9.48.7: 全行の高さを 20pt 固定 ・ タイトルだけ 36pt
+    ws["!rows"] = [{ hpt: 36 }, { hpt: 18 }];
+    for (let i = 2; i < rows.length; i++) {
+      ws["!rows"][i] = { hpt: 20 };
+    }
 
     // 結合 ( タイトル ・ 副題 ・ セクションヘッダ 等を A:D で結合 )
     const merges = [
@@ -21235,12 +21261,14 @@ function SeisanFormPage({ onBack }) {
       subtitle: { font: { sz: 10, name: FONT }, alignment: { horizontal: "center" } },
       sectionHeader: { font: { sz: 13, bold: true, color: { rgb: "FFFFFF" }, name: FONT }, fill: { fgColor: { rgb: NAVY } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL_BORDER },
       tableHeader: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: PALE_BLUE } }, alignment: { horizontal: "center", vertical: "center" }, border: ALL_BORDER },
-      label: { font: { sz: 11, name: FONT }, fill: { fgColor: { rgb: LIGHT_GRAY } }, alignment: { horizontal: "left", vertical: "center", wrapText: true }, border: ALL_BORDER },
-      cell: { font: { sz: 11, name: FONT }, alignment: { horizontal: "left", vertical: "center", wrapText: true }, border: ALL_BORDER },
+      // 🆕 v9.48.7: wrapText を外す ( 列幅で吸収 )
+      label: { font: { sz: 11, name: FONT }, fill: { fgColor: { rgb: LIGHT_GRAY } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL_BORDER },
+      cell: { font: { sz: 11, name: FONT }, alignment: { horizontal: "left", vertical: "center" }, border: ALL_BORDER },
       yen: { font: { sz: 11, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL_BORDER, numFmt: '#,##0"円"' },
       yenBold: { font: { sz: 12, bold: true, name: FONT }, alignment: { horizontal: "right", vertical: "center" }, border: ALL_BORDER, numFmt: '#,##0"円"', fill: { fgColor: { rgb: PALE_ORANGE } } },
       totalLabel: { font: { sz: 12, bold: true, name: FONT }, alignment: { horizontal: "left", vertical: "center" }, border: ALL_BORDER, fill: { fgColor: { rgb: PALE_ORANGE } } },
       subHeader: { font: { sz: 11, bold: true, name: FONT }, fill: { fgColor: { rgb: PALE_BLUE } }, alignment: { horizontal: "left", vertical: "center" }, border: ALL_BORDER },
+      // 備考のみ wrapText で長文対応
       note: { font: { sz: 10, name: FONT }, alignment: { horizontal: "left", vertical: "top", wrapText: true } },
     };
 
@@ -21331,6 +21359,25 @@ function SeisanFormPage({ onBack }) {
             </select>
           </Field>
         </div>
+        {/* 🆕 v9.48.7: 同日決済チェック + 契約日 ( 別日の場合 ) */}
+        <label style={{
+          display: "flex", alignItems: "center", gap: 8, padding: 8, marginBottom: 10,
+          background: form.sameDayContract ? C.success + "22" : C.bg,
+          border: `1px solid ${form.sameDayContract ? C.success : C.borderDim}`,
+          borderRadius: 6, cursor: "pointer", fontSize: 12,
+        }}>
+          <input type="checkbox" checked={form.sameDayContract}
+            onChange={e => set("sameDayContract", e.target.checked)}
+            style={{ width: 18, height: 18, cursor: "pointer" }} />
+          <span style={{ color: form.sameDayContract ? C.success : C.text, fontWeight: form.sameDayContract ? 700 : 400 }}>
+            {form.sameDayContract ? "✅ 売買契約と決済を 同日 に行う" : "☐ 売買契約と決済を 同日 に行う ( 別日なら契約日を入力 )"}
+          </span>
+        </label>
+        {!form.sameDayContract && (
+          <Field label="売買契約日">
+            <input style={inp} type="date" value={form.contractDate} onChange={e => set("contractDate", e.target.value)} />
+          </Field>
+        )}
         <Field label="決済場所">
           <input style={inp} value={form.settlementPlace} onChange={e => set("settlementPlace", e.target.value)} />
         </Field>
