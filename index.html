@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.46.7-ocr-fallback-for-scanned-tokibo";
+const APP_VERSION = "2026-06-08-v9.46.8-ocr-higher-resolution";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15053,15 +15053,21 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
           }
         },
       });
+      // 🆕 v9.46.8: PSM=6 ( 単一の均一テキストブロック ) で表組み登記簿の認識精度UP
+      await worker.setParameters({ tessedit_pageseg_mode: "6" });
       let ocrText = "";
       for (let i = 1; i <= pdf.numPages; i++) {
         if (opts.onPageStart) opts.onPageStart(i, pdf.numPages);
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2.0 });
+        // 🆕 v9.46.8: 解像度を上げる ( 2.0 → 3.0 )
+        const viewport = page.getViewport({ scale: 3.0 });
         const canvas = document.createElement("canvas");
         canvas.width = viewport.width;
         canvas.height = viewport.height;
         const ctx = canvas.getContext("2d");
+        // 🆕 v9.46.8: 白背景でレンダリング ( PDF背景が透明だと OCR 精度が落ちる )
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         await page.render({ canvasContext: ctx, viewport }).promise;
         const { data: { text } } = await worker.recognize(canvas);
         ocrText += text + "\n";
