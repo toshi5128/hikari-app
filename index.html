@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.46.9-number-candidates-from-ocr";
+const APP_VERSION = "2026-06-08-v9.46.10-gemini-vision-for-tokibo";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15079,6 +15079,47 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     return raw;
   };
 
+  // 🆕 v9.46.10: Gemini Vision API でPDFから登記簿情報を抽出
+  const callGeminiVision = async (file, prompt) => {
+    const apiKey = localStorage.getItem("hikari_gemini_api_key");
+    if (!apiKey) throw new Error("Gemini API キーが未設定です");
+    // PDF を base64 に変換
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    const chunk = 8192;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    const base64 = btoa(binary);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+    const body = {
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inline_data: { mime_type: "application/pdf", data: base64 } }
+        ]
+      }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.1,
+      }
+    };
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Gemini API エラー (${resp.status}): ${errText.slice(0, 200)}`);
+    }
+    const data = await resp.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error("Gemini から有効なレスポンスがありませんでした");
+    return JSON.parse(text);
+  };
+
   // 🆕 v9.46.9: raw テキストから 数値候補 を抽出 ( OCRの認識限界を半自動で補完 )
   const extractNumberCandidates = (raw) => {
     const cands = new Map(); // value -> count ( 重複カウント )
@@ -15104,11 +15145,33 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     return Array.from(cands.keys()).sort((a, b) => b - a).slice(0, 30);
   };
 
-  // 🆕 v9.46.6: 土地謄本 PDF から抽出 ( 登記簿の実テキスト構造に対応 )
-  // 登記簿は「152 30」 「m² 152 30」 のように整数部と小数部が空白区切りで出ることが多い
+  // 🆕 v9.46.10: 土地謄本 PDF → Gemini Vision API ( フォールバック: pdf.js + OCR )
   const handleLandDocUpload = async (file) => {
     if (!file) return;
     setAssessmentForm(f => ({ ...f, legalDocLandParsing: true, ocrProgress: null }));
+    const hasGeminiKey = !!localStorage.getItem("hikari_gemini_api_key");
+    if (hasGeminiKey) {
+      try {
+        const prompt = `この登記簿謄本 ( 土地の表示 ) PDF から以下の情報を抽出して、 厳密に JSON 形式で返してください。 値が見つからない項目は空文字 ""。
+{
+  "landArea": "地積を平方メートル ( 数値のみ ・ 例: 152.30 )",
+  "chiban": "地番 ( 例: 671-10 )",
+  "chimoku": "地目 ( 例: 宅地 / 田 / 畑 / 山林 / 雑種地 など )",
+  "locationLand": "所在 ( 都道府県 ・ 市区町村 ・ 字名まで )"
+}`;
+        const fields = await callGeminiVision(file, prompt);
+        console.log("[土地謄本 Gemini]", fields);
+        setAssessmentForm(f => ({
+          ...f,
+          legalDocLandParsing: false,
+          legalDocLand: { fileName: file.name, raw: "", fields, candidates: [], source: "gemini" },
+          landArea: f.landArea || fields.landArea || "",
+        }));
+        return;
+      } catch (e) {
+        console.warn("[土地謄本 Gemini エラー → OCRにフォールバック]", e);
+      }
+    }
     try {
       const raw = await extractPdfText(file, {
         onOcrStart: (totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "land", page: 1, totalPages, progress: 0 } })),
@@ -15166,10 +15229,37 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     }
   };
 
-  // 🆕 v9.46.6: 建物謄本 PDF から抽出 ( 登記簿の実テキスト構造に対応 )
+  // 🆕 v9.46.10: 建物謄本 PDF → Gemini Vision API ( フォールバック: pdf.js + OCR )
   const handleBuildingDocUpload = async (file) => {
     if (!file) return;
     setAssessmentForm(f => ({ ...f, legalDocBuildingParsing: true, ocrProgress: null }));
+    const hasGeminiKey = !!localStorage.getItem("hikari_gemini_api_key");
+    if (hasGeminiKey) {
+      try {
+        const prompt = `この登記簿謄本 ( 建物の表示 ) PDF から以下の情報を抽出して、 厳密に JSON 形式で返してください。 値が見つからない項目は空文字 ""。
+{
+  "buildingArea": "建物床面積の合計を平方メートル ( 数値のみ ・ 例: 118.00 )",
+  "floorAreas": "各階の床面積 ( 例: 「1階 65.84㎡ / 2階 52.16㎡」 形式 )",
+  "structure": "建物構造 ( 例: 木造瓦葺2階建 / 鉄筋コンクリート造3階建 など )",
+  "builtYear": "新築年 ( 西暦4桁の文字列 ・ 元号は西暦に変換 ・ 例: 1998 )",
+  "kashuType": "種類 ( 例: 居宅 / 店舗 / 共同住宅 / 事務所 など )",
+  "kaokuNo": "家屋番号"
+}`;
+        const fields = await callGeminiVision(file, prompt);
+        console.log("[建物謄本 Gemini]", fields);
+        setAssessmentForm(f => ({
+          ...f,
+          legalDocBuildingParsing: false,
+          legalDocBuilding: { fileName: file.name, raw: "", fields, candidates: [], source: "gemini" },
+          buildingArea: f.buildingArea || fields.buildingArea || "",
+          builtYear: f.builtYear || fields.builtYear || "",
+          structure: (f.structure === "木造2階建" && fields.structure) ? fields.structure : f.structure,
+        }));
+        return;
+      } catch (e) {
+        console.warn("[建物謄本 Gemini エラー → OCRにフォールバック]", e);
+      }
+    }
     try {
       const raw = await extractPdfText(file, {
         onOcrStart: (totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "building", page: 1, totalPages, progress: 0 } })),
@@ -17871,6 +17961,45 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           <div style={{ background: "#0ea5e911", border: "1px solid #0ea5e933", borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: C.text, lineHeight: 1.7 }}>
             💡 必要な情報を入力すると、 諸費用 ・ 手取り比較 ・ 3つのプランを自動計算した <b>査定書</b> が新しいタブで開きます。 そこから印刷 ( ブラウザの「PDFとして保存」 ) も可能です。
           </div>
+
+          {/* 🆕 v9.46.10: Gemini API キー設定 ( 謄本自動読取に必要 ) */}
+          {(() => {
+            const savedKey = localStorage.getItem("hikari_gemini_api_key") || "";
+            const [showKeyInput, setShowKeyInput] = [!savedKey, () => {}];
+            return (
+              <div style={{
+                background: savedKey ? C.success + "11" : "#fbbf2422",
+                border: `1px solid ${savedKey ? C.success + "66" : "#fbbf2466"}`,
+                borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11,
+              }}>
+                <div style={{ fontWeight: 700, color: savedKey ? C.success : "#fbbf24", marginBottom: 6 }}>
+                  {savedKey ? "🤖 Gemini Vision API: 設定済 ( 謄本を自動読取できます )" : "🤖 Gemini Vision API キー 未設定"}
+                </div>
+                {!savedKey && (
+                  <div style={{ color: C.text, lineHeight: 1.7, marginBottom: 8 }}>
+                    謄本 PDF を <b>自動で読み取る</b> ために、 Google Gemini API キーが必要です ( 1日 1,500回まで無料 )。<br />
+                    1. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style={{ color: "#0ea5e9" }}>Google AI Studio</a> でキーを取得 ( 無料 )<br />
+                    2. ↓ に貼り付けて「保存」 をタップ
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input type="password" placeholder={savedKey ? "( 設定済・変更する場合は新キーを入力 )" : "AIzaSy... ( Gemini APIキー )"}
+                    style={{ ...inp, flex: 1, fontSize: 11 }}
+                    onChange={e => {
+                      const v = e.target.value.trim();
+                      if (v) localStorage.setItem("hikari_gemini_api_key", v);
+                    }} />
+                  {savedKey && (
+                    <button onClick={() => { localStorage.removeItem("hikari_gemini_api_key"); setAssessmentForm(f => ({ ...f })); }}
+                      style={{ ...btnStyle("danger"), padding: "6px 12px", fontSize: 11 }}>キー削除</button>
+                  )}
+                </div>
+                <div style={{ marginTop: 4, fontSize: 9, color: C.muted }}>
+                  ※ キーは端末のローカル ( localStorage ) にのみ保存。 サーバーには送信されません。
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Step 1: 物件情報 ( 自動取得済 ) */}
           <div style={stepCard(true)}>
