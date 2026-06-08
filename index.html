@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.47.6-stamp-reg-in-yen";
+const APP_VERSION = "2026-06-08-v9.47.7-rent-by-town-not-city";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15123,6 +15123,12 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       residual: "30",    // 残置物 ( 万円 )
       survey: "50",      // 確定測量 ( 万円 )
       stampReg: "15000", // 🆕 v9.47.6: 印紙税 + 抹消登記関連 ( 円単位 ・ デフォルト 印紙1,000円 + 抹消登記 14,000円 想定)
+      // 🆕 v9.47.7: 賃貸プラン C 用 ( 町名別の想定家賃 ・ 根拠 )
+      rentMonthlyMin: "",      // 月額家賃 下限 ( 万円 )
+      rentMonthlyMax: "",      // 月額家賃 上限 ( 万円 )
+      rentBasis: "",           // 賃料の根拠 ( 営業が調査した実値・自由文 )
+      reformCostMin: "250",    // リフォーム費 下限 ( 万円 )
+      reformCostMax: "350",    // リフォーム費 上限 ( 万円 )
       assignee: j.assignee || "",
       ownerName: j.ownerName || "",
       memo: "",
@@ -15657,6 +15663,27 @@ out body 30;`;
     const stampRegYen = num(form.stampReg);
     const stampRegMan = stampRegYen / 10000;
     const totalCost = demolish + num(form.residual) + num(form.survey) + broker + stampRegMan;
+    // 🆕 v9.47.7: 物件住所から町名を抽出 ( 例: 「埼玉県熊谷市柿沼671-10」 → 「熊谷市柿沼」 )
+    const extractTown = (addr) => {
+      if (!addr) return "";
+      // 「◯◯市」 or 「◯◯郡◯◯町/村」 + 町名 ( 数字 ・ 番地より前 )
+      const m = addr.match(/([一-龥ぁ-んァ-ヶー]{2,8}市|[一-龥ぁ-んァ-ヶー]{2,5}郡[一-龥ぁ-んァ-ヶー]{2,5}[町村])([一-龥ぁ-んァ-ヶー大字字]{1,15}?)(?=[0-9一二三四五六七八九十○〇丁番号−-]|$)/);
+      if (m) return (m[1] + m[2]).replace(/大字|字/g, "");
+      // フォールバック: 市 で切る
+      const m2 = addr.match(/([一-龥ぁ-んァ-ヶー]{2,8}市)/);
+      return m2 ? m2[1] : addr.slice(0, 10);
+    };
+    const town = extractTown(form.address);
+    // 🆕 v9.47.7: 賃貸プラン C 用の数値 ( ユーザー入力 ・ 町名別 )
+    const rentMin = num(form.rentMonthlyMin);
+    const rentMax = num(form.rentMonthlyMax);
+    const rentAvg = rentMin > 0 && rentMax > 0 ? (rentMin + rentMax) / 2 : (rentMin || rentMax || 0);
+    const reformMin = num(form.reformCostMin) || 250;
+    const reformMax = num(form.reformCostMax) || 350;
+    const reformAvg = (reformMin + reformMax) / 2;
+    const annualRent = rentAvg * 12;
+    const roiYears = annualRent > 0 ? (reformAvg / annualRent).toFixed(1) : "—";
+    const lifetime30 = annualRent > 0 ? Math.round(annualRent * 30 * 0.75) : 0; // 諸経費 25% 引き
     const builtYearNum = parseInt(form.builtYear) || 0;
     const age = builtYearNum > 0 ? (new Date().getFullYear() - builtYearNum) : 0;
     const today = new Date();
@@ -15883,21 +15910,21 @@ ${reinsSection}
 <div class="plan-card c">
 <div class="plan-head c">
 <div><div class="lbl">PLAN C</div><div class="ttl">🏘 賃貸運用 ( リフォーム → 当社管理 )</div></div>
-<div class="pright"><div class="lbl">継続的な家賃収入</div><div class="val">月 7〜8 万</div></div>
+<div class="pright"><div class="lbl">継続的な家賃収入</div><div class="val">${rentMin > 0 && rentMax > 0 ? `月 ${rentMin}〜${rentMax} 万` : "月 ◯〜◯ 万"}</div></div>
 </div>
 <div class="plan-body">
 <table class="t">
-<tr><th style="width:30%">想定 月額家賃</th><td style="font-weight:800;color:#b45309;font-size:14px">7 〜 8 万円 / 月 ( リフォーム前提 )</td></tr>
-<tr><th>家賃の根拠</th><td>熊谷市内の戸建賃貸 平均 8.3万円 ・ 3LDK相場 10.3万円<br>同エリア 3LDK 戸建: 7〜8万円が中心<br><span style="font-size:10px;color:#64748b">出典: アットホーム ・ ホームズ ・ SUUMO 在庫情報より</span></td></tr>
-<tr><th>初期投資 ( リフォーム )</th><td>内装フルリノベ + 水回り交換: <b>約 250〜350 万円</b></td></tr>
-<tr><th>投資回収期間</th><td>家賃 8万 × 12 = 96万/年 → 約 3.3 年</td></tr>
-<tr><th>30年運用 累計収入</th><td>96万 × 30 = 2,880万 ( 諸経費引き後で 約 2,000〜2,400 万 )</td></tr>
+<tr><th style="width:30%">想定 月額家賃</th><td style="font-weight:800;color:#b45309;font-size:14px">${rentMin > 0 && rentMax > 0 ? `${rentMin} 〜 ${rentMax} 万円 / 月 ( リフォーム前提 )` : "( 営業調査入力待ち )"}</td></tr>
+<tr><th>家賃の根拠 ( ${town || "対象エリア"} )</th><td>${form.rentBasis ? form.rentBasis.replace(/\n/g, "<br>") : `${town || "対象町名"} の戸建賃貸 ( 築年数 ・ 面積が近い物件 ) を、 アットホーム ・ ホームズで調査した結果`}<br><span style="font-size:10px;color:#64748b">出典: アットホーム ・ ホームズ ・ SUUMO 在庫情報より</span></td></tr>
+<tr><th>初期投資 ( リフォーム )</th><td>内装フルリノベ + 水回り交換: <b>約 ${reformMin}〜${reformMax} 万円</b></td></tr>
+<tr><th>投資回収期間</th><td>${rentAvg > 0 ? `家賃 ${rentAvg.toFixed(1)}万 × 12 = ${annualRent.toFixed(0)}万/年 → 約 ${roiYears} 年` : "( 想定家賃 入力待ち )"}</td></tr>
+<tr><th>30年運用 累計収入</th><td>${lifetime30 > 0 ? `${(annualRent * 30).toFixed(0)}万 × 諸経費引き = 約 ${lifetime30.toLocaleString()} 万円` : "( 想定家賃 入力待ち )"}</td></tr>
 <tr><th>当社で対応する管理業務</th><td>入居者募集 ・ 賃料集金 ・ クレーム対応 ・ 退去立会い ・ 原状回復 ( 月額管理料 家賃の 5% )</td></tr>
 <tr><th>こんな方に</th><td>「すぐに現金化する必要がない」「子供に資産として残したい」「長期的に家賃収入を得たい」 方</td></tr>
 </table>
 <div class="box">
 <b>⚠️ リフォームについて</b><br>
-現状のまま貸し出した場合、 想定家賃 7〜8万 の達成は <b>不可能</b> です ( 内装劣化のため )。 リフォーム費用 250〜350万を投資することで、 適正家賃での募集が可能になります。 当社にはリフォーム部隊があり、 外注に頼まず自社施工できるため、 一般相場より 1〜2割安く施工可能です。
+現状のまま貸し出した場合、 想定家賃の達成は <b>不可能</b> です ( 内装劣化のため )。 リフォーム費用 ${reformMin}〜${reformMax}万を投資することで、 適正家賃での募集が可能になります。 当社にはリフォーム部隊があり、 外注に頼まず自社施工できるため、 一般相場より 1〜2割安く施工可能です。
 </div>
 </div>
 </div>
@@ -15908,7 +15935,7 @@ ${reinsSection}
 <tr><th>プラン</th><th>初期収入</th><th>諸費用</th><th>手取り / 累計収入</th><th>期間</th><th>確実性</th></tr>
 <tr style="background:#dcfce7;color:#14532d;font-weight:700"><td>A. 当社買取</td><td style="text-align:center">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万" : "—"}</td><td style="text-align:center">0 円</td><td style="text-align:center">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万 ( 即現金 )" : "—"}</td><td style="text-align:center">1 週間</td><td style="text-align:center">◎ 確定</td></tr>
 <tr><td>B. 仲介 ( 解体→土地 )</td><td style="text-align:center">${buyPrice > 0 ? Math.round(buyPrice * 0.8).toLocaleString() + "〜" + buyPrice.toLocaleString() : "—"} 万</td><td style="text-align:center">-${totalCost.toLocaleString()} 万</td><td style="text-align:center">${buyPrice > 0 ? Math.round(buyMinus * 0.6).toLocaleString() + "〜" + buyMinus.toLocaleString() + " 万" : "—"}</td><td style="text-align:center">3ヶ月以内</td><td style="text-align:center">○</td></tr>
-<tr style="background:#fef3c7"><td>C. 賃貸運用</td><td style="text-align:center">月 7〜8 万</td><td style="text-align:center">-250〜350 万</td><td style="text-align:center">30年 約 2,000〜2,400 万</td><td style="text-align:center">継続収入</td><td style="text-align:center">△</td></tr>
+<tr style="background:#fef3c7"><td>C. 賃貸運用 ( ${town || ""} )</td><td style="text-align:center">${rentMin > 0 && rentMax > 0 ? `月 ${rentMin}〜${rentMax} 万` : "月 ◯〜◯ 万"}</td><td style="text-align:center">-${reformMin}〜${reformMax} 万</td><td style="text-align:center">${lifetime30 > 0 ? `30年 約 ${lifetime30.toLocaleString()} 万` : "( 入力待ち )"}</td><td style="text-align:center">継続収入</td><td style="text-align:center">△</td></tr>
 </table>
 </div>
 
@@ -18594,6 +18621,45 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   onChange={e => setAssessmentForm(f => ({ ...f, stampReg: e.target.value }))}
                   placeholder="15000" />
               </Field>
+            </div>
+
+            {/* 🆕 v9.47.7: 賃貸プラン C 用 ( 町名別の想定家賃 ・ 根拠 ) */}
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${C.borderDim}` }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#d97706", marginBottom: 8 }}>
+                🏘 プラン C 賃貸運用 ( 町名別の家賃相場 を 営業が調査して入力 )
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="想定家賃 下限 (月額 ・ 万円)">
+                  <input style={inp} type="text" inputMode="decimal" value={assessmentForm.rentMonthlyMin}
+                    onChange={e => setAssessmentForm(f => ({ ...f, rentMonthlyMin: e.target.value }))}
+                    placeholder="7" />
+                </Field>
+                <Field label="想定家賃 上限 (月額 ・ 万円)">
+                  <input style={inp} type="text" inputMode="decimal" value={assessmentForm.rentMonthlyMax}
+                    onChange={e => setAssessmentForm(f => ({ ...f, rentMonthlyMax: e.target.value }))}
+                    placeholder="8" />
+                </Field>
+              </div>
+              <Field label="家賃根拠 ( アットホーム ・ ホームズで実調査した類似物件 )">
+                <textarea style={{ ...inp, height: 50, resize: "vertical" }} value={assessmentForm.rentBasis}
+                  onChange={e => setAssessmentForm(f => ({ ...f, rentBasis: e.target.value }))}
+                  placeholder="例: 熊谷市籠原南 3LDK 戸建 築20年 7.5万円 ( アットホーム調べ ) / 同エリア 3DK 戸建 築30年 6.8万円" />
+              </Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="リフォーム費 下限 (万円)">
+                  <input style={inp} type="text" inputMode="numeric" value={assessmentForm.reformCostMin}
+                    onChange={e => setAssessmentForm(f => ({ ...f, reformCostMin: e.target.value }))}
+                    placeholder="250" />
+                </Field>
+                <Field label="リフォーム費 上限 (万円)">
+                  <input style={inp} type="text" inputMode="numeric" value={assessmentForm.reformCostMax}
+                    onChange={e => setAssessmentForm(f => ({ ...f, reformCostMax: e.target.value }))}
+                    placeholder="350" />
+                </Field>
+              </div>
+              <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.5 }}>
+                💡 アットホーム ・ ホームズ で 対象町名 + 戸建賃貸 + 築年数 で検索した結果を入力してください。 賃貸運用プラン C の査定書反映で使われます。
+              </div>
             </div>
 
             {(() => {
