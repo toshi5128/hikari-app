@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.46.8-ocr-higher-resolution";
+const APP_VERSION = "2026-06-08-v9.46.9-number-candidates-from-ocr";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15079,6 +15079,31 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     return raw;
   };
 
+  // 🆕 v9.46.9: raw テキストから 数値候補 を抽出 ( OCRの認識限界を半自動で補完 )
+  const extractNumberCandidates = (raw) => {
+    const cands = new Map(); // value -> count ( 重複カウント )
+    const add = (v) => {
+      if (v > 5 && v < 5000) cands.set(v, (cands.get(v) || 0) + 1);
+    };
+    // 小数 ( 例: 152.30 )
+    [...raw.matchAll(/(\d{1,4})[.・・](\d{1,2})/g)].forEach(m => {
+      add(parseFloat(m[1] + "." + m[2]));
+    });
+    // 空白区切り ( 例: 152 30 → 152.30 )
+    [...raw.matchAll(/(?:^|[\s|│])(\d{1,4})\s+(\d{1,2})(?=[\s|│]|$)/g)].forEach(m => {
+      add(parseFloat(m[1] + "." + m[2]));
+    });
+    // 整数 ( 範囲 6〜4999 )
+    [...raw.matchAll(/(?:^|[\s|│])(\d{2,4})(?=[\s|│]|$)/g)].forEach(m => {
+      add(parseInt(m[1]));
+    });
+    // 西暦年候補 ( 1900〜2030 ) も別途
+    [...raw.matchAll(/(19\d{2}|20\d{2})/g)].forEach(m => {
+      add(parseInt(m[1]));
+    });
+    return Array.from(cands.keys()).sort((a, b) => b - a).slice(0, 30);
+  };
+
   // 🆕 v9.46.6: 土地謄本 PDF から抽出 ( 登記簿の実テキスト構造に対応 )
   // 登記簿は「152 30」 「m² 152 30」 のように整数部と小数部が空白区切りで出ることが多い
   const handleLandDocUpload = async (file) => {
@@ -15122,11 +15147,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
 
       console.log("[土地謄本抽出 v9.46.6]", { fields, rawLen: raw.length, rawHead: raw.slice(0, 800) });
 
+      // 🆕 v9.46.9: 数値候補を抽出 ( OCR失敗時の手動選択用 )
+      const candidates = extractNumberCandidates(raw);
       setAssessmentForm(f => ({
         ...f,
         legalDocLandParsing: false,
         ocrProgress: null,
-        legalDocLand: { fileName: file.name, raw: raw.slice(0, 5000), fields },
+        legalDocLand: { fileName: file.name, raw: raw.slice(0, 5000), fields, candidates },
         landArea: f.landArea || fields.landArea || "",
       }));
       if (Object.keys(fields).length === 0) {
@@ -15202,11 +15229,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
 
       console.log("[建物謄本抽出 v9.46.6]", { fields, rawLen: raw.length, rawHead: raw.slice(0, 800) });
 
+      // 🆕 v9.46.9: 数値候補を抽出 ( OCR失敗時の手動選択用 )
+      const candidates = extractNumberCandidates(raw);
       setAssessmentForm(f => ({
         ...f,
         legalDocBuildingParsing: false,
         ocrProgress: null,
-        legalDocBuilding: { fileName: file.name, raw: raw.slice(0, 5000), fields },
+        legalDocBuilding: { fileName: file.name, raw: raw.slice(0, 5000), fields, candidates },
         buildingArea: f.buildingArea || fields.buildingArea || "",
         builtYear: f.builtYear || fields.builtYear || "",
         structure: (f.structure === "木造2階建" && fields.structure) ? fields.structure : f.structure,
@@ -17920,6 +17949,22 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {assessmentForm.legalDocLand.fields.locationLand && <> / 所在={assessmentForm.legalDocLand.fields.locationLand}</>}
                           </>
                       }
+                      {/* 🆕 v9.46.9: 数値候補チップ ( タップで土地面積に反映 ) */}
+                      {assessmentForm.legalDocLand.candidates && assessmentForm.legalDocLand.candidates.length > 0 && (
+                        <div style={{ marginTop: 6, padding: 6, background: "#fef3c722", borderRadius: 4 }}>
+                          <div style={{ fontSize: 9, color: C.warn, fontWeight: 700, marginBottom: 4 }}>📐 検出された数値 ( タップで「土地面積」 に反映 ):</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                            {assessmentForm.legalDocLand.candidates.map(v => (
+                              <button key={v} onClick={() => setAssessmentForm(f => ({ ...f, landArea: String(v) }))}
+                                style={{ padding: "3px 8px", fontSize: 10, fontFamily: "inherit",
+                                  background: C.warn + "33", border: `1px solid ${C.warn}66`, color: C.warn,
+                                  borderRadius: 10, cursor: "pointer", fontWeight: 700 }}>
+                                {v}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       <details style={{ marginTop: 4 }}>
                         <summary style={{ cursor: "pointer", color: C.muted, fontSize: 9 }}>🔍 PDFから読み取った raw テキストを表示</summary>
                         <pre style={{ background: "#000", color: "#0f0", padding: 6, borderRadius: 4, fontSize: 9, maxHeight: 200, overflow: "auto", whiteSpace: "pre-wrap", marginTop: 4 }}>{assessmentForm.legalDocLand.raw}</pre>
@@ -17939,6 +17984,35 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {assessmentForm.legalDocBuilding.fields.kashuType && <> / 種類={assessmentForm.legalDocBuilding.fields.kashuType}</>}
                           </>
                       }
+                      {/* 🆕 v9.46.9: 数値候補チップ ( タップで建物面積/築年に反映 ) */}
+                      {assessmentForm.legalDocBuilding.candidates && assessmentForm.legalDocBuilding.candidates.length > 0 && (
+                        <div style={{ marginTop: 6, padding: 6, background: "#0ea5e922", borderRadius: 4 }}>
+                          <div style={{ fontSize: 9, color: "#0ea5e9", fontWeight: 700, marginBottom: 4 }}>📐 検出された数値 ( タップで「建物面積」 / 「築年」 に反映 ):</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                            {assessmentForm.legalDocBuilding.candidates.map(v => {
+                              const isYear = v >= 1900 && v <= 2030;
+                              return (
+                                <div key={v} style={{ display: "flex", gap: 2 }}>
+                                  <button onClick={() => setAssessmentForm(f => ({ ...f, buildingArea: String(v) }))}
+                                    style={{ padding: "3px 8px", fontSize: 10, fontFamily: "inherit",
+                                      background: "#0ea5e933", border: "1px solid #0ea5e966", color: "#0ea5e9",
+                                      borderRadius: 10, cursor: "pointer", fontWeight: 700 }}>
+                                    {v}㎡
+                                  </button>
+                                  {isYear && (
+                                    <button onClick={() => setAssessmentForm(f => ({ ...f, builtYear: String(v) }))}
+                                      style={{ padding: "3px 8px", fontSize: 10, fontFamily: "inherit",
+                                        background: C.success + "33", border: `1px solid ${C.success}66`, color: C.success,
+                                        borderRadius: 10, cursor: "pointer", fontWeight: 700 }}>
+                                      {v}年
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                       <details style={{ marginTop: 4 }}>
                         <summary style={{ cursor: "pointer", color: C.muted, fontSize: 9 }}>🔍 PDFから読み取った raw テキストを表示</summary>
                         <pre style={{ background: "#000", color: "#0f0", padding: 6, borderRadius: 4, fontSize: 9, maxHeight: 200, overflow: "auto", whiteSpace: "pre-wrap", marginTop: 4 }}>{assessmentForm.legalDocBuilding.raw}</pre>
