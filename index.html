@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.47.1-tokibo-colon-separator";
+const APP_VERSION = "2026-06-08-v9.47.2-gemini-error-visible-and-context";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15126,6 +15126,12 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       assignee: j.assignee || "",
       ownerName: j.ownerName || "",
       memo: "",
+      // 🆕 v9.47.2: ピン座標 ( 周辺施設取得用 )
+      lat: j.lat || null,
+      lng: j.lng || null,
+      // 🆕 v9.47.2: 周辺施設 ( Overpass API で自動取得 )
+      pois: [],
+      poisLoading: false,
       // 🆕 v9.46.5: 土地謄本 + 建物謄本 を別々に管理
       legalDocLand: null,      // { fileName, raw, fields: {landArea, locationLand, chiban, chimoku} }
       legalDocLandParsing: false,
@@ -15139,6 +15145,15 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       reins: null,       // { fileName, rows: [{addr, age, land, building, price, date}] }
       reinsParsing: false,
     });
+    // 🆕 v9.47.2: ピン座標があれば周辺施設を非同期で自動取得 ( OpenStreetMap Overpass API )
+    if (j.lat && j.lng) {
+      setAssessmentForm(f => f ? { ...f, poisLoading: true } : f);
+      fetchPois(j.lat, j.lng).then(pois => {
+        setAssessmentForm(f => f ? { ...f, pois, poisLoading: false } : f);
+      }).catch(() => {
+        setAssessmentForm(f => f ? { ...f, poisLoading: false } : f);
+      });
+    }
   };
 
   // 🆕 v9.46.5/v9.46.7: PDF から テキストを抽出 ( pdf.js → 空ならOCRにフォールバック )
@@ -15190,11 +15205,80 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     return raw;
   };
 
-  // 🆕 v9.46.10: Gemini Vision API でPDFから登記簿情報を抽出
+  // 🆕 v9.47.2: 周辺施設を Overpass API で自動取得 ( 半径 1km )
+  const fetchPois = async (lat, lng) => {
+    if (!lat || !lng) return [];
+    // ノミナティム逆引き は不要、 直接 Overpass で取る
+    const radius = 1000;  // 1km
+    const query = `[out:json][timeout:15];
+(
+  node[shop=supermarket](around:${radius},${lat},${lng});
+  node[shop=convenience](around:${radius},${lat},${lng});
+  node[amenity=school](around:${radius},${lat},${lng});
+  node[amenity=hospital](around:${radius},${lat},${lng});
+  node[amenity=clinic](around:${radius},${lat},${lng});
+  node[amenity=bank](around:${radius},${lat},${lng});
+  node[leisure=park](around:${radius},${lat},${lng});
+  node[railway=station](around:${radius * 2},${lat},${lng});
+);
+out body 30;`;
+    try {
+      const resp = await fetch("https://overpass.openstreetmap.fr/api/interpreter", {
+        method: "POST",
+        body: query,
+      });
+      if (!resp.ok) throw new Error(`Overpass エラー ${resp.status}`);
+      const data = await resp.json();
+      const haversine = (la1, lo1, la2, lo2) => {
+        const R = 6371000;
+        const toRad = d => d * Math.PI / 180;
+        const dLa = toRad(la2 - la1), dLo = toRad(lo2 - lo1);
+        const a = Math.sin(dLa / 2) ** 2 + Math.cos(toRad(la1)) * Math.cos(toRad(la2)) * Math.sin(dLo / 2) ** 2;
+        return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+      };
+      const categoryOf = (tags) => {
+        if (tags.shop === "supermarket") return { cat: "🛒 スーパー", priority: 1 };
+        if (tags.shop === "convenience") return { cat: "🏪 コンビニ", priority: 2 };
+        if (tags.amenity === "school") {
+          const name = tags.name || "";
+          if (name.includes("小学")) return { cat: "🏫 小学校", priority: 3 };
+          if (name.includes("中学")) return { cat: "🏫 中学校", priority: 4 };
+          if (name.includes("高校") || name.includes("高等")) return { cat: "🏫 高校", priority: 5 };
+          return { cat: "🏫 学校", priority: 6 };
+        }
+        if (tags.amenity === "hospital") return { cat: "🏥 病院", priority: 7 };
+        if (tags.amenity === "clinic") return { cat: "🏥 クリニック", priority: 8 };
+        if (tags.amenity === "bank") return { cat: "🏦 銀行", priority: 9 };
+        if (tags.leisure === "park") return { cat: "🌳 公園", priority: 10 };
+        if (tags.railway === "station") return { cat: "🚉 駅", priority: 0 };
+        return { cat: "📍 施設", priority: 99 };
+      };
+      const pois = (data.elements || []).map(el => {
+        const dist = haversine(lat, lng, el.lat, el.lon);
+        const { cat, priority } = categoryOf(el.tags || {});
+        const walkMin = Math.round(dist / 80);  // 80m/分
+        return {
+          cat, priority,
+          name: el.tags?.name || "( 名称不明 )",
+          dist,
+          walkMin,
+          distLabel: dist < 1000 ? `徒歩 ${walkMin}分 (約 ${dist}m)` : `車 ${Math.round(dist / 500)}分 (約 ${(dist / 1000).toFixed(1)}km)`,
+        };
+      })
+      .filter(p => p.name !== "( 名称不明 )")
+      .sort((a, b) => a.priority - b.priority || a.dist - b.dist)
+      .slice(0, 12);
+      return pois;
+    } catch (e) {
+      console.warn("[Overpass]", e);
+      return [];
+    }
+  };
+
+  // 🆕 v9.46.10/v9.47.2: Gemini Vision API でPDFから登記簿情報を抽出 ( モデル自動フォールバック )
   const callGeminiVision = async (file, prompt) => {
     const apiKey = localStorage.getItem("hikari_gemini_api_key");
     if (!apiKey) throw new Error("Gemini API キーが未設定です");
-    // PDF を base64 に変換
     const buf = await file.arrayBuffer();
     const bytes = new Uint8Array(buf);
     let binary = "";
@@ -15203,7 +15287,6 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
     }
     const base64 = btoa(binary);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
     const body = {
       contents: [{
         parts: [
@@ -15211,49 +15294,72 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
           { inline_data: { mime_type: "application/pdf", data: base64 } }
         ]
       }],
-      generationConfig: {
-        responseMimeType: "application/json",
-        temperature: 0.1,
-      }
+      generationConfig: { responseMimeType: "application/json", temperature: 0.1 }
     };
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`Gemini API エラー (${resp.status}): ${errText.slice(0, 200)}`);
+    // 🆕 v9.47.2: 複数モデルでフォールバック ( 古いキーでも動く新しいモデルへ自動切替 )
+    const models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"];
+    let lastErr = null;
+    for (const model of models) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          lastErr = new Error(`Gemini API (${model}) エラー (${resp.status}): ${errText.slice(0, 300)}`);
+          console.warn("[Gemini]", model, "失敗 →", resp.status, errText.slice(0, 200));
+          continue;
+        }
+        const data = await resp.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) {
+          lastErr = new Error(`Gemini (${model}) から有効なレスポンス無し`);
+          console.warn("[Gemini]", model, "空レスポンス:", JSON.stringify(data).slice(0, 200));
+          continue;
+        }
+        console.log(`[Gemini ${model}] 成功:`, text.slice(0, 200));
+        return JSON.parse(text);
+      } catch (e) {
+        lastErr = e;
+        console.warn("[Gemini]", model, "例外:", e.message);
+      }
     }
-    const data = await resp.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error("Gemini から有効なレスポンスがありませんでした");
-    return JSON.parse(text);
+    throw lastErr || new Error("Gemini API: 全モデル失敗");
   };
 
-  // 🆕 v9.46.9: raw テキストから 数値候補 を抽出 ( OCRの認識限界を半自動で補完 )
+  // 🆕 v9.46.9/v9.47.2: raw テキストから 数値候補 + コンテキスト を抽出
   const extractNumberCandidates = (raw) => {
-    const cands = new Map(); // value -> count ( 重複カウント )
-    const add = (v) => {
-      if (v > 5 && v < 5000) cands.set(v, (cands.get(v) || 0) + 1);
+    // value -> {count, contexts: [前後文字列]} のマップ
+    const cands = new Map();
+    const addWithCtx = (v, fullMatch, idx) => {
+      if (v <= 5 || v >= 5000) return;
+      // 前後 25文字を抽出 ( マッチ位置を中心 )
+      const before = raw.slice(Math.max(0, idx - 25), idx).replace(/\s+/g, " ");
+      const after = raw.slice(idx + fullMatch.length, idx + fullMatch.length + 25).replace(/\s+/g, " ");
+      const ctx = (before + "【" + fullMatch + "】" + after).slice(0, 80);
+      const e = cands.get(v) || { count: 0, contexts: [] };
+      e.count++;
+      if (e.contexts.length < 2) e.contexts.push(ctx);
+      cands.set(v, e);
     };
-    // 小数 ( 例: 152.30, 152:30, 152・30 ) — OCRはピリオドをコロンに読み違えやすい
-    [...raw.matchAll(/(\d{1,4})[.:;・・](\d{1,2})/g)].forEach(m => {
-      add(parseFloat(m[1] + "." + m[2]));
-    });
-    // 空白区切り ( 例: 152 30 → 152.30 )
-    [...raw.matchAll(/(?:^|[\s|│])(\d{1,4})\s+(\d{1,2})(?=[\s|│]|$)/g)].forEach(m => {
-      add(parseFloat(m[1] + "." + m[2]));
-    });
+    // 小数 ( ピリオド ・ コロン ・ 中黒 区切り )
+    for (const m of raw.matchAll(/(\d{1,4})[.:;・・](\d{1,2})/g)) {
+      addWithCtx(parseFloat(m[1] + "." + m[2]), m[0], m.index);
+    }
+    // 空白区切り ( 例: 152 30 )
+    for (const m of raw.matchAll(/(?:^|[\s|│])(\d{1,4})\s+(\d{1,2})(?=[\s|│]|$)/g)) {
+      addWithCtx(parseFloat(m[1] + "." + m[2]), m[0], m.index);
+    }
     // 整数 ( 範囲 6〜4999 )
-    [...raw.matchAll(/(?:^|[\s|│])(\d{2,4})(?=[\s|│]|$)/g)].forEach(m => {
-      add(parseInt(m[1]));
-    });
-    // 西暦年候補 ( 1900〜2030 ) も別途
-    [...raw.matchAll(/(19\d{2}|20\d{2})/g)].forEach(m => {
-      add(parseInt(m[1]));
-    });
-    return Array.from(cands.keys()).sort((a, b) => b - a).slice(0, 30);
+    for (const m of raw.matchAll(/(?:^|[\s|│])(\d{2,4})(?=[\s|│]|$)/g)) {
+      addWithCtx(parseInt(m[1]), m[0], m.index);
+    }
+    // 配列化 + ソート ( 30件まで )
+    return Array.from(cands.entries()).map(([v, info]) => ({ value: v, count: info.count, context: info.contexts[0] || "" }))
+      .sort((a, b) => b.value - a.value).slice(0, 30);
   };
 
   // 🆕 v9.46.10: 土地謄本 PDF → Gemini Vision API ( フォールバック: pdf.js + OCR )
@@ -15280,7 +15386,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         }));
         return;
       } catch (e) {
-        console.warn("[土地謄本 Gemini エラー → OCRにフォールバック]", e);
+        console.error("[土地謄本 Gemini 失敗 → OCRにフォールバック]", e);
+        // 🆕 v9.47.2: Gemini失敗を画面に通知
+        setAssessmentForm(f => ({ ...f, geminiError: `Gemini失敗 → OCRで再試行: ${e.message.slice(0, 200)}` }));
       }
     }
     try {
@@ -15375,7 +15483,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         }));
         return;
       } catch (e) {
-        console.warn("[建物謄本 Gemini エラー → OCRにフォールバック]", e);
+        console.error("[建物謄本 Gemini 失敗 → OCRにフォールバック]", e);
+        setAssessmentForm(f => ({ ...f, geminiError: `Gemini失敗 → OCRで再試行: ${e.message.slice(0, 200)}` }));
       }
     }
     try {
@@ -15672,19 +15781,15 @@ ${(form.kenpei || form.yoseki) ? `<tr><th>建ぺい率 / 容積率</th><td>${for
 <p class="note">※ 登記簿謄本 ( 全部事項証明書 ) から自動抽出した内容を反映しています。</p>
 </div>
 
+${(form.pois && form.pois.length > 0) ? `
 <div class="sec">■ 周辺施設 ( OpenStreetMap から自動取得 )</div>
-<p class="bt">本物件を中心に、 半径 1km 以内の主要施設を取得しました。 生活利便性の高い立地です。<br><span style="color:#64748b;font-size:10px">※ 周辺施設の自動取得は次回バージョンで対応予定。 現在はサンプルデータを表示しています。</span></p>
+<p class="bt">本物件を中心に、 半径 1km 以内の主要施設を自動取得しました。 生活利便性の高い立地です。</p>
 <div class="facility-grid">
-<div class="facility"><div class="cat">🛒 スーパー</div><div class="name">最寄りスーパー</div><div class="dist">徒歩 ◯分</div></div>
-<div class="facility"><div class="cat">🏪 コンビニ</div><div class="name">最寄りコンビニ</div><div class="dist">徒歩 ◯分</div></div>
-<div class="facility"><div class="cat">🏫 小学校</div><div class="name">小学校</div><div class="dist">徒歩 ◯分</div></div>
-<div class="facility"><div class="cat">🏫 中学校</div><div class="name">中学校</div><div class="dist">徒歩 ◯分</div></div>
-<div class="facility"><div class="cat">🏥 病院</div><div class="name">病院</div><div class="dist">車 ◯分</div></div>
-<div class="facility"><div class="cat">🚉 駅</div><div class="name">最寄駅</div><div class="dist">車 ◯分</div></div>
+${form.pois.map(p => `<div class="facility"><div class="cat">${p.cat}</div><div class="name">${p.name}</div><div class="dist">${p.distLabel}</div></div>`).join("")}
 </div>
+<p class="note">出典: OpenStreetMap ( Overpass API ) ・ 距離は直線距離ベース</p>
+` : ""}
 ${reinsSection}
-<div class="sec">■ アットホーム 現在の在庫状況 ( Web自動取得 )</div>
-<p class="bt">アットホームで現在売出中の物件を、 物件タイプ別に比較しました。 これが <b>「今、 市場に出すと いくらで反響が来るか」</b> の現実です。<br><span style="color:#64748b;font-size:10px">※ アットホーム自動取得は次回バージョンで対応予定。 現在はサンプルデータを表示しています。</span></p>
 
 <div class="sec orange">■ 解体 ・ 諸費用 シミュレーション ( 土地売却時 )</div>
 <div class="card">
@@ -18181,6 +18286,18 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 </label>
               </div>
               <div style={{ marginTop: 6, fontSize: 10 }}>土地謄本 → 地積、 建物謄本 → 床面積 ・ 構造 ・ 築年 を自動抽出して Step 4 に反映します</div>
+              {/* 🆕 v9.47.2: Gemini エラー表示 ( OCR にフォールバックされた原因 ) */}
+              {assessmentForm.geminiError && (
+                <div style={{
+                  marginTop: 8, padding: 10, background: C.danger + "22",
+                  border: `1px solid ${C.danger}66`, borderRadius: 8, fontSize: 11, color: C.danger,
+                }}>
+                  ⚠️ <b>{assessmentForm.geminiError}</b>
+                  <div style={{ marginTop: 4, fontSize: 10, color: C.text }}>
+                    対策案: ① API キーが正しく Google AI Studio で取得したものか確認 / ② キーに Generative Language API が有効か / ③ ブラウザのコンソール ( F12 ) で詳細エラーを確認
+                  </div>
+                </div>
+              )}
               {assessmentForm.ocrProgress && (
                 <div style={{ marginTop: 8, padding: 10, background: "#0ea5e911", border: "1px solid #0ea5e966", borderRadius: 8 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "#0ea5e9", marginBottom: 4 }}>
@@ -18212,19 +18329,24 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {assessmentForm.legalDocLand.fields.locationLand && <> / 所在={assessmentForm.legalDocLand.fields.locationLand}</>}
                           </>
                       }
-                      {/* 🆕 v9.46.9: 数値候補チップ ( タップで土地面積に反映 ) */}
+                      {/* 🆕 v9.47.2: 数値候補 ( コンテキスト付き ・ 何の数字か文脈表示 ) */}
                       {assessmentForm.legalDocLand.candidates && assessmentForm.legalDocLand.candidates.length > 0 && (
                         <div style={{ marginTop: 6, padding: 6, background: "#fef3c722", borderRadius: 4 }}>
-                          <div style={{ fontSize: 9, color: C.warn, fontWeight: 700, marginBottom: 4 }}>📐 検出された数値 ( タップで「土地面積」 に反映 ):</div>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                            {assessmentForm.legalDocLand.candidates.map(v => (
-                              <button key={v} onClick={() => setAssessmentForm(f => ({ ...f, landArea: String(v) }))}
-                                style={{ padding: "3px 8px", fontSize: 10, fontFamily: "inherit",
-                                  background: C.warn + "33", border: `1px solid ${C.warn}66`, color: C.warn,
-                                  borderRadius: 10, cursor: "pointer", fontWeight: 700 }}>
-                                {v}
-                              </button>
-                            ))}
+                          <div style={{ fontSize: 9, color: C.warn, fontWeight: 700, marginBottom: 4 }}>📐 検出された数値 ( 文脈付き ・ タップで「土地面積」 に反映 ):</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            {assessmentForm.legalDocLand.candidates.slice(0, 12).map((c, i) => {
+                              const v = typeof c === "object" ? c.value : c;
+                              const ctx = typeof c === "object" ? c.context : "";
+                              return (
+                                <button key={`${v}-${i}`} onClick={() => setAssessmentForm(f => ({ ...f, landArea: String(v) }))}
+                                  style={{ padding: "5px 8px", fontSize: 10, fontFamily: "inherit",
+                                    background: C.warn + "22", border: `1px solid ${C.warn}66`, color: C.text,
+                                    borderRadius: 6, cursor: "pointer", textAlign: "left", display: "flex", gap: 6, alignItems: "center" }}>
+                                  <span style={{ color: C.warn, fontWeight: 700, minWidth: 50 }}>{v}</span>
+                                  {ctx && <span style={{ color: C.muted, fontSize: 9, opacity: 0.85 }}>{ctx}</span>}
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
                       )}
@@ -18247,29 +18369,32 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {assessmentForm.legalDocBuilding.fields.kashuType && <> / 種類={assessmentForm.legalDocBuilding.fields.kashuType}</>}
                           </>
                       }
-                      {/* 🆕 v9.46.9: 数値候補チップ ( タップで建物面積/築年に反映 ) */}
+                      {/* 🆕 v9.47.2: 数値候補 ( 文脈付き ) */}
                       {assessmentForm.legalDocBuilding.candidates && assessmentForm.legalDocBuilding.candidates.length > 0 && (
                         <div style={{ marginTop: 6, padding: 6, background: "#0ea5e922", borderRadius: 4 }}>
-                          <div style={{ fontSize: 9, color: "#0ea5e9", fontWeight: 700, marginBottom: 4 }}>📐 検出された数値 ( タップで「建物面積」 / 「築年」 に反映 ):</div>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                            {assessmentForm.legalDocBuilding.candidates.map(v => {
+                          <div style={{ fontSize: 9, color: "#0ea5e9", fontWeight: 700, marginBottom: 4 }}>📐 検出された数値 ( 文脈付き ・ タップで反映 ):</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            {assessmentForm.legalDocBuilding.candidates.slice(0, 12).map((c, i) => {
+                              const v = typeof c === "object" ? c.value : c;
+                              const ctx = typeof c === "object" ? c.context : "";
                               const isYear = v >= 1900 && v <= 2030;
                               return (
-                                <div key={v} style={{ display: "flex", gap: 2 }}>
+                                <div key={`${v}-${i}`} style={{ display: "flex", gap: 3, alignItems: "center" }}>
                                   <button onClick={() => setAssessmentForm(f => ({ ...f, buildingArea: String(v) }))}
-                                    style={{ padding: "3px 8px", fontSize: 10, fontFamily: "inherit",
+                                    style={{ padding: "4px 8px", fontSize: 10, fontFamily: "inherit",
                                       background: "#0ea5e933", border: "1px solid #0ea5e966", color: "#0ea5e9",
-                                      borderRadius: 10, cursor: "pointer", fontWeight: 700 }}>
+                                      borderRadius: 6, cursor: "pointer", fontWeight: 700, minWidth: 60 }}>
                                     {v}㎡
                                   </button>
                                   {isYear && (
                                     <button onClick={() => setAssessmentForm(f => ({ ...f, builtYear: String(v) }))}
-                                      style={{ padding: "3px 8px", fontSize: 10, fontFamily: "inherit",
+                                      style={{ padding: "4px 8px", fontSize: 10, fontFamily: "inherit",
                                         background: C.success + "33", border: `1px solid ${C.success}66`, color: C.success,
-                                        borderRadius: 10, cursor: "pointer", fontWeight: 700 }}>
+                                        borderRadius: 6, cursor: "pointer", fontWeight: 700 }}>
                                       {v}年
                                     </button>
                                   )}
+                                  {ctx && <span style={{ color: C.muted, fontSize: 9, opacity: 0.85, marginLeft: 4 }}>{ctx}</span>}
                                 </div>
                               );
                             })}
