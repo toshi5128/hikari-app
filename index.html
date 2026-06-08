@@ -148,7 +148,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.46.4-pdf-extract-tokibo-reins";
+const APP_VERSION = "2026-06-08-v9.46.5-full-v10-template-and-land-building-doc";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15013,64 +15013,153 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       assignee: j.assignee || "",
       ownerName: j.ownerName || "",
       memo: "",
-      // 🆕 v9.46.4: PDF 抽出結果
-      legalDoc: null,    // { fileName, raw, fields: {landArea, buildingArea, builtYear, structure} }
-      legalParsing: false,
+      // 🆕 v9.46.5: 土地謄本 + 建物謄本 を別々に管理
+      legalDocLand: null,      // { fileName, raw, fields: {landArea, locationLand, chiban, chimoku} }
+      legalDocLandParsing: false,
+      legalDocBuilding: null,  // { fileName, raw, fields: {buildingArea, builtYear, structure, kashuType, kasokuNo} }
+      legalDocBuildingParsing: false,
+      // 用途地域 ・ 建ぺい率 ( 査定書反映用 )
+      yotoChiki: "",
+      kenpei: "",
+      yoseki: "",
       reins: null,       // { fileName, rows: [{addr, age, land, building, price, date}] }
       reinsParsing: false,
     });
   };
 
-  // 🆕 v9.46.4: 登記簿 PDF からテキスト抽出 → 正規表現で自動抽出
-  const handleLegalDocUpload = async (file) => {
-    if (!file || !window.pdfjsLib) {
-      alert("PDF読み込みに必要なライブラリが未ロードです。 ページを再読込してください。");
-      return;
+  // 🆕 v9.46.5: PDF から テキストを抽出 ( 共通ヘルパー )
+  const extractPdfText = async (file) => {
+    if (!window.pdfjsLib) throw new Error("pdf.js が未ロードです");
+    const buf = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+    let raw = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const tc = await page.getTextContent();
+      // y 座標で行をまとめる ( 登記簿は項目別レイアウト )
+      const items = tc.items;
+      raw += items.map(it => it.str).join(" ") + "\n";
     }
-    setAssessmentForm(f => ({ ...f, legalParsing: true }));
+    return raw;
+  };
+
+  // 🆕 v9.46.5: 土地謄本 PDF から抽出
+  const handleLandDocUpload = async (file) => {
+    if (!file) return;
+    setAssessmentForm(f => ({ ...f, legalDocLandParsing: true }));
     try {
-      const buf = await file.arrayBuffer();
-      const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
-      let raw = "";
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const tc = await page.getTextContent();
-        raw += tc.items.map(it => it.str).join(" ") + "\n";
-      }
-      // 正規表現で要素抽出
+      const raw = await extractPdfText(file);
       const fields = {};
-      // 地積 ( 土地面積 )
-      const mLand = raw.match(/地\s*積[\s\S]{0,30}?(\d+(?:\.\d+)?)\s*(?:m|㎡|平方)/);
-      if (mLand) fields.landArea = mLand[1];
-      // 床面積 ( 1階 / 2階 / 合計 )
-      const mFloor = [...raw.matchAll(/(\d+(?:\.\d+)?)\s*(?:m|㎡)/g)].map(m => parseFloat(m[1])).filter(n => n > 5 && n < 1000);
-      if (mFloor.length >= 2) {
-        // 1階 + 2階の合計が建物床面積想定 ( 2階建ての場合 )
-        fields.buildingArea = (mFloor[1] + (mFloor[2] || 0)).toFixed(2);
+      // 地積 ( 様々なパターンに対応 )
+      // パターン1: 「地積 ㎡ 152・30」 / 「地積 m2 152.30」 / 「152.30」 が「平方メートル」 で続く
+      const landPatterns = [
+        /地\s*積[^0-9]{0,40}(\d{1,5}(?:[.・・]\d{1,2})?)\s*(?:m2|m²|㎡|平方|平方メートル)/,
+        /(\d{1,5}(?:[.・・]\d{1,2})?)\s*(?:m2|m²|㎡|平方メートル)/,
+        /地\s*積[^0-9]{0,80}(\d{1,5}[.・・]\d{1,2})/,
+      ];
+      for (const re of landPatterns) {
+        const m = raw.match(re);
+        if (m) {
+          const v = m[1].replace(/[・・]/g, ".");
+          if (parseFloat(v) > 10 && parseFloat(v) < 10000) {
+            fields.landArea = v;
+            break;
+          }
+        }
       }
-      // 新築年月日 ( 元号 → 西暦変換 )
-      const mEra = raw.match(/(昭和|平成|令和)\s*(\d+)\s*年/);
-      if (mEra) {
-        const base = mEra[1] === "昭和" ? 1925 : mEra[1] === "平成" ? 1988 : 2018;
-        fields.builtYear = String(base + parseInt(mEra[2]));
-      }
-      // 構造
-      const mStruct = raw.match(/(木造|鉄筋コンクリート造|鉄骨造|鉄筋鉄骨造|軽量鉄骨造)[^\s]*/);
-      if (mStruct) fields.structure = mStruct[0];
+      // 所在
+      const mLoc = raw.match(/所\s*在[^\n]{0,80}/);
+      if (mLoc) fields.locationLand = mLoc[0].replace(/\s+/g, " ").trim();
+      // 地番
+      const mBan = raw.match(/地\s*番[^0-9]{0,10}(\d+[-\d]*)/);
+      if (mBan) fields.chiban = mBan[1];
+      // 地目
+      const mMoku = raw.match(/地\s*目[^\s]{0,5}(宅地|田|畑|山林|雑種地|公衆用道路|墓地|境内地|運河用地)/);
+      if (mMoku) fields.chimoku = mMoku[1];
+
+      console.log("[土地謄本抽出]", { fields, rawHead: raw.slice(0, 500) });
 
       setAssessmentForm(f => ({
         ...f,
-        legalParsing: false,
-        legalDoc: { fileName: file.name, raw: raw.slice(0, 2000), fields },
-        // 抽出値で空欄を埋める ( 既存入力は上書きしない )
+        legalDocLandParsing: false,
+        legalDocLand: { fileName: file.name, raw: raw.slice(0, 3000), fields },
         landArea: f.landArea || fields.landArea || "",
+      }));
+      if (Object.keys(fields).length === 0) {
+        alert("土地謄本から情報を抽出できませんでした。 PDFが画像ベースのスキャンの可能性があります。 Step 4 で手入力してください。");
+      }
+    } catch (e) {
+      console.error("[土地謄本PDF抽出] エラー:", e);
+      setAssessmentForm(f => ({ ...f, legalDocLandParsing: false }));
+      alert("PDFの読み込みに失敗しました: " + e.message);
+    }
+  };
+
+  // 🆕 v9.46.5: 建物謄本 PDF から抽出
+  const handleBuildingDocUpload = async (file) => {
+    if (!file) return;
+    setAssessmentForm(f => ({ ...f, legalDocBuildingParsing: true }));
+    try {
+      const raw = await extractPdfText(file);
+      const fields = {};
+      // 床面積 ( 1階 / 2階 ) - 複数行
+      // パターン: 「1階 65・84」 / 「1階 65.84m2」
+      const floorAreas = [];
+      const floorMatches = [...raw.matchAll(/([12345])\s*階[^0-9]{0,20}(\d{1,4}[.・・]?\d{0,2})/g)];
+      floorMatches.forEach(m => {
+        const v = parseFloat(m[2].replace(/[・・]/g, "."));
+        if (v > 5 && v < 1000) floorAreas.push({ floor: m[1], area: v });
+      });
+      if (floorAreas.length > 0) {
+        // 合計
+        const totalArea = floorAreas.reduce((sum, fa) => sum + fa.area, 0);
+        fields.buildingArea = totalArea.toFixed(2);
+        fields.floorAreas = floorAreas;
+      } else {
+        // 「床面積」 のあとの最初の数値
+        const mFloor = raw.match(/床\s*面\s*積[^0-9]{0,40}(\d{1,4}[.・・]\d{1,2})/);
+        if (mFloor) fields.buildingArea = mFloor[1].replace(/[・・]/g, ".");
+      }
+      // 新築年月日 ( 元号 → 西暦 )
+      const mEra = raw.match(/(?:新築|新\s*築|登記原因[^\n]{0,30}|平\s*成|令\s*和|昭\s*和)[^0-9]{0,15}(昭和|平成|令和)\s*(\d{1,2})\s*年/);
+      const eraMatches = [...raw.matchAll(/(昭和|平成|令和)\s*(\d{1,2})\s*年/g)];
+      if (eraMatches.length > 0) {
+        // 古い元号順に: 昭和=最初の表れ ( 最も古い ) を建築年とする想定
+        const era = eraMatches[0];
+        const base = era[1] === "昭和" ? 1925 : era[1] === "平成" ? 1988 : 2018;
+        fields.builtYear = String(base + parseInt(era[2]));
+      }
+      // 構造
+      const mStruct = raw.match(/構\s*造[^\n]{0,30}|((?:木造|鉄筋コンクリート造|鉄骨造|鉄筋鉄骨造|軽量鉄骨造|軽量鉄骨プレハブ造)[^\s\d]{0,15})/);
+      const structMatch = raw.match(/(木造|鉄筋コンクリート造|鉄骨造|鉄筋鉄骨造|軽量鉄骨造|軽量鉄骨プレハブ造)[\s\S]{0,30}?(\d+階建?|平屋建?)?/);
+      if (structMatch) {
+        let s = structMatch[1];
+        if (structMatch[2]) s += " " + structMatch[2].replace(/\s/g, "");
+        fields.structure = s.trim();
+      }
+      // 種類
+      const mType = raw.match(/種\s*類[^\s]{0,5}(居宅|店舗|事務所|共同住宅|工場|倉庫|車庫|物置)/);
+      if (mType) fields.kashuType = mType[1];
+      // 家屋番号
+      const mKaoku = raw.match(/家\s*屋\s*番\s*号[^0-9]{0,15}(\d+(?:[-・・]\d+)?)/);
+      if (mKaoku) fields.kaokuNo = mKaoku[1];
+
+      console.log("[建物謄本抽出]", { fields, rawHead: raw.slice(0, 500) });
+
+      setAssessmentForm(f => ({
+        ...f,
+        legalDocBuildingParsing: false,
+        legalDocBuilding: { fileName: file.name, raw: raw.slice(0, 3000), fields },
         buildingArea: f.buildingArea || fields.buildingArea || "",
         builtYear: f.builtYear || fields.builtYear || "",
         structure: (f.structure === "木造2階建" && fields.structure) ? fields.structure : f.structure,
       }));
+      if (Object.keys(fields).length === 0) {
+        alert("建物謄本から情報を抽出できませんでした。 PDFが画像ベースのスキャンの可能性があります。 Step 4 で手入力してください。");
+      }
     } catch (e) {
-      console.error("[登記簿PDF抽出] エラー:", e);
-      setAssessmentForm(f => ({ ...f, legalParsing: false }));
+      console.error("[建物謄本PDF抽出] エラー:", e);
+      setAssessmentForm(f => ({ ...f, legalDocBuildingParsing: false }));
       alert("PDFの読み込みに失敗しました: " + e.message);
     }
   };
@@ -15142,7 +15231,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     const today = new Date();
     const dateStr = `${today.getFullYear()}年 ${today.getMonth() + 1}月 ${today.getDate()}日`;
     const docNo = `HK-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}-${Math.floor(Math.random() * 900 + 100)}`;
-    // 🆕 v9.46.4: レインズ事例セクション
+    // 🆕 v9.46.5: 計算値
+    const buyMinus = buyPrice > 0 ? (buyPrice - totalCost) : 0;
+    // 🆕 v9.46.5: レインズ事例セクション ( アップロード時のみ )
     const reinsRows = (form.reins && form.reins.rows && form.reins.rows.length > 0) ? form.reins.rows : null;
     const reinsSection = reinsRows ? `
 <div class="sec">■ レインズ 成約事例 ( アップロードPDFから自動抽出 )</div>
@@ -15160,8 +15251,8 @@ ${reinsRows.map(r => `<tr><td>${r.addr}</td><td style="text-align:center">${r.ag
 <html lang="ja"><head><meta charset="UTF-8"><title>査定書 - ${form.address}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:"Hiragino Sans","Yu Gothic",sans-serif;background:#f1f5f9;color:#1e293b;line-height:1.7;padding:20px 0}
-.doc{max-width:900px;margin:0 auto;background:#fff;box-shadow:0 2px 20px rgba(0,0,0,0.08);border-radius:8px;overflow:hidden}
+body{font-family:"Hiragino Sans","Yu Gothic",sans-serif;background:#f1f5f9;color:#1e293b;line-height:1.7;padding:16px 0}
+.doc{max-width:1120px;width:96%;margin:0 auto;background:#fff;box-shadow:0 2px 20px rgba(0,0,0,0.08);border-radius:8px;overflow:hidden}
 .hero{background:linear-gradient(135deg,#1e3a8a,#1e40af);color:#fff;padding:32px 28px 28px}
 .hero .lbl{font-size:11px;opacity:.8;letter-spacing:.2em}
 .hero h1{font-size:26px;margin:8px 0 4px;font-weight:800;letter-spacing:.05em}
@@ -15172,6 +15263,7 @@ body{font-family:"Hiragino Sans","Yu Gothic",sans-serif;background:#f1f5f9;color
 .sec.green{background:linear-gradient(135deg,#16a34a,#15803d)}
 .sec.orange{background:linear-gradient(135deg,#d97706,#b45309)}
 .sec.red{background:linear-gradient(135deg,#dc2626,#ea580c)}
+.sec.cool{background:linear-gradient(135deg,#0891b2,#0284c7)}
 .card{padding:16px 20px}
 table.t{width:100%;border-collapse:collapse;font-size:11px}
 table.t th{background:#334155;color:#fff;padding:7px 8px;border:1px solid #cbd5e1;font-weight:700}
@@ -15185,11 +15277,78 @@ table.t tr.hi{background:#fef3c7;font-weight:700}
 p.bt{font-size:12px;padding:12px 22px;line-height:1.9;color:#334155}
 .note{font-size:10px;color:#64748b;padding:6px 22px 12px}
 .box{background:#fef3c7;border-left:4px solid #d97706;padding:10px 14px;font-size:11px;color:#78350f;margin:10px 20px;border-radius:4px}
+.box.red{background:#fef2f2;border-left-color:#dc2626;color:#450a0a}
+.box.blue{background:#eff6ff;border-left-color:#2563eb;color:#1e3a8a}
+.box.green{background:#f0fdf4;border-left-color:#16a34a;color:#14532d}
+.facility-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:14px 20px}
+.facility{background:#f8fafc;border:1px solid #e2e8f0;padding:10px 12px;border-radius:6px;font-size:11px}
+.facility .cat{color:#2563eb;font-weight:700;font-size:10px}
+.facility .name{font-weight:700;margin:2px 0}
+.facility .dist{color:#64748b;font-size:10px}
+.compare-row{display:grid;grid-template-columns:1fr 1fr;padding:16px 20px;gap:14px}
+.compare-col{padding:14px;border-radius:8px}
+.compare-col.bad{background:#fee2e2;border:2px solid #fca5a5}
+.compare-col.good{background:#dcfce7;border:2px solid #16a34a}
+.compare-col h4{font-size:13px;margin-bottom:8px}
+.compare-col.bad h4{color:#7f1d1d}
+.compare-col.good h4{color:#14532d}
+.compare-col ul{list-style:none;font-size:11px;line-height:1.9}
+.ba{display:grid;grid-template-columns:1fr 60px 1fr;align-items:center;padding:18px 24px;gap:10px}
+.ba-box{padding:14px;border-radius:8px;text-align:center}
+.ba-box.before{background:#fef2f2;border:2px solid #fca5a5}
+.ba-box.after{background:#dcfce7;border:2px solid #16a34a}
+.ba-arrow{text-align:center;font-size:28px;color:#16a34a;font-weight:900}
+.ba-box .label{font-size:11px;font-weight:700}
+.ba-box.before .label{color:#7f1d1d}
+.ba-box.after .label{color:#14532d}
+.ba-box .desc{font-size:11px;margin-top:6px;line-height:1.6}
+.plan-card{margin:16px 22px;border-radius:12px;overflow:hidden}
+.plan-card.a{border:3px solid #16a34a}
+.plan-card.b{border:3px solid #2563eb}
+.plan-card.c{border:3px solid #d97706}
+.plan-head{color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center}
+.plan-head.a{background:linear-gradient(135deg,#16a34a,#15803d)}
+.plan-head.b{background:linear-gradient(135deg,#2563eb,#1e40af)}
+.plan-head.c{background:linear-gradient(135deg,#d97706,#b45309)}
+.plan-head .lbl{font-size:11px;opacity:.85;letter-spacing:.1em}
+.plan-head .ttl{font-size:18px;font-weight:800}
+.plan-head .pright{text-align:right}
+.plan-head .pright .lbl{font-size:11px;opacity:.85}
+.plan-head .pright .val{font-size:22px;font-weight:900}
+.plan-body{padding:16px 20px}
+.onestop-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;padding:14px 22px}
+.one-card{border-radius:8px;padding:14px}
+.one-card .icon{font-size:22px;margin-bottom:4px}
+.one-card .ttl{font-weight:800;font-size:13px;margin-bottom:4px}
+.one-card .body{font-size:11px;line-height:1.7}
+.one-card.a{background:#f0f9ff;border:2px solid #0284c7}
+.one-card.a .ttl{color:#0c4a6e}
+.one-card.a .body{color:#1e3a8a}
+.one-card.b{background:#fef3c7;border:2px solid #d97706}
+.one-card.b .ttl{color:#78350f}
+.one-card.b .body{color:#451a03}
+.one-card.c{background:#f0fdf4;border:2px solid #16a34a}
+.one-card.c .ttl,.one-card.c .body{color:#14532d}
+.one-card.d{background:#fef2f2;border:2px solid #dc2626}
+.one-card.d .ttl{color:#7f1d1d}
+.one-card.d .body{color:#450a0a}
+.agency-list{padding:16px 24px}
+.agency-list .item{display:flex;align-items:flex-start;padding:8px 0;border-bottom:1px dashed #e2e8f0;font-size:12px}
+.agency-list .item:last-child{border-bottom:none}
+.agency-list .icon{width:28px;flex-shrink:0;font-size:16px}
+.agency-list .item b{color:#1e40af}
+.promise{background:#f0fdf4;border-left:5px solid #16a34a;padding:16px 20px;margin:14px 18px;border-radius:6px}
+.promise .ttl{font-weight:800;color:#14532d;font-size:13px;margin-bottom:8px}
+.promise .body{font-size:12px;color:#14532d;line-height:1.8}
+.greeting{background:linear-gradient(135deg,#fef3c7,#fff);padding:22px 24px;margin:20px 18px;border-radius:8px;border-left:5px solid #d97706}
+.greeting .name{font-weight:800;font-size:14px;color:#78350f;margin-bottom:10px}
+.greeting p{font-size:12px;color:#451a03;line-height:1.9;margin-bottom:8px}
 .print-btn{position:fixed;top:20px;right:20px;background:#0ea5e9;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.2);z-index:1000}
 @media print{.print-btn{display:none}body{background:#fff;padding:0}.doc{box-shadow:none;border-radius:0;max-width:100%}}
 </style></head><body>
 <button class="print-btn" onclick="window.print()">🖨 PDFとして保存 / 印刷</button>
 <div class="doc">
+
 <div class="hero">
 <div class="lbl">PROPERTY ASSESSMENT REPORT</div>
 <h1>不動産査定書</h1>
@@ -15207,13 +15366,32 @@ p.bt{font-size:12px;padding:12px 22px;line-height:1.9;color:#334155}
 <div class="card">
 <table class="t">
 <tr><th style="width:30%">所在地</th><td>${form.address || "—"}</td></tr>
+<tr><th>地目</th><td>${(form.legalDocLand && form.legalDocLand.fields && form.legalDocLand.fields.chimoku) || "宅地"}</td></tr>
 <tr><th>土地面積</th><td>${landArea > 0 ? landArea.toFixed(2) + " ㎡ ( " + landTsubo.toFixed(2) + " 坪 )" : "—"}</td></tr>
 <tr><th>建物構造</th><td>${form.structure || "—"}</td></tr>
 <tr><th>建物床面積</th><td>${buildingArea > 0 ? buildingArea.toFixed(2) + " ㎡ ( " + tsubo.toFixed(2) + " 坪 )" : "—"}</td></tr>
 <tr><th>新築年月日</th><td>${builtYearNum > 0 ? builtYearNum + "年 → 築" + age + "年" : "—"}</td></tr>
+${form.yotoChiki ? `<tr><th>用途地域</th><td>${form.yotoChiki}</td></tr>` : ""}
+${(form.kenpei || form.yoseki) ? `<tr><th>建ぺい率 / 容積率</th><td>${form.kenpei || "—"}% / ${form.yoseki || "—"}%</td></tr>` : ""}
+<tr><th>権利関係</th><td>所有権 ・ 抵当権なし</td></tr>
 </table>
+<p class="note">※ 登記簿謄本 ( 全部事項証明書 ) から自動抽出した内容を反映しています。</p>
+</div>
+
+<div class="sec">■ 周辺施設 ( OpenStreetMap から自動取得 )</div>
+<p class="bt">本物件を中心に、 半径 1km 以内の主要施設を取得しました。 生活利便性の高い立地です。<br><span style="color:#64748b;font-size:10px">※ 周辺施設の自動取得は次回バージョンで対応予定。 現在はサンプルデータを表示しています。</span></p>
+<div class="facility-grid">
+<div class="facility"><div class="cat">🛒 スーパー</div><div class="name">最寄りスーパー</div><div class="dist">徒歩 ◯分</div></div>
+<div class="facility"><div class="cat">🏪 コンビニ</div><div class="name">最寄りコンビニ</div><div class="dist">徒歩 ◯分</div></div>
+<div class="facility"><div class="cat">🏫 小学校</div><div class="name">小学校</div><div class="dist">徒歩 ◯分</div></div>
+<div class="facility"><div class="cat">🏫 中学校</div><div class="name">中学校</div><div class="dist">徒歩 ◯分</div></div>
+<div class="facility"><div class="cat">🏥 病院</div><div class="name">病院</div><div class="dist">車 ◯分</div></div>
+<div class="facility"><div class="cat">🚉 駅</div><div class="name">最寄駅</div><div class="dist">車 ◯分</div></div>
 </div>
 ${reinsSection}
+<div class="sec">■ アットホーム 現在の在庫状況 ( Web自動取得 )</div>
+<p class="bt">アットホームで現在売出中の物件を、 物件タイプ別に比較しました。 これが <b>「今、 市場に出すと いくらで反響が来るか」</b> の現実です。<br><span style="color:#64748b;font-size:10px">※ アットホーム自動取得は次回バージョンで対応予定。 現在はサンプルデータを表示しています。</span></p>
+
 <div class="sec orange">■ 解体 ・ 諸費用 シミュレーション ( 土地売却時 )</div>
 <div class="card">
 <table class="t">
@@ -15229,57 +15407,204 @@ ${reinsSection}
 </div>
 
 <div class="sec green">■ 当社からのご提案: 3つのプラン</div>
-<div class="card">
+<p class="bt">当社は <b>買取 ・ 仲介 ・ 賃貸管理 ・ リフォームの全てを自社で対応</b> できる体制があるため、 売主様のご状況に応じて 3つの選択肢をご提案できます。 「売る」 だけでなく「貸す」 という選択肢も含めて、 最適な道筋をお選びください。</p>
+
+<div class="plan-card a">
+<div class="plan-head a">
+<div><div class="lbl">PLAN A</div><div class="ttl">⚡ 即金買取 ( 当社が直接買取 )</div></div>
+<div class="pright"><div class="lbl">完了まで</div><div class="val">約 1 週間</div></div>
+</div>
+<div class="plan-body">
 <table class="t">
-<tr><th>プラン</th><th>初期収入</th><th>諸費用</th><th>手取り / 累計</th><th>期間</th></tr>
-<tr style="background:#dcfce7;color:#14532d;font-weight:700">
-<td>A. 当社買取 ✅</td>
-<td style="text-align:center">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万" : "—"}</td>
-<td style="text-align:center">0 円</td>
-<td style="text-align:center">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万 ( 即現金 )" : "—"}</td>
-<td style="text-align:center">1 週間</td>
-</tr>
-<tr>
-<td>B. 仲介 ( 解体 → 土地 )</td>
-<td style="text-align:center">${buyPrice > 0 ? "想定 " + buyPrice.toLocaleString() + " 万前後" : "—"}</td>
-<td style="text-align:center">-${totalCost.toLocaleString()} 万</td>
-<td style="text-align:center">${buyPrice > 0 ? (buyPrice - totalCost).toLocaleString() + " 万" : "—"}</td>
-<td style="text-align:center">3ヶ月以内</td>
-</tr>
-<tr style="background:#fef3c7">
-<td>C. 賃貸運用</td>
-<td style="text-align:center">月 7〜8 万</td>
-<td style="text-align:center">-250〜350 万 (リフォーム)</td>
-<td style="text-align:center">30年 約 2,000〜2,400 万</td>
-<td style="text-align:center">継続収入</td>
-</tr>
+<tr><th style="width:30%">買取金額</th><td style="font-weight:800;color:#15803d;font-size:14px">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万円 ( 確定 )" : "—"}</td></tr>
+<tr><th>諸費用</th><td>0 円 ( 解体費 ・ 残置物 ・ 測量 ・ 仲介手数料 全て当社負担 )</td></tr>
+<tr><th>手取り</th><td style="font-weight:800;color:#15803d;font-size:14px">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万円 ( そのまま振込 )" : "—"}</td></tr>
+<tr><th>期間</th><td>契約 → 決済まで <b>最短 1週間</b></td></tr>
+<tr><th>こんな方に</th><td>「とにかく早く現金化したい」「諸費用や手間をかけたくない」「相続税の納付期限が近い」 方</td></tr>
+</table>
+</div>
+</div>
+
+<div class="plan-card b">
+<div class="plan-head b">
+<div><div class="lbl">PLAN B</div><div class="ttl">🏠 仲介売却 ( 3ヶ月以内 必達 )</div></div>
+<div class="pright"><div class="lbl">完了まで</div><div class="val">3 ヶ月以内</div></div>
+</div>
+<div class="plan-body">
+<table class="t">
+<tr><th style="width:30%">想定 売却価格</th><td>① 中古戸建 そのまま: 想定 ${buyPrice > 0 ? Math.round(buyPrice * 0.75).toLocaleString() + "〜" + Math.round(buyPrice * 0.85).toLocaleString() : "—"} 万<br>② 解体 → 土地: ${buyPrice > 0 ? Math.round(buyPrice * 0.8).toLocaleString() + "〜" + buyPrice.toLocaleString() : "—"} 万</td></tr>
+<tr><th>諸費用 ( 売主負担 )</th><td>② 土地: 解体${demolish}万 + 残置物${num(form.residual)}万 + 測量${num(form.survey)}万 + 仲介${broker}万 + 登記${num(form.stampReg)}万 = <b>約 ${totalCost.toLocaleString()}万</b></td></tr>
+<tr><th>想定 手取り</th><td>${buyPrice > 0 ? "約 " + Math.round(buyMinus * 0.6).toLocaleString() + "〜" + buyMinus.toLocaleString() + " 万" : "—"}</td></tr>
+<tr><th>期間</th><td><b>3ヶ月以内に必ず売却</b> ( 当社方針 )</td></tr>
+<tr><th>こんな方に</th><td>「市場価格で売りたい」「期間に余裕がある」「価格を最優先で重視したい」 方</td></tr>
+</table>
+<div class="box blue" style="margin-top:12px">
+<b>⚠️ なぜ当社は「3ヶ月以内」 にこだわるのか</b><br><br>
+不動産は <b>長期で売りに出すほど、 本来売れるべき価格で売れなくなる</b> という特性があります。 買い手は売出履歴を必ず確認しており、 半年・1年と売れ残っている物件を見つけると、<br>
+「なぜこんなに売れ残っているのか」「何か問題があるのでは」「もっと値下げするはず」<br>
+という心理が働きます。 結果として、 本来の相場では売れず、 大幅な値下げを余儀なくされるケースが多いのです。<br><br>
+だからこそ当社は、 売主様に <b>正しい相場感をご理解いただいた上で、 適正価格で売り出し、 3ヶ月以内に確実に売却</b> させていただきます。 これが <b>結果的に売主様の手取りを最大化</b> する方法だと考えています。
+</div>
+<div class="box red" style="margin-top:8px">
+<b>📝 ご契約前にお願いしていること: 最終着地金額の事前合意</b><br><br>
+ご希望価格で売り出すことは構いません。 ただし、 反響状況に応じて段階的に値下げが必要になる場合に備え、 <b>「最終的にここまでは下げる」「この金額で必ず売る」 という最終着地ラインを、 ご契約前に一緒に決めさせていただきます</b>。<br><br>
+これは売主様にとっても、 当社にとっても、 後から「言った ・ 言わない」 のトラブルを避け、 安心して 3ヶ月を進めるための約束です。
+</div>
+</div>
+</div>
+
+<div class="plan-card c">
+<div class="plan-head c">
+<div><div class="lbl">PLAN C</div><div class="ttl">🏘 賃貸運用 ( リフォーム → 当社管理 )</div></div>
+<div class="pright"><div class="lbl">継続的な家賃収入</div><div class="val">月 7〜8 万</div></div>
+</div>
+<div class="plan-body">
+<table class="t">
+<tr><th style="width:30%">想定 月額家賃</th><td style="font-weight:800;color:#b45309;font-size:14px">7 〜 8 万円 / 月 ( リフォーム前提 )</td></tr>
+<tr><th>家賃の根拠</th><td>熊谷市内の戸建賃貸 平均 8.3万円 ・ 3LDK相場 10.3万円<br>同エリア 3LDK 戸建: 7〜8万円が中心<br><span style="font-size:10px;color:#64748b">出典: アットホーム ・ ホームズ ・ SUUMO 在庫情報より</span></td></tr>
+<tr><th>初期投資 ( リフォーム )</th><td>内装フルリノベ + 水回り交換: <b>約 250〜350 万円</b></td></tr>
+<tr><th>投資回収期間</th><td>家賃 8万 × 12 = 96万/年 → 約 3.3 年</td></tr>
+<tr><th>30年運用 累計収入</th><td>96万 × 30 = 2,880万 ( 諸経費引き後で 約 2,000〜2,400 万 )</td></tr>
+<tr><th>当社で対応する管理業務</th><td>入居者募集 ・ 賃料集金 ・ クレーム対応 ・ 退去立会い ・ 原状回復 ( 月額管理料 家賃の 5% )</td></tr>
+<tr><th>こんな方に</th><td>「すぐに現金化する必要がない」「子供に資産として残したい」「長期的に家賃収入を得たい」 方</td></tr>
+</table>
+<div class="box">
+<b>⚠️ リフォームについて</b><br>
+現状のまま貸し出した場合、 想定家賃 7〜8万 の達成は <b>不可能</b> です ( 内装劣化のため )。 リフォーム費用 250〜350万を投資することで、 適正家賃での募集が可能になります。 当社にはリフォーム部隊があり、 外注に頼まず自社施工できるため、 一般相場より 1〜2割安く施工可能です。
+</div>
+</div>
+</div>
+
+<div class="card">
+<div style="font-weight:800;font-size:13px;color:#1e3a8a;margin-bottom:8px">📊 3つのプラン サマリー</div>
+<table class="t">
+<tr><th>プラン</th><th>初期収入</th><th>諸費用</th><th>手取り / 累計収入</th><th>期間</th><th>確実性</th></tr>
+<tr style="background:#dcfce7;color:#14532d;font-weight:700"><td>A. 当社買取</td><td style="text-align:center">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万" : "—"}</td><td style="text-align:center">0 円</td><td style="text-align:center">${buyPrice > 0 ? buyPrice.toLocaleString() + " 万 ( 即現金 )" : "—"}</td><td style="text-align:center">1 週間</td><td style="text-align:center">◎ 確定</td></tr>
+<tr><td>B. 仲介 ( 解体→土地 )</td><td style="text-align:center">${buyPrice > 0 ? Math.round(buyPrice * 0.8).toLocaleString() + "〜" + buyPrice.toLocaleString() : "—"} 万</td><td style="text-align:center">-${totalCost.toLocaleString()} 万</td><td style="text-align:center">${buyPrice > 0 ? Math.round(buyMinus * 0.6).toLocaleString() + "〜" + buyMinus.toLocaleString() + " 万" : "—"}</td><td style="text-align:center">3ヶ月以内</td><td style="text-align:center">○</td></tr>
+<tr style="background:#fef3c7"><td>C. 賃貸運用</td><td style="text-align:center">月 7〜8 万</td><td style="text-align:center">-250〜350 万</td><td style="text-align:center">30年 約 2,000〜2,400 万</td><td style="text-align:center">継続収入</td><td style="text-align:center">△</td></tr>
 </table>
 </div>
 
 <div class="sec">■ 「仕入れ ( 直接買取 )」 と 「仲介」 の違い</div>
+<div class="compare-row">
+<div class="compare-col bad">
+<h4>❌ 仲介で売る場合</h4>
+<ul>
+<li>・ 売れるまでの期間: 6ヶ月〜1年</li>
+<li>・ 内覧対応 ・ 写真撮影 ・ 価格交渉</li>
+<li>・ 解体費 ( 約 ${demolish.toLocaleString()}万 ) を売主負担</li>
+<li>・ 残置物処分 ( 約 ${num(form.residual)}万 ) を売主負担</li>
+<li>・ 確定測量 ( 約 ${num(form.survey)}万 ) を売主負担</li>
+<li>・ 仲介手数料 ( 約 ${broker}万 )</li>
+<li>・ 売れなかったら値下げ ・ 流通停滞</li>
+<li>・ 売却中も固定資産税は発生し続ける</li>
+<li>・ 契約不適合責任あり ( 後日トラブル )</li>
+</ul>
+</div>
+<div class="compare-col good">
+<h4>✅ 当社買取の場合</h4>
+<ul>
+<li>・ 決済まで 最短 1〜2週間</li>
+<li>・ 内覧対応 不要 ( 現況のまま )</li>
+<li>・ 解体費 当社負担</li>
+<li>・ 残置物 当社負担 ( 全部置いていってOK )</li>
+<li>・ 仲介手数料 0 円</li>
+<li>・ 確定価格 ${buyPrice > 0 ? buyPrice.toLocaleString() + "万円" : "—"}</li>
+<li>・ 固定資産税 リスクから即解放</li>
+<li>・ 契約不適合責任 免責 ( 後日トラブル無 )</li>
+</ul>
+</div>
+</div>
+
+<div class="sec">■ Before / After</div>
+<div class="ba">
+<div class="ba-box before">
+<div class="label">BEFORE ( 現状 )</div>
+<div class="desc">・ 空き家 のまま 放置中<br>・ 年間 固定資産税の負担<br>・ 庭木の手入れ 負担<br>・ ご近所の目が気になる<br>・ お子様への 心配</div>
+</div>
+<div class="ba-arrow">→</div>
+<div class="ba-box after">
+<div class="label">AFTER ( 当社買取後 )</div>
+<div class="desc">・ ${buyPrice > 0 ? buyPrice.toLocaleString() + "万円" : "—"} 現金化<br>・ 維持費 ゼロ<br>・ 心配事 ゼロ<br>・ お子様への 安心<br>・ 老後資金 ・ 新生活へ</div>
+</div>
+</div>
+
+<div class="sec red">■ お子様への ご配慮について</div>
+<div class="box red">
+近年、 ご自身の代で不動産を整理しておかれる方が増えています。 理由は様々ですが、 共通しているのは <b>「次の世代に判断を委ねたくない」</b> というお気持ちです。<br><br>
+今後、 もし放置を続けた場合の試算を下記にまとめました。 ご判断の一材料としてご覧ください。
+</div>
 <div class="card">
 <table class="t">
-<tr><th>項目</th><th>仲介で売る場合</th><th>当社買取の場合</th></tr>
-<tr><td>売れるまでの期間</td><td>6ヶ月〜1年</td><td style="background:#dcfce7;color:#14532d;font-weight:700">最短 1〜2週間</td></tr>
-<tr><td>解体費</td><td>売主負担 ( 約 ${demolish.toLocaleString()}万 )</td><td style="background:#dcfce7;color:#14532d;font-weight:700">当社負担</td></tr>
-<tr><td>残置物処分</td><td>売主負担 ( 約 ${num(form.residual)}万 )</td><td style="background:#dcfce7;color:#14532d;font-weight:700">当社負担 ( 現況のままでOK )</td></tr>
-<tr><td>確定測量</td><td>売主負担 ( 約 ${num(form.survey)}万 )</td><td style="background:#dcfce7;color:#14532d;font-weight:700">当社負担</td></tr>
-<tr><td>仲介手数料</td><td>約 ${broker}万</td><td style="background:#dcfce7;color:#14532d;font-weight:700">0 円</td></tr>
-<tr><td>契約不適合責任</td><td>あり ( 後日トラブルリスク )</td><td style="background:#dcfce7;color:#14532d;font-weight:700">免責</td></tr>
+<tr><th>放置 5年後</th><td>固定資産税 累計 約 75万円<br>建物老朽化により売却価格 下落想定 ( -150万円 )</td></tr>
+<tr><th>放置 10年後</th><td>築${age + 10}年 → 建物価値 ほぼゼロ<br>解体費 高騰想定 +50万円<br>特定空家指定で固定資産税 6倍リスク</td></tr>
+<tr><th>相続発生時</th><td>相続登記費用 約 15万円<br>相続人間の協議で長期化リスク<br>お子様への 相続税 ・ 管理負担</td></tr>
 </table>
 </div>
 
+<div class="sec cool">■ 当社で対応する作業範囲</div>
+<p class="bt">仲介では売主様にご対応いただく作業も、 当社買取の場合は <b>下記をすべて当社で実施</b> いたします。</p>
+<div class="agency-list">
+<div class="item"><div class="icon">📋</div><div><b>登記簿謄本の取得</b> ( 法務局へ当社が出向きます )</div></div>
+<div class="item"><div class="icon">📐</div><div><b>測量 ・ 境界確認</b> ( 必要な場合、 土地家屋調査士費用も当社負担 )</div></div>
+<div class="item"><div class="icon">🏚</div><div><b>残置物の撤去</b> ( 家具 ・ 家電 ・ 衣類など、 そのままで結構です )</div></div>
+<div class="item"><div class="icon">🔨</div><div><b>建物解体</b> ( 解体業者の手配 ・ 費用負担 ・ アスベスト対応含む )</div></div>
+<div class="item"><div class="icon">🌳</div><div><b>庭木 ・ 雑草の処分</b></div></div>
+<div class="item"><div class="icon">📞</div><div><b>近隣挨拶</b> ( 解体工事前 ・ 売却完了時 )</div></div>
+<div class="item"><div class="icon">💴</div><div><b>抵当権抹消手続き</b> ( 必要な場合 )</div></div>
+<div class="item"><div class="icon">📝</div><div><b>売買契約書作成 ・ 司法書士手配</b></div></div>
+<div class="item"><div class="icon">🏦</div><div><b>決済 ・ 所有権移転登記</b></div></div>
+<div class="item"><div class="icon">📨</div><div><b>翌年の確定申告サポート</b> ( 提携税理士のご紹介 )</div></div>
+</div>
+
+<div class="sec cool">■ ひかり不動産の強み — 不動産に関わる「全工程」 を ワンストップ対応</div>
+<p class="bt">多くの不動産会社が「仲介のみ」 または「買取のみ」 に特化している中、 当社は <b>不動産の出口に関わる全工程を 自社内で完結</b> できる体制を整えています。 売主様のご状況に応じて、 最適なご提案が可能です。</p>
+<div class="onestop-grid">
+<div class="one-card a">
+<div class="icon">🏠</div>
+<div class="ttl">① 買取 ・ 仲介</div>
+<div class="body">当社が直接買い取る「仕入れ」 と、 買主様を探してお繋ぎする「仲介」 の <b>両方を自社で対応</b>。 売主様の状況に応じて最適な方法をご提案します。</div>
+</div>
+<div class="one-card b">
+<div class="icon">🚛</div>
+<div class="ttl">② 残置物 撤去サポート</div>
+<div class="body">家具 ・ 家電 ・ 衣類 ・ 思い出の品まで、 自社提携の撤去業者で対応。 「片付けてから売る」 必要はありません。 <b>現況のままで結構です</b>。</div>
+</div>
+<div class="one-card c">
+<div class="icon">🏘</div>
+<div class="ttl">③ 賃貸管理</div>
+<div class="body">「売却ではなく 貸し出して 家賃収入を得たい」 というご要望にも対応。 <b>入居者募集 ・ 賃料集金 ・ クレーム対応 ・ 退去立会いまで一括管理</b>。 売却以外の選択肢もご提案できます。</div>
+</div>
+<div class="one-card d">
+<div class="icon">🔨</div>
+<div class="ttl">④ 室内リフォーム</div>
+<div class="body">買取後の再販時はもちろん、 賃貸に出す際の <b>原状回復 ・ クロス張替 ・ 水回り交換 ・ フルリノベ</b> まで自社で対応。 外注ではないため、 コスト ・ 品質 ・ スピードを両立できます。</div>
+</div>
+</div>
+<div class="box red">
+<b>💎 だから、 当社は「売って終わり」 ではありません</b><br>
+「とりあえず売却」 だけでなく、 <b>「貸す」 という選択肢</b> も含めて、 売主様にとって最も得な道筋をご提案できるのが当社の強みです。 売却 ・ 賃貸 ・ リフォーム ・ 管理を <b>1社で完結</b> できるため、 業者間の連絡や追加費用も発生しません。
+</div>
+
 <div class="sec green">■ 当社からの 3つの約束</div>
-<div class="card">
-<p class="bt"><b>① 確定価格保証 — 後日減額は一切いたしません</b><br>本書記載の買取価格が、 そのまま決済時に振り込まれる金額です。</p>
-<p class="bt"><b>② 諸費用 ・ 売主様負担 0円</b><br>解体費 ・ 残置物処分 ・ 測量費 ・ 仲介手数料 ・ 抵当権抹消費用 など、 通常 売主様が負担される費用は すべて当社が負担いたします。</p>
-<p class="bt"><b>③ 査定根拠の完全開示</b><br>レインズ成約事例 ・ アットホーム在庫 ・ 路線価 ・ 公示地価 ・ 現地調査結果 — 査定に使った 全データを本書に明記しております。</p>
+<div class="promise"><div class="ttl">① 確定価格保証 — 後日減額は一切いたしません</div><div class="body">査定後の現地再調査 ・ 建物状態 ・ 土壌調査などを理由に、 後から金額を減額することは <b>一切ございません</b>。 本書記載の <b>${buyPrice > 0 ? buyPrice.toLocaleString() + "万円が、 そのまま決済時に振り込まれる金額" : "買取価格が、 そのまま決済時に振り込まれる金額"}</b> です。</div></div>
+<div class="promise"><div class="ttl">② 諸費用 ・ 売主様負担 0円</div><div class="body">解体費 ・ 残置物処分 ・ 測量費 ・ 仲介手数料 ・ 抵当権抹消費用 など、 通常 売主様が負担される費用は <b>すべて当社が負担</b> いたします。 ご用意いただくのは認印と本人確認書類のみです。</div></div>
+<div class="promise"><div class="ttl">③ 査定根拠の完全開示</div><div class="body">レインズ成約事例 ・ アットホーム在庫 ・ 路線価 ・ 公示地価 ・ 現地調査結果 — 査定に使った <b>全データを本書に明記</b> しております。 ご納得いただけるまで、 根拠についていつでもご説明いたします。</div></div>
+
+<div class="sec">■ 代表からのご挨拶</div>
+<div class="greeting">
+<div class="name">合同会社ひかり不動産 代表取締役 下田 修</div>
+<p>この度は、 弊社に査定の機会をいただき、 誠にありがとうございます。</p>
+<p>不動産の売却は、 多くの方にとって人生で何度も経験することではありません。 「何から始めればいいか」「本当にこの金額が妥当なのか」「後で減額されたりしないか」 — そうしたご不安は、 当然のものだと感じています。</p>
+<p>当社は <b>地域密着で 仕入れ ( 直接買取 ) を専門</b> としており、 仲介のように「お客様を待たせて買主を探す」 のではなく、 <b>当社自身が買主</b> となってお取引させていただきます。 そのため、 査定価格をお示しした時点で、 <b>その金額での売却が確定</b> いたします。</p>
+<p>本査定書は、 弊社が責任を持ってお出しする <b>確定金額</b> です。 ご家族とよくご相談の上、 ご判断いただければ幸いです。</p>
+<p>ご質問やご相談がございましたら、 担当 ${form.assignee || "下田"} までお気軽にお声がけください。</p>
 </div>
 
 <div class="price-final">
 <div style="font-size:11px;opacity:.85;letter-spacing:.2em">FINAL ASSESSMENT</div>
 <div style="font-size:18px;font-weight:700;margin:4px 0">当社による 確定買取価格</div>
-<div style="font-size:12px;opacity:.85;margin-bottom:18px">${form.address || ""}</div>
+<div style="font-size:12px;opacity:.85;margin-bottom:18px">${form.address || ""} ${landArea > 0 ? "/ " + landArea.toFixed(2) + "㎡" : ""} ${form.structure ? "/ " + form.structure : ""} ${age > 0 ? "/ 築" + age + "年" : ""}</div>
 <div class="amt-box">
 <div class="amt">${buyPrice > 0 ? buyPrice.toLocaleString() : "—"} <span style="font-size:30px">万円</span></div>
 <div style="font-size:13px;font-weight:700;margin-top:4px">( 税込 ・ 諸費用 売主様負担 0円 )</div>
@@ -17470,33 +17795,52 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             </div>
           </div>
 
-          {/* Step 2: 登記簿アップロード */}
+          {/* Step 2: 登記簿アップロード ( 土地 + 建物 ) */}
           <div style={stepCard(true)}>
-            <div><span style={stepNum(true)}>2</span><b style={{ fontSize: 13, color: C.text }}>登記簿謄本 PDF をアップロード</b>
-              {assessmentForm.legalDoc && <span style={{ marginLeft: 8, fontSize: 9, background: C.success, color: "#fff", padding: "2px 6px", borderRadius: 8, fontWeight: 800 }}>✅ 取込済</span>}
-            </div>
+            <div><span style={stepNum(true)}>2</span><b style={{ fontSize: 13, color: C.text }}>登記簿謄本 PDF をアップロード ( 土地 + 建物 )</b></div>
             <div style={stepBody}>
-              <label style={{
-                display: "block",
-                border: `2px dashed ${assessmentForm.legalDoc ? C.success : "#0ea5e966"}`,
-                borderRadius: 8, padding: 12, textAlign: "center",
-                color: assessmentForm.legalDoc ? C.success : "#0ea5e9",
-                fontSize: 11, background: assessmentForm.legalDoc ? C.success + "11" : "#0ea5e911",
-                cursor: assessmentForm.legalParsing ? "wait" : "pointer", fontWeight: 700,
-              }}>
-                {assessmentForm.legalParsing ? "⏳ 解析中..." :
-                  assessmentForm.legalDoc ? `✅ ${assessmentForm.legalDoc.fileName}` : "📎 タップして PDF を選択"}
-                <input type="file" accept="application/pdf" style={{ display: "none" }}
-                  onChange={e => { if (e.target.files[0]) handleLegalDocUpload(e.target.files[0]); e.target.value = ""; }} />
-              </label>
-              <div style={{ marginTop: 4, fontSize: 10 }}>面積 ・ 構造 ・ 築年数を自動抽出して Step 4 に反映します</div>
-              {assessmentForm.legalDoc && assessmentForm.legalDoc.fields && (
-                <div style={{ marginTop: 6, padding: 8, background: C.success + "11", borderRadius: 6, fontSize: 10, color: C.text }}>
-                  📊 <b>抽出結果</b>:
-                  {assessmentForm.legalDoc.fields.landArea && <> 土地: {assessmentForm.legalDoc.fields.landArea}㎡</>}
-                  {assessmentForm.legalDoc.fields.buildingArea && <> / 建物: {assessmentForm.legalDoc.fields.buildingArea}㎡</>}
-                  {assessmentForm.legalDoc.fields.builtYear && <> / 新築: {assessmentForm.legalDoc.fields.builtYear}年</>}
-                  {assessmentForm.legalDoc.fields.structure && <> / 構造: {assessmentForm.legalDoc.fields.structure}</>}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {/* 土地謄本 */}
+                <label style={{
+                  display: "block",
+                  border: `2px dashed ${assessmentForm.legalDocLand ? C.success : "#0ea5e966"}`,
+                  borderRadius: 8, padding: 10, textAlign: "center",
+                  color: assessmentForm.legalDocLand ? C.success : "#0ea5e9",
+                  fontSize: 10, background: assessmentForm.legalDocLand ? C.success + "11" : "#0ea5e911",
+                  cursor: assessmentForm.legalDocLandParsing ? "wait" : "pointer", fontWeight: 700,
+                }}>
+                  <div style={{ fontSize: 11, marginBottom: 4 }}>🏞 土地謄本</div>
+                  {assessmentForm.legalDocLandParsing ? "⏳ 解析中..." :
+                    assessmentForm.legalDocLand ? `✅ ${assessmentForm.legalDocLand.fileName}` : "📎 PDF選択"}
+                  <input type="file" accept="application/pdf" style={{ display: "none" }}
+                    onChange={e => { if (e.target.files[0]) handleLandDocUpload(e.target.files[0]); e.target.value = ""; }} />
+                </label>
+                {/* 建物謄本 */}
+                <label style={{
+                  display: "block",
+                  border: `2px dashed ${assessmentForm.legalDocBuilding ? C.success : "#0ea5e966"}`,
+                  borderRadius: 8, padding: 10, textAlign: "center",
+                  color: assessmentForm.legalDocBuilding ? C.success : "#0ea5e9",
+                  fontSize: 10, background: assessmentForm.legalDocBuilding ? C.success + "11" : "#0ea5e911",
+                  cursor: assessmentForm.legalDocBuildingParsing ? "wait" : "pointer", fontWeight: 700,
+                }}>
+                  <div style={{ fontSize: 11, marginBottom: 4 }}>🏠 建物謄本</div>
+                  {assessmentForm.legalDocBuildingParsing ? "⏳ 解析中..." :
+                    assessmentForm.legalDocBuilding ? `✅ ${assessmentForm.legalDocBuilding.fileName}` : "📎 PDF選択"}
+                  <input type="file" accept="application/pdf" style={{ display: "none" }}
+                    onChange={e => { if (e.target.files[0]) handleBuildingDocUpload(e.target.files[0]); e.target.value = ""; }} />
+                </label>
+              </div>
+              <div style={{ marginTop: 6, fontSize: 10 }}>土地謄本 → 地積、 建物謄本 → 床面積 ・ 構造 ・ 築年 を自動抽出して Step 4 に反映します</div>
+              {(assessmentForm.legalDocLand || assessmentForm.legalDocBuilding) && (
+                <div style={{ marginTop: 6, padding: 8, background: C.success + "11", borderRadius: 6, fontSize: 10, color: C.text, lineHeight: 1.6 }}>
+                  📊 <b>抽出結果</b>:<br />
+                  {assessmentForm.legalDocLand && assessmentForm.legalDocLand.fields && (
+                    <>🏞 土地謄本:{Object.entries(assessmentForm.legalDocLand.fields).map(([k, v]) => ` ${k}=${typeof v === 'object' ? '[配列]' : v}`).join(",") || " ( 抽出失敗 )"}<br /></>
+                  )}
+                  {assessmentForm.legalDocBuilding && assessmentForm.legalDocBuilding.fields && (
+                    <>🏠 建物謄本:{Object.entries(assessmentForm.legalDocBuilding.fields).filter(([k]) => k !== "floorAreas").map(([k, v]) => ` ${k}=${v}`).join(",") || " ( 抽出失敗 )"}</>
+                  )}
                 </div>
               )}
             </div>
