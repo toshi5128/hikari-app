@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.47-hearing-sheet";
+const APP_VERSION = "2026-06-08-v9.47.1-tokibo-colon-separator";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15237,8 +15237,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     const add = (v) => {
       if (v > 5 && v < 5000) cands.set(v, (cands.get(v) || 0) + 1);
     };
-    // 小数 ( 例: 152.30 )
-    [...raw.matchAll(/(\d{1,4})[.・・](\d{1,2})/g)].forEach(m => {
+    // 小数 ( 例: 152.30, 152:30, 152・30 ) — OCRはピリオドをコロンに読み違えやすい
+    [...raw.matchAll(/(\d{1,4})[.:;・・](\d{1,2})/g)].forEach(m => {
       add(parseFloat(m[1] + "." + m[2]));
     });
     // 空白区切り ( 例: 152 30 → 152.30 )
@@ -15291,22 +15291,29 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       });
       const fields = {};
       // 地積抽出: 複数パターンを順に試行
-      // パターン A: 「地積 ㎡ 152 30」 ( 空白区切り )
-      let m = raw.match(/地\s*積[^0-9]{0,80}(\d{1,5})\s+(\d{1,2})\s/);
+      // 区切り文字クラス: . : ; ・ ・ (OCR で揺れる )
+      // 「番」 が後ろに来る数字 ( 地番 ) は地積じゃない → (?!\s*番)
+      // パターン A: 「数字+区切り+数字」 が ㎡ や m² の近く ( 最も信頼度高 )
+      let m = raw.match(/(\d{1,5})[.:;・・](\d{1,2})\s*(?:m2|m²|㎡)/);
+      if (!m) m = raw.match(/(?:m2|m²|㎡)[\s\S]{0,40}?(\d{1,5})[.:;・・](\d{1,2})(?!\s*番)/);
+      if (!m) {
+        // パターン B: 「地積」 のあと200文字以内の「数字+区切り+数字」 ( 「番」 が後ろにない )
+        m = raw.match(/地\s*積[\s\S]{0,200}?(\d{1,5})[.:;・・](\d{1,2})(?!\s*番)/);
+      }
+      if (!m) {
+        // パターン C: 「地積 ㎡ ... 数字 数字」 ( 空白区切り )
+        m = raw.match(/地\s*積[\s\S]{0,200}?(\d{1,5})\s+(\d{1,2})(?=\s|$)(?!\s*番)/);
+      }
       if (m) {
-        fields.landArea = m[1] + "." + m[2];
-      } else {
-        // パターン B: 「地積 ... 152.30」 or 「地積 ... 152・30」
-        m = raw.match(/地\s*積[^0-9]{0,80}(\d{1,5}[.・・]\d{1,2})/);
-        if (m) {
-          fields.landArea = m[1].replace(/[・・]/g, ".");
-        } else {
-          // パターン C: 「地積」 ヘッダーの後の最初の数字 ( 整数 )
-          m = raw.match(/地\s*積[^0-9]{0,80}(\d{2,5})/);
-          if (m) {
-            const v = parseInt(m[1]);
-            if (v > 10 && v < 10000) fields.landArea = String(v);
-          }
+        const v = parseFloat(m[1] + "." + m[2]);
+        if (v > 10 && v < 10000) fields.landArea = m[1] + "." + m[2];
+      }
+      // 最終手段: 上記すべて失敗時、 raw から「番」 を伴わない「数字+区切り+数字」 を全部拾って 10〜5000 範囲を地積候補に
+      if (!fields.landArea) {
+        const allM = [...raw.matchAll(/(\d{1,5})[.:;・・](\d{1,2})(?!\s*番)/g)];
+        for (const mm of allM) {
+          const v = parseFloat(mm[1] + "." + mm[2]);
+          if (v > 30 && v < 5000) { fields.landArea = mm[1] + "." + mm[2]; break; }
         }
       }
       // 所在
@@ -15378,19 +15385,19 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         onProgress: (p) => setAssessmentForm(f => f.ocrProgress ? ({ ...f, ocrProgress: { ...f.ocrProgress, progress: p } }) : f),
       });
       const fields = {};
-      // 階別床面積 ( 「1階 65 84」 「2階 52 16」 のパターン )
+      // 階別床面積 ( 「1階 65 84」「1階 65.84」「1階 65:84」 のパターンに対応 )
       const floorAreas = [];
-      // パターン A: 「1階 65 84」 ( 空白区切り )
-      const floorAB = [...raw.matchAll(/([12345])\s*階[^0-9]{0,8}(\d{1,4})\s+(\d{1,2})(?=\s|$|[^0-9])/g)];
+      // 区切り = ピリオド / コロン / セミコロン / 中黒 を共通対応
+      const floorAB = [...raw.matchAll(/([12345])\s*階[^0-9]{0,8}(\d{1,4})[.:;・・](\d{1,2})/g)];
       floorAB.forEach(m => {
         const v = parseFloat(m[2] + "." + m[3]);
         if (v > 5 && v < 1000) floorAreas.push({ floor: m[1], area: v });
       });
-      // パターン B: 「1階 65.84」
+      // パターン B: 「1階 65 84」 ( 空白区切り )
       if (floorAreas.length === 0) {
-        const floorB = [...raw.matchAll(/([12345])\s*階[^0-9]{0,8}(\d{1,4}[.・・]\d{1,2})/g)];
+        const floorB = [...raw.matchAll(/([12345])\s*階[^0-9]{0,8}(\d{1,4})\s+(\d{1,2})(?=\s|$|[^0-9])/g)];
         floorB.forEach(m => {
-          const v = parseFloat(m[2].replace(/[・・]/g, "."));
+          const v = parseFloat(m[2] + "." + m[3]);
           if (v > 5 && v < 1000) floorAreas.push({ floor: m[1], area: v });
         });
       }
@@ -15399,13 +15406,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         fields.buildingArea = totalArea.toFixed(2);
         fields.floorAreas = floorAreas.map(fa => `${fa.floor}階 ${fa.area.toFixed(2)}㎡`).join(" / ");
       } else {
-        // 「床面積 ㎡ 118 00」 のような形
-        let m2 = raw.match(/床\s*面\s*積[^0-9]{0,40}(\d{1,4})\s+(\d{1,2})/);
+        // 「床面積 ㎡ 118:00」「118.00」「118 00」 のいずれにも対応
+        let m2 = raw.match(/床\s*面\s*積[\s\S]{0,80}?(\d{1,4})[.:;・・](\d{1,2})/);
         if (m2) {
           fields.buildingArea = m2[1] + "." + m2[2];
         } else {
-          m2 = raw.match(/床\s*面\s*積[^0-9]{0,40}(\d{1,4}[.・・]\d{1,2})/);
-          if (m2) fields.buildingArea = m2[1].replace(/[・・]/g, ".");
+          m2 = raw.match(/床\s*面\s*積[\s\S]{0,80}?(\d{1,4})\s+(\d{1,2})/);
+          if (m2) fields.buildingArea = m2[1] + "." + m2[2];
         }
       }
       // 新築年月日 - 最初に出てくる元号年を建築年とする
