@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.48.3-hikari-account-default";
+const APP_VERSION = "2026-06-08-v9.48.4-stamp-paid-checkbox";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -21049,6 +21049,8 @@ function SeisanFormPage({ onBack }) {
     // 印紙代
     stampForSeller: "500",
     stampForBuyer: "500",
+    stampPaidSeller: false,              // 🆕 v9.48.4: 売主分 印紙代 支払い済み
+    stampPaidBuyer: false,               // 🆕 v9.48.4: 買主分 印紙代 支払い済み
     // 振込先 ( ひかり )
     hikariBank: "埼玉信用組合", hikariBranch: "深谷支店", hikariKind: "普通",
     hikariAccountNo: "0436895", hikariAccountName: "ド)ヒカリフドウサン",
@@ -21151,9 +21153,15 @@ function SeisanFormPage({ onBack }) {
       if (depositApplied > 0) rows.push(["うち 手付金（契約時受領済）", depositApplied, "", "売買代金の内訳"]);
       if (buyerTax > 0) rows.push(["固定資産税・都市計画税 精算金（日割り）", buyerTax, "", "買主より受領"]);
       if (feeS > 0) rows.push(["仲介手数料", "", feeS, "ひかり不動産へお支払い"]);
-      if (stampS > 0) rows.push(["収入印紙代（売買契約書 売主保管分に貼付）", "", stampS, "ひかり不動産へ（立替分）"]);
+      if (stampS > 0) {
+        if (form.stampPaidSeller) {
+          rows.push(["収入印紙代（売買契約書 売主保管分に貼付）", "", 0, `✅ 支払い済み（${stampS.toLocaleString()}円 ・ 精算対象外）`]);
+        } else {
+          rows.push(["収入印紙代（売買契約書 売主保管分に貼付）", "", stampS, "ひかり不動産へ（立替分）"]);
+        }
+      }
       const recv = price + buyerTax;
-      const pay = feeS + stampS;
+      const pay = feeS + (form.stampPaidSeller ? 0 : stampS);
       rows.push(["小計", recv, pay]);
       rows.push(["差引　売主お手取り額", recv - pay, "", "（受取－支払 ・ 手付金分含む総額）"]);
       if (depositApplied > 0) rows.push(["うち 決済時受領額", recv - pay - depositApplied, "", "( 手付金 " + depositApplied.toLocaleString() + " 円は契約時既受領 )"]);
@@ -21192,7 +21200,11 @@ function SeisanFormPage({ onBack }) {
     if (depositApplied > 0) rows.push([`・手付金 ${depositApplied.toLocaleString()}円は売買契約時に売主様が受領済みのため、決済時の買主様お支払額は売買代金から手付金を控除した ${balancePayment.toLocaleString()}円となります。`]);
     else if (deposit > 0 && !form.depositPaid) rows.push([`・手付金 ${deposit.toLocaleString()}円は本決済日に売買代金と合わせてお支払いいただきます。`]);
     if (tax) rows.push([`・固定資産税・都市計画税は売主様が当年度分を全額納付済みのため、決済日を基準とした日割り精算とし、買主様のご負担額 ${tax.buyerAmount.toLocaleString()}円を売主様へお支払いいただきます。（年税額合計 ${tax.yearTax.toLocaleString()}円［固定資産税 ${tax.kotei.toLocaleString()}円 + 都市計画税 ${tax.toshi.toLocaleString()}円］ × ${tax.buyerDays}日 ÷ ${tax.yearDays}日）`]);
-    if (stampS > 0) rows.push([`・売買契約書は2通作成し、各通に収入印紙 ${stampS}円を貼付します（売主様・買主様 各自${stampS}円ご負担）。売主様分はひかり不動産が立替・貼付いたします。`]);
+    if (stampS > 0 || num(form.stampForBuyer) > 0) {
+      const sNote = form.stampPaidSeller ? `売主様分 ${stampS.toLocaleString()}円は支払い済み ( ひかり不動産にて立替・貼付完了 )` : `売主様分 ${stampS.toLocaleString()}円はひかり不動産が立替・貼付いたします`;
+      const bNote = form.stampPaidBuyer ? `買主様分 ${num(form.stampForBuyer).toLocaleString()}円は支払い済み` : `買主様分 ${num(form.stampForBuyer).toLocaleString()}円は買主様ご負担`;
+      rows.push([`・売買契約書は2通作成し、各通に収入印紙を貼付します。${sNote}。${bNote}。`]);
+    }
     if (form.notes) form.notes.split("\n").forEach(line => { if (line.trim()) rows.push(["・" + line]); });
 
     const ws = XLSX.utils.aoa_to_sheet(rows);
@@ -21331,14 +21343,46 @@ function SeisanFormPage({ onBack }) {
           </Field>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <Field label="印紙代 売主分 (円)">
-            <input style={inp} type="text" inputMode="numeric" value={form.stampForSeller}
-              onChange={e => set("stampForSeller", e.target.value)} placeholder="500" />
-          </Field>
-          <Field label="印紙代 買主分 (円)">
-            <input style={inp} type="text" inputMode="numeric" value={form.stampForBuyer}
-              onChange={e => set("stampForBuyer", e.target.value)} placeholder="500" />
-          </Field>
+          <div>
+            <Field label="印紙代 売主分 (円)">
+              <input style={inp} type="text" inputMode="numeric" value={form.stampForSeller}
+                onChange={e => set("stampForSeller", e.target.value)} placeholder="500" />
+            </Field>
+            {/* 🆕 v9.48.4: 売主分 支払い済み */}
+            <label style={{
+              display: "flex", alignItems: "center", gap: 6, marginTop: 4,
+              padding: 6, background: form.stampPaidSeller ? C.success + "22" : C.bg,
+              border: `1px solid ${form.stampPaidSeller ? C.success : C.borderDim}`,
+              borderRadius: 6, cursor: "pointer", fontSize: 11,
+            }}>
+              <input type="checkbox" checked={form.stampPaidSeller}
+                onChange={e => set("stampPaidSeller", e.target.checked)}
+                style={{ width: 16, height: 16, cursor: "pointer" }} />
+              <span style={{ color: form.stampPaidSeller ? C.success : C.text, fontWeight: form.stampPaidSeller ? 700 : 400 }}>
+                {form.stampPaidSeller ? "✅ 支払い済み" : "☐ 支払い済み"}
+              </span>
+            </label>
+          </div>
+          <div>
+            <Field label="印紙代 買主分 (円)">
+              <input style={inp} type="text" inputMode="numeric" value={form.stampForBuyer}
+                onChange={e => set("stampForBuyer", e.target.value)} placeholder="500" />
+            </Field>
+            {/* 🆕 v9.48.4: 買主分 支払い済み */}
+            <label style={{
+              display: "flex", alignItems: "center", gap: 6, marginTop: 4,
+              padding: 6, background: form.stampPaidBuyer ? C.success + "22" : C.bg,
+              border: `1px solid ${form.stampPaidBuyer ? C.success : C.borderDim}`,
+              borderRadius: 6, cursor: "pointer", fontSize: 11,
+            }}>
+              <input type="checkbox" checked={form.stampPaidBuyer}
+                onChange={e => set("stampPaidBuyer", e.target.checked)}
+                style={{ width: 16, height: 16, cursor: "pointer" }} />
+              <span style={{ color: form.stampPaidBuyer ? C.success : C.text, fontWeight: form.stampPaidBuyer ? 700 : 400 }}>
+                {form.stampPaidBuyer ? "✅ 支払い済み" : "☐ 支払い済み"}
+              </span>
+            </label>
+          </div>
         </div>
       </div>
 
