@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.46.10-gemini-vision-for-tokibo";
+const APP_VERSION = "2026-06-08-v9.47-hearing-sheet";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13463,6 +13463,10 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   // 🆕 v9.46: 査定書作成モーダル
   const [assessmentTarget, setAssessmentTarget] = useState(null); // { item } または null
   const [assessmentForm, setAssessmentForm] = useState(null); // { buyPrice, demolishUnit, ... }
+  // 🆕 v9.47: 初回面談 調査書 モーダル
+  const [hearingTarget, setHearingTarget] = useState(null);
+  const [hearingForm, setHearingForm] = useState(null);
+  const [hearingOpenSecs, setHearingOpenSecs] = useState({ 1: true, 2: true }); // section 開閉
   const [quickFilter, setQuickFilter] = useState(null); // "overdue" | "dm_un" | "hot" | null
   const [histForm, setHistForm] = useState({ date: today, method: "電話", note: "", member: MEMBERS[0] });
   // 訪問結果記録モード
@@ -14993,6 +14997,113 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     } else {
       alert(`✅ 完了！\n成功: ${success}件 / 失敗: ${failed}件`);
     }
+  };
+
+  // 🆕 v9.47: 初回面談 調査書 モーダルを開く ( 既存データがあればロード )
+  const openHearing = (item) => {
+    if (!item) return;
+    const j = item.raw || {};
+    const existing = j.hearing || {};
+    setHearingTarget({ item });
+    setHearingForm({
+      // 1. 面談基本
+      meetingDate: existing.meetingDate || new Date().toISOString().slice(0, 10),
+      propType: existing.propType || "",  // 売地/売り戸建/売り区分/売り収益/その他
+      // 2. 物件情報
+      addressBan: existing.addressBan || j.address || "",
+      addressJukyo: existing.addressJukyo || "",
+      floor1: existing.floor1 || "",
+      floor2: existing.floor2 || "",
+      floor3: existing.floor3 || "",
+      zochiku: existing.zochiku || "",       // 有/無
+      genchiku: existing.genchiku || "",     // 有/無
+      builtY: existing.builtY || "",
+      builtM: existing.builtM || "",
+      builtD: existing.builtD || "",
+      pastBuilding: existing.pastBuilding || "",  // 有/無
+      structure: existing.structure || "",   // 木造/軽量鉄骨/鉄骨/RC/SRC
+      roof: existing.roof || "",             // スレート葺/瓦葺/その他
+      floors: existing.floors || "",         // 平家/2階建て/3階建て
+      lands: existing.lands || [{ ban: "", area: "", chimoku: "" }],
+      // 3. 税金
+      hasTaxNotice: existing.hasTaxNotice || "",
+      taxYear: existing.taxYear || "",
+      yearTax: existing.yearTax || "",
+      taxDelin: existing.taxDelin || "",
+      taxDelinAmount: existing.taxDelinAmount || "",
+      buildingTaxes: existing.buildingTaxes || [{ amount: "", kaoku: "" }],
+      landTaxes: existing.landTaxes || [{ amount: "" }],
+      // 4. 所有者
+      relation: existing.relation || "",      // 本人/父/母/兄/弟/姉/妹/妻/子/その他
+      hasIdDoc: existing.hasIdDoc || "",      // 有/無
+      idDocType: existing.idDocType || "",    // 運転免許証/保険証/その他
+      hasKenriShou: existing.hasKenriShou || "",
+      moveHistory: existing.moveHistory || "", // なし/1回/2回以上
+      // 5. ローン
+      hasLoan: existing.hasLoan || "",
+      loanBalance: existing.loanBalance || "",
+      loanDate: existing.loanDate || "",
+      loanDelin: existing.loanDelin || "",
+      bank: existing.bank || "",
+      branch: existing.branch || "",
+      // 6. 物件詳細
+      hasFloorPlan: existing.hasFloorPlan || "",
+      reformHistory: existing.reformHistory || "",
+      reformNeeded: existing.reformNeeded || "",
+      defects: existing.defects || "",
+      neighborTrouble: existing.neighborTrouble || "",
+      neighborBad: existing.neighborBad || "",
+      pastIncidents: existing.pastIncidents || "",
+      // 7. ライフライン
+      electricity: existing.electricity || "",
+      water: existing.water || "",
+      sewerage: existing.sewerage || "",
+      jokaso: existing.jokaso || "",
+      gas: existing.gas || "",
+      // 8. 周辺・残置物
+      jichikaiFee: existing.jichikaiFee || "",
+      gomiLoc: existing.gomiLoc || "",
+      residuals: existing.residuals || [],  // ["エアコン", "照明器具", ...]
+      schoolElem: existing.schoolElem || "",
+      schoolMid: existing.schoolMid || "",
+      // 9. 意向
+      sellReasons: existing.sellReasons || [],   // 複数選択
+      foundReason: existing.foundReason || "",
+      foundDetail: existing.foundDetail || "",
+      whyUs: existing.whyUs || "",
+      otherCompany: existing.otherCompany || "",
+      intention: existing.intention || "",    // 売主意向 ( 5択 )
+      // 10. 連絡先
+      contactPostal: existing.contactPostal || "",
+      contactAddress: existing.contactAddress || j.ownerAddress || "",
+      contactName: existing.contactName || j.ownerName || "",
+      contactKana: existing.contactKana || "",
+      contactPhone: existing.contactPhone || j.ownerPhone || "",
+      contactEmail: existing.contactEmail || "",
+    });
+    setHearingOpenSecs({ 1: true, 2: true });
+  };
+
+  // 🆕 v9.47: 初回面談 調査書を保存
+  const saveHearing = () => {
+    if (!hearingTarget || !hearingForm) return;
+    const itemRaw = hearingTarget.item.raw;
+    const itemType = hearingTarget.item.type;  // jiage / owner / sekisan etc
+    if (!itemRaw || !itemRaw.id) { alert("対象アイテムが特定できません"); return; }
+    const now = Date.now();
+    const updatedHearing = { ...hearingForm, savedAt: now, savedBy: currentUser || "" };
+    setData(d => {
+      const next = { ...d };
+      const collection = itemType === "owner" ? "owners" : "jiage";
+      const list = (next[collection] || []).map(x =>
+        x.id === itemRaw.id ? { ...x, hearing: updatedHearing } : x
+      );
+      next[collection] = list;
+      return appendLogAndNotify(next, "hearing", collection, `${itemRaw.address || ""} 初回面談調査書を保存`, itemRaw);
+    });
+    alert("✅ 初回面談 調査書 を保存しました");
+    setHearingTarget(null);
+    setHearingForm(null);
   };
 
   // 🆕 v9.46: 査定書作成モーダルを開く
@@ -17925,6 +18036,22 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 ピン情報・諸費用計算から査定書を自動生成 ( 新タブで表示・印刷OK )
               </div>
             </div>
+
+            {/* 🆕 v9.47: 初回面談 調査書ボタン */}
+            <div style={{ position: "relative", marginTop: 14 }}>
+              <span style={{
+                position: "absolute", top: -6, right: -6, background: "#dc2626",
+                color: "#fff", fontSize: 9, fontWeight: 800, padding: "2px 6px",
+                borderRadius: 10, zIndex: 1,
+              }}>NEW</span>
+              <button onClick={() => openHearing(selected.item)} style={{
+                width: "100%", padding: "13px", background: "#a855f722", border: "1px solid #a855f766",
+                color: "#a855f7", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+              }}>📋 初回面談 調査書 {selected.item.raw && selected.item.raw.hearing ? "( ✅ 保存済 )" : "を作成する"}</button>
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                物件情報・所有者意向をタップ入力 → ピンに保存 + 査定書に自動反映
+              </div>
+            </div>
           </div>
 
           {/* 編集・削除（誰でも可） */}
@@ -18285,6 +18412,437 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               onClick={() => generateAndOpenAssessment(assessmentForm)}>📄 査定書を表示</button>
           </div>
         </BottomSheet>
+        );
+      })()}
+
+      {/* 🆕 v9.47: 初回面談 調査書 モーダル */}
+      {hearingTarget && hearingForm && (() => {
+        const hf = hearingForm;
+        const set = (key, val) => setHearingForm(f => ({ ...f, [key]: val }));
+        const toggleArr = (key, val) => setHearingForm(f => {
+          const arr = f[key] || [];
+          const has = arr.includes(val);
+          return { ...f, [key]: has ? arr.filter(v => v !== val) : [...arr, val] };
+        });
+        const toggleSec = (n) => setHearingOpenSecs(s => ({ ...s, [n]: !s[n] }));
+        const isOpen = (n) => !!hearingOpenSecs[n];
+        const purple = "#a855f7";
+
+        // セクションヘッダ
+        const SecHead = ({ num, title, badge }) => (
+          <div onClick={() => toggleSec(num)} style={{
+            padding: "11px 14px", cursor: "pointer", display: "flex",
+            justifyContent: "space-between", alignItems: "center",
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
+              <span style={{
+                display: "inline-block", width: 20, height: 20, borderRadius: 10,
+                background: isOpen(num) ? purple : C.borderDim, color: "#fff",
+                textAlign: "center", fontSize: 11, lineHeight: "20px", marginRight: 6, fontWeight: 800,
+              }}>{num}</span>
+              {title}
+              {badge && <span style={{
+                marginLeft: 6, fontSize: 9, background: C.success, color: "#fff",
+                padding: "1px 5px", borderRadius: 7, fontWeight: 800,
+              }}>{badge}</span>}
+            </div>
+            <div style={{ color: C.muted, fontSize: 12 }}>{isOpen(num) ? "▼" : "▶"}</div>
+          </div>
+        );
+
+        // セクションラッパー
+        const Sec = ({ num, title, badge, children }) => (
+          <div style={{
+            background: C.cardBg, borderRadius: 10, marginBottom: 8, overflow: "hidden",
+            borderLeft: `3px solid ${isOpen(num) ? purple : C.borderDim}`,
+          }}>
+            <SecHead num={num} title={title} badge={badge} />
+            {isOpen(num) && <div style={{ padding: "4px 14px 14px", fontSize: 11 }}>{children}</div>}
+          </div>
+        );
+
+        // ラジオ チップ
+        const Radio = ({ field, val, label }) => (
+          <span onClick={() => set(field, val)} style={{
+            padding: "5px 11px", background: hf[field] === val ? purple : C.bg,
+            border: `1px solid ${hf[field] === val ? purple : C.borderDim}`,
+            color: hf[field] === val ? "#fff" : C.text,
+            borderRadius: 14, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+            fontWeight: hf[field] === val ? 700 : 400, marginRight: 4, marginBottom: 4,
+            display: "inline-block",
+          }}>{label}</span>
+        );
+
+        // チェック チップ ( 複数選択 )
+        const Check = ({ field, val, label }) => {
+          const checked = (hf[field] || []).includes(val);
+          return (
+            <span onClick={() => toggleArr(field, val)} style={{
+              padding: "5px 11px", background: checked ? purple : C.bg,
+              border: `1px solid ${checked ? purple : C.borderDim}`,
+              color: checked ? "#fff" : C.text,
+              borderRadius: 14, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+              fontWeight: checked ? 700 : 400, marginRight: 4, marginBottom: 4,
+              display: "inline-block",
+            }}>{checked ? "✓ " : ""}{label}</span>
+          );
+        };
+
+        const ItemAddr = hearingTarget.item.raw ? (hearingTarget.item.raw.address || "( 住所未設定 )") : "";
+
+        return (
+          <BottomSheet title="📋 初回面談 調査書" onClose={() => { setHearingTarget(null); setHearingForm(null); }}>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+              <b style={{ color: C.text }}>{ItemAddr}</b><br />
+              担当: {(hearingTarget.item.raw && hearingTarget.item.raw.assignee) || "—"}
+            </div>
+
+            <div style={{ background: purple + "11", border: `1px solid ${purple}33`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: C.text, lineHeight: 1.7 }}>
+              💡 セクションをタップで開閉。 入力情報は <b>ピンに保存</b> されて、 <b>査定書作成時に自動反映</b> されます。
+            </div>
+
+            {/* ① 面談基本 */}
+            <Sec num={1} title="面談基本">
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, fontWeight: 700 }}>面談日</div>
+                <input style={inp} type="date" value={hf.meetingDate} onChange={e => set("meetingDate", e.target.value)} />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, fontWeight: 700 }}>種類</div>
+                <div>
+                  <Radio field="propType" val="売地" label="売地" />
+                  <Radio field="propType" val="売り戸建" label="売り戸建" />
+                  <Radio field="propType" val="売り区分" label="売り区分" />
+                  <Radio field="propType" val="売り収益" label="売り収益" />
+                  <Radio field="propType" val="その他" label="その他" />
+                </div>
+              </div>
+            </Sec>
+
+            {/* ② 物件情報 */}
+            <Sec num={2} title="物件情報" badge="謄本連携">
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>所在地番</div>
+                <input style={inp} value={hf.addressBan} onChange={e => set("addressBan", e.target.value)} />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>所在住居表示</div>
+                <input style={inp} value={hf.addressJukyo} onChange={e => set("addressJukyo", e.target.value)} placeholder="( 同上の場合は空欄 )" />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>建物床面積 ( ㎡ )</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                  <input style={inp} placeholder="1階" value={hf.floor1} onChange={e => set("floor1", e.target.value)} />
+                  <input style={inp} placeholder="2階" value={hf.floor2} onChange={e => set("floor2", e.target.value)} />
+                  <input style={inp} placeholder="3階" value={hf.floor3} onChange={e => set("floor3", e.target.value)} />
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>増築</div>
+                  <Radio field="zochiku" val="有り" label="有り" />
+                  <Radio field="zochiku" val="無し" label="無し" />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>減築</div>
+                  <Radio field="genchiku" val="有り" label="有り" />
+                  <Radio field="genchiku" val="無し" label="無し" />
+                </div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>新築年月日</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                  <input style={inp} placeholder="年" value={hf.builtY} onChange={e => set("builtY", e.target.value)} />
+                  <input style={inp} placeholder="月" value={hf.builtM} onChange={e => set("builtM", e.target.value)} />
+                  <input style={inp} placeholder="日" value={hf.builtD} onChange={e => set("builtD", e.target.value)} />
+                </div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>過去建物 ( 滅失登記 )</div>
+                <Radio field="pastBuilding" val="有り" label="有り" />
+                <Radio field="pastBuilding" val="無し" label="無し" />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>構造</div>
+                <Radio field="structure" val="木造" label="木造" />
+                <Radio field="structure" val="軽量鉄骨" label="軽量鉄骨" />
+                <Radio field="structure" val="鉄骨" label="鉄骨" />
+                <Radio field="structure" val="RC" label="RC" />
+                <Radio field="structure" val="SRC" label="SRC" />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>屋根</div>
+                <Radio field="roof" val="スレート葺" label="スレート葺" />
+                <Radio field="roof" val="瓦葺" label="瓦葺" />
+                <Radio field="roof" val="その他" label="その他" />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>階数</div>
+                <Radio field="floors" val="平家" label="平家" />
+                <Radio field="floors" val="2階建て" label="2階建て" />
+                <Radio field="floors" val="3階建て" label="3階建て" />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>地積 ( 登記簿 ・ 最大5筆 + 地目 )</div>
+                {(hf.lands || []).map((l, idx) => (
+                  <div key={idx} style={{ display: "grid", gridTemplateColumns: "24px 1fr 1fr 1fr 28px", gap: 4, marginBottom: 4, alignItems: "center" }}>
+                    <div style={{ color: C.muted, textAlign: "center", fontSize: 10 }}>{["①","②","③","④","⑤"][idx]}</div>
+                    <input style={inp} placeholder="番" value={l.ban} onChange={e => {
+                      const lands = [...hf.lands]; lands[idx] = { ...lands[idx], ban: e.target.value }; set("lands", lands);
+                    }} />
+                    <input style={inp} placeholder="㎡" value={l.area} onChange={e => {
+                      const lands = [...hf.lands]; lands[idx] = { ...lands[idx], area: e.target.value }; set("lands", lands);
+                    }} />
+                    <input style={inp} placeholder="地目" value={l.chimoku} onChange={e => {
+                      const lands = [...hf.lands]; lands[idx] = { ...lands[idx], chimoku: e.target.value }; set("lands", lands);
+                    }} />
+                    <button style={{ background: "transparent", border: "none", color: C.danger, fontSize: 14, cursor: "pointer" }}
+                      onClick={() => set("lands", hf.lands.filter((_, i) => i !== idx))}>×</button>
+                  </div>
+                ))}
+                {(hf.lands || []).length < 5 && (
+                  <button style={{
+                    background: "transparent", border: `1px dashed ${purple}66`, color: purple,
+                    padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "inherit",
+                  }} onClick={() => set("lands", [...(hf.lands || []), { ban: "", area: "", chimoku: "" }])}>
+                    ＋ 筆を追加
+                  </button>
+                )}
+              </div>
+            </Sec>
+
+            {/* ③ 税金 */}
+            <Sec num={3} title="税金 ・ 固定資産税">
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>固定資産税通知書</div>
+                <Radio field="hasTaxNotice" val="有" label="有" />
+                <Radio field="hasTaxNotice" val="無" label="無" />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>令和 X 年度</div>
+                <input style={inp} value={hf.taxYear} onChange={e => set("taxYear", e.target.value)} placeholder="例: 6" />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>年間税額 (円)</div>
+                <input style={inp} value={hf.yearTax} onChange={e => set("yearTax", e.target.value)} />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>滞納</div>
+                <Radio field="taxDelin" val="有" label="有" />
+                <Radio field="taxDelin" val="無" label="無" />
+                {hf.taxDelin === "有" && <input style={{ ...inp, marginTop: 4 }} value={hf.taxDelinAmount} onChange={e => set("taxDelinAmount", e.target.value)} placeholder="滞納額 ( 円 )" />}
+              </div>
+            </Sec>
+
+            {/* ④ 所有者 */}
+            <Sec num={4} title="所有者 ・ 本人確認 ・ 引越履歴">
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>相談者と所有者の関係</div>
+                {["本人","父","母","兄","弟","姉","妹","妻","子","その他"].map(v => <Radio key={v} field="relation" val={v} label={v} />)}
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>本人確認書類</div>
+                <Radio field="hasIdDoc" val="有" label="有" />
+                <Radio field="hasIdDoc" val="無" label="無" />
+                {hf.hasIdDoc === "有" && (
+                  <div style={{ marginTop: 4 }}>
+                    <Radio field="idDocType" val="運転免許証" label="運転免許証" />
+                    <Radio field="idDocType" val="保険証" label="保険証" />
+                    <Radio field="idDocType" val="その他" label="その他" />
+                  </div>
+                )}
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>権利証</div>
+                <Radio field="hasKenriShou" val="有" label="有" />
+                <Radio field="hasKenriShou" val="無" label="無" />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>登記住所からの引越履歴</div>
+                <Radio field="moveHistory" val="なし" label="なし" />
+                <Radio field="moveHistory" val="1回引っ越し" label="1回引越" />
+                <Radio field="moveHistory" val="2回以上引っ越し" label="2回以上" />
+              </div>
+            </Sec>
+
+            {/* ⑤ ローン */}
+            <Sec num={5} title="ローン情報">
+              <div style={{ marginBottom: 8 }}>
+                <Radio field="hasLoan" val="有" label="残高 有" />
+                <Radio field="hasLoan" val="無" label="残高 無" />
+              </div>
+              {hf.hasLoan === "有" && (
+                <>
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>残債 ・ 確認日</div>
+                    <input style={inp} placeholder="残債金額 ( 円 )" value={hf.loanBalance} onChange={e => set("loanBalance", e.target.value)} />
+                    <input style={{ ...inp, marginTop: 4 }} type="date" value={hf.loanDate} onChange={e => set("loanDate", e.target.value)} />
+                  </div>
+                  <div style={{ marginBottom: 8 }}>
+                    <Radio field="loanDelin" val="有" label="滞納 有" />
+                    <Radio field="loanDelin" val="無" label="滞納 無" />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <input style={inp} placeholder="銀行" value={hf.bank} onChange={e => set("bank", e.target.value)} />
+                    <input style={inp} placeholder="支店" value={hf.branch} onChange={e => set("branch", e.target.value)} />
+                  </div>
+                </>
+              )}
+            </Sec>
+
+            {/* ⑥ 物件詳細 */}
+            <Sec num={6} title="物件詳細 ・ リフォーム ・ 近隣">
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>建築図面 ・ 間取り</div>
+                <Radio field="hasFloorPlan" val="有" label="有" />
+                <Radio field="hasFloorPlan" val="無" label="無" />
+              </div>
+              {[
+                ["reformHistory", "リフォーム履歴"],
+                ["reformNeeded", "リフォーム必須事項"],
+                ["defects", "使用上の故障や不具合"],
+                ["neighborTrouble", "近隣との申し合わせ・瑕疵・トラブル ( 境界・越境 )"],
+                ["neighborBad", "近隣の嫌悪施設 ( 鉄塔・線路・国道・墓 等 )"],
+                ["pastIncidents", "過去の事件・事故・自殺・死亡履歴"],
+              ].map(([f, label]) => (
+                <div key={f} style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>{label}</div>
+                  <textarea style={{ ...inp, height: 50, resize: "vertical" }} value={hf[f]} onChange={e => set(f, e.target.value)} />
+                </div>
+              ))}
+            </Sec>
+
+            {/* ⑦ ライフライン */}
+            <Sec num={7} title="ライフライン ( 電気・水道・ガス )">
+              {[
+                ["electricity", "電気"],
+                ["water", "上水道"],
+                ["sewerage", "下水道"],
+                ["jokaso", "浄化槽"],
+                ["gas", "ガス"],
+              ].map(([f, label]) => (
+                <div key={f} style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>{label}</div>
+                  <input style={inp} value={hf[f]} onChange={e => set(f, e.target.value)} placeholder={label === "電気" ? "東京電力 / 売却中契約継続 可能" : ""} />
+                </div>
+              ))}
+            </Sec>
+
+            {/* ⑧ 周辺 ・ 残置物 */}
+            <Sec num={8} title="周辺 ・ 残置物 ・ 学区">
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>自治会費 ( 年額・円 )</div>
+                <input style={inp} value={hf.jichikaiFee} onChange={e => set("jichikaiFee", e.target.value)} />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>ゴミ集積場 ・ 袋指定</div>
+                <textarea style={{ ...inp, height: 50, resize: "vertical" }} value={hf.gomiLoc} onChange={e => set("gomiLoc", e.target.value)} />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>残置物 ( 撤去対象 )</div>
+                <Check field="residuals" val="エアコン" label="エアコン" />
+                <Check field="residuals" val="照明器具" label="照明器具" />
+                <Check field="residuals" val="カーテン" label="カーテン" />
+                <Check field="residuals" val="遺灰・仏壇" label="遺灰・仏壇" />
+                <Check field="residuals" val="家具" label="家具" />
+                <Check field="residuals" val="家電" label="家電" />
+                <Check field="residuals" val="その他" label="その他" />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>学区</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <input style={inp} placeholder="小学校" value={hf.schoolElem} onChange={e => set("schoolElem", e.target.value)} />
+                  <input style={inp} placeholder="中学校" value={hf.schoolMid} onChange={e => set("schoolMid", e.target.value)} />
+                </div>
+              </div>
+            </Sec>
+
+            {/* ⑨ 意向 */}
+            <Sec num={9} title="売却意向" badge="査定書反映">
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>① 売却のきっかけ ( 複数選択可 )</div>
+                {["相続","離婚","住み替え","資産処分","ローン返済厳しい","入寮","その他"].map(v => <Check key={v} field="sellReasons" val={v} label={v} />)}
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>② 知ったきっかけ</div>
+                <Radio field="foundReason" val="ポスティングちらし" label="ポスティング" />
+                <Radio field="foundReason" val="紹介" label="紹介" />
+                <Radio field="foundReason" val="インターネット" label="ネット" />
+                <Radio field="foundReason" val="物件看板" label="看板" />
+                <Radio field="foundReason" val="その他" label="その他" />
+                <input style={{ ...inp, marginTop: 4 }} placeholder="紹介者様名 / サイト名 / 詳細" value={hf.foundDetail} onChange={e => set("foundDetail", e.target.value)} />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>③ 当社に連絡くださった理由</div>
+                <textarea style={{ ...inp, height: 50, resize: "vertical" }} value={hf.whyUs} onChange={e => set("whyUs", e.target.value)} />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>④ 他社にも依頼 / 理由</div>
+                <textarea style={{ ...inp, height: 50, resize: "vertical" }} value={hf.otherCompany} onChange={e => set("otherCompany", e.target.value)} />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>⑤ 売主様のご意向 ( 最も近いものを選択 )</div>
+                {[
+                  ["safe_early", "安くてもいいので早く手放したい", "→ 即仕入買取プラン 中心"],
+                  ["high_long", "時間が掛かっても高く売りたい", "→ 仲介売却プラン 中心"],
+                  ["no_minus", "マイナスにならないように ( 撤去 ・ 解体費含む )", "→ 仕入買取 ( 諸費用0 ) を強調"],
+                  ["rent", "賃貸 / 空き家管理を希望", "→ プラン C ( 賃貸運用 ) 中心"],
+                  ["other", "その他", ""],
+                ].map(([v, label, desc]) => (
+                  <div key={v} onClick={() => set("intention", v)} style={{
+                    background: hf.intention === v ? purple + "33" : C.bg,
+                    border: `1px solid ${hf.intention === v ? purple : C.borderDim}`,
+                    padding: 10, borderRadius: 6, marginBottom: 4, cursor: "pointer", fontSize: 11,
+                  }}>
+                    <b>{hf.intention === v ? "☑" : "□"} {label}</b>
+                    {desc && <div style={{ fontSize: 10, color: C.accent, marginTop: 4 }}>{desc}</div>}
+                  </div>
+                ))}
+              </div>
+            </Sec>
+
+            {/* ⑩ 連絡先 */}
+            <Sec num={10} title="今後のご連絡先">
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>郵便番号</div>
+                <input style={inp} value={hf.contactPostal} onChange={e => set("contactPostal", e.target.value)} placeholder="000-0000" />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>住所</div>
+                <input style={inp} value={hf.contactAddress} onChange={e => set("contactAddress", e.target.value)} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>氏名</div>
+                  <input style={inp} value={hf.contactName} onChange={e => set("contactName", e.target.value)} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>ふりがな</div>
+                  <input style={inp} value={hf.contactKana} onChange={e => set("contactKana", e.target.value)} />
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>携帯番号</div>
+                  <input style={inp} value={hf.contactPhone} onChange={e => set("contactPhone", e.target.value)} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>メール</div>
+                  <input style={inp} value={hf.contactEmail} onChange={e => set("contactEmail", e.target.value)} />
+                </div>
+              </div>
+            </Sec>
+
+            {/* フッター */}
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.borderDim}`, display: "flex", flexDirection: "column", gap: 6 }}>
+              <button style={{
+                ...btnStyle(), padding: 12, fontSize: 14, fontWeight: 700,
+                background: purple, borderColor: purple,
+              }} onClick={saveHearing}>💾 調査書を保存 ( ピンに紐づけ )</button>
+              <button style={{ ...btnStyle("ghost"), padding: 10, fontSize: 12 }}
+                onClick={() => { setHearingTarget(null); setHearingForm(null); }}>キャンセル</button>
+            </div>
+          </BottomSheet>
         );
       })()}
 
