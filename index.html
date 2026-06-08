@@ -150,7 +150,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.47.4-fix-floor-area-regex";
+const APP_VERSION = "2026-06-08-v9.47.5-normalize-raw-text";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15205,6 +15205,22 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     return raw;
   };
 
+  // 🆕 v9.47.5: 法務局PDF用 raw テキスト正規化 ( 区切り文字 ・ 全角半角 ・ 空白 を統一 )
+  const normalizeTokiboText = (raw) => {
+    if (!raw) return "";
+    return raw
+      // 区切り文字を全て「.」 に統一 ( 全角コロン ・ 半角コロン ・ セミコロン ・ 中黒 )
+      .replace(/[：﹕:;・・]/g, ".")
+      // 全角数字 → 半角数字
+      .replace(/[0-9]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+      // ㎡ 表記の統一
+      .replace(/m\s*²|m²|平\s*方\s*メートル|平\s*米/g, "㎡")
+      // 連続する区切り「..」 や 「.」 が複数 → 1つに
+      .replace(/\.{2,}/g, ".")
+      // 連続スペース → 1つに
+      .replace(/[\s　]+/g, " ");
+  };
+
   // 🆕 v9.47.2: 周辺施設を Overpass API で自動取得 ( 半径 1km )
   const fetchPois = async (lat, lng) => {
     if (!lat || !lng) return [];
@@ -15345,8 +15361,12 @@ out body 30;`;
       if (e.contexts.length < 2) e.contexts.push(ctx);
       cands.set(v, e);
     };
-    // 小数 ( ピリオド ・ 半角コロン ・ 全角コロン ・ セミコロン ・ 中黒 区切り )
-    for (const m of raw.matchAll(/(\d{1,4})[.:;・・：﹕](\d{1,2})/g)) {
+    // 🆕 v9.47.5: raw は正規化済 ( 区切りは全部「.」 ) なのでシンプルに
+    for (const m of raw.matchAll(/(\d{1,4})\.(\d{1,2})/g)) {
+      addWithCtx(parseFloat(m[1] + "." + m[2]), m[0], m.index);
+    }
+    // 旧表記の raw が来た場合の保険
+    for (const m of raw.matchAll(/(\d{1,4})[:;・・：﹕](\d{1,2})/g)) {
       addWithCtx(parseFloat(m[1] + "." + m[2]), m[0], m.index);
     }
     // 空白区切り ( 例: 152 30 )
@@ -15392,27 +15412,26 @@ out body 30;`;
       }
     }
     try {
-      const raw = await extractPdfText(file, {
+      const rawOrig = await extractPdfText(file, {
         onOcrStart: (totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "land", page: 1, totalPages, progress: 0 } })),
         onPageStart: (page, totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "land", page, totalPages, progress: 0 } })),
         onProgress: (p) => setAssessmentForm(f => f.ocrProgress ? ({ ...f, ocrProgress: { ...f.ocrProgress, progress: p } }) : f),
       });
+      // 🆕 v9.47.5: raw テキストを正規化 ( 区切り統一 ・ 全角→半角 )
+      const raw = normalizeTokiboText(rawOrig);
       const fields = {};
-      // 地積抽出: 複数パターンを順に試行 ( v9.47.4: 全角コロン ： も対応 )
-      let m = raw.match(/(\d{1,5})[.:;・・：﹕](\d{1,2})\s*(?:m2|m²|㎡)/);
-      if (!m) m = raw.match(/(?:m2|m²|㎡)[\s\S]{0,40}?(\d{1,5})[.:;・・：﹕](\d{1,2})(?!\s*番)/);
-      if (!m) {
-        m = raw.match(/地\s*積[\s\S]{0,200}?(\d{1,5})[.:;・・：﹕](\d{1,2})(?!\s*番)/);
-      }
-      if (!m) {
-        m = raw.match(/地\s*積[\s\S]{0,200}?(\d{1,5})\s+(\d{1,2})(?=\s|$)(?!\s*番)/);
-      }
+      // 🆕 v9.47.5: raw は正規化済 ( 区切りは全部「.」 )
+      console.log("[土地謄本 v9.47.5 正規化後 head]", raw.slice(0, 500));
+      let m = raw.match(/(\d{1,5})\.(\d{1,2})\s*㎡/);
+      if (!m) m = raw.match(/㎡[\s\S]{0,40}?(\d{1,5})\.(\d{1,2})(?!\s*番)/);
+      if (!m) m = raw.match(/地\s*積[\s\S]{0,200}?(\d{1,5})\.(\d{1,2})(?!\s*番)/);
+      if (!m) m = raw.match(/地\s*積[\s\S]{0,200}?(\d{1,5})\s+(\d{1,2})(?=\s|$)(?!\s*番)/);
       if (m) {
         const v = parseFloat(m[1] + "." + m[2]);
         if (v > 10 && v < 10000) fields.landArea = m[1] + "." + m[2];
       }
       if (!fields.landArea) {
-        const allM = [...raw.matchAll(/(\d{1,5})[.:;・・：﹕](\d{1,2})(?!\s*番)/g)];
+        const allM = [...raw.matchAll(/(\d{1,5})\.(\d{1,2})(?!\s*番)/g)];
         for (const mm of allM) {
           const v = parseFloat(mm[1] + "." + mm[2]);
           if (v > 30 && v < 5000) { fields.landArea = mm[1] + "." + mm[2]; break; }
@@ -15482,37 +15501,47 @@ out body 30;`;
       }
     }
     try {
-      const raw = await extractPdfText(file, {
+      const rawOrig = await extractPdfText(file, {
         onOcrStart: (totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "building", page: 1, totalPages, progress: 0 } })),
         onPageStart: (page, totalPages) => setAssessmentForm(f => ({ ...f, ocrProgress: { which: "building", page, totalPages, progress: 0 } })),
         onProgress: (p) => setAssessmentForm(f => f.ocrProgress ? ({ ...f, ocrProgress: { ...f.ocrProgress, progress: p } }) : f),
       });
+      // 🆕 v9.47.5: raw を正規化 ( ：→. / 全角→半角 / ㎡統一 / 連続空白→1つ )
+      const raw = normalizeTokiboText(rawOrig);
+      console.log("[建物謄本 v9.47.5 正規化後 head]", raw.slice(0, 500));
       const fields = {};
-      // 階別床面積 ( 「1階 65 84」「1階 65.84」「1階 65:84」「1階 65：54」 等 )
-      // v9.47.4: 「2階建」「3階建て」 にマッチしないよう (?!建) で除外、 全角コロン (：) も対応
+      // 🆕 v9.47.5: raw は正規化済み ( 区切りは全部「.」 ) なのでシンプルな正規表現でOK
+      // 「N階 + (数字.数字 or 数字 数字 )」 を抽出、 「N階建/階造」 は除外
       const floorAreas = [];
-      // 区切り = ピリオド / コロン ( 半角 + 全角 ) / セミコロン / 中黒
-      const sepChars = "[.:;・・：﹕]";
-      const floorAB = [...raw.matchAll(new RegExp(`([12345])\\s*階(?![建造])[^0-9]{0,8}(\\d{1,4})${sepChars}(\\d{1,2})`, "g"))];
-      floorAB.forEach(m => {
+      // パターン A: 「1階 65.84」 ( 正規化後の標準形 )
+      for (const m of raw.matchAll(/([12345])\s*階(?![建造階])[^0-9]{0,8}(\d{1,4})\.(\d{1,2})/g)) {
         const v = parseFloat(m[2] + "." + m[3]);
         if (v > 5 && v < 1000) floorAreas.push({ floor: m[1], area: v });
-      });
-      // パターン B: 「1階 65 84」 ( 空白区切り )
+      }
+      // パターン B: 「1階 65 84」 ( 空白区切り = 整数部 + 整数部 が空白で分かれているケース )
       if (floorAreas.length === 0) {
-        const floorB = [...raw.matchAll(/([12345])\s*階(?![建造])[^0-9]{0,8}(\d{1,4})\s+(\d{1,2})(?=\s|$|[^0-9])/g)];
-        floorB.forEach(m => {
+        for (const m of raw.matchAll(/([12345])\s*階(?![建造階])[^0-9]{0,8}(\d{1,4})\s+(\d{1,2})(?=\s|$|[^0-9])/g)) {
           const v = parseFloat(m[2] + "." + m[3]);
           if (v > 5 && v < 1000) floorAreas.push({ floor: m[1], area: v });
-        });
+        }
       }
+      // 階の重複削除 ( 同じ階が複数マッチしたら最大値だけ残す )
+      const uniqByFloor = new Map();
+      for (const fa of floorAreas) {
+        const prev = uniqByFloor.get(fa.floor);
+        if (!prev || fa.area > prev.area) uniqByFloor.set(fa.floor, fa);
+      }
+      const uniqFloorAreas = Array.from(uniqByFloor.values()).sort((a, b) => parseInt(a.floor) - parseInt(b.floor));
+      // 上書き
+      floorAreas.length = 0;
+      floorAreas.push(...uniqFloorAreas);
       if (floorAreas.length > 0) {
         const totalArea = floorAreas.reduce((sum, fa) => sum + fa.area, 0);
         fields.buildingArea = totalArea.toFixed(2);
         fields.floorAreas = floorAreas.map(fa => `${fa.floor}階 ${fa.area.toFixed(2)}㎡`).join(" / ");
       } else {
-        // 「床面積 ㎡ 118:00」「118.00」「118 00」「118：00」 全角コロンも対応
-        let m2 = raw.match(/床\s*面\s*積[\s\S]{0,80}?(\d{1,4})[.:;・・：﹕](\d{1,2})/);
+        // 「床面積 ... 118.00」 ( 正規化後 )
+        let m2 = raw.match(/床\s*面\s*積[\s\S]{0,80}?(\d{1,4})\.(\d{1,2})/);
         if (m2) {
           fields.buildingArea = m2[1] + "." + m2[2];
         } else {
