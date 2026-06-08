@@ -148,7 +148,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.46.5-full-v10-template-and-land-building-doc";
+const APP_VERSION = "2026-06-08-v9.46.6-improve-tokibo-regex-and-debug";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15043,50 +15043,53 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     return raw;
   };
 
-  // 🆕 v9.46.5: 土地謄本 PDF から抽出
+  // 🆕 v9.46.6: 土地謄本 PDF から抽出 ( 登記簿の実テキスト構造に対応 )
+  // 登記簿は「152 30」 「m² 152 30」 のように整数部と小数部が空白区切りで出ることが多い
   const handleLandDocUpload = async (file) => {
     if (!file) return;
     setAssessmentForm(f => ({ ...f, legalDocLandParsing: true }));
     try {
       const raw = await extractPdfText(file);
       const fields = {};
-      // 地積 ( 様々なパターンに対応 )
-      // パターン1: 「地積 ㎡ 152・30」 / 「地積 m2 152.30」 / 「152.30」 が「平方メートル」 で続く
-      const landPatterns = [
-        /地\s*積[^0-9]{0,40}(\d{1,5}(?:[.・・]\d{1,2})?)\s*(?:m2|m²|㎡|平方|平方メートル)/,
-        /(\d{1,5}(?:[.・・]\d{1,2})?)\s*(?:m2|m²|㎡|平方メートル)/,
-        /地\s*積[^0-9]{0,80}(\d{1,5}[.・・]\d{1,2})/,
-      ];
-      for (const re of landPatterns) {
-        const m = raw.match(re);
+      // 地積抽出: 複数パターンを順に試行
+      // パターン A: 「地積 ㎡ 152 30」 ( 空白区切り )
+      let m = raw.match(/地\s*積[^0-9]{0,80}(\d{1,5})\s+(\d{1,2})\s/);
+      if (m) {
+        fields.landArea = m[1] + "." + m[2];
+      } else {
+        // パターン B: 「地積 ... 152.30」 or 「地積 ... 152・30」
+        m = raw.match(/地\s*積[^0-9]{0,80}(\d{1,5}[.・・]\d{1,2})/);
         if (m) {
-          const v = m[1].replace(/[・・]/g, ".");
-          if (parseFloat(v) > 10 && parseFloat(v) < 10000) {
-            fields.landArea = v;
-            break;
+          fields.landArea = m[1].replace(/[・・]/g, ".");
+        } else {
+          // パターン C: 「地積」 ヘッダーの後の最初の数字 ( 整数 )
+          m = raw.match(/地\s*積[^0-9]{0,80}(\d{2,5})/);
+          if (m) {
+            const v = parseInt(m[1]);
+            if (v > 10 && v < 10000) fields.landArea = String(v);
           }
         }
       }
       // 所在
-      const mLoc = raw.match(/所\s*在[^\n]{0,80}/);
-      if (mLoc) fields.locationLand = mLoc[0].replace(/\s+/g, " ").trim();
+      const mLoc = raw.match(/所\s*在[\s　]+([^\s　]{2,40}(?:[市区町村][^\s　]{1,30})?)/);
+      if (mLoc) fields.locationLand = mLoc[1].trim();
       // 地番
-      const mBan = raw.match(/地\s*番[^0-9]{0,10}(\d+[-\d]*)/);
+      const mBan = raw.match(/地\s*番[^0-9]{0,15}(\d+(?:[-番ノの]\d+)*)/);
       if (mBan) fields.chiban = mBan[1];
       // 地目
-      const mMoku = raw.match(/地\s*目[^\s]{0,5}(宅地|田|畑|山林|雑種地|公衆用道路|墓地|境内地|運河用地)/);
+      const mMoku = raw.match(/地\s*目[^\s　]{0,5}(宅地|田|畑|山林|雑種地|公衆用道路|墓地|境内地|運河用地|池沼|原野)/);
       if (mMoku) fields.chimoku = mMoku[1];
 
-      console.log("[土地謄本抽出]", { fields, rawHead: raw.slice(0, 500) });
+      console.log("[土地謄本抽出 v9.46.6]", { fields, rawLen: raw.length, rawHead: raw.slice(0, 800) });
 
       setAssessmentForm(f => ({
         ...f,
         legalDocLandParsing: false,
-        legalDocLand: { fileName: file.name, raw: raw.slice(0, 3000), fields },
+        legalDocLand: { fileName: file.name, raw: raw.slice(0, 5000), fields },
         landArea: f.landArea || fields.landArea || "",
       }));
       if (Object.keys(fields).length === 0) {
-        alert("土地謄本から情報を抽出できませんでした。 PDFが画像ベースのスキャンの可能性があります。 Step 4 で手入力してください。");
+        alert("土地謄本から情報を抽出できませんでした。 PDFが画像ベース ( スキャン ) の場合は読み取れません。 抽出結果欄の「rawテキスト確認」 でPDF内のテキストを確認できます。");
       }
     } catch (e) {
       console.error("[土地謄本PDF抽出] エラー:", e);
@@ -15095,67 +15098,75 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     }
   };
 
-  // 🆕 v9.46.5: 建物謄本 PDF から抽出
+  // 🆕 v9.46.6: 建物謄本 PDF から抽出 ( 登記簿の実テキスト構造に対応 )
   const handleBuildingDocUpload = async (file) => {
     if (!file) return;
     setAssessmentForm(f => ({ ...f, legalDocBuildingParsing: true }));
     try {
       const raw = await extractPdfText(file);
       const fields = {};
-      // 床面積 ( 1階 / 2階 ) - 複数行
-      // パターン: 「1階 65・84」 / 「1階 65.84m2」
+      // 階別床面積 ( 「1階 65 84」 「2階 52 16」 のパターン )
       const floorAreas = [];
-      const floorMatches = [...raw.matchAll(/([12345])\s*階[^0-9]{0,20}(\d{1,4}[.・・]?\d{0,2})/g)];
-      floorMatches.forEach(m => {
-        const v = parseFloat(m[2].replace(/[・・]/g, "."));
+      // パターン A: 「1階 65 84」 ( 空白区切り )
+      const floorAB = [...raw.matchAll(/([12345])\s*階[^0-9]{0,8}(\d{1,4})\s+(\d{1,2})(?=\s|$|[^0-9])/g)];
+      floorAB.forEach(m => {
+        const v = parseFloat(m[2] + "." + m[3]);
         if (v > 5 && v < 1000) floorAreas.push({ floor: m[1], area: v });
       });
+      // パターン B: 「1階 65.84」
+      if (floorAreas.length === 0) {
+        const floorB = [...raw.matchAll(/([12345])\s*階[^0-9]{0,8}(\d{1,4}[.・・]\d{1,2})/g)];
+        floorB.forEach(m => {
+          const v = parseFloat(m[2].replace(/[・・]/g, "."));
+          if (v > 5 && v < 1000) floorAreas.push({ floor: m[1], area: v });
+        });
+      }
       if (floorAreas.length > 0) {
-        // 合計
         const totalArea = floorAreas.reduce((sum, fa) => sum + fa.area, 0);
         fields.buildingArea = totalArea.toFixed(2);
-        fields.floorAreas = floorAreas;
+        fields.floorAreas = floorAreas.map(fa => `${fa.floor}階 ${fa.area.toFixed(2)}㎡`).join(" / ");
       } else {
-        // 「床面積」 のあとの最初の数値
-        const mFloor = raw.match(/床\s*面\s*積[^0-9]{0,40}(\d{1,4}[.・・]\d{1,2})/);
-        if (mFloor) fields.buildingArea = mFloor[1].replace(/[・・]/g, ".");
+        // 「床面積 ㎡ 118 00」 のような形
+        let m2 = raw.match(/床\s*面\s*積[^0-9]{0,40}(\d{1,4})\s+(\d{1,2})/);
+        if (m2) {
+          fields.buildingArea = m2[1] + "." + m2[2];
+        } else {
+          m2 = raw.match(/床\s*面\s*積[^0-9]{0,40}(\d{1,4}[.・・]\d{1,2})/);
+          if (m2) fields.buildingArea = m2[1].replace(/[・・]/g, ".");
+        }
       }
-      // 新築年月日 ( 元号 → 西暦 )
-      const mEra = raw.match(/(?:新築|新\s*築|登記原因[^\n]{0,30}|平\s*成|令\s*和|昭\s*和)[^0-9]{0,15}(昭和|平成|令和)\s*(\d{1,2})\s*年/);
+      // 新築年月日 - 最初に出てくる元号年を建築年とする
       const eraMatches = [...raw.matchAll(/(昭和|平成|令和)\s*(\d{1,2})\s*年/g)];
       if (eraMatches.length > 0) {
-        // 古い元号順に: 昭和=最初の表れ ( 最も古い ) を建築年とする想定
         const era = eraMatches[0];
         const base = era[1] === "昭和" ? 1925 : era[1] === "平成" ? 1988 : 2018;
         fields.builtYear = String(base + parseInt(era[2]));
       }
       // 構造
-      const mStruct = raw.match(/構\s*造[^\n]{0,30}|((?:木造|鉄筋コンクリート造|鉄骨造|鉄筋鉄骨造|軽量鉄骨造|軽量鉄骨プレハブ造)[^\s\d]{0,15})/);
-      const structMatch = raw.match(/(木造|鉄筋コンクリート造|鉄骨造|鉄筋鉄骨造|軽量鉄骨造|軽量鉄骨プレハブ造)[\s\S]{0,30}?(\d+階建?|平屋建?)?/);
+      const structMatch = raw.match(/(木造|鉄筋コンクリート造|鉄骨造|鉄筋鉄骨造|軽量鉄骨造|軽量鉄骨プレハブ造|コンクリートブロック造|れんが造)([^\s\d]{0,30})/);
       if (structMatch) {
-        let s = structMatch[1];
-        if (structMatch[2]) s += " " + structMatch[2].replace(/\s/g, "");
-        fields.structure = s.trim();
+        let s = structMatch[1] + (structMatch[2] || "").trim();
+        fields.structure = s.replace(/\s+/g, "").slice(0, 30);
       }
       // 種類
-      const mType = raw.match(/種\s*類[^\s]{0,5}(居宅|店舗|事務所|共同住宅|工場|倉庫|車庫|物置)/);
+      const mType = raw.match(/種\s*類[^\s　]{0,5}(居宅|店舗|事務所|共同住宅|工場|倉庫|車庫|物置|店舗併用住宅|事務所併用住宅)/);
       if (mType) fields.kashuType = mType[1];
       // 家屋番号
-      const mKaoku = raw.match(/家\s*屋\s*番\s*号[^0-9]{0,15}(\d+(?:[-・・]\d+)?)/);
+      const mKaoku = raw.match(/家\s*屋\s*番\s*号[^0-9]{0,15}(\d+(?:[-番ノの]\d+)*)/);
       if (mKaoku) fields.kaokuNo = mKaoku[1];
 
-      console.log("[建物謄本抽出]", { fields, rawHead: raw.slice(0, 500) });
+      console.log("[建物謄本抽出 v9.46.6]", { fields, rawLen: raw.length, rawHead: raw.slice(0, 800) });
 
       setAssessmentForm(f => ({
         ...f,
         legalDocBuildingParsing: false,
-        legalDocBuilding: { fileName: file.name, raw: raw.slice(0, 3000), fields },
+        legalDocBuilding: { fileName: file.name, raw: raw.slice(0, 5000), fields },
         buildingArea: f.buildingArea || fields.buildingArea || "",
         builtYear: f.builtYear || fields.builtYear || "",
         structure: (f.structure === "木造2階建" && fields.structure) ? fields.structure : f.structure,
       }));
       if (Object.keys(fields).length === 0) {
-        alert("建物謄本から情報を抽出できませんでした。 PDFが画像ベースのスキャンの可能性があります。 Step 4 で手入力してください。");
+        alert("建物謄本から情報を抽出できませんでした。 PDFが画像ベース ( スキャン ) の場合は読み取れません。 抽出結果欄の「rawテキスト確認」 でPDF内のテキストを確認できます。");
       }
     } catch (e) {
       console.error("[建物謄本PDF抽出] エラー:", e);
@@ -17835,11 +17846,42 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               {(assessmentForm.legalDocLand || assessmentForm.legalDocBuilding) && (
                 <div style={{ marginTop: 6, padding: 8, background: C.success + "11", borderRadius: 6, fontSize: 10, color: C.text, lineHeight: 1.6 }}>
                   📊 <b>抽出結果</b>:<br />
-                  {assessmentForm.legalDocLand && assessmentForm.legalDocLand.fields && (
-                    <>🏞 土地謄本:{Object.entries(assessmentForm.legalDocLand.fields).map(([k, v]) => ` ${k}=${typeof v === 'object' ? '[配列]' : v}`).join(",") || " ( 抽出失敗 )"}<br /></>
+                  {assessmentForm.legalDocLand && (
+                    <div style={{ marginBottom: 6 }}>
+                      🏞 <b>土地謄本</b>:
+                      {Object.keys(assessmentForm.legalDocLand.fields || {}).length === 0
+                        ? <span style={{ color: C.danger }}> ❌ 何も抽出できませんでした</span>
+                        : <>
+                            {assessmentForm.legalDocLand.fields.landArea && <> 地積={assessmentForm.legalDocLand.fields.landArea}㎡</>}
+                            {assessmentForm.legalDocLand.fields.chiban && <> / 地番={assessmentForm.legalDocLand.fields.chiban}</>}
+                            {assessmentForm.legalDocLand.fields.chimoku && <> / 地目={assessmentForm.legalDocLand.fields.chimoku}</>}
+                            {assessmentForm.legalDocLand.fields.locationLand && <> / 所在={assessmentForm.legalDocLand.fields.locationLand}</>}
+                          </>
+                      }
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ cursor: "pointer", color: C.muted, fontSize: 9 }}>🔍 PDFから読み取った raw テキストを表示</summary>
+                        <pre style={{ background: "#000", color: "#0f0", padding: 6, borderRadius: 4, fontSize: 9, maxHeight: 200, overflow: "auto", whiteSpace: "pre-wrap", marginTop: 4 }}>{assessmentForm.legalDocLand.raw}</pre>
+                      </details>
+                    </div>
                   )}
-                  {assessmentForm.legalDocBuilding && assessmentForm.legalDocBuilding.fields && (
-                    <>🏠 建物謄本:{Object.entries(assessmentForm.legalDocBuilding.fields).filter(([k]) => k !== "floorAreas").map(([k, v]) => ` ${k}=${v}`).join(",") || " ( 抽出失敗 )"}</>
+                  {assessmentForm.legalDocBuilding && (
+                    <div>
+                      🏠 <b>建物謄本</b>:
+                      {Object.keys(assessmentForm.legalDocBuilding.fields || {}).length === 0
+                        ? <span style={{ color: C.danger }}> ❌ 何も抽出できませんでした</span>
+                        : <>
+                            {assessmentForm.legalDocBuilding.fields.buildingArea && <> 床面積={assessmentForm.legalDocBuilding.fields.buildingArea}㎡</>}
+                            {assessmentForm.legalDocBuilding.fields.floorAreas && <> ({assessmentForm.legalDocBuilding.fields.floorAreas})</>}
+                            {assessmentForm.legalDocBuilding.fields.builtYear && <> / 新築={assessmentForm.legalDocBuilding.fields.builtYear}年</>}
+                            {assessmentForm.legalDocBuilding.fields.structure && <> / 構造={assessmentForm.legalDocBuilding.fields.structure}</>}
+                            {assessmentForm.legalDocBuilding.fields.kashuType && <> / 種類={assessmentForm.legalDocBuilding.fields.kashuType}</>}
+                          </>
+                      }
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ cursor: "pointer", color: C.muted, fontSize: 9 }}>🔍 PDFから読み取った raw テキストを表示</summary>
+                        <pre style={{ background: "#000", color: "#0f0", padding: 6, borderRadius: 4, fontSize: 9, maxHeight: 200, overflow: "auto", whiteSpace: "pre-wrap", marginTop: 4 }}>{assessmentForm.legalDocBuilding.raw}</pre>
+                      </details>
+                    </div>
                   )}
                 </div>
               )}
