@@ -167,7 +167,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.56.2-furigana-no-freeze";
+const APP_VERSION = "2026-06-09-v9.57-furigana-web-worker";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2210,45 +2210,63 @@ function routeBuildOrder(start, stops, count, endId) {
   return seq.slice(1);
 }
 
-// 🆕 v9.56: 所有者名のふりがな自動推定（kuromoji.js を遅延ロード）
-//   ・初回だけ辞書(数MB)を読み込む。以後はオフラインでも動く。
+// 🆕 v9.57: 所有者名のふりがな自動推定（kuromoji.js を Web Worker で実行）
+//   ★メインスレッドを固めないのが最重要。辞書(数MB)の読み込み・解析は裏方スレッドで行う。
 //   ・名前の読みは曖昧なので推定（特に下の名前）。間違いはユーザーが手直しする前提。
-let _kuromojiTk = null, _kuromojiPromise = null;
-function _loadKuromoji() {
-  if (_kuromojiTk) return Promise.resolve(_kuromojiTk);
-  if (_kuromojiPromise) return _kuromojiPromise;
-  _kuromojiPromise = new Promise((resolve, reject) => {
-    const build = () => {
-      if (typeof window.kuromoji === "undefined") { reject(new Error("kuromoji unavailable")); return; }
-      window.kuromoji.builder({ dicPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/" }).build((err, tk) => {
-        if (err) { reject(err); return; }
-        _kuromojiTk = tk; resolve(tk);
-      });
+const _FURI_WORKER_SRC = [
+  'var tk=null, q=[];',
+  'function _h(d){',
+  '  try{',
+  '    var tokens=tk.tokenize(String(d.name||""));',
+  '    var out="";',
+  '    for(var i=0;i<tokens.length;i++){',
+  '      var sf=tokens[i].surface_form;',
+  '      if(/^\\s+$/.test(sf)){ out+=" "; continue; }',
+  '      var r=(tokens[i].reading&&tokens[i].reading!=="*")?tokens[i].reading:"";',
+  '      out+=r;',
+  '    }',
+  '    out=out.replace(/[\\u30a1-\\u30f6]/g,function(c){return String.fromCharCode(c.charCodeAt(0)-0x60);});',
+  '    postMessage({type:"result",id:d.id,kana:out.replace(/\\s+/g," ").trim()});',
+  '  }catch(e){ postMessage({type:"result",id:d.id,kana:""}); }',
+  '}',
+  'self.onmessage=function(e){ var d=e.data||{}; if(!tk){ q.push(d); return; } _h(d); };',
+  'try{ importScripts("https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"); }catch(e){ postMessage({type:"error"}); }',
+  'if(typeof kuromoji!=="undefined"){',
+  '  kuromoji.builder({dicPath:"https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/"}).build(function(err,t){',
+  '    if(err){ postMessage({type:"error"}); return; }',
+  '    tk=t; postMessage({type:"ready"});',
+  '    var qq=q; q=[]; for(var i=0;i<qq.length;i++){ _h(qq[i]); }',
+  '  });',
+  '} else { postMessage({type:"error"}); }',
+].join("\n");
+let _furiWorker = null, _furiReqId = 0; // null=未init / false=不可 / Worker=OK
+const _furiPending = {};
+function _initFuriWorker() {
+  if (_furiWorker !== null) return _furiWorker;
+  if (typeof Worker === "undefined") { _furiWorker = false; return false; }
+  try {
+    const url = URL.createObjectURL(new Blob([_FURI_WORKER_SRC], { type: "application/javascript" }));
+    const w = new Worker(url);
+    w.onmessage = (e) => {
+      const d = e.data || {};
+      if (d.type === "result" && _furiPending[d.id]) { _furiPending[d.id](d.kana || ""); delete _furiPending[d.id]; }
     };
-    if (typeof window.kuromoji !== "undefined") { build(); return; }
-    const s = document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js";
-    s.onload = build;
-    s.onerror = () => reject(new Error("kuromoji script load failed"));
-    document.head.appendChild(s);
-  });
-  return _kuromojiPromise;
+    w.onerror = () => {};
+    _furiWorker = w;
+  } catch (e) { _furiWorker = false; }
+  return _furiWorker;
 }
-function _kataToHira(s) { return String(s || "").replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60)); }
-async function furiganaEstimate(name) {
-  const cleaned = String(name || "").trim();
-  if (!cleaned) return "";
-  // 法人名はふりがな対象外（読みが不要なことが多い）
-  if (isCorporateOwner(cleaned)) return "";
-  const tk = await _loadKuromoji();
-  const tokens = tk.tokenize(cleaned);
-  let out = "";
-  tokens.forEach(t => {
-    const sf = t.surface_form;
-    if (/^\s+$/.test(sf)) { out += " "; return; }
-    out += (t.reading && t.reading !== "*") ? _kataToHira(t.reading) : "";
+function furiganaEstimate(name) {
+  return new Promise((resolve) => {
+    const cleaned = String(name || "").trim();
+    if (!cleaned || isCorporateOwner(cleaned)) { resolve(""); return; }
+    const w = _initFuriWorker();
+    if (!w) { resolve(""); return; }
+    const id = ++_furiReqId;
+    _furiPending[id] = resolve;
+    setTimeout(() => { if (_furiPending[id]) { delete _furiPending[id]; resolve(""); } }, 20000);
+    try { w.postMessage({ id, name: cleaned }); } catch (e) { delete _furiPending[id]; resolve(""); }
   });
-  return out.replace(/\s+/g, " ").trim();
 }
 
 // 同じidのアイテムを項目ごとにマージ
@@ -13779,12 +13797,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     }
   }, [currentLoc && currentLoc.lat, currentLoc && currentLoc.lng, route.open, route.targetIndex, route.stops]);
 
-  // 🆕 v9.56→v9.56.2: ピン詳細を開いた時、所有者名にふりがなが未設定なら自動推定して保存。
-  //   ★重要: 辞書(kuromoji)が「既に読み込み済み」の時だけ実行する。
-  //     ・ピンを開くたびに数MBの辞書を読み込む → スマホが固まる事故を防ぐ。
-  //     ・初回の重い読み込みは、編集フォームの「✨自動」をユーザーが押した時だけ行う。
+  // 🆕 v9.57: ふりがな辞書は Web Worker（裏方）で起動時に静かに先読み（メインは固めない）
+  React.useEffect(() => { try { _initFuriWorker(); } catch (e) {} }, []);
+
+  // 🆕 v9.56→v9.57: ピン詳細を開いた時、所有者名にふりがなが未設定なら自動推定して保存。
+  //   ・推定は Web Worker で行うのでメイン画面は固まらない。
+  //   ・辞書ロード中に開いた場合はキューに積まれ、準備でき次第ふりがなが反映される。
   React.useEffect(() => {
-    if (!_kuromojiTk) return; // 辞書未ロードなら自動はしない（固まり防止）
     if (!selected || !selected.item) return;
     const id = selected.item.rawId != null ? selected.item.rawId : selected.item.id;
     if (id == null) return;
