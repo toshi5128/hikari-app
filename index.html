@@ -165,7 +165,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.53-route-bulk-remove-stops";
+const APP_VERSION = "2026-06-09-v9.53.1-route-popup-persist";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4814,13 +4814,24 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
 
   // 🆕 v9.51: 訪問ルートのオーバーレイ（道なり/直線ルート線＋番号マーカー＋点滅）
   const routeLayerRef = React.useRef(null);
+  const routeSigRef = React.useRef("");
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    // 既存オーバーレイを消す
-    if (routeLayerRef.current) { try { map.removeLayer(routeLayerRef.current); } catch (e) {} routeLayerRef.current = null; }
-    if (!routeOverlay || !routeOverlay.start || !Array.isArray(routeOverlay.stops) || routeOverlay.stops.length === 0) return;
+    // オーバーレイ無し → 消してリセット
+    if (!routeOverlay || !routeOverlay.start || !Array.isArray(routeOverlay.stops) || routeOverlay.stops.length === 0) {
+      if (routeLayerRef.current) { try { map.removeLayer(routeLayerRef.current); } catch (e) {} routeLayerRef.current = null; }
+      routeSigRef.current = "";
+      return;
+    }
     const { start, stops, targetIndex = 0, roadCoords, endId } = routeOverlay;
+    // 🆕 v9.53.1: ルートの中身（停留所・進行・終点・道なり線）が変わった時だけ再描画。
+    //   ・GPS現在地の更新だけでは作り直さない → 開いているポップアップが消えない
+    const sig = stops.map(s => `${s.id}@${s.lat},${s.lng}`).join("|") + `#${targetIndex}#${endId || ""}#${(Array.isArray(roadCoords) && roadCoords.length) || 0}`;
+    if (sig === routeSigRef.current && routeLayerRef.current) return;
+    routeSigRef.current = sig;
+    // 既存オーバーレイを消して作り直す
+    if (routeLayerRef.current) { try { map.removeLayer(routeLayerRef.current); } catch (e) {} routeLayerRef.current = null; }
     const grp = L.layerGroup();
     // ルート線：道なり(roadCoords)があれば優先、なければ直線
     const straight = [[start.lat, start.lng], ...stops.map(s => [s.lat, s.lng])];
@@ -4849,7 +4860,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         + `<button class="hk-route-log" style="display:block;width:100%;margin-bottom:5px;background:#22c55e;color:#fff;border:none;padding:8px;border-radius:7px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;">📍 訪問結果を記録する</button>`
         + `<button class="hk-route-end" style="display:block;width:100%;background:#f59e0b;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">🟠 ここを最終地点にする</button>`
         + `</div>`,
-        { autoClose: true, closeOnClick: true }
+        { autoClose: false, closeOnClick: false }
       );
       mk.on("popupopen", (e) => {
         setTimeout(() => {
