@@ -167,7 +167,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.56-owner-name-furigana";
+const APP_VERSION = "2026-06-09-v9.56.1-furigana-in-pin-detail-auto";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13778,6 +13778,29 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       if (nextTi >= route.stops.length) { setRouteCelebrate(true); setTimeout(() => setRouteCelebrate(false), 4500); }
     }
   }, [currentLoc && currentLoc.lat, currentLoc && currentLoc.lng, route.open, route.targetIndex, route.stops]);
+
+  // 🆕 v9.56: ピン詳細を開いた時、所有者名にふりがなが未設定なら自動推定して保存（次回から即表示）
+  React.useEffect(() => {
+    if (!selected || !selected.item) return;
+    const id = selected.item.rawId != null ? selected.item.rawId : selected.item.id;
+    if (id == null) return;
+    const name = String(selected.item.ownerName || selected.item.owner || "").trim();
+    if (!name || isCorporateOwner(name)) return;
+    const liveJ = (data.jiage || []).find(j => String(j.id) === String(id));
+    const liveO = (data.owners || []).find(o => String(o.id) === String(id));
+    if ((liveJ && liveJ.ownerKana) || (liveO && liveO.ownerKana)) return; // 既にある
+    let cancelled = false;
+    furiganaEstimate(name).then(k => {
+      if (cancelled || !k) return;
+      setData(prev => {
+        const _now = Date.now();
+        const jiage = (prev.jiage || []).map(j => (String(j.id) === String(id) && !j.ownerKana) ? { ...j, ownerKana: k, _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), ownerKana: _now }, updatedAt: _now } : j);
+        const owners = (prev.owners || []).map(o => (String(o.id) === String(id) && !o.ownerKana) ? { ...o, ownerKana: k, _fieldUpdatedAt: { ...(o._fieldUpdatedAt || {}), ownerKana: _now }, updatedAt: _now } : o);
+        return { ...prev, jiage, owners };
+      });
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [selected && selected.item && (selected.item.rawId != null ? selected.item.rawId : selected.item.id)]);
   const [pinForm, setPinForm] = useState({ address: "", landmark: "", assignee: "", memo: "" });
   // 🆕 v9.25: ピン保存前に撮影した写真を Blob で保持 → 保存時に一括 upload
   const [pendingPinPhotos, setPendingPinPhotos] = useState([]);
@@ -18657,16 +18680,36 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           {/* 所有者情報 */}
           <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>所有者情報</div>
-            {[
-              ["所有者名", selected.item.ownerName],
-              ["連絡先", selected.item.ownerContact],
-              ["所有者住所", selected.item.ownerAddress],
-            ].filter(([, v]) => v).map(([l, v]) => (
-              <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.borderDim}`, fontSize: 13 }}>
-                <span style={{ color: C.muted }}>{l}</span>
-                <span style={{ color: C.text, textAlign: "right", maxWidth: "65%" }}>{v}</span>
-              </div>
-            ))}
+            {(() => {
+              // 🆕 v9.56: 所有者名に ふりがな（ルビ）を表示。最新データから取得（自動推定後も反映）
+              const _oid = selected.item.rawId != null ? selected.item.rawId : selected.item.id;
+              const _lj = (data.jiage || []).find(j => String(j.id) === String(_oid));
+              const _lo = (data.owners || []).find(o => String(o.id) === String(_oid));
+              const _kana = (_lj && _lj.ownerKana) || (_lo && _lo.ownerKana) || selected.item.ownerKana || (_raw && _raw.ownerKana) || "";
+              const _nm = selected.item.ownerName;
+              return (
+                <>
+                  {_nm && (
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.borderDim}`, fontSize: 13 }}>
+                      <span style={{ color: C.muted }}>所有者名</span>
+                      <span style={{ color: C.text, textAlign: "right", maxWidth: "65%" }}>
+                        {_kana ? <span style={{ display: "block", fontSize: 10, color: "#0ea5e9", lineHeight: 1.2, marginBottom: 1 }}>{_kana}</span> : null}
+                        {_nm}
+                      </span>
+                    </div>
+                  )}
+                  {[
+                    ["連絡先", selected.item.ownerContact],
+                    ["所有者住所", selected.item.ownerAddress],
+                  ].filter(([, v]) => v).map(([l, v]) => (
+                    <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.borderDim}`, fontSize: 13 }}>
+                      <span style={{ color: C.muted }}>{l}</span>
+                      <span style={{ color: C.text, textAlign: "right", maxWidth: "65%" }}>{v}</span>
+                    </div>
+                  ))}
+                </>
+              );
+            })()}
           </div>
 
           {/* アクションボタン群 */}
