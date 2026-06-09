@@ -152,7 +152,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-08-v9.49-allow-photo-add-on-existing-pin";
+const APP_VERSION = "2026-06-09-v9.50-bulk-exclude-corporate-pins";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2126,6 +2126,21 @@ function mergeArrayField(localArr, remoteArr) {
     }
   });
   return [...idOrder.map(id => byId.get(id)), ...noId];
+}
+
+// 🆕 v9.50: 所有者名が法人かどうか判定（DM対象外クリーンアップ用）
+//   ・株式会社/有限会社/合同会社/合資会社/合名会社/各種(株)(有)表記/各種法人/NPO法人
+//   ・全角カッコ版も網羅
+const CORP_OWNER_WORDS = [
+  "株式会社", "有限会社", "合同会社", "合資会社", "合名会社",
+  "(株)", "（株）", "㈱", "(有)", "（有）", "㈲", "(資)", "（資）", "(名)", "（名）",
+  "一般社団法人", "公益社団法人", "一般財団法人", "公益財団法人",
+  "社会福祉法人", "宗教法人", "医療法人", "学校法人", "NPO法人", "ＮＰＯ法人",
+];
+function isCorporateOwner(s) {
+  const t = String(s || "");
+  if (!t.trim()) return false;
+  return CORP_OWNER_WORDS.some(w => t.indexOf(w) >= 0);
 }
 
 // 同じidのアイテムを項目ごとにマージ
@@ -17167,6 +17182,57 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     )}
                   </div>
                 </div>
+
+                {/* 🆕 v9.50: 所有者が法人の現地ピンを一括🚫対象外（一回限りのクリーンアップ＋将来用） */}
+                {/*   ・setData 経由で更新するため updatedAt と _fieldUpdatedAt が自動で「今」になり、 */}
+                {/*     他端末の古いキャッシュに負けて元に戻ることはない（mergeItems の競合解消で勝つ） */}
+                {(() => {
+                  const corpPins = (Array.isArray(data.jiage) ? data.jiage : []).filter(
+                    j => j && j.coordsManual && isCorporateOwner(j.owner || j.ownerName)
+                  );
+                  if (corpPins.length === 0) return null;
+                  return (
+                    <div style={{ margin: "4px 0 10px" }}>
+                      <button onClick={() => {
+                        const list = corpPins
+                          .map(j => "・" + String(j.owner || j.ownerName) + "（" + (j.address || "住所なし") + "）")
+                          .join("\n");
+                        if (!window.confirm(
+                          "所有者が法人の現地ピン " + corpPins.length + "件 を 🚫対象外 にします。\n" +
+                          "法人名はメモに退避し、所有者欄は空にします。\n\n" + list +
+                          "\n\nよろしいですか？"
+                        )) return;
+                        setData(prev => {
+                          const jiage = Array.isArray(prev.jiage) ? prev.jiage : [];
+                          const next = jiage.map(j => {
+                            if (!(j && j.coordsManual && isCorporateOwner(j.owner || j.ownerName))) return j;
+                            const orig = String(j.owner || j.ownerName || "").trim();
+                            const memoLine = "法人所有：" + orig;
+                            const newMemo = (j.memo && String(j.memo).trim())
+                              ? (memoLine + "\n" + j.memo)
+                              : memoLine;
+                            return {
+                              ...j,
+                              memo: newMemo,
+                              owner: "", ownerName: "", ownerAddr: "",
+                              excluded: true, excludedReason: "法人所有",
+                              lookupFailed: false, lookupNote: "",
+                            };
+                          });
+                          return { ...prev, jiage: next };
+                        });
+                        alert(
+                          "✅ " + corpPins.length + "件 を 🚫対象外 にしました（メモに法人名を退避）。\n" +
+                          "全端末で一度リロードして、クラウドの正データを取り込んでください。"
+                        );
+                      }} style={{
+                        width: "100%", padding: "10px 12px", borderRadius: 10, cursor: "pointer",
+                        fontSize: 12, fontWeight: 800, fontFamily: "inherit",
+                        background: "#94a3b822", color: "#475569", border: "1.5px solid #94a3b8",
+                      }}>🏢 所有者が法人のピンを一括で 🚫対象外 にする（{corpPins.length}件）</button>
+                    </div>
+                  );
+                })()}
 
                 {/* 地図 */}
                 {itemsWithCoord.length > 0 ? (
