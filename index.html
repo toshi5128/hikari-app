@@ -167,7 +167,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.57.1-furigana-inline-edit-in-detail";
+const APP_VERSION = "2026-06-09-v9.58-ios-nav-anchor-and-errorboundary";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2167,6 +2167,19 @@ function routeDist(a, b) {
   return 2 * R * Math.asin(Math.sqrt(x));
 }
 function routeFmtDist(m) { return m >= 1000 ? (m / 1000).toFixed(1) + "km" : Math.round(m) + "m"; }
+// 🆕 v9.58: 外部リンク（Googleマップ等）を安全に開く。
+//   ・iOSのホーム画面アプリ(standalone PWA)では window.open(_blank) がアプリ自体を外部URLに飛ばし、
+//     戻ると白画面になる事故がある。アンカー(target=_blank rel=noopener)クリックなら別画面で開きアプリは残る。
+function openExternalLink(url) {
+  try {
+    const a = document.createElement("a");
+    a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { try { a.remove(); } catch (e) {} }, 0);
+  } catch (e) {
+    try { window.open(url, "_blank", "noopener"); } catch (e2) {}
+  }
+}
 // 移動時間の目安（OSRM未取得時のフォールバック：市街地 約20km/h ＝ 333m/分）
 function routeEstMin(m) { return Math.max(1, Math.round(m / 333)); }
 function routeFmtMin(min) { min = Math.max(0, Math.round(min)); return min >= 60 ? (Math.floor(min / 60) + "時間" + (min % 60 ? (min % 60) + "分" : "")) : (min + "分"); }
@@ -16888,7 +16901,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 return { ...prev, targetIndex: nextTi };
               });
             };
-            const routeOpenGmaps = (lat, lng) => window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`, "_blank");
+            const routeOpenGmaps = (lat, lng) => openExternalLink(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`);
             const routeOpenNext = () => { const t = route.stops[route.targetIndex] || route.stops[0]; if (t) routeOpenGmaps(t.lat, t.lng); };
             const routeOpenFull = () => {
               if (!route.stops.length || !currentLoc) return;
@@ -16896,7 +16909,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const wp = route.stops.slice(0, -1).map(s => `${s.lat},${s.lng}`).join("|");
               let url = `https://www.google.com/maps/dir/?api=1&origin=${currentLoc.lat},${currentLoc.lng}&destination=${dest.lat},${dest.lng}&travelmode=driving`;
               if (wp) url += `&waypoints=${encodeURIComponent(wp)}`;
-              window.open(url, "_blank");
+              openExternalLink(url);
             };
 
             // 🆕 v9.54: ピン位置の現地修正
@@ -24157,8 +24170,32 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
 
 // ===================== APP =====================
 
+// 🆕 v9.58: エラーバウンダリ — 万一クラッシュしても白画面にせず復帰画面を出す
+class AppErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false, msg: "" }; }
+  static getDerivedStateFromError(error) { return { hasError: true, msg: (error && error.message) ? String(error.message) : "不明なエラー" }; }
+  componentDidCatch(error, info) { try { console.error("[AppErrorBoundary]", error, info); } catch (e) {} }
+  render() {
+    if (this.state.hasError) {
+      return React.createElement("div", {
+        style: { minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center", fontFamily: "'Noto Sans JP',sans-serif", color: "#e2e8f0", background: "#0f172a" }
+      },
+        React.createElement("div", { style: { fontSize: 40, marginBottom: 12 } }, "⚠️"),
+        React.createElement("div", { style: { fontSize: 16, fontWeight: 800, marginBottom: 8 } }, "一時的なエラーが発生しました"),
+        React.createElement("div", { style: { fontSize: 12, color: "#94a3b8", marginBottom: 20, maxWidth: 320, lineHeight: 1.6 } }, "データは保存されています。下のボタンで再読み込みしてください。"),
+        React.createElement("button", {
+          onClick: () => { try { window.location.reload(); } catch (e) {} },
+          style: { background: "#0ea5e9", color: "#fff", border: "none", borderRadius: 10, padding: "12px 24px", fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }
+        }, "🔄 アプリを再読み込み"),
+        React.createElement("div", { style: { fontSize: 10, color: "#475569", marginTop: 16 } }, this.state.msg)
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const root=ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(App));
+root.render(React.createElement(AppErrorBoundary, null, React.createElement(App)));
 </script>
 
 <!-- 🆕 v8.92: Babel コンパイル結果キャッシュ・ローダー -->
