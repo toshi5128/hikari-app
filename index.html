@@ -63,7 +63,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::
 @keyframes hkPop{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
 @keyframes hkBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
 .hk-confetti{position:absolute;width:10px;height:14px;top:-20px;z-index:1199;will-change:transform;pointer-events:none;}
-@keyframes hkFall{to{transform:translateY(110vh) rotate(720deg)}}</style>
+@keyframes hkFall{to{transform:translateY(110vh) rotate(720deg)}}
+/* 🆕 v9.54: ピン位置の現地修正マーカー（赤・点滅） */
+.hk-pinedit{background:#f43f5e;color:#fff;border:3px solid #fff;border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.6);animation:hkNextPulse 1s infinite;}</style>
 <script>
 // ローディングメッセージを段階的に変える（ユーザーに状況を伝える）
 var hikariLoadingMessages = [
@@ -165,7 +167,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.53.1-route-popup-persist";
+const APP_VERSION = "2026-06-09-v9.54-onsite-pin-reposition";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4445,7 +4447,7 @@ function PendingPhotoSection({ photos, onAdd, onRemove }) {
 }
 
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, routeFitKey }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -4889,6 +4891,23 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       map.fitBounds(L.polyline(pts).getBounds(), { padding: [60, 60], maxZoom: 16 });
     } catch (e) {}
   }, [routeFitKey]);
+
+  // 🆕 v9.54: ピン位置の現地修正用ドラッグマーカー
+  const editMarkerRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (editMarkerRef.current) { try { map.removeLayer(editMarkerRef.current); } catch (e) {} editMarkerRef.current = null; }
+    if (!editPin || typeof editPin.lat !== "number" || typeof editPin.lng !== "number") return;
+    const mk = L.marker([editPin.lat, editPin.lng], {
+      draggable: true,
+      icon: L.divIcon({ html: `<div class="hk-pinedit">📍</div>`, className: "", iconSize: [34, 34], iconAnchor: [17, 17] }),
+      zIndexOffset: 2000,
+    });
+    mk.on("dragend", () => { const ll = mk.getLatLng(); if (onEditPinMove) onEditPinMove(ll.lat, ll.lng); });
+    mk.addTo(map);
+    editMarkerRef.current = mk;
+  }, [editPin && editPin.lat, editPin && editPin.lng, onEditPinMove]);
 
   // 🆕 v8.96: fitBoundsKey が変わったら手動で全件表示（「全件表示」ボタン用）
   React.useEffect(() => {
@@ -13647,6 +13666,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   //   route = { open, count, endId, stops:[{id,lat,lng,name}], targetIndex, road:{coords,duration}|null }
   const [route, setRoute] = useState({ open: false, minimized: false, count: 10, endId: "", stops: [], targetIndex: 0, road: null });
   const [routeSel, setRouteSel] = useState([]); // 🆕 v9.53: ルートから一括削除する選択 stop id 群
+  // 🆕 v9.54: ピン位置の現地修正 { id, field:"address"|"owner", lat, lng, origLat, origLng, name }
+  const [pinEdit, setPinEdit] = useState(null);
   const [routeFitKey, setRouteFitKey] = useState(0);
   const [routeCelebrate, setRouteCelebrate] = useState(false);
   const routeRoadKeyRef = React.useRef("");
@@ -16760,6 +16781,30 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               window.open(url, "_blank");
             };
 
+            // 🆕 v9.54: ピン位置の現地修正
+            const pinEditSnapGps = () => {
+              if (!currentLoc) { alert("⚠️ 現在地がまだ取れていません。位置情報を許可してください。"); return; }
+              setPinEdit(p => p ? { ...p, lat: currentLoc.lat, lng: currentLoc.lng } : p);
+            };
+            const pinEditCancel = () => setPinEdit(null);
+            const pinEditSave = () => {
+              if (!pinEdit) return;
+              const pe = pinEdit;
+              setData(prev => {
+                const jiage = (prev.jiage || []).map(j => {
+                  if (String(j.id) !== String(pe.id)) return j;
+                  const _now = Date.now();
+                  if (pe.field === "owner") {
+                    return { ...j, ownerLat: pe.lat, ownerLng: pe.lng, _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), ownerLat: _now, ownerLng: _now }, updatedAt: _now };
+                  }
+                  return { ...j, lat: pe.lat, lng: pe.lng, coordsManual: true, _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), lat: _now, lng: _now, coordsManual: _now }, updatedAt: _now };
+                });
+                return { ...prev, jiage };
+              });
+              setPinEdit(null);
+              alert("✅ ピンの位置を更新しました。");
+            };
+
             return (
               <div style={{ marginBottom: 14 }}>
                 {/* ジオコーディング進捗・実行 */}
@@ -17534,9 +17579,33 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       onRouteStopTap={routeOnStopTap}
                       onRouteStopOpen={routeOnStopOpen}
                       routeFitKey={routeFitKey}
+                      editPin={pinEdit ? { lat: pinEdit.lat, lng: pinEdit.lng } : null}
+                      onEditPinMove={(lat, lng) => setPinEdit(p => p ? { ...p, lat, lng } : p)}
                     />
-                    {/* 🆕 v9.51: 訪問ルート提案（FAB + パネル + ゴール演出） */}
-                    {!(selected || showAdd || assessmentTarget) && (
+                    {/* 🆕 v9.54: ピン位置の現地修正パネル */}
+                    {pinEdit && (
+                      <div style={{
+                        position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 700,
+                        background: C.cardBg, borderTopLeftRadius: 16, borderTopRightRadius: 16,
+                        boxShadow: "0 -8px 32px rgba(0,0,0,0.45)", padding: "14px 16px 18px",
+                      }}>
+                        <div style={{ fontSize: 15, fontWeight: 800, color: C.text, marginBottom: 2 }}>
+                          📍 ピンの位置を直す <span style={{ background: "#f43f5e", color: "#fff", fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "2px 7px", marginLeft: 6 }}>編集中</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>{pinEdit.name || ""}（赤ピンをドラッグ、または現在地に合わせる）</div>
+                        <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", fontSize: 12, lineHeight: 1.6, marginBottom: 10 }}>
+                          元の位置からの移動: <b style={{ color: "#fbbf24" }}>{routeFmtDist(routeDist({ lat: pinEdit.origLat, lng: pinEdit.origLng }, { lat: pinEdit.lat, lng: pinEdit.lng }))}</b>
+                          {currentLoc && <><br />現在地との差: <b style={{ color: "#fbbf24" }}>{routeFmtDist(routeDist({ lat: currentLoc.lat, lng: currentLoc.lng }, { lat: pinEdit.lat, lng: pinEdit.lng }))}</b></>}
+                        </div>
+                        <button onClick={pinEditSnapGps} style={{ display: "block", width: "100%", border: "none", borderRadius: 10, padding: 12, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", background: C.success, color: "#fff", marginBottom: 8 }}>🛰 現在地（自分の場所）に合わせる</button>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button onClick={pinEditSave} style={{ flex: 1, border: "none", borderRadius: 10, padding: 12, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", background: C.accent, color: "#fff" }}>✅ ここで確定</button>
+                          <button onClick={pinEditCancel} style={{ flex: 1, border: "none", borderRadius: 10, padding: 12, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", background: C.bg, color: C.muted }}>キャンセル</button>
+                        </div>
+                      </div>
+                    )}
+                    {/* 🆕 v9.51: 訪問ルート提案（FAB + パネル + ゴール演出）※ピン位置修正中は隠す */}
+                    {!(selected || showAdd || assessmentTarget || pinEdit) && (
                       <>
                         {/* FAB（左下・絞り込みFABの上にスタック） */}
                         <button
@@ -17691,7 +17760,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     {/* 🆕 v9.41→v9.46.1: 地図内フローティング絞り込み ( FAB + 展開パネル ) ・ BottomSheet 表示中は非表示 */}
                     {(() => {
                       // 🆕 v9.46.1: ピン詳細 ・ 新規登録 ・ 査定書作成モーダル表示中は FAB を隠す ( 地図にのみ表示するため )
-                      if (selected || showAdd || assessmentTarget) return null;
+                      if (selected || showAdd || assessmentTarget || pinEdit) return null;
                       const stColor = (st) => JIAGE_STATUS_COLORS[st]
                         || (st === "NG" || st === "断られた" || st === "お断り" ? "#ef4444"
                         : st === "訪問済" ? C.success
@@ -18353,6 +18422,21 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               <div style={{ fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: _isPendingLot ? 8 : 0 }}>
                 座標: {typeof _raw.lat === "number" ? _raw.lat.toFixed(6) : "?"}, {typeof _raw.lng === "number" ? _raw.lng.toFixed(6) : "?"}
               </div>
+              {/* 🆕 v9.54: ピン位置の現地修正（現地ピンのみ） */}
+              {_raw.coordsManual && (
+                <button onClick={() => {
+                  const useOwner = mapPinTarget === "ownerAddr";
+                  const lat = useOwner ? _raw.ownerLat : _raw.lat;
+                  const lng = useOwner ? _raw.ownerLng : _raw.lng;
+                  if (typeof lat !== "number" || typeof lng !== "number") { alert("⚠️ この座標がまだありません。"); return; }
+                  setPinEdit({ id: (selected.item.rawId != null ? selected.item.rawId : selected.item.id), field: useOwner ? "owner" : "address", lat, lng, origLat: lat, origLng: lng, name: _raw.address || _raw.ownerName || "" });
+                  setSelected(null);
+                }} style={{
+                  width: "100%", marginTop: 8, background: "#0ea5e922", color: C.accent,
+                  border: `1.5px solid ${C.accent}`, borderRadius: 8, padding: "9px 12px",
+                  cursor: "pointer", fontSize: 12, fontWeight: 800, fontFamily: "inherit",
+                }}>📍 ピンの位置を直す（現地でズレを修正）</button>
+              )}
               {/* 🆕 v8.114: 対象外フラグの手動トグル（謄本待ち or 対象外 のときに表示） */}
               {!_isPendingLot && !_hasOwnerSel && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.borderDim}` }}>
