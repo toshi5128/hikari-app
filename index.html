@@ -65,7 +65,15 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::
 .hk-confetti{position:absolute;width:10px;height:14px;top:-20px;z-index:1199;will-change:transform;pointer-events:none;}
 @keyframes hkFall{to{transform:translateY(110vh) rotate(720deg)}}
 /* 🆕 v9.54: ピン位置の現地修正マーカー（赤・点滅） */
-.hk-pinedit{background:#f43f5e;color:#fff;border:3px solid #fff;border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.6);animation:hkNextPulse 1s infinite;}</style>
+.hk-pinedit{background:#f43f5e;color:#fff;border:3px solid #fff;border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.6);animation:hkNextPulse 1s infinite;}
+/* 🆕 v9.59: DM手紙の印刷（window.open不要・iOS安全）。#dm-print-root だけを印刷 */
+#dm-print-root{display:none;}
+@media print{
+  body *{visibility:hidden !important;}
+  #dm-print-root, #dm-print-root *{visibility:visible !important;}
+  #dm-print-root{display:block !important;position:absolute;left:0;top:0;width:100%;}
+  .dm-letter{page-break-after:always;}
+}</style>
 <script>
 // ローディングメッセージを段階的に変える（ユーザーに状況を伝える）
 var hikariLoadingMessages = [
@@ -167,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.58-ios-nav-anchor-and-errorboundary";
+const APP_VERSION = "2026-06-09-v9.59-dm-management";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2012,7 +2020,7 @@ function mergeWithDefault(remote) {
 // ============== 🆕 v6: 項目ごとマージ（編集の取り合いを防ぐ）==============
 // 「物件まるごと最後の勝ち」だと、2人が別の項目を編集しても片方が丸ごと負ける。
 // 項目ごとに更新時刻を持たせ、項目単位で新しい方を採用する。反響・写真・コメント等のリストは「上書き」でなく「合算」する。
-const MERGEABLE_ARRAY_FIELDS = new Set(["viewings", "photos", "comments", "visitLog", "history", "family"]);
+const MERGEABLE_ARRAY_FIELDS = new Set(["viewings", "photos", "comments", "visitLog", "history", "family", "dmLog"]);
 
 // 🆕 v8.35: ネスト配列の削除を tombstone で他端末に伝えるための設定
 //   ・viewings 用と同じパターンを、家族構成・履歴・訪問ログ・写真にも横展開
@@ -7673,6 +7681,10 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                 setKanaLoading(false);
               }} disabled={kanaLoading} style={{ ...btnStyle(), padding: "0 12px", fontSize: 12, whiteSpace: "nowrap", opacity: kanaLoading ? 0.6 : 1 }}>{kanaLoading ? "..." : "✨自動"}</button>
             </div>
+          </Field>
+          {/* 🆕 v9.59: DMの宛名用 郵便番号 */}
+          <Field label="郵便番号（DM宛名用）">
+            <input style={inp} value={quickEditJiageForm.ownerZip || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, ownerZip: e.target.value }))} placeholder="例：360-0037" />
           </Field>
           <Field label="所有者住所">
             <input style={inp} value={quickEditJiageForm.ownerAddr || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, ownerAddr: e.target.value }))} placeholder="謄本記載の住所" />
@@ -18468,6 +18480,18 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const _isShared = _ownerStr.includes("・") || _memoStr.includes("【共有者あり】");
               return _isShared ? <Tag label="👥 共有者あり" color={C.danger} /> : null;
             })()}
+            {/* 🆕 v9.59: DM送付状況バッジ（送った/未送付が一目で分かる） */}
+            {selected.item.type === "jiage" && (() => {
+              const _st = dmStateFor(_raw);
+              if (_st === "対象外") return null; // 法人・所有者なし・対象外はDM対象外なので出さない
+              const _n = dmSentCountFor(_raw);
+              if (_st === "返送") return <Tag label="📩 DM返送" color="#ef4444" />;
+              if (_st === "反応") return <Tag label="🔥 DM反応あり" color="#a855f7" />;
+              if (_st === "不要") return <Tag label="🚫 DM不要" color="#64748b" />;
+              if (_st === "住所未取得") return <Tag label="📭 DM未送付(住所未取得)" color="#94a3b8" />;
+              if (_n > 0) return <Tag label={`📩 DM送付済 ${_n}回`} color={C.success} />;
+              return <Tag label="📭 DM未送付" color="#fbbf24" />;
+            })()}
           </div>
 
           {/* 🆕 v9.18: ピン写真セクション（全ピン共通、 現地ピン以外も含む） */}
@@ -20917,6 +20941,284 @@ function WebPushSection({ currentUser, data }) {
   );
 }
 
+// ===================== DM 管理 (v9.59) =====================
+const DM_FROM = { co: "合同会社ひかり不動産", license: "埼玉県知事（１）第２５１３１号", addr: "埼玉県熊谷市籠原南1丁目225番地", person: "宅地建物取引士　比嘉（ひが）", tel: "０４８―５１１―０２２７", mobile: "０９０－８５５８－４０７８", mail: "biz@hikarifudosan.com" };
+function dmWareki() { const n = new Date(); return `令和${n.getFullYear() - 2018}年 ${n.getMonth() + 1}月 吉日`; }
+function dmTodayStr() { const n = new Date(); return `${n.getFullYear()}/${String(n.getMonth() + 1).padStart(2, "0")}/${String(n.getDate()).padStart(2, "0")}`; }
+function dmNewId() { return "dm" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function dmNorm(s) { return String(s || "").replace(/[\s　〒]/g, "").replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); }
+function dmLetterBody(name, prop) {
+  return `突然のお手紙、大変失礼致します。\n『埼玉県熊谷市籠原南1丁目２２５番地』にて不動産業を行っております。\nひかり不動産の比嘉（ひが）と申します。\n\nこの度、お手紙をお送りしましたのは、私どもは埼玉県を中心に空き家の買取・活用を行っております。\n弊社にて空き家調査を実施しました際に${name}様がお持ちの『${prop}』不動産が目に留まりました。\n現在こちらのお宅は居住されておりますでしょうか。\nもし空き家であり御売却の意思がございましたら、当社にて現状のまま買取させていただく事も可能です。\n「処分に困っている」「管理が大変」などのお悩みがございましたら、ぜひ一度ご相談ください。\n\n誠に勝手な話で大変申し訳ございませんが、もし御売却を検討頂ける場合は\n「ひかり不動産」の比嘉（ひが）までご連絡頂ければ幸いです。\n\n弊社チラシを同封させていただきますのでお時間ある時に御覧いただければ幸いです。\n\n※しつこい営業は一切致しませんのでご安心ください。\n※今すぐでなく将来的に売却を検討されている場合でもご相談可能です。\n※簡単なご質問やご相談でもお気軽にご連絡ください。`;
+}
+// 🆕 v9.59: ピン詳細・絞り込みでも使う共通のDM状態導出
+function dmLogSortedFor(j) { return (Array.isArray(j.dmLog) ? [...j.dmLog] : []).sort((a, b) => (a.ts || 0) - (b.ts || 0)); }
+function dmSentCountFor(j) { const lg = dmLogSortedFor(j).filter(e => e.t === "送付").length; const legacy = j.dm === "①" ? 1 : j.dm === "②" ? 2 : j.dm === "済" ? 1 : 0; return Math.max(lg, legacy); }
+function dmStateFor(j) {
+  const on = String(j.owner || j.ownerName || "").trim();
+  if (!on || isCorporateOwner(on) || j.excluded === true) return "対象外"; // DM対象でない
+  let st = ""; dmLogSortedFor(j).forEach(e => { if (e.t === "不要") st = "不要"; else if (e.t === "反応") st = "反応"; else if (e.t === "返送") st = "返送"; else if (e.t === "住所修正") { if (st === "返送") st = ""; } else if (e.t === "復活") st = ""; });
+  if (!st && !dmLogSortedFor(j).some(e => ["不要", "反応", "返送"].includes(e.t)) && j.dm === "📩返送") st = "返送";
+  if (st) return st;
+  return String(j.ownerAddr || "").trim() ? "送付対象" : "住所未取得";
+}
+
+function DMPage({ data, setData, onBack }) {
+  const me = (typeof getCurrentUser === "function" && getCurrentUser()) || "";
+  const [view, setView] = useState("送付対象");
+  const [fCount, setFCount] = useState("all");
+  const [fArea, setFArea] = useState("すべて");
+  const [fAsg, setFAsg] = useState("すべて");
+  const [sel, setSel] = useState([]);
+  const [screen, setScreen] = useState("board");
+  const [pIdx, setPIdx] = useState(0);
+  const [printing, setPrinting] = useState(null);
+  const [editAddr, setEditAddr] = useState(null); // { id, addr, zip }
+
+  const jiage = Array.isArray(data.jiage) ? data.jiage : [];
+  const ownerName = j => String(j.owner || j.ownerName || "").trim();
+  const mailAddr = j => String(j.ownerAddr || "").trim();
+  const propAddr = j => String(j.address || "").trim();
+  const universe = jiage.filter(j => j && ownerName(j) && !isCorporateOwner(ownerName(j)) && j.excluded !== true);
+  const dmlog = j => (Array.isArray(j.dmLog) ? [...j.dmLog] : []).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const sentCount = j => { const lg = dmlog(j).filter(e => e.t === "送付").length; const legacy = j.dm === "①" ? 1 : j.dm === "②" ? 2 : j.dm === "済" ? 1 : 0; return Math.max(lg, legacy); };
+  const everRet = j => dmlog(j).some(e => e.t === "返送") || j.dm === "📩返送";
+  const everRea = j => dmlog(j).some(e => e.t === "反応");
+  const everNo = j => dmlog(j).some(e => e.t === "不要");
+  const stateOf = j => {
+    let st = ""; dmlog(j).forEach(e => { if (e.t === "不要") st = "不要"; else if (e.t === "反応") st = "反応"; else if (e.t === "返送") st = "返送"; else if (e.t === "住所修正") { if (st === "返送") st = ""; } else if (e.t === "復活") st = ""; });
+    if (!st && !dmlog(j).some(e => ["不要", "反応", "返送"].includes(e.t)) && j.dm === "📩返送") st = "返送";
+    if (st) return st;
+    return mailAddr(j) ? "送付対象" : "住所未取得";
+  };
+  const okey = j => ownerName(j) + "|" + dmNorm(mailAddr(j));
+  const otherCnt = j => universe.filter(p => p.id !== j.id && okey(p) === okey(j)).length;
+  const areaA = j => fArea === "すべて" || (j.area || "") === fArea;
+  const asgA = j => fAsg === "すべて" || (j.assignee || "") === fAsg;
+
+  const areas = ["すべて", ...Array.from(new Set(universe.map(j => j.area || "").filter(Boolean)))];
+  const asgs = ["すべて", ...Array.from(new Set(universe.map(j => j.assignee || "").filter(Boolean)))];
+  const nState = s => universe.filter(j => stateOf(j) === s).length;
+  const countSend = n => universe.filter(j => stateOf(j) === "送付対象" && (n === 3 ? sentCount(j) >= 3 : sentCount(j) === n) && areaA(j) && asgA(j)).length;
+  const visible = () => {
+    if (view === "送付対象") return universe.filter(j => stateOf(j) === "送付対象" && (fCount === "all" || (fCount === 3 ? sentCount(j) >= 3 : sentCount(j) === fCount)) && areaA(j) && asgA(j));
+    return universe.filter(j => stateOf(j) === view);
+  };
+  // 成果集計（エリア・担当で絞り込み）
+  const stats = (() => {
+    const base = universe.filter(j => areaA(j) && asgA(j));
+    const sp = base.filter(j => sentCount(j) > 0);
+    const sou = sp.length, tsu = sp.reduce((a, j) => a + sentCount(j), 0);
+    const ret = sp.filter(everRet).length, rea = sp.filter(everRea).length, no = sp.filter(everNo).length;
+    const pct = x => sou ? Math.round(x / sou * 1000) / 10 : 0;
+    return { sou, tsu, ret, rea, no, retP: pct(ret), reaP: pct(rea), noP: pct(no) };
+  })();
+
+  // ===== 同期セーフな追記（dmLog はマージ対象配列・固有ID付き） =====
+  const appendLog = (ids, t) => {
+    const set = new Set(ids.map(String));
+    setData(prev => {
+      const arr = Array.isArray(prev.jiage) ? prev.jiage : [];
+      const next = arr.map(j => {
+        if (!set.has(String(j.id))) return j;
+        const entry = { id: dmNewId(), t, d: dmTodayStr(), ts: Date.now(), by: me };
+        return { ...j, dmLog: [...(Array.isArray(j.dmLog) ? j.dmLog : []), entry] };
+      });
+      return { ...prev, jiage: next };
+    });
+  };
+  const sameOwnerIds = (j, states) => universe.filter(p => okey(p) === okey(j) && (!states || states.includes(stateOf(p)))).map(p => p.id);
+  const markReturn = (j) => { const ids = sameOwnerIds(j, ["送付対象"]); appendLog(ids, "返送"); if (ids.length > 1) alert(`同じ住所の物件 ${ids.length}件 をまとめて返送扱いにしました（住所要確認）。`); };
+  const markReaction = (j) => { if (!window.confirm("「連絡あり」として記録します。\nこの後、所有者ステータス更新や訪問予定の作成は、地上げ/所有者画面から行ってください（日付はご自身で入力）。\n記録しますか？")) return; appendLog([j.id], "反応"); alert("🔥 連絡ありを記録しました。地上げ/所有者でフォロー（訪問・査定）を進めてください。"); };
+  const markNo = (j) => { if (!window.confirm("このピンを「もう送らない（DM対象外）」にしますか？")) return; appendLog([j.id], "不要"); };
+  const undo = (j) => { appendLog([j.id], "復活"); };
+
+  // 住所の修正（返送・住所未取得 → 送付対象へ）。同じ所有者の物件にもまとめて反映
+  const openAddrEdit = (j) => setEditAddr({ id: j.id, addr: mailAddr(j), zip: j.ownerZip || "" });
+  const saveAddrEdit = () => {
+    if (!editAddr) return;
+    const target = jiage.find(j => String(j.id) === String(editAddr.id));
+    if (!target) { setEditAddr(null); return; }
+    const oldKey = okey(target);
+    const newAddr = String(editAddr.addr || "").trim(), newZip = String(editAddr.zip || "").trim();
+    setData(prev => {
+      const arr = Array.isArray(prev.jiage) ? prev.jiage : [];
+      const next = arr.map(j => {
+        const isSame = ownerName(j) + "|" + dmNorm(mailAddr(j)) === oldKey && ownerName(j);
+        if (String(j.id) !== String(editAddr.id) && !isSame) return j;
+        const _now = Date.now();
+        const entry = { id: dmNewId(), t: "住所修正", d: dmTodayStr(), ts: _now, by: me };
+        return { ...j, ownerAddr: newAddr, ownerZip: newZip, dmLog: [...(Array.isArray(j.dmLog) ? j.dmLog : []), entry] };
+      });
+      return { ...prev, jiage: next };
+    });
+    setEditAddr(null);
+  };
+
+  // ===== 作成・印刷 =====
+  const selPins = () => universe.filter(j => sel.includes(j.id));
+  const printable = () => selPins().filter(j => mailAddr(j));
+  const doPrint = () => { const p = printable(); if (p.length) setPrinting(p); };
+  React.useEffect(() => { if (printing) { const t = setTimeout(() => { try { window.print(); } catch (e) {} setPrinting(null); }, 200); return () => clearTimeout(t); } }, [printing]);
+  const markSent = () => { const p = printable(); if (!p.length) return; appendLog(p.map(j => j.id), "送付"); setSel([]); setScreen("board"); setView("送付対象"); alert(`✅ ${p.length}件を送付済みにしました（履歴に記録＝同期で消えません）。`); };
+
+  const toggle = id => setSel(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  const selectAll = () => { const v = visible().map(j => j.id); setSel(sel.length > 0 ? [] : v); };
+
+  // ===== 手紙ビュー =====
+  const Letter = (j) => (
+    <div className="dm-letter" key={j.id} style={{ background: "#fff", color: "#1a1a1a", padding: "16mm 14mm", fontSize: 13, lineHeight: 1.85, fontFamily: "'Noto Sans JP',serif", borderRadius: screen === "create" ? 10 : 0, marginBottom: screen === "create" ? 0 : 0 }}>
+      <div style={{ textAlign: "right", fontSize: 12, color: "#333", marginBottom: 16 }}>{dmWareki()}</div>
+      <div style={{ border: "1.5px dashed #0ea5e9", borderRadius: 6, padding: "8px 10px", position: "relative" }}>
+        <span style={{ position: "absolute", top: -9, left: 8, background: "#fff", color: "#0ea5e9", fontSize: 9, fontWeight: 800, padding: "0 5px" }}>👁 封筒の窓に出る部分</span>
+        <div>〒{j.ownerZip || ""}　</div>
+        <div>{mailAddr(j)}</div>
+        <div style={{ fontSize: 16, fontWeight: 800, marginTop: 4 }}>{ownerName(j)}　殿</div>
+      </div>
+      <div style={{ fontWeight: 800, fontSize: 15, margin: "14px 0 8px" }}>【売却に関するご相談】</div>
+      <div style={{ whiteSpace: "pre-wrap" }}>{dmLetterBody(ownerName(j), propAddr(j))}</div>
+      <div style={{ marginTop: 16, borderTop: "1px solid #ccc", paddingTop: 10, fontSize: 12, color: "#333" }}>
+        {DM_FROM.co}<br />{DM_FROM.license}<br />{DM_FROM.addr}<br />{DM_FROM.person}<br />電話番号：{DM_FROM.tel}<br />携帯直通：{DM_FROM.mobile}<br />メールアドレス：{DM_FROM.mail}
+      </div>
+    </div>
+  );
+
+  // ===== 作成画面 =====
+  if (screen === "create") {
+    const ps = printable(), missing = selPins().length - ps.length, o = ps[Math.min(pIdx, ps.length - 1)] || ps[0];
+    return (
+      <div>
+        <div id="dm-print-root">{printing ? printing.map(Letter) : null}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+          <button onClick={() => setScreen("board")} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+          <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>📨 DM作成・プレビュー</div>
+        </div>
+        <div style={{ fontSize: 12, color: C.accent, background: C.accentBg, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "8px 10px", marginBottom: 12, lineHeight: 1.6 }}>👁 <b>窓付き封筒方式</b>：手紙だけ印刷すれば、青枠の宛名が封筒の窓から見えます（封筒への宛名印刷は不要）。<br />※ 実際の封筒に合わせて、初回だけ宛名の位置を微調整してください。</div>
+        {missing > 0 && <div style={{ background: "#ef444422", border: "1px solid #ef4444", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fca5a5", marginBottom: 10 }}>⚠ 送付先住所が未登録の {missing}件 は印刷から除外しました。</div>}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, color: C.muted, fontSize: 12 }}>
+          <button onClick={() => setPIdx(i => (i - 1 + ps.length) % Math.max(1, ps.length))} style={{ background: C.bg, border: `1px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 800 }}>◀</button>
+          <span>{ps.length ? Math.min(pIdx, ps.length - 1) + 1 : 0} / {ps.length} 件目</span>
+          <button onClick={() => setPIdx(i => (i + 1) % Math.max(1, ps.length))} style={{ background: C.bg, border: `1px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 800 }}>▶</button>
+        </div>
+        {o ? Letter(o) : <div style={{ textAlign: "center", color: C.muted, padding: 30 }}>印刷できる宛先がありません</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button onClick={doPrint} style={{ ...btnStyle(), flex: 2, padding: 13 }}>🖨 手紙を印刷（{ps.length}件）</button>
+        </div>
+        <button onClick={markSent} style={{ width: "100%", marginTop: 8, background: C.success, color: "#fff", border: "none", borderRadius: 10, padding: 13, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✅ この {ps.length} 件を送付済みに（履歴に+1）</button>
+      </div>
+    );
+  }
+
+  // ===== ボード =====
+  const list = visible();
+  const sc = stats;
+  const Kpi = (l, big, sub, col) => (<div style={{ flex: 1, background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "8px 4px", textAlign: "center" }}><div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l}</div><div style={{ fontSize: 17, fontWeight: 800, color: col, lineHeight: 1.2 }}>{big}</div><div style={{ fontSize: 10, color: C.text }}>{sub}</div></div>);
+  const Tab = (v, l) => (<button key={v} onClick={() => { setView(v); setSel([]); }} style={{ flex: "none", background: view === v ? C.accent : C.bg, color: view === v ? "#fff" : C.muted, border: `1.5px solid ${view === v ? C.accent : C.borderDim}`, borderRadius: 20, padding: "7px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer", whiteSpace: "nowrap", fontFamily: "inherit" }}>{l} {nState(v)}</button>);
+  const Chip = (v, l, c) => { const on = String(fCount) === String(v); return (<button key={l} onClick={() => { setFCount(v); setSel([]); }} style={{ background: on ? C.accent : C.bg, color: on ? "#fff" : C.text, border: `1.5px solid ${on ? C.accent : C.borderDim}`, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{l}{c !== "" ? ` ${c}` : ""}</button>); };
+
+  return (
+    <div>
+      <div id="dm-print-root">{printing ? printing.map(Letter) : null}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+        <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>📩 DM管理</div>
+      </div>
+
+      {/* 成果集計 */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>📊 成果集計（エリア・担当で絞り込み）</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <select value={fArea} onChange={e => { setFArea(e.target.value); setSel([]); }} style={{ ...inp, flex: 1, fontSize: 12, padding: 8 }}>{areas.map(a => <option key={a}>{a}</option>)}</select>
+          <select value={fAsg} onChange={e => { setFAsg(e.target.value); setSel([]); }} style={{ ...inp, flex: 1, fontSize: 12, padding: 8 }}>{asgs.map(a => <option key={a}>{a}</option>)}</select>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {Kpi("送付先", sc.sou + "件", `延べ ${sc.tsu}通`, C.accent)}
+          {Kpi("📩返送", sc.ret + "件", `${sc.retP}%`, "#ef4444")}
+          {Kpi("🔥反応", sc.rea + "件", `反応率 ${sc.reaP}%`, "#a855f7")}
+          {Kpi("🚫不要", sc.no + "件", `${sc.noP}%`, C.muted)}
+        </div>
+        <div style={{ fontSize: 10, color: C.muted, marginTop: 8 }}>※ 率は「送付先数」に対する割合（{fArea === "すべて" ? "全エリア" : fArea}・{fAsg === "すべて" ? "全担当" : fAsg}）</div>
+      </div>
+
+      {/* タブ */}
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 12, paddingBottom: 2 }}>
+        {Tab("送付対象", "📨 送付対象")}{Tab("住所未取得", "🏠 住所未取得")}{Tab("返送", "📩 返送")}{Tab("反応", "🔥 反応")}{Tab("不要", "🚫 不要")}
+      </div>
+
+      {/* 絞り込み（送付対象のみ） */}
+      {view === "送付対象" && (
+        <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>送信回数で絞り込み（履歴から自動集計）</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {Chip("all", "すべて", "")}{Chip(0, "未送信", countSend(0))}{Chip(1, "1回", countSend(1))}{Chip(2, "2回", countSend(2))}{Chip(3, "3回以上", countSend(3))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ flex: 1, fontSize: 12, color: C.accent, fontWeight: 800 }}>該当 {list.length}件</span>
+        {view === "送付対象" && <button onClick={selectAll} style={{ background: C.bg, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{sel.length > 0 ? "選択解除" : "表示中を全選択"}</button>}
+      </div>
+
+      {list.length === 0 ? <div style={{ textAlign: "center", color: C.muted, padding: 30, fontSize: 13 }}>対象がありません</div> : list.map(j => {
+        const st = stateOf(j), selected = sel.includes(j.id), n = sentCount(j), oc = otherCnt(j);
+        const col = n >= 3 ? "#f43f5e" : n === 2 ? "#f59e0b" : n === 1 ? "#0ea5e9" : "#64748b";
+        const sendLbl = n === 0 ? "未送信" : `送信 ${n}回`;
+        return (
+          <div key={j.id} style={{ background: selected ? "#0ea5e914" : C.cardBg, border: `1px solid ${selected ? C.accent : C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              {st === "送付対象" && <button onClick={() => toggle(j.id)} style={{ flex: "none", width: 22, height: 22, borderRadius: 6, border: `2px solid ${selected ? C.accent : C.borderDim}`, background: selected ? C.accent : "transparent", color: "#fff", fontSize: 14, fontWeight: 900, cursor: "pointer", marginTop: 2 }}>{selected ? "✓" : ""}</button>}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {j.ownerKana && <div style={{ fontSize: 10, color: "#0ea5e9", lineHeight: 1 }}>{j.ownerKana}</div>}
+                <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{ownerName(j)} 様
+                  <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: st === "送付対象" ? col : st === "返送" ? "#ef4444" : st === "反応" ? "#a855f7" : "#475569", color: "#fff" }}>{st === "送付対象" ? sendLbl : st}</span>
+                </div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}>⚠ 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 担当 {j.assignee || "—"}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／👥この所有者は他に{oc}件</span>}</div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
+                  {st === "送付対象" && <>
+                    <button onClick={() => markReturn(j)} style={dmActBtn("#ef4444")}>📩 返送</button>
+                    <button onClick={() => markReaction(j)} style={dmActBtn("#a855f7")}>🔥 連絡あり</button>
+                    <button onClick={() => markNo(j)} style={dmActBtn("#64748b")}>🚫 もう送らない</button>
+                  </>}
+                  {st === "住所未取得" && <button onClick={() => openAddrEdit(j)} style={dmActBtn("#0ea5e9")}>✏️ 住所を入力</button>}
+                  {st === "返送" && <button onClick={() => openAddrEdit(j)} style={dmActBtn("#0ea5e9")}>✏️ 住所を直して送付対象に戻す</button>}
+                  {st === "反応" && <button onClick={() => undo(j)} style={dmActBtn("#64748b")}>DMに戻す</button>}
+                  {st === "不要" && <button onClick={() => undo(j)} style={dmActBtn("#64748b")}>対象に戻す</button>}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* 送付対象：作成ボタン */}
+      {view === "送付対象" && (
+        <div style={{ position: "sticky", bottom: 0, paddingTop: 10 }}>
+          <button onClick={() => { setPIdx(0); setScreen("create"); }} disabled={sel.length === 0} style={{ width: "100%", border: "none", borderRadius: 10, padding: 14, fontSize: 14, fontWeight: 800, cursor: sel.length ? "pointer" : "default", fontFamily: "inherit", background: sel.length ? C.accent : C.borderDim, color: sel.length ? "#fff" : C.muted }}>📨 選択した {sel.length} 件でDMを作成</button>
+        </div>
+      )}
+
+      {/* 住所編集モーダル */}
+      {editAddr && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 3000, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => setEditAddr(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: C.cardBg, width: "100%", maxWidth: 560, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 18 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.text, marginBottom: 10 }}>✏️ 送付先住所を直す</div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>同じ所有者・同じ住所の物件もまとめて更新します。</div>
+            <label style={{ fontSize: 11, color: C.muted }}>郵便番号</label>
+            <input value={editAddr.zip} onChange={e => setEditAddr(a => ({ ...a, zip: e.target.value }))} placeholder="例：360-0037" style={{ ...inp, marginBottom: 8 }} />
+            <label style={{ fontSize: 11, color: C.muted }}>送付先住所</label>
+            <input value={editAddr.addr} onChange={e => setEditAddr(a => ({ ...a, addr: e.target.value }))} placeholder="埼玉県…" style={{ ...inp, marginBottom: 12 }} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setEditAddr(null)} style={{ flex: 1, background: C.bg, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>キャンセル</button>
+              <button onClick={saveAddrEdit} style={{ flex: 2, ...btnStyle(), padding: 12 }}>保存して送付対象に戻す</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function dmActBtn(col) { return { background: "transparent", border: `1px solid ${col}`, color: col, borderRadius: 7, padding: "5px 8px", fontSize: 10, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }; }
+
 // ===================== MORE PAGE (役所・積算) =====================
 function MorePage({ data, setData, onLock, onSwitchUser }) {
   const [subPage, setSubPage] = useState(null);
@@ -20934,6 +21236,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
   if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "investors") return <InvestorListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "shorui") return <ShoruiPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
+  if (subPage === "dm") return <DMPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   const hasPin = !!getPin();
   const activityLog = data.activityLog || [];
   const notifPermission = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
@@ -21138,6 +21441,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
         { key: "yakusho", icon: "🏛", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
         { key: "investors", icon: "💎", title: "投資家リスト", desc: "反響で「投資家」を選択した顧客を自動集約", count: (data.stocks || []).reduce((a, s) => a + (s.viewings || []).filter(v => v.purpose === "投資家").length, 0) },
         { key: "shorui", icon: "📁", title: "書類関係", desc: "精算書ひな形・各種テンプレート", count: null },
+        { key: "dm", icon: "📩", title: "DM管理", desc: "送付・返送・反応の管理／窓付き封筒の手紙を一括作成", count: (data.jiage || []).filter(j => dmStateFor(j) === "送付対象").length },
       ].map(item => (
         <button key={item.key} onClick={() => setSubPage(item.key)} style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 20, marginBottom: 12, textAlign: "left", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 16, touchAction: "manipulation" }}>
           <span style={{ fontSize: 32 }}>{item.icon}</span>
