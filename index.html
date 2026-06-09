@@ -167,7 +167,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.55-photo-pick-from-gallery";
+const APP_VERSION = "2026-06-09-v9.56-owner-name-furigana";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2208,6 +2208,47 @@ function routeBuildOrder(start, stops, count, endId) {
     }
   }
   return seq.slice(1);
+}
+
+// 🆕 v9.56: 所有者名のふりがな自動推定（kuromoji.js を遅延ロード）
+//   ・初回だけ辞書(数MB)を読み込む。以後はオフラインでも動く。
+//   ・名前の読みは曖昧なので推定（特に下の名前）。間違いはユーザーが手直しする前提。
+let _kuromojiTk = null, _kuromojiPromise = null;
+function _loadKuromoji() {
+  if (_kuromojiTk) return Promise.resolve(_kuromojiTk);
+  if (_kuromojiPromise) return _kuromojiPromise;
+  _kuromojiPromise = new Promise((resolve, reject) => {
+    const build = () => {
+      if (typeof window.kuromoji === "undefined") { reject(new Error("kuromoji unavailable")); return; }
+      window.kuromoji.builder({ dicPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/" }).build((err, tk) => {
+        if (err) { reject(err); return; }
+        _kuromojiTk = tk; resolve(tk);
+      });
+    };
+    if (typeof window.kuromoji !== "undefined") { build(); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js";
+    s.onload = build;
+    s.onerror = () => reject(new Error("kuromoji script load failed"));
+    document.head.appendChild(s);
+  });
+  return _kuromojiPromise;
+}
+function _kataToHira(s) { return String(s || "").replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60)); }
+async function furiganaEstimate(name) {
+  const cleaned = String(name || "").trim();
+  if (!cleaned) return "";
+  // 法人名はふりがな対象外（読みが不要なことが多い）
+  if (isCorporateOwner(cleaned)) return "";
+  const tk = await _loadKuromoji();
+  const tokens = tk.tokenize(cleaned);
+  let out = "";
+  tokens.forEach(t => {
+    const sf = t.surface_form;
+    if (/^\s+$/.test(sf)) { out += " "; return; }
+    out += (t.reading && t.reading !== "*") ? _kataToHira(t.reading) : "";
+  });
+  return out.replace(/\s+/g, " ").trim();
 }
 
 // 同じidのアイテムを項目ごとにマージ
@@ -4299,7 +4340,7 @@ function AssessmentSheet({ pin, viewer, onClose }) {
       <div style={{ background: "#0284c711", border: "1px solid #0284c733", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12, lineHeight: 1.6 }}>
         <div><b>所在地:</b> {pin.address || "(空)"}</div>
         <div><b>目印住所:</b> {pin.landmark || "(空)"}</div>
-        <div><b>所有者:</b> {pin.ownerName || pin.owner || "(空)"}</div>
+        <div><b>所有者:</b> {pin.ownerKana ? <span style={{ fontSize: 9, color: "#0ea5e9", marginRight: 4 }}>（{pin.ownerKana}）</span> : null}{pin.ownerName || pin.owner || "(空)"}</div>
       </div>
 
       <div style={sec}>■ 物件詳細 ( 査定用追加入力 )</div>
@@ -4758,7 +4799,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         <div style="font-family:'Noto Sans JP',sans-serif;min-width:180px;">
           <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${popupTitle.slice(0, 50)}</div>
           ${_whoWhenHtml}
-          ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">👤 ${it.ownerName}</div>` : ""}
+          ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">${(it.ownerKana || (it.raw && it.raw.ownerKana)) ? `<div style="font-size:9px;color:#0ea5e9;line-height:1;margin-bottom:1px;">${it.ownerKana || it.raw.ownerKana}</div>` : ""}👤 ${it.ownerName}</div>` : ""}
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
           <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_excludedBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
           <button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を見る</button>
@@ -7588,6 +7629,20 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           <Field label="所有者名">
             <input style={inp} value={quickEditJiageForm.owner || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, owner: e.target.value }))} />
           </Field>
+          {/* 🆕 v9.56: ふりがな（自動推定＋手直し） */}
+          <Field label="ふりがな">
+            <div style={{ display: "flex", gap: 8 }}>
+              <input style={{ ...inp, flex: 1 }} value={quickEditJiageForm.ownerKana || ""} placeholder="例：しもだ おさむ" onChange={e => setQuickEditJiageForm(p => ({ ...p, ownerKana: e.target.value }))} />
+              <button onClick={async () => {
+                const nm = quickEditJiageForm.owner || "";
+                if (!nm.trim()) { alert("先に所有者名を入力してください。"); return; }
+                setKanaLoading(true);
+                try { const k = await furiganaEstimate(nm); setQuickEditJiageForm(p => ({ ...p, ownerKana: k })); if (!k) alert("うまく推定できませんでした。手入力してください。"); }
+                catch (e) { alert("ふりがな辞書の読み込みに失敗しました（通信をご確認ください）。"); }
+                setKanaLoading(false);
+              }} disabled={kanaLoading} style={{ ...btnStyle(), padding: "0 12px", fontSize: 12, whiteSpace: "nowrap", opacity: kanaLoading ? 0.6 : 1 }}>{kanaLoading ? "..." : "✨自動"}</button>
+            </div>
+          </Field>
           <Field label="所有者住所">
             <input style={inp} value={quickEditJiageForm.ownerAddr || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, ownerAddr: e.target.value }))} placeholder="謄本記載の住所" />
           </Field>
@@ -7634,6 +7689,20 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           </Field>
           <Field label="所有者名">
             <input style={inp} value={quickEditOwnerForm.ownerName || ""} onChange={e => setQuickEditOwnerForm(p => ({ ...p, ownerName: e.target.value }))} />
+          </Field>
+          {/* 🆕 v9.56: ふりがな（自動推定＋手直し） */}
+          <Field label="ふりがな">
+            <div style={{ display: "flex", gap: 8 }}>
+              <input style={{ ...inp, flex: 1 }} value={quickEditOwnerForm.ownerKana || ""} placeholder="例：しもだ おさむ" onChange={e => setQuickEditOwnerForm(p => ({ ...p, ownerKana: e.target.value }))} />
+              <button onClick={async () => {
+                const nm = quickEditOwnerForm.ownerName || "";
+                if (!nm.trim()) { alert("先に所有者名を入力してください。"); return; }
+                setKanaLoading(true);
+                try { const k = await furiganaEstimate(nm); setQuickEditOwnerForm(p => ({ ...p, ownerKana: k })); if (!k) alert("うまく推定できませんでした。手入力してください。"); }
+                catch (e) { alert("ふりがな辞書の読み込みに失敗しました（通信をご確認ください）。"); }
+                setKanaLoading(false);
+              }} disabled={kanaLoading} style={{ ...btnStyle(), padding: "0 12px", fontSize: 12, whiteSpace: "nowrap", opacity: kanaLoading ? 0.6 : 1 }}>{kanaLoading ? "..." : "✨自動"}</button>
+            </div>
           </Field>
           <Field label="所有者住所">
             <input style={inp} value={quickEditOwnerForm.ownerAddress || ""} onChange={e => setQuickEditOwnerForm(p => ({ ...p, ownerAddress: e.target.value }))} placeholder="謄本記載の住所" />
@@ -13667,6 +13736,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [routeSel, setRouteSel] = useState([]); // 🆕 v9.53: ルートから一括削除する選択 stop id 群
   // 🆕 v9.54: ピン位置の現地修正 { id, field:"address"|"owner", lat, lng, origLat, origLng, name }
   const [pinEdit, setPinEdit] = useState(null);
+  // 🆕 v9.56: ふりがな自動推定の実行中フラグ
+  const [kanaLoading, setKanaLoading] = useState(false);
   const [routeFitKey, setRouteFitKey] = useState(0);
   const [routeCelebrate, setRouteCelebrate] = useState(false);
   const routeRoadKeyRef = React.useRef("");
