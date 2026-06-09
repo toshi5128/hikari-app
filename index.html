@@ -167,7 +167,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.57-furigana-web-worker";
+const APP_VERSION = "2026-06-09-v9.57.1-furigana-inline-edit-in-detail";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13756,6 +13756,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [pinEdit, setPinEdit] = useState(null);
   // 🆕 v9.56: ふりがな自動推定の実行中フラグ
   const [kanaLoading, setKanaLoading] = useState(false);
+  // 🆕 v9.57: 物件詳細でふりがなをその場で直す { id, value } or null
+  const [kanaEdit, setKanaEdit] = useState(null);
   const [routeFitKey, setRouteFitKey] = useState(0);
   const [routeCelebrate, setRouteCelebrate] = useState(false);
   const routeRoadKeyRef = React.useRef("");
@@ -18710,15 +18712,38 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const _lo = (data.owners || []).find(o => String(o.id) === String(_oid));
               const _kana = (_lj && _lj.ownerKana) || (_lo && _lo.ownerKana) || selected.item.ownerKana || (_raw && _raw.ownerKana) || "";
               const _nm = selected.item.ownerName;
+              const _editing = kanaEdit && String(kanaEdit.id) === String(_oid);
+              // 🆕 v9.57: ふりがなを最新データに保存（手直し優先・同期セーフ）
+              const _saveKana = (val) => {
+                const v = String(val || "").trim();
+                setData(prev => {
+                  const _now = Date.now();
+                  const jiage = (prev.jiage || []).map(j => String(j.id) === String(_oid) ? { ...j, ownerKana: v, _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), ownerKana: _now }, updatedAt: _now } : j);
+                  const owners = (prev.owners || []).map(o => String(o.id) === String(_oid) ? { ...o, ownerKana: v, _fieldUpdatedAt: { ...(o._fieldUpdatedAt || {}), ownerKana: _now }, updatedAt: _now } : o);
+                  return { ...prev, jiage, owners };
+                });
+              };
               return (
                 <>
                   {_nm && (
-                    <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.borderDim}`, fontSize: 13 }}>
-                      <span style={{ color: C.muted }}>所有者名</span>
-                      <span style={{ color: C.text, textAlign: "right", maxWidth: "65%" }}>
-                        {_kana ? <span style={{ display: "block", fontSize: 10, color: "#0ea5e9", lineHeight: 1.2, marginBottom: 1 }}>{_kana}</span> : null}
-                        {_nm}
-                      </span>
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.borderDim}`, fontSize: 13, alignItems: "flex-start", gap: 8 }}>
+                      <span style={{ color: C.muted, flexShrink: 0 }}>所有者名</span>
+                      {_editing ? (
+                        <div style={{ flex: 1, display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
+                          <input value={kanaEdit.value} autoFocus placeholder="ふりがな（例：とりい さだゑ）"
+                            onChange={e => setKanaEdit({ id: _oid, value: e.target.value })}
+                            style={{ ...inp, flex: 1, minWidth: 120, fontSize: 13, padding: "6px 8px" }} />
+                          <button onClick={async () => { const k = await furiganaEstimate(_nm); if (k) setKanaEdit({ id: _oid, value: k }); }} title="自動で推定" style={{ background: "#0ea5e922", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✨</button>
+                          <button onClick={() => { _saveKana(kanaEdit.value); setKanaEdit(null); }} style={{ background: C.success, color: "#fff", border: "none", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>保存</button>
+                          <button onClick={() => setKanaEdit(null)} style={{ background: C.bg, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 7, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>×</button>
+                        </div>
+                      ) : (
+                        <span style={{ color: C.text, textAlign: "right", maxWidth: "70%" }}>
+                          {_kana ? <span style={{ display: "block", fontSize: 10, color: "#0ea5e9", lineHeight: 1.2, marginBottom: 1 }}>{_kana}</span> : null}
+                          {_nm}
+                          <button onClick={() => setKanaEdit({ id: _oid, value: _kana })} title="ふりがなを直す" style={{ marginLeft: 6, background: "transparent", border: "none", color: C.accent, fontSize: 12, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>✏️</button>
+                        </span>
+                      )}
                     </div>
                   )}
                   {[
