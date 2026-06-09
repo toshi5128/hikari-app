@@ -165,7 +165,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.51-visit-route-planner";
+const APP_VERSION = "2026-06-09-v9.52-route-fab-collapse-traveltime";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2165,6 +2165,9 @@ function routeDist(a, b) {
   return 2 * R * Math.asin(Math.sqrt(x));
 }
 function routeFmtDist(m) { return m >= 1000 ? (m / 1000).toFixed(1) + "km" : Math.round(m) + "m"; }
+// 移動時間の目安（OSRM未取得時のフォールバック：市街地 約20km/h ＝ 333m/分）
+function routeEstMin(m) { return Math.max(1, Math.round(m / 333)); }
+function routeFmtMin(min) { min = Math.max(0, Math.round(min)); return min >= 60 ? (Math.floor(min / 60) + "時間" + (min % 60 ? (min % 60) + "分" : "")) : (min + "分"); }
 // start から近い順に count 件を選び、効率順（最近傍法＋2-opt）に並べる。endId を指定すると終点固定。
 function routeBuildOrder(start, stops, count, endId) {
   if (!start || !Array.isArray(stops) || stops.length === 0) return [];
@@ -4442,7 +4445,7 @@ function PendingPhotoSection({ photos, onAdd, onRemove }) {
 }
 
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, routeFitKey }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, routeFitKey }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -4839,8 +4842,25 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         icon: L.divIcon({ html: `<div class="${cls}">${label}</div>`, className: "", iconSize: [sz, sz], iconAnchor: [anc, anc] }),
         zIndexOffset: (i === targetIndex) ? 1000 : 500,
       });
-      mk.bindPopup(`<div style="font-family:'Noto Sans JP',sans-serif;min-width:140px;"><b>${i + 1}. ${(s.name || "(無住所)").slice(0, 40)}</b><br><span style="font-size:11px;color:#64748b;">👆 タップで最終地点に設定</span></div>`, { autoClose: true, closeOnClick: true });
-      mk.on("click", () => { if (onRouteStopTap) onRouteStopTap(s.id); });
+      // 🆕 v9.52: タップ→2択（訪問記録 / 最終地点）。記録がメイン操作
+      mk.bindPopup(
+        `<div style="font-family:'Noto Sans JP',sans-serif;min-width:170px;">`
+        + `<div style="font-weight:800;font-size:13px;margin-bottom:6px;">${i + 1}. ${(s.name || "(無住所)").slice(0, 40)}</div>`
+        + `<button class="hk-route-log" style="display:block;width:100%;margin-bottom:5px;background:#22c55e;color:#fff;border:none;padding:8px;border-radius:7px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;">📍 訪問結果を記録する</button>`
+        + `<button class="hk-route-end" style="display:block;width:100%;background:#f59e0b;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">🟠 ここを最終地点にする</button>`
+        + `</div>`,
+        { autoClose: true, closeOnClick: true }
+      );
+      mk.on("popupopen", (e) => {
+        setTimeout(() => {
+          const node = e.popup && e.popup._contentNode;
+          if (!node) return;
+          const lb = node.querySelector(".hk-route-log");
+          if (lb) lb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRouteStopOpen) onRouteStopOpen(s.id); };
+          const eb = node.querySelector(".hk-route-end");
+          if (eb) eb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRouteStopTap) onRouteStopTap(s.id); };
+        }, 10);
+      });
       mk.addTo(grp);
     });
     grp.addTo(map);
@@ -13614,7 +13634,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [centerLocKey, setCenterLocKey] = useState(0); // 現在地センタリング trigger
   // 🆕 v9.51: 訪問ルート提案
   //   route = { open, count, endId, stops:[{id,lat,lng,name}], targetIndex, road:{coords,duration}|null }
-  const [route, setRoute] = useState({ open: false, count: 10, endId: "", stops: [], targetIndex: 0, road: null });
+  const [route, setRoute] = useState({ open: false, minimized: false, count: 10, endId: "", stops: [], targetIndex: 0, road: null });
   const [routeFitKey, setRouteFitKey] = useState(0);
   const [routeCelebrate, setRouteCelebrate] = useState(false);
   const routeRoadKeyRef = React.useRef("");
@@ -13633,7 +13653,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       if (aborted) return;
       if (j && j.routes && j.routes[0] && j.routes[0].geometry) {
         const coords = j.routes[0].geometry.coordinates.map(c => [c[1], c[0]]); // [lng,lat]→[lat,lng]
-        setRoute(prev => (prev.open ? { ...prev, road: { coords, duration: j.routes[0].duration, distance: j.routes[0].distance } } : prev));
+        const legs = Array.isArray(j.routes[0].legs) ? j.routes[0].legs.map(lg => ({ duration: lg.duration, distance: lg.distance })) : null;
+        setRoute(prev => (prev.open ? { ...prev, road: { coords, duration: j.routes[0].duration, distance: j.routes[0].distance, legs } } : prev));
       } else {
         setRoute(prev => (prev.open ? { ...prev, road: null } : prev));
       }
@@ -16674,13 +16695,20 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const stops = routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, routeAllStops, count, endId);
               if (stops.length === 0) { alert("⚠️ ルートにできるピンが地図にありません。"); return; }
               routeRoadKeyRef.current = "";
-              setRoute({ open: true, count, endId: endId || "", stops, targetIndex: 0, road: null });
+              setRoute({ open: true, minimized: false, count, endId: endId || "", stops, targetIndex: 0, road: null });
               setRouteCelebrate(false);
               setRouteFitKey(Date.now());
             };
             const routeOpen = () => routeRecompute(route.count, "");
-            const routeClose = () => setRoute(r => ({ ...r, open: false }));
+            const routeClose = () => setRoute(r => ({ ...r, open: false, minimized: false }));
+            const routeMinimize = () => setRoute(r => ({ ...r, minimized: true }));
+            const routeExpand = () => setRoute(r => ({ ...r, minimized: false }));
             const routeOnStopTap = (id) => routeRecompute(route.count, String(id) === String(route.endId) ? "" : id);
+            // 🆕 v9.52: ピンの「📍訪問結果を記録する」→ ピン詳細を開く（既存の訪問記録UIへ）
+            const routeOnStopOpen = (id) => {
+              const it = itemsWithCoord.find(x => String(x.id != null ? x.id : x.rawId) === String(id));
+              if (it) { setRoute(r => ({ ...r, minimized: true })); setSelected({ item: it }); }
+            };
             const routeArriveNext = () => {
               setRoute(prev => {
                 if (!prev.open || prev.targetIndex >= prev.stops.length) return prev;
@@ -17472,17 +17500,18 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         roadCoords: route.road && route.road.coords,
                       } : null}
                       onRouteStopTap={routeOnStopTap}
+                      onRouteStopOpen={routeOnStopOpen}
                       routeFitKey={routeFitKey}
                     />
                     {/* 🆕 v9.51: 訪問ルート提案（FAB + パネル + ゴール演出） */}
                     {!(selected || showAdd || assessmentTarget) && (
                       <>
-                        {/* FAB（右下） */}
+                        {/* FAB（左下・絞り込みFABの上にスタック） */}
                         <button
                           onClick={() => route.open ? routeClose() : routeOpen()}
                           title="訪問ルート提案"
                           style={{
-                            position: "absolute", right: 12, bottom: 90, zIndex: 600,
+                            position: "absolute", left: 12, bottom: 154, zIndex: 601,
                             width: 56, height: 56, borderRadius: "50%",
                             background: route.open ? "#0ea5e9" : "#fff",
                             border: "1px solid rgba(0,0,0,0.12)", boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
@@ -17494,8 +17523,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           <span style={{ fontSize: 8, color: route.open ? "#e0f2fe" : C.muted, marginTop: 1, fontWeight: 700, letterSpacing: 0.4 }}>ルート</span>
                         </button>
 
-                        {/* パネル */}
-                        {route.open && (
+                        {/* パネル（最小化中は非表示） */}
+                        {route.open && !route.minimized && (
                           <div style={{
                             position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 650,
                             background: C.cardBg, borderTopLeftRadius: 16, borderTopRightRadius: 16,
@@ -17505,6 +17534,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {/* ヘッダー */}
                             <div style={{ padding: "12px 16px 8px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${C.borderDim}` }}>
                               <h3 style={{ fontSize: 15, margin: 0, flex: 1, fontWeight: 800, color: C.text }}>🧭 訪問ルート提案</h3>
+                              <button onClick={routeMinimize} title="小さくする（地図を広く見る）" style={{ background: C.bg, border: "none", color: C.muted, width: 30, height: 30, borderRadius: 8, fontSize: 16, cursor: "pointer" }}>▼</button>
                               <button onClick={routeClose} style={{ background: C.bg, border: "none", color: C.muted, width: 30, height: 30, borderRadius: 8, fontSize: 16, cursor: "pointer" }}>×</button>
                             </div>
                             {/* コントロール */}
@@ -17528,8 +17558,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                 let totalM = 0; let prev = { lat: currentLoc.lat, lng: currentLoc.lng };
                                 route.stops.forEach(s => { totalM += routeDist(prev, s); prev = s; });
                                 const distLabel = route.road && route.road.distance ? routeFmtDist(route.road.distance) + "（道なり）" : "約" + routeFmtDist(totalM) + "（直線）";
-                                const minLabel = route.road && route.road.duration ? ` ・ 車で約${Math.round(route.road.duration / 60)}分` : "";
-                                return `📍 ${done}/${route.stops.length}件 完了 ・ ${distLabel}${minLabel}`;
+                                const totalMin = route.road && route.road.duration ? (route.road.duration / 60) : routeEstMin(totalM);
+                                return `📍 ${done}/${route.stops.length}件 完了 ・ ${distLabel} ・ 移動 約${routeFmtMin(totalMin)}${route.road ? "" : "（目安）"}`;
                               })()}
                             </div>
                             {/* 一覧 */}
@@ -17537,6 +17567,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               {route.stops.map((s, i) => {
                                 let prev = i === 0 ? { lat: currentLoc.lat, lng: currentLoc.lng } : route.stops[i - 1];
                                 const d = routeDist(prev, s);
+                                const legMin = (route.road && route.road.legs && route.road.legs[i]) ? Math.max(1, Math.round(route.road.legs[i].duration / 60)) : routeEstMin(d);
                                 const isDone = i < route.targetIndex;
                                 const isNext = i === route.targetIndex;
                                 const isEnd = (i === route.stops.length - 1) && route.endId;
@@ -17555,7 +17586,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                       <div style={{ fontSize: 13, fontWeight: 700, color: isDone ? C.muted : C.text, textDecoration: isDone ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                         {s.name} {isNext && <span style={{ fontSize: 10, color: "#fb7185", fontWeight: 800 }}>← 次はここ！</span>}
                                       </div>
-                                      <div style={{ fontSize: 11, color: C.muted }}>前の地点から {routeFmtDist(d)}{isEnd ? " ・ 🟠終点" : ""}</div>
+                                      <div style={{ fontSize: 11, color: C.muted }}>前から {routeFmtDist(d)} ・ 車で約{legMin}分{isEnd ? " ・ 🟠終点" : ""}</div>
                                     </div>
                                     <button onClick={() => routeOpenGmaps(s.lat, s.lng)} style={{ flex: "none", background: C.accentBg, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>▶ ナビ</button>
                                   </div>
@@ -17570,6 +17601,29 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               <button onClick={routeOpenFull} style={{ flex: 1, padding: 11, borderRadius: 10, border: "none", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", background: C.accent, color: "#fff" }}>🗺 全行程</button>
                             </div>
                           </div>
+                        )}
+
+                        {/* 最小化バー（タップで元に戻す） */}
+                        {route.open && route.minimized && (
+                          <button onClick={routeExpand} style={{
+                            position: "absolute", left: 12, right: 12, bottom: 14, zIndex: 660,
+                            background: "#0ea5e9", color: "#fff", border: "none", borderRadius: 14,
+                            padding: "12px 16px", fontSize: 13, fontWeight: 800, cursor: "pointer",
+                            fontFamily: "inherit", boxShadow: "0 6px 20px rgba(0,0,0,0.45)",
+                            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                          }}>
+                            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {(() => {
+                                const ti = route.targetIndex;
+                                if (ti >= route.stops.length) return `🎉 全${route.stops.length}件 完了`;
+                                const t = route.stops[ti];
+                                const prev = ti === 0 ? { lat: currentLoc.lat, lng: currentLoc.lng } : route.stops[ti - 1];
+                                const legMin = (route.road && route.road.legs && route.road.legs[ti]) ? Math.max(1, Math.round(route.road.legs[ti].duration / 60)) : routeEstMin(routeDist(prev, t));
+                                return `🧭 ${ti + 1}/${route.stops.length} 次: ${(t.name || "").slice(0, 16)}（約${legMin}分）`;
+                              })()}
+                            </span>
+                            <span style={{ fontSize: 16 }}>▲</span>
+                          </button>
                         )}
 
                         {/* ゴール演出 */}
