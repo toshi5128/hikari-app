@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.61-settings-into-folder";
+const APP_VERSION = "2026-06-09-v9.62-jiage-funnel-stats";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -10834,6 +10834,112 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   );
 }
 
+// ===================== 地上げ統計（v9.62） =====================
+function JiageFunnelStats({ data }) {
+  const [open, setOpen] = useState(false);
+  const [period, setPeriod] = useState("month");
+  const [member, setMember] = useState("__ALL__");
+  const now = new Date();
+  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const weekAgo = new Date(now); weekAgo.setDate(now.getDate() - 6);
+  const waStr = `${weekAgo.getFullYear()}-${String(weekAgo.getMonth() + 1).padStart(2, "0")}-${String(weekAgo.getDate()).padStart(2, "0")}`;
+  const inPeriod = (d) => { if (!d) return false; const ds = String(d); if (period === "all") return true; if (period === "month") return ds.startsWith(ym); return ds >= waStr; };
+  const memMatch = (m) => member === "__ALL__" || m === member;
+  const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 : 0;
+  const yen = n => "¥" + (n || 0).toLocaleString();
+
+  // 担当者ごとの集計（approaches を合算 ＋ 謄本はピンのフラグから）
+  const jiage = Array.isArray(data.jiage) ? data.jiage : [];
+  const statFor = (mem) => {
+    const agg = {}; const days = new Set();
+    (data.approaches || []).forEach(a => {
+      if (!a) return;
+      if (mem !== "__ALL__" && a.member !== mem) return;
+      if (!inPeriod(a.date)) return;
+      days.add(a.date);
+      Object.entries(a.values || {}).forEach(([k, v]) => agg[k] = (agg[k] || 0) + (Number(v) || 0));
+    });
+    const g = k => agg[k] || 0;
+    const touhon = jiage.filter(j => j.lookupDone && inPeriod(j.lookupDoneAt) && (mem === "__ALL__" || (j.lookupDoneBy || j.assignee) === mem)).length;
+    const genmikomi = jiage.filter(j => j.status === "見込" && (mem === "__ALL__" || j.assignee === mem)).length;
+    return {
+      shinki: g("新規地上"), homon: g("初訪") + g("地上再訪"), fuzai: g("地上不在") + g("居留守"),
+      mendan: g("面談"), mikomi: g("見込み"), baikai: g("媒介"), shiire: g("地上仕入"),
+      touhon, genmikomi, days: days.size,
+    };
+  };
+  const d = statFor(member);
+  const seikyaku = d.baikai + d.shiire;
+  const cost = d.touhon * 140;
+  const days = Math.max(d.days, 1);
+
+  const Kpi = (l, v, s, col) => (<div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}><div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l}</div><div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, color: col || C.text }}>{v}</div><div style={{ fontSize: 10, color: "#7dd3fc" }}>{s}</div></div>);
+  const Seg = (val, set, opts) => (<div style={{ display: "flex", gap: 4, background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 4 }}>{opts.map(o => <button key={o.v} onClick={() => set(o.v)} style={{ background: val === o.v ? C.accent : "transparent", color: val === o.v ? "#fff" : C.muted, border: "none", borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>{o.l}</button>)}</div>);
+  const stages = [
+    { n: "新規地上げ", v: d.shinki, c: "#6366f1", p: null },
+    { n: "謄本取得", v: d.touhon, c: "#0ea5e9", p: d.shinki, pn: "新規" },
+    { n: "見込み", v: d.mikomi, c: "#22c55e", p: d.touhon, pn: "謄本" },
+    { n: "媒介(仲介)", v: d.baikai, c: "#a855f7", p: d.mikomi, pn: "見込" },
+    { n: "自社仕入", v: d.shiire, c: "#f59e0b", p: d.mikomi, pn: "見込" },
+  ];
+  const mx = Math.max(d.shinki, d.touhon, d.homon, 1);
+
+  return (
+    <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+      <button onClick={() => setOpen(o => !o)} style={{ width: "100%", background: "transparent", border: "none", color: C.text, fontSize: 15, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", display: "flex", justifyContent: "space-between", alignItems: "center", padding: 0 }}>
+        <span>📊 地上げ統計・ファネル分析</span><span style={{ color: C.muted }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (<div style={{ marginTop: 12 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {Seg(period, setPeriod, [{ v: "week", l: "今週" }, { v: "month", l: "今月" }, { v: "all", l: "全期間" }])}
+          {Seg(member, setMember, [{ v: "__ALL__", l: "全員" }, ...MEMBERS.filter(m => m !== "比嘉・下田").map(m => ({ v: m, l: m }))])}
+        </div>
+        {/* ① 訪問・面談 */}
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>① 訪問・面談の状況</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 14 }}>
+          {Kpi("訪問数", d.homon + "件", "1日あたり " + (d.homon / days).toFixed(1) + "件")}
+          {Kpi("不在率", pct(d.fuzai, d.homon) + "%", d.fuzai + "件が不在/居留守", "#ef4444")}
+          {Kpi("面談数", d.mendan + "件", "訪問→面談 " + pct(d.mendan, d.homon) + "%", "#22c55e")}
+        </div>
+        {/* ② ファネル */}
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>② 新規→謄本→見込み→成約 ファネル</div>
+        <div style={{ marginBottom: 14 }}>
+          {stages.map(s => (
+            <div key={s.n} style={{ marginBottom: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 86, flex: "none", fontSize: 12, fontWeight: 700, color: C.text }}>{s.n}</div>
+                <div style={{ flex: 1, height: 24, background: C.bg, borderRadius: 6, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: Math.max(6, s.v / mx * 100) + "%", background: s.c, borderRadius: 6, display: "flex", alignItems: "center", paddingLeft: 8, fontSize: 12, fontWeight: 800, color: "#fff" }}>{s.v}件</div>
+                </div>
+              </div>
+              {s.p != null && <div style={{ fontSize: 10, color: C.muted, margin: "1px 0 0 96px" }}>{s.pn}から <b style={{ color: "#7dd3fc" }}>{pct(s.v, s.p)}%</b></div>}
+            </div>
+          ))}
+        </div>
+        {/* ③ 謄本コスト */}
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>③ 謄本コスト（1件 140円）と効率</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+          {Kpi("謄本 取得件数", d.touhon + "件", "")}
+          {Kpi("謄本 課金総額", yen(cost), "", "#fbbf24")}
+          {Kpi("成約数(媒介＋仕入)", seikyaku + "件", "", "#22c55e")}
+          {Kpi("1成約あたり謄本コスト", seikyaku ? yen(Math.round(cost / seikyaku)) : "—", "")}
+          {Kpi("謄本→成約率", pct(seikyaku, d.touhon) + "%", "")}
+          {Kpi("現在の見込み", d.genmikomi + "件", "（ストック）")}
+        </div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※ 謄本数はピンの「📄謄本取得済み」記録から集計（×140円）。活動系は営業の活動カウンターから集計。</div>
+        {/* ④ 担当者別 */}
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>④ 担当者別</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead><tr>{["担当", "新規", "訪問", "面談", "謄本", "見込", "媒介", "仕入", "謄本課金"].map((h, i) => <th key={h} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.borderDim}` }}>{h}</th>)}</tr></thead>
+            <tbody>{MEMBERS.filter(m => m !== "比嘉・下田").map(m => { const s = statFor(m); return (<tr key={m}>{[m, s.shinki, s.homon, s.mendan, s.touhon, s.mikomi, s.baikai, s.shiire, yen(s.touhon * 140)].map((c, i) => <td key={i} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: i === 0 ? C.text : C.muted, fontWeight: i === 0 ? 800 : 400, borderBottom: `1px solid ${C.borderDim}` }}>{c}</td>)}</tr>); })}</tbody>
+          </table>
+        </div>
+      </div>)}
+    </div>
+  );
+}
+
 // ===================== APPROACH PAGE =====================
 function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   const today = useTodayDate();
@@ -11483,6 +11589,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
   return (
     <div>
       <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 14 }}>📞 アプローチ管理</div>
+
+      {/* 🆕 v9.62: 地上げ統計・ファネル分析 */}
+      <JiageFunnelStats data={data} />
 
       {/* 🆕 統一の担当者選択（全タブで連動） */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
@@ -18591,6 +18700,34 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   border: `1.5px solid ${C.accent}`, borderRadius: 8, padding: "9px 12px",
                   cursor: "pointer", fontSize: 12, fontWeight: 800, fontFamily: "inherit",
                 }}>📍 ピンの位置を直す（現地でズレを修正）</button>
+              )}
+              {/* 🆕 v9.62: 謄本取得の記録（統計の課金管理用・1件140円） */}
+              {_raw.coordsManual && (
+                <button onClick={() => {
+                  const _id = (selected.item.rawId != null ? selected.item.rawId : selected.item.id);
+                  const turnOn = !_raw.lookupDone;
+                  setData(d => ({
+                    ...d,
+                    jiage: (d.jiage || []).map(j => {
+                      if (String(j.id) !== String(_id)) return j;
+                      const _now = Date.now();
+                      const today = new Date(); const ds = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+                      return {
+                        ...j, lookupDone: turnOn,
+                        lookupDoneAt: turnOn ? ds : (j.lookupDoneAt || ""),
+                        lookupDoneBy: turnOn ? (getCurrentUser() || j.assignee || "") : (j.lookupDoneBy || ""),
+                        _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), lookupDone: _now, lookupDoneAt: _now, lookupDoneBy: _now },
+                        updatedAt: _now,
+                      };
+                    }),
+                  }));
+                }} style={{
+                  width: "100%", marginTop: 8, padding: "9px 12px", borderRadius: 8,
+                  cursor: "pointer", fontSize: 12, fontWeight: 800, fontFamily: "inherit",
+                  background: _raw.lookupDone ? "#22c55e22" : "transparent",
+                  color: _raw.lookupDone ? C.success : C.muted,
+                  border: `1.5px solid ${_raw.lookupDone ? C.success : C.borderDim}`,
+                }}>{_raw.lookupDone ? `✅ 謄本取得済み（${_raw.lookupDoneAt || ""}）` : "📄 謄本取得済みにする（×140円）"}</button>
               )}
               {/* 🆕 v8.114: 対象外フラグの手動トグル（謄本待ち or 対象外 のときに表示） */}
               {!_isPendingLot && !_hasOwnerSel && (
