@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.63.2-route-pick-tap-record";
+const APP_VERSION = "2026-06-09-v9.64-route-tap-remove-unify";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4526,7 +4526,7 @@ function PendingPhotoSection({ photos, onAdd, onRemove }) {
 }
 
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -4951,17 +4951,15 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         icon: L.divIcon({ html: `<div class="${cls}">${label}</div>`, className: "", iconSize: [sz, sz], iconAnchor: [anc, anc] }),
         zIndexOffset: (i === targetIndex) ? 1000 : 500,
       });
-      // 🆕 v9.63.2: 選んだ番号ピンはタップ→ポップアップ（訪問記録 ＋ モードに応じた2つ目）。
-      //   ・選択モード：📍訪問記録 ／ ➖ルートから外す（誤って番号が変わらない）
-      //   ・自動モード：📍訪問記録 ／ 🟠最終地点
-      const secondBtn = pickMode
-        ? `<button class="hk-route-rm" style="display:block;width:100%;background:#ef4444;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">➖ ルートから外す</button>`
-        : `<button class="hk-route-end" style="display:block;width:100%;background:#f59e0b;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">🟠 ここを最終地点にする</button>`;
+      // 🆕 v9.64: 番号ピンはタップ→ポップアップ。どちらのモードでも「➖ルートから外す」で直接外せる。
+      //   ・📍訪問記録（共通） ／ 🟠最終地点（自動のみ） ／ ➖ルートから外す（共通）
+      const endBtn = pickMode ? "" : `<button class="hk-route-end" style="display:block;width:100%;margin-bottom:5px;background:#f59e0b;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">🟠 ここを最終地点にする</button>`;
+      const rmBtn = `<button class="hk-route-rm" style="display:block;width:100%;background:#ef4444;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">➖ ルートから外す</button>`;
       mk.bindPopup(
         `<div style="font-family:'Noto Sans JP',sans-serif;min-width:170px;">`
         + `<div style="font-weight:800;font-size:13px;margin-bottom:6px;">${i + 1}. ${(s.name || "(無住所)").slice(0, 40)}</div>`
         + `<button class="hk-route-log" style="display:block;width:100%;margin-bottom:5px;background:#22c55e;color:#fff;border:none;padding:8px;border-radius:7px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;">📍 訪問結果を記録する</button>`
-        + secondBtn
+        + endBtn + rmBtn
         + `</div>`,
         { autoClose: false, closeOnClick: false }
       );
@@ -4974,14 +4972,14 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           const eb = node.querySelector(".hk-route-end");
           if (eb) eb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRouteStopTap) onRouteStopTap(s.id); };
           const rb = node.querySelector(".hk-route-rm");
-          if (rb) rb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRoutePickToggle) onRoutePickToggle(s.id); };
+          if (rb) rb.onclick = () => { try { map.closePopup(); } catch (_) {} if (pickMode) { if (onRoutePickToggle) onRoutePickToggle(s.id); } else { if (onRouteStopRemove) onRouteStopRemove(s.id); } };
         }, 10);
       });
       mk.addTo(grp);
     });
     grp.addTo(map);
     routeLayerRef.current = grp;
-  }, [routeOverlay, onRouteStopTap, onRoutePickToggle]);
+  }, [routeOverlay, onRouteStopTap, onRoutePickToggle, onRouteStopRemove]);
 
   // 🆕 v9.51: ルート確定時に全体が見えるよう fitBounds
   React.useEffect(() => {
@@ -17053,6 +17051,19 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               setRouteSel([]);
               setRouteFitKey(Date.now());
             };
+            // 🆕 v9.64: 番号ピンを直接タップ→「➖ルートから外す」（自動モード・1件ずつ）。地図は動かさない
+            const routeRemoveOne = (id) => {
+              setRoute(prev => {
+                const idx = prev.stops.findIndex(s => String(s.id) === String(id));
+                if (idx < 0) return prev;
+                const stops = prev.stops.filter(s => String(s.id) !== String(id));
+                let targetIndex = idx < prev.targetIndex ? Math.max(0, prev.targetIndex - 1) : prev.targetIndex;
+                targetIndex = Math.min(targetIndex, stops.length);
+                const endId = String(prev.endId) === String(id) ? "" : prev.endId;
+                return { ...prev, stops, targetIndex, endId, road: null };
+              });
+              routeRoadKeyRef.current = "";
+            };
             const routeOpen = () => routeRecompute(route.count, "");
             const routeClose = () => setRoute(r => ({ ...r, open: false, minimized: false }));
             const routeMinimize = () => setRoute(r => ({ ...r, minimized: true }));
@@ -17882,6 +17893,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       onRouteStopTap={routeOnStopTap}
                       onRouteStopOpen={routeOnStopOpen}
                       onRoutePickToggle={routePickToggle}
+                      onRouteStopRemove={routeRemoveOne}
                       routeFitKey={routeFitKey}
                       editPin={pinEdit ? { lat: pinEdit.lat, lng: pinEdit.lng } : null}
                       onEditPinMove={(lat, lng) => setPinEdit(p => p ? { ...p, lat, lng } : p)}
@@ -17981,14 +17993,6 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                 return `📍 ${done}/${route.stops.length}件 完了 ・ ${distLabel} ・ 移動 約${routeFmtMin(totalMin)}${route.road ? "" : "（目安）"}`;
                               })()}
                             </div>
-                            {/* 🆕 v9.53: 選択中の一括削除バー */}
-                            {routeSel.length > 0 && (
-                              <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0 12px 8px", padding: "10px 12px", background: "#ef444422", border: "1px solid #ef4444", borderRadius: 10 }}>
-                                <span style={{ flex: 1, fontSize: 12, fontWeight: 800, color: "#fca5a5" }}>{routeSel.length}件 選択中</span>
-                                <button onClick={routeRemoveSelected} style={{ border: "none", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", background: "#ef4444", color: "#fff" }}>🗑 まとめて外す</button>
-                                <button onClick={routeClearSel} style={{ border: "none", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", background: C.bg, color: C.muted }}>選択解除</button>
-                              </div>
-                            )}
                             {/* 一覧 */}
                             <div style={{ overflowY: "auto", padding: "0 12px 8px" }}>
                               {route.stops.map((s, i) => {
@@ -17998,15 +18002,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                 const isDone = i < route.targetIndex;
                                 const isNext = i === route.targetIndex;
                                 const isEnd = (i === route.stops.length - 1) && route.endId;
-                                const isSel = routeSel.some(x => String(x) === String(s.id));
                                 return (
                                   <div key={s.id} style={{
                                     display: "flex", gap: 8, alignItems: "center", padding: "9px 8px",
                                     borderBottom: `1px solid ${C.borderDim}`,
-                                    background: isSel ? "#ef444418" : (isNext ? "#f43f5e18" : "transparent"), borderRadius: 8,
+                                    background: isNext ? "#f43f5e18" : "transparent", borderRadius: 8,
                                   }}>
-                                    <button onClick={() => routeToggleSel(s.id)} title="選択して、まとめて外す"
-                                      style={{ flex: "none", background: "transparent", border: "none", color: isSel ? "#ef4444" : C.muted, fontSize: 20, lineHeight: 1, cursor: "pointer", padding: "0 2px", fontFamily: "inherit" }}>{isSel ? "☑" : "☐"}</button>
                                     <div style={{
                                       flex: "none", width: 26, height: 26, borderRadius: "50%",
                                       background: isDone ? "#22c55e" : isNext ? "#f43f5e" : (isEnd ? "#f59e0b" : C.accent),
