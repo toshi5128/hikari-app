@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.66-hearing-input-focus-fix";
+const APP_VERSION = "2026-06-11-v9.67-hearing-input-focus-fix2";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13916,6 +13916,42 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     };
     return Comp;
   }, [hearingOpenSecs]);
+  // 初回面談調査書のチップ（ラジオ／チェック）も安定参照にする。
+  // hearingForm は ref 経由で常に最新を読むので、文字入力でチップが作り直されず（＝兄弟DOMの削除/再挿入が起きず）、
+  // iOSでキーボードが閉じる/画面が上に飛ぶ不具合を防ぐ。選択状態は親の再レンダー時に最新refを読んで反映される。
+  const hearingFormRef = useRef(null);
+  hearingFormRef.current = hearingForm;
+  const hearingSetField = useMemo(() => (k, v) => setHearingForm(f => ({ ...f, [k]: v })), []);
+  const hearingToggleArr = useMemo(() => (k, v) => setHearingForm(f => {
+    const a = f[k] || []; const has = a.includes(v);
+    return { ...f, [k]: has ? a.filter(x => x !== v) : [...a, v] };
+  }), []);
+  const HearingChip = useMemo(() => {
+    const purple = "#a855f7";
+    const Radio = ({ field, val, label }) => {
+      const on = !!hearingFormRef.current && hearingFormRef.current[field] === val;
+      return (
+        <span onClick={() => hearingSetField(field, val)} style={{
+          padding: "5px 11px", background: on ? purple : C.bg,
+          border: `1px solid ${on ? purple : C.borderDim}`, color: on ? "#fff" : C.text,
+          borderRadius: 14, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+          fontWeight: on ? 700 : 400, marginRight: 4, marginBottom: 4, display: "inline-block",
+        }}>{label}</span>
+      );
+    };
+    const Check = ({ field, val, label }) => {
+      const on = !!hearingFormRef.current && (hearingFormRef.current[field] || []).includes(val);
+      return (
+        <span onClick={() => hearingToggleArr(field, val)} style={{
+          padding: "5px 11px", background: on ? purple : C.bg,
+          border: `1px solid ${on ? purple : C.borderDim}`, color: on ? "#fff" : C.text,
+          borderRadius: 14, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+          fontWeight: on ? 700 : 400, marginRight: 4, marginBottom: 4, display: "inline-block",
+        }}>{on ? "✓ " : ""}{label}</span>
+      );
+    };
+    return { Radio, Check };
+  }, [hearingSetField, hearingToggleArr]);
   const [quickFilter, setQuickFilter] = useState(null); // "overdue" | "dm_un" | "hot" | null
   const [histForm, setHistForm] = useState({ date: today, method: "電話", note: "", member: MEMBERS[0] });
   // 訪問結果記録モード
@@ -19770,32 +19806,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
         // セクション枠は安定参照の HearingSec を使う（毎レンダーで作り直さない＝入力欄のフォーカスを維持）
         const Sec = HearingSec;
 
-        // ラジオ チップ
-        const Radio = ({ field, val, label }) => (
-          <span onClick={() => set(field, val)} style={{
-            padding: "5px 11px", background: hf[field] === val ? purple : C.bg,
-            border: `1px solid ${hf[field] === val ? purple : C.borderDim}`,
-            color: hf[field] === val ? "#fff" : C.text,
-            borderRadius: 14, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
-            fontWeight: hf[field] === val ? 700 : 400, marginRight: 4, marginBottom: 4,
-            display: "inline-block",
-          }}>{label}</span>
-        );
-
-        // チェック チップ ( 複数選択 )
-        const Check = ({ field, val, label }) => {
-          const checked = (hf[field] || []).includes(val);
-          return (
-            <span onClick={() => toggleArr(field, val)} style={{
-              padding: "5px 11px", background: checked ? purple : C.bg,
-              border: `1px solid ${checked ? purple : C.borderDim}`,
-              color: checked ? "#fff" : C.text,
-              borderRadius: 14, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
-              fontWeight: checked ? 700 : 400, marginRight: 4, marginBottom: 4,
-              display: "inline-block",
-            }}>{checked ? "✓ " : ""}{label}</span>
-          );
-        };
+        // チップも安定参照（毎レンダーで作り直さない＝iOSでキーボードが閉じない）
+        const Radio = HearingChip.Radio;
+        const Check = HearingChip.Check;
 
         const ItemAddr = hearingTarget.item.raw ? (hearingTarget.item.raw.address || "( 住所未設定 )") : "";
 
