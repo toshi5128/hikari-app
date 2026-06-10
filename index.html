@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.65-route-close-confirm";
+const APP_VERSION = "2026-06-11-v9.66-hearing-input-focus-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13893,6 +13893,29 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [hearingTarget, setHearingTarget] = useState(null);
   const [hearingForm, setHearingForm] = useState(null);
   const [hearingOpenSecs, setHearingOpenSecs] = useState({ 1: true, 2: true }); // section 開閉
+  // 初回面談調査書のセクション枠（安定参照）。文字入力（hearingForm更新）では作り直されず、
+  // 開閉（hearingOpenSecs）が変わった時だけ再生成 → 入力欄のフォーカス喪失/画面が上に飛ぶ不具合を防ぐ。
+  const HearingSec = useMemo(() => {
+    const purple = "#a855f7";
+    const toggle = (n) => setHearingOpenSecs(s => ({ ...s, [n]: !s[n] }));
+    const Comp = ({ num, title, badge, children }) => {
+      const open = !!hearingOpenSecs[num];
+      return (
+        <div style={{ background: C.cardBg, borderRadius: 10, marginBottom: 8, overflow: "hidden", borderLeft: `3px solid ${open ? purple : C.borderDim}` }}>
+          <div onClick={() => toggle(num)} style={{ padding: "11px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
+              <span style={{ display: "inline-block", width: 20, height: 20, borderRadius: 10, background: open ? purple : C.borderDim, color: "#fff", textAlign: "center", fontSize: 11, lineHeight: "20px", marginRight: 6, fontWeight: 800 }}>{num}</span>
+              {title}
+              {badge && <span style={{ marginLeft: 6, fontSize: 9, background: C.success, color: "#fff", padding: "1px 5px", borderRadius: 7, fontWeight: 800 }}>{badge}</span>}
+            </div>
+            <div style={{ color: C.muted, fontSize: 12 }}>{open ? "▼" : "▶"}</div>
+          </div>
+          {open && <div style={{ padding: "4px 14px 14px", fontSize: 11 }}>{children}</div>}
+        </div>
+      );
+    };
+    return Comp;
+  }, [hearingOpenSecs]);
   const [quickFilter, setQuickFilter] = useState(null); // "overdue" | "dm_un" | "hot" | null
   const [histForm, setHistForm] = useState({ date: today, method: "電話", note: "", member: MEMBERS[0] });
   // 訪問結果記録モード
@@ -19744,38 +19767,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
         const isOpen = (n) => !!hearingOpenSecs[n];
         const purple = "#a855f7";
 
-        // セクションヘッダ
-        const SecHead = ({ num, title, badge }) => (
-          <div onClick={() => toggleSec(num)} style={{
-            padding: "11px 14px", cursor: "pointer", display: "flex",
-            justifyContent: "space-between", alignItems: "center",
-          }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
-              <span style={{
-                display: "inline-block", width: 20, height: 20, borderRadius: 10,
-                background: isOpen(num) ? purple : C.borderDim, color: "#fff",
-                textAlign: "center", fontSize: 11, lineHeight: "20px", marginRight: 6, fontWeight: 800,
-              }}>{num}</span>
-              {title}
-              {badge && <span style={{
-                marginLeft: 6, fontSize: 9, background: C.success, color: "#fff",
-                padding: "1px 5px", borderRadius: 7, fontWeight: 800,
-              }}>{badge}</span>}
-            </div>
-            <div style={{ color: C.muted, fontSize: 12 }}>{isOpen(num) ? "▼" : "▶"}</div>
-          </div>
-        );
-
-        // セクションラッパー
-        const Sec = ({ num, title, badge, children }) => (
-          <div style={{
-            background: C.cardBg, borderRadius: 10, marginBottom: 8, overflow: "hidden",
-            borderLeft: `3px solid ${isOpen(num) ? purple : C.borderDim}`,
-          }}>
-            <SecHead num={num} title={title} badge={badge} />
-            {isOpen(num) && <div style={{ padding: "4px 14px 14px", fontSize: 11 }}>{children}</div>}
-          </div>
-        );
+        // セクション枠は安定参照の HearingSec を使う（毎レンダーで作り直さない＝入力欄のフォーカスを維持）
+        const Sec = HearingSec;
 
         // ラジオ チップ
         const Radio = ({ field, val, label }) => (
