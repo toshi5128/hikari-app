@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.62-jiage-funnel-stats";
+const APP_VERSION = "2026-06-09-v9.62.1-touhon-infer-existing";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -10845,6 +10845,11 @@ function JiageFunnelStats({ data }) {
   const waStr = `${weekAgo.getFullYear()}-${String(weekAgo.getMonth() + 1).padStart(2, "0")}-${String(weekAgo.getDate()).padStart(2, "0")}`;
   const inPeriod = (d) => { if (!d) return false; const ds = String(d); if (period === "all") return true; if (period === "month") return ds.startsWith(ym); return ds >= waStr; };
   const memMatch = (m) => member === "__ALL__" || m === member;
+  // 日付文字列(YYYY-MM-DD)に正規化（ISO/ms どちらでも）
+  const toDStr = (v) => { if (!v) return ""; try { const dd = new Date(v); if (isNaN(dd.getTime())) return ""; return `${dd.getFullYear()}-${String(dd.getMonth() + 1).padStart(2, "0")}-${String(dd.getDate()).padStart(2, "0")}`; } catch (e) { return ""; } };
+  // 謄本を取得済みとみなす判定（明示記録 or 既存データから推定：所有者判明・対象外・要修正）
+  const touhonTaken = (j) => !!(j.lookupDone || (j.owner && String(j.owner).trim()) || (j.ownerName && String(j.ownerName).trim()) || j.excluded === true || j.lookupFailed === true);
+  const touhonDate = (j) => j.lookupDoneAt || toDStr(j.createdAt) || toDStr(j.updatedAt);
   const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 : 0;
   const yen = n => "¥" + (n || 0).toLocaleString();
 
@@ -10860,7 +10865,7 @@ function JiageFunnelStats({ data }) {
       Object.entries(a.values || {}).forEach(([k, v]) => agg[k] = (agg[k] || 0) + (Number(v) || 0));
     });
     const g = k => agg[k] || 0;
-    const touhon = jiage.filter(j => j.lookupDone && inPeriod(j.lookupDoneAt) && (mem === "__ALL__" || (j.lookupDoneBy || j.assignee) === mem)).length;
+    const touhon = jiage.filter(j => touhonTaken(j) && inPeriod(touhonDate(j)) && (mem === "__ALL__" || (j.lookupDoneBy || j.assignee) === mem)).length;
     const genmikomi = jiage.filter(j => j.status === "見込" && (mem === "__ALL__" || j.assignee === mem)).length;
     return {
       shinki: g("新規地上"), homon: g("初訪") + g("地上再訪"), fuzai: g("地上不在") + g("居留守"),
@@ -10926,7 +10931,7 @@ function JiageFunnelStats({ data }) {
           {Kpi("謄本→成約率", pct(seikyaku, d.touhon) + "%", "")}
           {Kpi("現在の見込み", d.genmikomi + "件", "（ストック）")}
         </div>
-        <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※ 謄本数はピンの「📄謄本取得済み」記録から集計（×140円）。活動系は営業の活動カウンターから集計。</div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※ 謄本数＝「📄謄本取得済み」記録 ＋ 既存の所有者判明・対象外・要修正ピン（謄本を取った分）を×140円で集計。活動系は営業の活動カウンターから集計。期間は謄本記録日／無い場合はピン作成日で判定。</div>
         {/* ④ 担当者別 */}
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>④ 担当者別</div>
         <div style={{ overflowX: "auto" }}>
