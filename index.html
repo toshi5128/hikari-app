@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-09-v9.63.1-route-pick-no-autopan";
+const APP_VERSION = "2026-06-09-v9.63.2-route-pick-tap-record";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4951,31 +4951,32 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         icon: L.divIcon({ html: `<div class="${cls}">${label}</div>`, className: "", iconSize: [sz, sz], iconAnchor: [anc, anc] }),
         zIndexOffset: (i === targetIndex) ? 1000 : 500,
       });
-      if (pickMode) {
-        // 選択モード：番号ピンをタップで選択解除
-        mk.on("click", () => { if (onRoutePickToggle) onRoutePickToggle(s.id); });
-        mk.bindTooltip(`${i + 1}. ${(s.name || "")}（タップで外す）`);
-      } else {
-        // 自動モード：タップ→2択（訪問記録 / 最終地点）
-        mk.bindPopup(
-          `<div style="font-family:'Noto Sans JP',sans-serif;min-width:170px;">`
-          + `<div style="font-weight:800;font-size:13px;margin-bottom:6px;">${i + 1}. ${(s.name || "(無住所)").slice(0, 40)}</div>`
-          + `<button class="hk-route-log" style="display:block;width:100%;margin-bottom:5px;background:#22c55e;color:#fff;border:none;padding:8px;border-radius:7px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;">📍 訪問結果を記録する</button>`
-          + `<button class="hk-route-end" style="display:block;width:100%;background:#f59e0b;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">🟠 ここを最終地点にする</button>`
-          + `</div>`,
-          { autoClose: false, closeOnClick: false }
-        );
-        mk.on("popupopen", (e) => {
-          setTimeout(() => {
-            const node = e.popup && e.popup._contentNode;
-            if (!node) return;
-            const lb = node.querySelector(".hk-route-log");
-            if (lb) lb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRouteStopOpen) onRouteStopOpen(s.id); };
-            const eb = node.querySelector(".hk-route-end");
-            if (eb) eb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRouteStopTap) onRouteStopTap(s.id); };
-          }, 10);
-        });
-      }
+      // 🆕 v9.63.2: 選んだ番号ピンはタップ→ポップアップ（訪問記録 ＋ モードに応じた2つ目）。
+      //   ・選択モード：📍訪問記録 ／ ➖ルートから外す（誤って番号が変わらない）
+      //   ・自動モード：📍訪問記録 ／ 🟠最終地点
+      const secondBtn = pickMode
+        ? `<button class="hk-route-rm" style="display:block;width:100%;background:#ef4444;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">➖ ルートから外す</button>`
+        : `<button class="hk-route-end" style="display:block;width:100%;background:#f59e0b;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">🟠 ここを最終地点にする</button>`;
+      mk.bindPopup(
+        `<div style="font-family:'Noto Sans JP',sans-serif;min-width:170px;">`
+        + `<div style="font-weight:800;font-size:13px;margin-bottom:6px;">${i + 1}. ${(s.name || "(無住所)").slice(0, 40)}</div>`
+        + `<button class="hk-route-log" style="display:block;width:100%;margin-bottom:5px;background:#22c55e;color:#fff;border:none;padding:8px;border-radius:7px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;">📍 訪問結果を記録する</button>`
+        + secondBtn
+        + `</div>`,
+        { autoClose: false, closeOnClick: false }
+      );
+      mk.on("popupopen", (e) => {
+        setTimeout(() => {
+          const node = e.popup && e.popup._contentNode;
+          if (!node) return;
+          const lb = node.querySelector(".hk-route-log");
+          if (lb) lb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRouteStopOpen) onRouteStopOpen(s.id); };
+          const eb = node.querySelector(".hk-route-end");
+          if (eb) eb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRouteStopTap) onRouteStopTap(s.id); };
+          const rb = node.querySelector(".hk-route-rm");
+          if (rb) rb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRoutePickToggle) onRoutePickToggle(s.id); };
+        }, 10);
+      });
       mk.addTo(grp);
     });
     grp.addTo(map);
