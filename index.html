@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.73-calendar-allday-todo";
+const APP_VERSION = "2026-06-11-v9.74-dashboard-chart-kpi-detail";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -282,7 +282,12 @@ function YAxis() { return null; }
 function Tooltip() { return null; }
 function Cell() { return null; }
 function BarChart({ data = [], children, layout }) {
-  const bars = React.Children.toArray(children).filter(ch => ch && ch.type === Bar).map(ch => ch.props);
+  const childArr = React.Children.toArray(children);
+  const bars = childArr.filter(ch => ch && ch.type === Bar).map(ch => ch.props);
+  // 🆕 v9.74: Tooltip の formatter を取り出して Y軸目盛り＆タップ数値に流用
+  const tipEl = childArr.find(ch => ch && ch.type === Tooltip);
+  const fmt = (tipEl && tipEl.props && typeof tipEl.props.formatter === "function") ? tipEl.props.formatter : ((v) => String(Math.round(v)));
+  const [activeBar, setActiveBar] = React.useState(null);
   const keys = bars.map(b => b.dataKey);
   const vals = data.flatMap(d => keys.map(k => Number(d[k]) || 0));
   const max = Math.max(1, ...vals);
@@ -301,14 +306,52 @@ function BarChart({ data = [], children, layout }) {
       })}
     </div>;
   }
-  return <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "end", gap: 6, padding: "8px 2px 18px", position: "relative" }}>
-    {data.map((d, i) => <div key={i} style={{ flex: 1, height: "100%", display: "flex", alignItems: "end", gap: 2, position: "relative" }}>
-      {bars.map((b, j) => {
-        const v = Number(d[b.dataKey]) || 0;
-        return <div key={j} title={`${b.name || b.dataKey}: ${v}`} style={{ flex: 1, height: `${Math.max(3, v / max * 100)}%`, background: b.fill || C.accent, opacity: b.opacity || 1, borderRadius: "4px 4px 0 0" }} />;
-      })}
-      <div style={{ position: "absolute", left: 0, right: 0, bottom: -16, textAlign: "center", color: C.muted, fontSize: 9 }}>{d.month || ""}</div>
-    </div>)}
+  // 🆕 v9.74: 縦棒グラフ＝Y軸目盛り＋グリッド線＋タップで数値表示
+  const niceCeil = (n) => { if (n <= 0) return 1; const exp = Math.pow(10, Math.floor(Math.log10(n))); const f = n / exp; const nice = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10; return nice * exp; };
+  const step = niceCeil(max / 4);
+  const top = Math.max(step, Math.ceil(max / step) * step);
+  const ticks = []; for (let t = 0; t <= top + 1e-9; t += step) ticks.push(t);
+  return <div style={{ width: "100%", height: "100%", display: "flex" }}>
+    {/* Y軸ラベル列 */}
+    <div style={{ width: 38, flexShrink: 0, position: "relative", marginBottom: 16 }}>
+      {ticks.map((t, i) => (
+        <div key={i} style={{ position: "absolute", right: 4, bottom: `${(t / top) * 100}%`, transform: "translateY(50%)", color: C.muted, fontSize: 8, whiteSpace: "nowrap", lineHeight: 1 }}>{fmt(t)}</div>
+      ))}
+    </div>
+    {/* グラフ領域 */}
+    <div style={{ flex: 1, position: "relative" }}>
+      {/* グリッド線 */}
+      <div style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 16 }}>
+        {ticks.map((t, i) => (
+          <div key={i} style={{ position: "absolute", left: 0, right: 0, bottom: `${(t / top) * 100}%`, borderTop: `1px solid ${C.borderDim}`, opacity: 0.45 }} />
+        ))}
+      </div>
+      {/* 棒 */}
+      <div style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 16, display: "flex", alignItems: "end", gap: 6 }}>
+        {data.map((d, i) => (
+          <div key={i} onClick={() => setActiveBar(activeBar === i ? null : i)} style={{ flex: 1, height: "100%", display: "flex", alignItems: "end", gap: 2, position: "relative", cursor: "pointer" }}>
+            {bars.map((b, j) => {
+              const v = Number(d[b.dataKey]) || 0;
+              return <div key={j} title={`${b.name || b.dataKey}: ${fmt(v)}`} style={{ flex: 1, height: `${v > 0 ? Math.max(2, v / top * 100) : 0}%`, background: b.fill || C.accent, opacity: b.opacity || 1, borderRadius: "3px 3px 0 0" }} />;
+            })}
+            {activeBar === i && (
+              <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 9px", fontSize: 10, whiteSpace: "nowrap", zIndex: 20, boxShadow: "0 4px 14px rgba(0,0,0,0.45)", marginBottom: 4 }}>
+                <div style={{ fontWeight: 800, color: C.text, marginBottom: 3 }}>{d.month || d.name || ""}</div>
+                {bars.map((b, j) => (
+                  <div key={j} style={{ color: b.fill || C.accent, fontWeight: 700, opacity: b.opacity || 1 }}>{b.name || b.dataKey}: {fmt(Number(d[b.dataKey]) || 0)}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {/* X軸（月）ラベル */}
+      <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 14, display: "flex", gap: 6 }}>
+        {data.map((d, i) => (
+          <div key={i} style={{ flex: 1, textAlign: "center", color: C.muted, fontSize: 8 }}>{d.month || ""}</div>
+        ))}
+      </div>
+    </div>
   </div>;
 }
 function Pie({ data = [], dataKey = "value" }) { return null; }
@@ -6756,11 +6799,13 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const PIE_COLORS = [C.accent, C.success, C.warn, C.purple, C.danger, "#06b6d4"];
 
-  const StatCard = ({ label, value, sub, color, icon }) => (
-    <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: "13px 14px", flex: 1, minWidth: 90 }}>
+  const [kpiDetail, setKpiDetail] = useState(null); // 🆕 v9.74: KPI内訳モーダル ("sold"|"bought"|"active")
+  const StatCard = ({ label, value, sub, color, icon, onClick }) => (
+    <div onClick={onClick} style={{ background: C.cardBg, border: `1px solid ${onClick ? color + "55" : C.borderDim}`, borderRadius: 12, padding: "13px 14px", flex: 1, minWidth: 90, cursor: onClick ? "pointer" : "default", WebkitTapHighlightColor: "transparent" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
         <span style={{ fontSize: 13 }}>{icon}</span>
         <span style={{ color: C.muted, fontSize: 10, letterSpacing: "0.04em" }}>{label}</span>
+        {onClick && <span style={{ marginLeft: "auto", color: color || C.accent, fontSize: 12, fontWeight: 800 }}>›</span>}
       </div>
       <div style={{ color: color || C.text, fontSize: 22, fontWeight: 800, lineHeight: 1 }}>{value}</div>
       {sub && <div style={{ color: C.muted, fontSize: 10, marginTop: 4 }}>{sub}</div>}
@@ -7587,13 +7632,13 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 12 }}>📅 {selectedYear}年 年間実績</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-          <StatCard icon="💰" label="年間売上" value={(yearSell / 10000).toFixed(0) + "万"} color={C.warn} sub={`決済${yearCompleted.length}件`} />
-          <StatCard icon="📈" label="年間利益" value={(yearProfit / 10000).toFixed(0) + "万"} color={C.success} sub="税引前" />
+          <StatCard icon="💰" label="年間売上" value={(yearSell / 10000).toFixed(0) + "万"} color={C.warn} sub={`決済${yearCompleted.length}件`} onClick={() => setKpiDetail("sold")} />
+          <StatCard icon="📈" label="年間利益" value={(yearProfit / 10000).toFixed(0) + "万"} color={C.success} sub="税引前" onClick={() => setKpiDetail("sold")} />
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
-          <StatCard icon="🏠" label="仕入件数" value={yearBought.length + "件"} color={C.accent} />
-          <StatCard icon="✅" label="売却件数" value={yearCompleted.length + "件"} color={C.success} />
-          <StatCard icon="📦" label="在庫" value={active.length + "件"} color={C.muted} />
+          <StatCard icon="🏠" label="仕入件数" value={yearBought.length + "件"} color={C.accent} onClick={() => setKpiDetail("bought")} />
+          <StatCard icon="✅" label="売却件数" value={yearCompleted.length + "件"} color={C.success} onClick={() => setKpiDetail("sold")} />
+          <StatCard icon="📦" label="在庫" value={active.length + "件"} color={C.muted} onClick={() => setKpiDetail("active")} />
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
           <StatCard icon="💡" label="平均利益" value={(avgProfit / 10000).toFixed(0) + "万"} color={C.purple} sub="1件あたり" />
@@ -7679,6 +7724,62 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           </div>
         </BottomSheet>
       )}
+
+      {/* 🆕 v9.74: KPI内訳モーダル（年間売上/仕入件数/売却件数/在庫をタップ） */}
+      {kpiDetail && (() => {
+        const isSold = kpiDetail === "sold";
+        const isBought = kpiDetail === "bought";
+        const list = isSold ? yearCompleted : isBought ? yearBought : active;
+        const man = (n) => Math.round((Number(n) || 0) / 10000).toLocaleString() + "万";
+        const sorted = list.slice().sort((a, b) => {
+          if (isSold) return ((Number(b.sellPrice) || 0) - (Number(b.buyCost) || 0)) - ((Number(a.sellPrice) || 0) - (Number(a.buyCost) || 0));
+          return String(b.buyDate || "").localeCompare(String(a.buyDate || ""));
+        });
+        const title = isSold ? `💰 ${selectedYear}年 売却内訳（${yearCompleted.length}件）`
+          : isBought ? `🏠 ${selectedYear}年 仕入物件（${yearBought.length}件）`
+          : `📦 在庫物件（${active.length}件）`;
+        return (
+          <BottomSheet title={title} onClose={() => setKpiDetail(null)}>
+            {isSold && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 800, color: C.text, marginBottom: 12, padding: "8px 12px", background: C.bg, borderRadius: 10, border: `1px solid ${C.borderDim}` }}>
+                <span>合計 売上 <span style={{ color: C.warn }}>{man(yearSell)}</span></span>
+                <span>利益 <span style={{ color: C.success }}>{man(yearProfit)}</span></span>
+              </div>
+            )}
+            {sorted.length === 0 ? (
+              <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "24px 0" }}>該当する物件がありません</div>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {sorted.map(s => {
+                  const profit = (Number(s.sellPrice) || 0) - (Number(s.buyCost) || 0);
+                  return (
+                    <div key={s.id} style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name || "(無題)"}</span>
+                        {s.assignee && <MemberTag name={s.assignee} />}
+                      </div>
+                      {isSold ? (
+                        <div style={{ display: "flex", gap: 12, fontSize: 11, color: C.muted, flexWrap: "wrap" }}>
+                          <span>仕入 {man(s.buyCost)}</span>
+                          <span>売却 {man(s.sellPrice)}</span>
+                          <span style={{ color: profit >= 0 ? C.success : C.danger, fontWeight: 700 }}>利益 {man(profit)}</span>
+                          {s.sellDate && <span>📅 {s.sellDate}</span>}
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", gap: 12, fontSize: 11, color: C.muted, flexWrap: "wrap" }}>
+                          <span>仕入 {man(s.buyCost)}</span>
+                          {s.buyDate && <span>📅 {s.buyDate}</span>}
+                          {s.status && <span style={{ color: C.accent }}>{s.status}</span>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </BottomSheet>
+        );
+      })()}
 
       {/* 今日フォロー予定は最上段の「今日のアクション」に統合 */}
 
