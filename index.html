@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.70-pinedit-no-register-conflict";
+const APP_VERSION = "2026-06-11-v9.71-filter-visit-results";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13539,6 +13539,20 @@ async function reverseGeocode(lat, lng) {
 // レート制限用 sleep
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// 🆕 v9.71: ピン表示・絞り込み共通の「最新の訪問結果」判定ヘルパー
+//   不在/居留守/訪問禁止 は status 値に無く、最新の visitLog.result として保存される。
+//   ピンの絵文字（emojiForPin）と絞り込みを同じロジックで一致させるために使う。
+function latestVisitResultKey(raw) {
+  const log = (raw && raw.visitLog) || [];
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i] && log[i].result) return log[i].result;
+  }
+  return null;
+}
+function isBasicStageStatus(s) {
+  return !s || s === "未訪問" || s === "初訪" || s === "再訪" || s === "訪問済";
+}
+
 // 訪問結果の定義
 const VISIT_RESULTS = [
   { key: "home",      label: "🤝 面談",     short: "面談",     color: "#10b981", autoStatus: "初訪" },
@@ -15116,6 +15130,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     if (quickFilter === "ignore_attack") {
       const log = (item.raw && item.raw.visitLog) || [];
       if (!log.some(v => v.result === "ignore")) return false;
+    }
+    // 🆕 v9.71: 訪問結果フィルター（不在/居留守/訪問禁止）。ピンの絵文字と同じ条件で一致させる
+    //   （基本段階の status ＝ 未訪問/初訪/再訪/訪問済 のとき、最新の訪問結果が一致するもの）
+    if (quickFilter === "result_absent" || quickFilter === "result_ignore" || quickFilter === "result_rejected") {
+      const want = quickFilter === "result_absent" ? "absent" : quickFilter === "result_ignore" ? "ignore" : "rejected";
+      if (!isBasicStageStatus(item.status)) return false;
+      if (latestVisitResultKey(item.raw) !== want) return false;
     }
     // ⏰ 今この時間ベスト（現在の曜日×時間帯で過去 不在/居留守 を除外）
     if (quickFilter === "now_best") {
@@ -18262,13 +18283,21 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               </div>
                               <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}>📍 ピン状態</div>
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
-                                {[
+                                {(() => {
+                                  // 🆕 v9.71: 訪問結果（不在/居留守/訪問禁止）の件数を最新訪問結果で集計
+                                  const _resultCount = (want) => (data.jiage || []).filter(j =>
+                                    isBasicStageStatus(j.status) && latestVisitResultKey(j) === want
+                                  ).length;
+                                  return [
                                   { key: "pending_lot",    label: "🟡 地番待ち",  color: "#fde047", count: pendingPinSummary.total },
                                   { key: "lookup_pending", label: "⏳ 謄本待ち",  color: "#f97316", count: pendingPinSummary.lookupPendingTotal },
                                   { key: "excluded",       label: "🚫 対象外",   color: "#cbd5e1", count: pendingPinSummary.excludedTotal },
                                   { key: "lookup_failed",  label: "🔧 要修正",   color: "#dc2626", count: pendingPinSummary.lookupFailedTotal },
                                   { key: "dm_ready",       label: "🚪 訪問OK",   color: "#16a34a", count: pendingPinSummary.dmReadyTotal },
-                                ].map(p => {
+                                  { key: "result_absent",  label: "🚪 不在",     color: "#92400e", count: _resultCount("absent") },
+                                  { key: "result_ignore",  label: "🙈 居留守",   color: "#b45309", count: _resultCount("ignore") },
+                                  { key: "result_rejected",label: "🚷 訪問禁止", color: "#7f1d1d", count: _resultCount("rejected") },
+                                ]; })().map(p => {
                                   const isActive = quickFilter === p.key;
                                   const isLight = ["#fde047","#cbd5e1"].includes(p.color);
                                   return (
