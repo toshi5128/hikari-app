@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.71-filter-visit-results";
+const APP_VERSION = "2026-06-11-v9.72-mediation-archive";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8100,6 +8100,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("__ALL__");
   const [filterMember, setFilterMember] = useState("__ALL__");
+  const [showArchived, setShowArchived] = useState(false); // 🆕 v9.72: 決済完了はアーカイブ（既定で隠す）
   const [showForm, setShowForm] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const empty = {
@@ -8127,12 +8128,16 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const [importTargetMedId, setImportTargetMedId] = useState(null);
 
   const mediations = data.mediations || [];
+  // 🆕 v9.72: 決済完了の件数（アーカイブ）
+  const archivedCount = mediations.filter(m => m.status === "決済完了").length;
   const filtered = useMemo(() => mediations.filter(m => {
+    // 🆕 v9.72: 決済完了はアーカイブ扱い。既定では非表示（アーカイブ表示ON、または「決済完了」で絞り込み中のみ表示）
+    if (m.status === "決済完了" && !showArchived && filterStatus !== "決済完了") return false;
     if (filterStatus !== "__ALL__" && m.status !== filterStatus) return false;
     if (filterMember !== "__ALL__" && !isAssignedTo([m.assignee], filterMember)) return false;
     if (search && !(m.name || "").includes(search) && !(m.seller || "").includes(search)) return false;
     return true;
-  }), [mediations, filterStatus, filterMember, search]);
+  }), [mediations, filterStatus, filterMember, search, showArchived]);
 
   const statusColor = (st) => ({ "媒介契約": C.accent, "売出中": C.warn, "買付あり": C.purple, "売買契約": "#f97316", "決済完了": C.success }[st] || C.muted);
 
@@ -8497,6 +8502,10 @@ function MediationView({ data, setData, dealType, setDealType }) {
           const active = filterStatus === st;
           return <button key={st} onClick={() => setFilterStatus(active ? "__ALL__" : st)} style={{ padding: "6px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, background: active ? statusColor(st) : C.cardBg, color: active ? "#fff" : C.muted, border: `1px solid ${active ? statusColor(st) : C.borderDim}`, fontFamily: "inherit" }}>{st}</button>;
         })}
+        {/* 🆕 v9.72: アーカイブ（決済完了）表示トグル */}
+        {archivedCount > 0 && (
+          <button onClick={() => setShowArchived(v => !v)} style={{ padding: "6px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, background: showArchived ? C.success : C.cardBg, color: showArchived ? "#fff" : C.muted, border: `1px solid ${showArchived ? C.success : C.borderDim}`, fontFamily: "inherit", marginLeft: "auto" }}>{showArchived ? "✓ " : ""}📦 決済済み {archivedCount}</button>
+        )}
       </div>
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
       {filtered.length === 0 && (
