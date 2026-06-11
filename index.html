@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.82-impact-notif-and-todo-visible";
+const APP_VERSION = "2026-06-11-v9.84-day-popup-swipe";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6763,6 +6763,9 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   }, [calCursor]);
 
   const fmtDate = d => d ? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}` : null;
+  // 🆕 v9.84: 日ポップアップを左右スワイプ/矢印で前後の日へ
+  const calSwipeRef = useRef(null);
+  const shiftSelectedDate = (delta) => { try { const d = new Date(calSelectedDate + "T00:00:00"); d.setDate(d.getDate() + delta); const ns = fmtDate(d); if (ns) setCalSelectedDate(ns); } catch (e) {} };
   // 🆕 v9.73: 終日の予定を先頭に（他は元の順序を維持＝安定ソート）
   const selectedEvents = (calEventsByDate[calSelectedDate] || []).slice().sort((a, b) => {
     const aAll = (a.isCustom && a.allDay) ? 0 : 1;
@@ -7160,15 +7163,20 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
         {showDayPanel && (
         <>
         <div onClick={() => setShowDayPanel(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 300 }} />
-        <div style={{ position: "fixed", left: "50%", top: "12%", transform: "translateX(-50%)", width: "min(94vw, 470px)", maxHeight: "74vh", display: "flex", flexDirection: "column", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 18, boxShadow: "0 18px 50px rgba(0,0,0,0.5)", zIndex: 301, overflow: "hidden" }}>
+        <div
+          onTouchStart={e => { const t = e.touches[0]; calSwipeRef.current = { x: t.clientX, y: t.clientY }; }}
+          onTouchEnd={e => { const s = calSwipeRef.current; calSwipeRef.current = null; if (!s) return; const t = e.changedTouches[0]; const dx = t.clientX - s.x, dy = t.clientY - s.y; if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.5) shiftSelectedDate(dx < 0 ? 1 : -1); }}
+          style={{ position: "fixed", left: "50%", top: "12%", transform: "translateX(-50%)", width: "min(94vw, 470px)", maxHeight: "74vh", display: "flex", flexDirection: "column", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 18, boxShadow: "0 18px 50px rgba(0,0,0,0.5)", zIndex: 301, overflow: "hidden" }}>
         <div style={{ padding: "16px", overflowY: "auto", flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+            <button onClick={() => shiftSelectedDate(-1)} aria-label="前の日" style={{ background: C.accent + "18", border: `1px solid ${C.accent}44`, color: C.accent, borderRadius: 8, width: 28, height: 28, cursor: "pointer", fontFamily: "inherit", fontSize: 16, fontWeight: 800, lineHeight: 1, flexShrink: 0 }}>‹</button>
             <span style={{ fontSize: 16, fontWeight: 800, color: C.text }}>📅 {calSelectedDate}</span>
             {calSelectedDate === today && <Tag label="今日" color={C.accent} />}
             {calSelectedDate < today && <Tag label="過去" color={C.muted} />}
             {calSelectedDate > today && <Tag label="予定" color={C.success} />}
-            <span style={{ color: C.muted, fontSize: 12, marginLeft: "auto" }}>予定 {selectedEvents.length}件</span>
-            <button onClick={() => setShowDayPanel(false)} aria-label="閉じる" style={{ background: "transparent", border: "none", color: C.muted, fontSize: 18, cursor: "pointer", fontFamily: "inherit", padding: "0 2px", lineHeight: 1 }}>✕</button>
+            <button onClick={() => shiftSelectedDate(1)} aria-label="次の日" style={{ marginLeft: "auto", background: C.accent + "18", border: `1px solid ${C.accent}44`, color: C.accent, borderRadius: 8, width: 28, height: 28, cursor: "pointer", fontFamily: "inherit", fontSize: 16, fontWeight: 800, lineHeight: 1, flexShrink: 0 }}>›</button>
+            <span style={{ color: C.muted, fontSize: 12 }}>予定 {selectedEvents.length}件</span>
+            <button onClick={() => setShowDayPanel(false)} aria-label="閉じる" style={{ background: "transparent", border: "none", color: C.muted, fontSize: 18, cursor: "pointer", fontFamily: "inherit", padding: "0 2px", lineHeight: 1, flexShrink: 0 }}>✕</button>
           </div>
           {selectedEvents.length === 0 ? (
             <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "16px 0" }}>
