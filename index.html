@@ -44,6 +44,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::
 @keyframes hikariGoldPulse{0%,100%{box-shadow:0 0 15px rgba(252,211,77,0.35),inset 0 0 20px rgba(252,211,77,0.06)}50%{box-shadow:0 0 35px rgba(252,211,77,0.7),inset 0 0 40px rgba(252,211,77,0.12)}}
 @keyframes hikariRipple{0%{transform:scale(0.3);opacity:0.85}100%{transform:scale(3);opacity:0}}
 @keyframes hikariRippleCore{0%{transform:scale(0.5);opacity:1}100%{transform:scale(1.5);opacity:0}}
+@keyframes hikariFlashPulse{0%{opacity:0}15%{opacity:0.95}100%{opacity:0.82}}
+@keyframes hikariFlashCardIn{0%{transform:scale(0.6) translateY(20px);opacity:0}100%{transform:scale(1) translateY(0);opacity:1}}
+@keyframes hikariFlashEmoji{0%{transform:scale(0) rotate(-20deg)}60%{transform:scale(1.25) rotate(8deg)}100%{transform:scale(1) rotate(0)}}
 .hikari-hide-zoom .leaflet-control-zoom{display:none!important;}
 /* 🆕 v9.45: ズーム +/- を絞り込み FAB と中心揃え ( 左 25px = 中心 40px、 FAB と一致 ) */
 .leaflet-bottom.leaflet-left .leaflet-control-zoom{margin-left:25px!important;}
@@ -175,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.80-todo-show-on-day";
+const APP_VERSION = "2026-06-11-v9.82-impact-notif-and-todo-visible";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1776,7 +1779,7 @@ function markCommentsAsRead(threadKey) {
 
 // ============== 操作履歴 ==============
 // data に対してログエントリを追加する純粋関数
-function appendLog(d, action, target, description) {
+function appendLog(d, action, target, description, meta = {}) {
   const entry = {
     id: Date.now() + Math.random(),
     timestamp: new Date().toISOString(),
@@ -1784,6 +1787,7 @@ function appendLog(d, action, target, description) {
     action, // "add" | "update" | "delete" | "promote"
     target, // "stock" | "jiage" | "owner" | "sekisan" | "yakusho"
     description,
+    ...meta, // 🆕 v9.81: assignees / itemId（インパクト通知の「自分に関係する」判定用）
   };
   const log = [entry, ...(d.activityLog || [])].slice(0, 200);
   return { ...d, activityLog: log };
@@ -1796,7 +1800,9 @@ function appendLogAndNotify(d, action, target, description, item = null, options
     recordDeletion(target, item.id);
   }
 
-  const next = appendLog(d, action, target, description);
+  // 🆕 v9.81: 対象アイテムの担当者をログに残す（インパクト通知の「自分に関係する」判定用）
+  const _logAssignees = item ? (item.assignees || (item.assignee ? [item.assignee] : [])) : [];
+  const next = appendLog(d, action, target, description, { assignees: _logAssignees, itemId: item?.id ?? null });
 
   // skipPush: 専用通知が既に飛ぶ箇所では汎用通知をスキップ
   if (options.skipPush) return next;
@@ -3018,6 +3024,60 @@ function MainApp({ onLock, onSwitchUser }) {
   // 🔔 通知タップ → 該当画面遷移用の state
   const [pendingNav, setPendingNav] = useState(null);
 
+  // 🆕 v9.81: インパクト通知（全画面フラッシュ・音・バイブ）
+  const [flashNotif, setFlashNotif] = useState(null);
+  const lastSeenActivityRef = useRef(null); // 既読基準（このタイムスタンプより新しい他人の関係アクティビティを検知）
+  const _buildFlash = (e) => {
+    const map = {
+      stock: { icon: "🏠", color: "#0ea5e9" }, jiage: { icon: "🚧", color: "#a855f7" },
+      owner: { icon: "👤", color: "#0ea5e9" }, sekisan: { icon: "🧮", color: "#ef4444" },
+      mediation: { icon: "🤝", color: "#a855f7" }, event: { icon: "📅", color: "#22c55e" },
+      yakusho: { icon: "🏛", color: "#06b6d4" },
+    };
+    const actionLabel = { add: "新規追加", update: "更新", delete: "削除", promote: "転記", import: "取込" }[e.action] || "変更";
+    const t = map[e.target] || { icon: "📋", color: "#0ea5e9" };
+    return { emoji: t.icon, color: t.color, kind: `${actionLabel}・${e.user}さん`, title: `${e.user}さんが${actionLabel}しました`, body: e.description || "", nav: { target: e.target, itemId: e.itemId } };
+  };
+  // リモート取込（マージ）後に、自分に関係する新着アクティビティを検知してフラッシュ
+  const maybeFlashFromMerged = (merged, isInitial) => {
+    try {
+      const log = (merged && merged.activityLog) || [];
+      if (log.length === 0) return;
+      const newestTs = log[0].timestamp;
+      if (isInitial || lastSeenActivityRef.current == null) { lastSeenActivityRef.current = newestTs; return; } // 初回は基準だけ
+      const prevSeen = lastSeenActivityRef.current;
+      lastSeenActivityRef.current = newestTs;
+      if (localStorage.getItem('hikari_flash_on') === 'false') return; // 設定オフ
+      const me = getCurrentUser() || "";
+      if (!me) return;
+      const fresh = log.filter(e => e && e.timestamp > prevSeen && e.user !== me && Array.isArray(e.assignees) && isAssignedTo(e.assignees, me));
+      if (fresh.length === 0) return;
+      setFlashNotif(_buildFlash(fresh[0]));
+    } catch (err) {}
+  };
+  // 🆕 v9.81: フラッシュ発火時に 音＋バイブ、5秒で自動クローズ
+  React.useEffect(() => {
+    if (!flashNotif) return;
+    try { if (localStorage.getItem('hikari_flash_vibe') !== 'false' && navigator.vibrate) navigator.vibrate([0, 90, 60, 90, 60, 160]); } catch (e) {}
+    try {
+      if (localStorage.getItem('hikari_flash_sound') !== 'false') {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) {
+          const ctx = new AC(); const now = ctx.currentTime;
+          [[880, 0], [1320, 0.13]].forEach(([f, t]) => {
+            const o = ctx.createOscillator(), g = ctx.createGain();
+            o.type = "sine"; o.frequency.value = f;
+            g.gain.setValueAtTime(0, now + t); g.gain.linearRampToValueAtTime(0.3, now + t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, now + t + 0.35);
+            o.connect(g); g.connect(ctx.destination); o.start(now + t); o.stop(now + t + 0.4);
+          });
+          setTimeout(() => { try { ctx.close(); } catch (e) {} }, 1200);
+        }
+      }
+    } catch (e) {}
+    const tm = setTimeout(() => setFlashNotif(null), 5000);
+    return () => clearTimeout(tm);
+  }, [flashNotif]);
+
   // URL クエリ / SW message から遷移先を取得
   useEffect(() => {
     // ① URL クエリ（新規ウィンドウ起動時）
@@ -3485,6 +3545,7 @@ function MainApp({ onLock, onSwitchUser }) {
       if (merged) {
         setDataRaw(merged);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
+        maybeFlashFromMerged(merged, true); // 🆕 v9.81: 初回は既読基準を設定（鳴らさない）
 
         // 🆕 v8.65: 自分が新しいバージョンなら Supabase に「俺いるよ」をアナウンスして他端末のバナーを起動
         //   ・remote.__appVersion < APP_VERSION のときに自動で minimal save を発火
@@ -3528,6 +3589,7 @@ function MainApp({ onLock, onSwitchUser }) {
         if (merged) {
           setDataRaw(merged);
           try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
+          maybeFlashFromMerged(merged, false); // 🆕 v9.81: 自分に関係する新着を検知してフラッシュ
         }
       });
     }, 30000); // 🆕 v9.21: 15s → 30s
@@ -4097,6 +4159,23 @@ function MainApp({ onLock, onSwitchUser }) {
           </button>
         ))}
       </div>
+
+      {/* 🆕 v9.81: インパクト通知（全画面フラッシュ・テーマ追従・音/バイブは effect 側） */}
+      {flashNotif && (
+        <div onClick={() => setFlashNotif(null)} style={{ position: "fixed", inset: 0, zIndex: 99998, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "absolute", inset: 0, background: `radial-gradient(circle at 50% 38%, ${flashNotif.color}, ${flashNotif.color}cc 40%, ${flashNotif.color}88 100%)`, animation: "hikariFlashPulse 1.1s ease-out 2", opacity: 0.9 }} />
+          <div onClick={e => e.stopPropagation()} style={{ position: "relative", zIndex: 2, width: "100%", maxWidth: 420, background: C.cardBg, border: `2px solid ${flashNotif.color}`, borderRadius: 22, padding: "26px 22px 22px", textAlign: "center", boxShadow: "0 24px 70px rgba(0,0,0,0.6)", animation: "hikariFlashCardIn 0.45s cubic-bezier(.2,1.3,.4,1)" }}>
+            <div style={{ fontSize: 60, lineHeight: 1, animation: "hikariFlashEmoji 0.6s ease", display: "inline-block" }}>{flashNotif.emoji}</div>
+            <div style={{ display: "inline-block", margin: "14px 0 6px", fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", padding: "4px 12px", borderRadius: 20, background: flashNotif.color + "22", color: flashNotif.color }}>{flashNotif.kind}</div>
+            <div style={{ fontSize: 20, fontWeight: 900, margin: "4px 0 6px", lineHeight: 1.3, color: C.text }}>{flashNotif.title}</div>
+            <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, wordBreak: "break-word" }}>{flashNotif.body}</div>
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button onClick={() => setFlashNotif(null)} style={{ flex: 1, border: `1px solid ${C.borderDim}`, background: "transparent", color: C.muted, borderRadius: 12, padding: 13, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>閉じる</button>
+              <button onClick={() => { const n = flashNotif.nav; setFlashNotif(null); if (n && n.target) { const tabMap = { stock: "stock", mediation: "stock", jiage: "jiage", owner: "jiage", sekisan: "approach", yakusho: "dashboard", event: "dashboard" }; setPage(tabMap[n.target] || "dashboard"); } }} style={{ flex: 1, border: "none", background: flashNotif.color, color: "#fff", borderRadius: 12, padding: 13, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>開く</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -6690,6 +6769,12 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     calSelectedDate === today ? (t.createdDate || today) <= today : (t.createdDate || today) === calSelectedDate
   ));
   const selectedTodosDone = myTodos.filter(t => t.done && (t.doneDate || "") === calSelectedDate);
+  // 🆕 v9.82: 常時表示「今日のやること」（タップ不要で見える）
+  const todayUndone = myTodos.filter(t => !t.done && (t.createdDate || today) <= today);
+  const todayDone = myTodos.filter(t => t.done && (t.doneDate || "") === today);
+  // 日付→その日に作成したToDo件数（カレンダーセル表示用）
+  const todoCountByDate = {};
+  myTodos.forEach(t => { const d = t.createdDate || today; todoCountByDate[d] = (todoCountByDate[d] || 0) + 1; });
   const addTodo = () => {
     const text = todoInput.trim(); if (!text) return;
     const item = { id: Date.now(), text, done: false, doneDate: "", owner: _todoUser, createdDate: calSelectedDate, createdAt: new Date().toISOString() };
@@ -7045,6 +7130,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                       );
                     })}
                     {events.length > 6 && <div style={{ fontSize: 10, color: C.muted, padding: "0 4px", fontWeight: 700 }}>+{events.length - 6}件</div>}
+                    {/* 🆕 v9.82: その日のToDo件数バッジ（タップしなくても分かる） */}
+                    {todoCountByDate[dateStr] > 0 && <div style={{ alignSelf: "flex-start", fontSize: 9, fontWeight: 800, color: "#fff", background: C.success, borderRadius: 4, padding: "1px 5px", display: "inline-flex", alignItems: "center", gap: 2 }}>✓{todoCountByDate[dateStr]}</div>}
                   </div>
                 </div>
               );
@@ -7305,6 +7392,35 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
         </button>
         </div>{/* ポップアップ枠 */}
         </>
+        )}
+      </div>
+
+      {/* 🆕 v9.82: 今日のやること（常時表示・タップ不要ですぐ見える） */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 800, color: C.success }}>✓ 今日のやること</span>
+          <span style={{ fontSize: 11, color: C.muted }}>残り {todayUndone.length}件</span>
+          <button onClick={() => { setCalSelectedDate(today); setTodoInput(""); setShowTodoSheet(true); }} style={{ marginLeft: "auto", background: C.success + "22", border: `1px solid ${C.success}66`, color: C.success, borderRadius: 8, padding: "5px 11px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>＋ ToDo</button>
+        </div>
+        {todayUndone.length === 0 && todayDone.length === 0 ? (
+          <div style={{ color: C.muted, fontSize: 12, textAlign: "center", padding: "8px 0" }}>今日のやることはありません（「＋ ToDo」で追加）</div>
+        ) : (
+          <>
+            {todayUndone.map(t => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 8, background: C.bg, border: `1px solid ${C.borderDim}`, marginBottom: 6 }}>
+                <div onClick={() => toggleTodo(t.id)} style={{ flexShrink: 0, width: 22, height: 22, borderRadius: 6, border: `2px solid ${C.muted}`, cursor: "pointer" }} />
+                <div style={{ flex: 1, fontSize: 13, color: C.text }}>{t.text}{t.createdDate < today && <span style={{ fontSize: 9, fontWeight: 800, background: "#f9731622", color: "#fb923c", border: "1px solid #fb923c55", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>繰り越し</span>}</div>
+                <button onClick={() => { if (window.confirm("このToDoを削除しますか？")) deleteTodo(t); }} style={{ flexShrink: 0, background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14 }}>🗑</button>
+              </div>
+            ))}
+            {todayDone.length > 0 && <div style={{ fontSize: 10, color: C.muted, margin: "6px 0 4px" }}>完了 {todayDone.length}</div>}
+            {todayDone.map(t => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 8, background: C.bg, border: `1px solid ${C.borderDim}`, marginBottom: 6 }}>
+                <div onClick={() => toggleTodo(t.id)} style={{ flexShrink: 0, width: 22, height: 22, borderRadius: 6, background: C.success, border: `2px solid ${C.success}`, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 14, cursor: "pointer" }}>✓</div>
+                <div style={{ flex: 1, fontSize: 13, color: C.muted, textDecoration: "line-through" }}>{t.text}</div>
+              </div>
+            ))}
+          </>
         )}
       </div>
 
