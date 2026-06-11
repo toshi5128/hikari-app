@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.67-hearing-input-focus-fix2";
+const APP_VERSION = "2026-06-11-v9.68-pin-emoji-visit-result";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4740,11 +4740,26 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           if (st === "居住している") return "🏡";
           return null;
         };
+        // 🆕 v9.68: 最新の訪問結果（不在/居留守/訪問禁止）をピン絵文字に反映。
+        //   ・訪問結果は status=初訪 として保存される（不在 等は status 値に無い）ため、
+        //     status が「初訪/再訪/未訪問」の基本段階のときだけ、最新の訪問結果アイコンで上書きする。
+        //   ・見込み 以降に進んだ案件は status を優先（重要な進捗を隠さない）。
+        const latestVisitResult = (() => {
+          const log = (_r && _r.visitLog) || [];
+          for (let i = log.length - 1; i >= 0; i--) {
+            if (log[i] && log[i].result) return log[i].result;
+          }
+          return null;
+        })();
+        const isBasicStage = !s || s === "未訪問" || s === "初訪" || s === "再訪" || s === "訪問済";
+        const RESULT_EMOJI = { absent: "🚫", ignore: "🚪", rejected: "⛔" }; // home(面談) は status 絵文字を使う
+        const resultOverride = (isBasicStage && latestVisitResult && RESULT_EMOJI[latestVisitResult]) ? RESULT_EMOJI[latestVisitResult] : null;
         // 現地ピン
         if (_r && _r.coordsManual) {
           if (pendingLot) return "⏰";
           // 所有者判明後は訪問status を反映（未訪問なら ✅ で訪問OK 待機）
           if (_ownerExists(_r)) {
+            if (resultOverride) return resultOverride;  // 不在/居留守/訪問禁止 を優先表示
             if (!s || s === "未訪問") return "✅";  // 訪問OK・未着手
             const e = statusEmoji(s);
             return e || "✅";
@@ -4754,6 +4769,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           return "⏳";  // 謄本待ち
         }
         // 通常物件（インポート etc）
+        if (resultOverride) return resultOverride;  // 不在/居留守/訪問禁止 を優先表示
         if (s === "未訪問") return "🏠";
         const e = statusEmoji(s);
         return e || "📍";
@@ -4790,11 +4806,23 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       //   所有者あり時、 status が「未訪問」以外なら訪問進捗の status を優先表示
       //   （訪問記録を保存して「初訪/再訪/見込み/...」になったら、 そのstatus を表示）
       const _isOnsite = !!(_r && _r.coordsManual);  // ← 変数名維持（3561行で使用中）
+      // 🆕 v9.68: ラベルにも最新の訪問結果（不在/居留守/訪問禁止）を反映
+      const _RESULT_LABEL = { absent: "🚫 不在", ignore: "🚪 居留守", rejected: "⛔ 訪問禁止" };
+      const _latestResLabel = (() => {
+        const log = (_r && _r.visitLog) || [];
+        for (let i = log.length - 1; i >= 0; i--) { if (log[i] && log[i].result) return log[i].result; }
+        return null;
+      })();
+      const _isBasicStage = (st) => !st || st === "未訪問" || st === "初訪" || st === "再訪" || st === "訪問済";
       const statusLabel = (() => {
-        if (!_isOnsite) return it.status;
+        if (!_isOnsite) {
+          if (_isBasicStage(it.status) && _latestResLabel && _RESULT_LABEL[_latestResLabel]) return `${_RESULT_LABEL[_latestResLabel]}（${it.status || "初訪"}）`;
+          return it.status;
+        }
         if (pendingLot) return "🟡 地番待ち";
         if (_ownerExists(_r)) {
           const s = it.status;
+          if (_isBasicStage(s) && _latestResLabel && _RESULT_LABEL[_latestResLabel]) return `${_RESULT_LABEL[_latestResLabel]}（${s || "訪問OK"}）`;
           if (!s || s === "未訪問") return "🚪 訪問OK";
           return s;  // 「初訪」「再訪」「見込み」「中長期見込」「交渉中」「媒介」「仕入」「見込無し」「NG」 など
         }
@@ -4888,7 +4916,11 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     items.length,
     items.map(i => {
       const r = (i && i.raw) || i || {};
-      return `${i.id || i.rawId || ""}|${i.lat ?? ""}|${i.lng ?? ""}|${i.ownerLat ?? ""}|${i.ownerLng ?? ""}|${i.status || ""}|${r.coordsManual ? 1 : 0}|${r.address || ""}|${r.owner || r.ownerName || ""}|${r.excluded === true ? 1 : 0}|${r.lookupFailed === true ? 1 : 0}`;
+      // 🆕 v9.68: 訪問ログの件数＋最新の訪問結果 もハッシュに含める
+      //   → status が変わらない訪問結果（不在/居留守/訪問禁止 を初訪のまま記録）でもピンを再描画する
+      const _vlog = (r.visitLog || i.visitLog || []);
+      const _lastRes = (_vlog.length ? (_vlog[_vlog.length - 1] || {}).result : "") || "";
+      return `${i.id || i.rawId || ""}|${i.lat ?? ""}|${i.lng ?? ""}|${i.ownerLat ?? ""}|${i.ownerLng ?? ""}|${i.status || ""}|${r.coordsManual ? 1 : 0}|${r.address || ""}|${r.owner || r.ownerName || ""}|${r.excluded === true ? 1 : 0}|${r.lookupFailed === true ? 1 : 0}|${_vlog.length}|${_lastRes}`;
     }).join("¦"),
     pinTarget,
   ]);
