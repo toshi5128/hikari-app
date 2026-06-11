@@ -175,7 +175,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.72-mediation-archive";
+const APP_VERSION = "2026-06-11-v9.73-calendar-allday-todo";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -328,7 +328,7 @@ function PieChart({ children }) {
 // ===================== CONSTANTS =====================
 const JIAGE_EXCEL_DATA = {};
 
-const MEMBERS = ["たっくん", "長島", "松村", "脇本", "谷津", "下田", "比嘉", "比嘉・下田"];
+const MEMBERS = ["下田", "たっくん", "長島", "松村", "脇本", "谷津", "比嘉", "比嘉・下田"];
 const MEMBER_COLORS = {
   "たっくん": "#3b82f6", "長島": "#10b981", "松村": "#f59e0b",
   "脇本": "#ef4444", "谷津": "#8b5cf6", "下田": "#06b6d4", "比嘉": "#ec4899",
@@ -1690,6 +1690,7 @@ const DEFAULT_DATA = {
   annualGoals: { sell: 0, profit: 0, buyCount: 0, brokerFee: 0 },
   activityLog: [],
   customEvents: [],
+  todos: [], // 🆕 v9.73: 個人ToDo（自分用・未完了は翌日繰り越し）
   // 🆕 v8.67: 管理者は下田のみのデフォルト（実値は Supabase が優先される）
   adminMember: "下田",
   adminMembers: ["下田"],
@@ -1876,7 +1877,7 @@ async function saveToSupabase(data, retries = 3) {
         });
         // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去（手動削除を尊重）
         // 配列の項目別マージ（mergeItems を使う）
-        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations"];
+        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos"];
         const mergedArrays = {};
         arrayKeys.forEach(k => {
           const localArr = Array.isArray(data[k]) ? data[k] : [];
@@ -2639,6 +2640,7 @@ function recordDeletion(target, id) {
     "yakusho": "yakusho",
     "approach": "approaches",
     "mediation": "mediations",
+    "todo": "todos",
   };
   const arrayKey = targetToArrayKey[target] || target;
   try {
@@ -3237,7 +3239,7 @@ function MainApp({ onLock, onSwitchUser }) {
     // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去
     //   ・データ回復が済んだので、今後は通常通り「ユーザーが削除した」 tombstone を尊重する
     //   ・これにより手動で削除した stocks/jiage は復活しなくなる
-    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "activityLog"];
+    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "activityLog", "todos"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
       const remoteArr = Array.isArray(merged[k]) ? merged[k] : [];
@@ -3848,7 +3850,7 @@ function MainApp({ onLock, onSwitchUser }) {
       }
 
       // 🆕 変更されたアイテムに updatedAt をセット（マージ時の競合解決用）
-      const trackedKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations"];
+      const trackedKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos"];
       let hasActualChange = false; // 実質的な変更があったか
       // 🆕 共有tombstone（削除済みID）を更新するための作業コピー
       let nextTomb = { ...(next.tombstones || prev.tombstones || {}) };
@@ -5950,11 +5952,12 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   }, [today]);
   const [calFilterType, setCalFilterType] = useState("all");
   const [calFilterMember, setCalFilterMember] = useState("__ALL__");
-  const [calShowFilters, setCalShowFilters] = useState(false); // フィルター展開状態
+  const [calShowFilters, setCalShowFilters] = useState(true); // 🆕 v9.73: 種類/担当者を最初から表示（フィルタ自体はall）
   const [showEventForm, setShowEventForm] = useState(false);
   const [editingEvent, setEditingEvent] = useState(null);
-  const eventEmpty = { title: "", date: today, time: "", location: "", memo: "", assignees: [], reminderMinutes: 0 };
+  const eventEmpty = { title: "", date: today, time: "", allDay: false, location: "", memo: "", assignees: [], reminderMinutes: 0 };
   const [eventForm, setEventForm] = useState(eventEmpty);
+  const [todoInput, setTodoInput] = useState(""); // 🆕 v9.73: ToDo入力
   // 🆕 カレンダー予定のコメント関連 state
   // 🆕 予定ごとに別々の入力値を保持（共有しないため）
   const [newEventComment, setNewEventComment] = useState({}); // { eventId: text }
@@ -6311,6 +6314,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       title: ev.title || "",
       date: ev.date || today,
       time: ev.time || "",
+      allDay: !!ev.allDay,  // 🆕 v9.73: 終日
       location: ev.location || "",
       memo: ev.memo || "",
       // 旧データの assignee (単一) も吸収して assignees (配列) に統一
@@ -6340,7 +6344,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       id: editingEvent?.id || Date.now(),
       title: eventForm.title,
       date: eventForm.date,
-      time: eventForm.time,
+      allDay: !!eventForm.allDay,            // 🆕 v9.73: 終日
+      time: eventForm.allDay ? "" : eventForm.time,  // 終日なら時刻なし
       location: eventForm.location,
       memo: eventForm.memo,
       assignees,
@@ -6564,11 +6569,12 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       // 旧データの assignee (単一) も吸収
       const assignees = ev.assignees || (ev.assignee ? [ev.assignee] : []);
       list.push({
-        date: ev.date, type: "custom", icon: "📌", color: "#f97316",
+        date: ev.date, type: "custom", icon: ev.allDay ? "📅" : "📌", color: "#f97316",
         title: ev.title,
-        sub: `${ev.time ? ev.time + "〜" : ""}${ev.location ? " @" + ev.location : ""}${ev.memo ? " | " + ev.memo : ""}`,
+        sub: `${ev.allDay ? "終日" : (ev.time ? ev.time + "〜" : "")}${ev.location ? (ev.allDay || ev.time ? " " : "") + "@" + ev.location : ""}${ev.memo ? " | " + ev.memo : ""}`,
         assignee: assignees[0] || "", // 後方互換
         assignees, // 配列で保持
+        allDay: !!ev.allDay, // 🆕 v9.73: 終日
         time: ev.time,
         location: ev.location,
         memo: ev.memo,
@@ -6623,7 +6629,34 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   }, [calCursor]);
 
   const fmtDate = d => d ? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}` : null;
-  const selectedEvents = calEventsByDate[calSelectedDate] || [];
+  // 🆕 v9.73: 終日の予定を先頭に（他は元の順序を維持＝安定ソート）
+  const selectedEvents = (calEventsByDate[calSelectedDate] || []).slice().sort((a, b) => {
+    const aAll = (a.isCustom && a.allDay) ? 0 : 1;
+    const bAll = (b.isCustom && b.allDay) ? 0 : 1;
+    return aAll - bAll;
+  });
+
+  // 🆕 v9.73: 個人ToDo（自分用・未完了は翌日繰り越し・シンプル）
+  const _todoUser = getCurrentUser() || "未設定";
+  const myTodos = (data.todos || []).filter(t => t && t.owner === _todoUser);
+  // この日の表示：未完了は「今日」にだけ繰り越し表示、完了は実施日(doneDate)に表示
+  const selectedTodosUndone = (calSelectedDate === today) ? myTodos.filter(t => !t.done) : [];
+  const selectedTodosDone = myTodos.filter(t => t.done && (t.doneDate || "") === calSelectedDate);
+  const addTodo = () => {
+    const text = todoInput.trim(); if (!text) return;
+    const item = { id: Date.now(), text, done: false, doneDate: "", owner: _todoUser, createdDate: today, createdAt: new Date().toISOString() };
+    setData(d => ({ ...d, todos: [...(d.todos || []), item] }));
+    setTodoInput("");
+  };
+  const toggleTodo = (id) => {
+    setData(d => ({ ...d, todos: (d.todos || []).map(t => t.id === id ? { ...t, done: !t.done, doneDate: !t.done ? today : "" } : t) }));
+  };
+  const deleteTodo = (todo) => {
+    setData(d => {
+      const next = { ...d, todos: (d.todos || []).filter(t => t.id !== todo.id) };
+      return appendLogAndNotify(next, "delete", "todo", `ToDo「${todo.text}」を削除`, todo, { skipPush: true });
+    });
+  };
 
   const availableYears = useMemo(() => {
     const years = new Set([currentYear]);
@@ -7048,7 +7081,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                   <span style={{ gridColumn: 1, gridRow: 1, fontSize: 18, alignSelf: "center" }}>{e.icon}</span>
                   <div style={{ gridColumn: 2, gridRow: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span style={{ color: C.text, fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 0", minWidth: 0 }}>{e.title}</span>
-                    {e.isCustom && e.time && <span style={{ color: "#f97316", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>🕐 {e.time}</span>}
+                    {e.isCustom && e.allDay && <span style={{ color: "#fbbf24", fontSize: 11, fontWeight: 800, flexShrink: 0, background: "#fbbf2422", border: "1px solid #fbbf2455", borderRadius: 5, padding: "1px 6px" }}>📅 終日</span>}
+                    {e.isCustom && !e.allDay && e.time && <span style={{ color: "#f97316", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>🕐 {e.time}</span>}
                     {e.isCustom && e.reminderMinutes > 0 && <span style={{ color: C.muted, fontSize: 10, flexShrink: 0 }}>🔔{e.reminderMinutes < 60 ? `${e.reminderMinutes}分前` : `${Math.round(e.reminderMinutes/60)}時間前`}</span>}
                     {/* 🆕 v8.60: 反響予定にタイトル横「詳細」ボタン。タップで反響内容を展開 */}
                     {e.type === "viewing" && cmtTarget && (
@@ -7189,6 +7223,38 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               })}
             </div>
           )}
+          {/* 🆕 v9.73: ToDo（自分用・未完了は翌日繰り越し・シンプル） */}
+          <div style={{ marginTop: 14, borderTop: `1px dashed ${C.borderDim}`, paddingTop: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.success, marginBottom: 8 }}>✓ ToDo（自分用）<span style={{ fontSize: 10, color: C.muted, fontWeight: 400, marginLeft: 6 }}>{_todoUser}</span></div>
+            {calSelectedDate === today && (
+              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                <input value={todoInput} onChange={e => setTodoInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addTodo(); }} placeholder="やることを入力（例：謄本を取る）" style={{ ...inp, flex: 1 }} />
+                <button onClick={addTodo} style={{ flexShrink: 0, border: "none", borderRadius: 8, background: C.success, color: "#fff", fontWeight: 800, padding: "0 16px", cursor: "pointer", fontFamily: "inherit", fontSize: 18 }}>＋</button>
+              </div>
+            )}
+            {selectedTodosUndone.length === 0 && selectedTodosDone.length === 0 && (
+              <div style={{ color: C.muted, fontSize: 12, textAlign: "center", padding: "10px 0" }}>{calSelectedDate === today ? "やることを追加できます" : "この日に完了したToDoはありません"}</div>
+            )}
+            {selectedTodosUndone.map(t => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 8, background: C.bg, border: `1px solid ${C.borderDim}`, marginBottom: 6 }}>
+                <div onClick={() => toggleTodo(t.id)} style={{ flexShrink: 0, width: 22, height: 22, borderRadius: 6, border: `2px solid ${C.muted}`, cursor: "pointer" }} />
+                <div style={{ flex: 1, fontSize: 13, color: C.text }}>{t.text}{t.createdDate < today && <span style={{ fontSize: 9, fontWeight: 800, background: "#f9731622", color: "#fb923c", border: "1px solid #fb923c55", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>繰り越し</span>}</div>
+                <button onClick={() => { if (window.confirm("このToDoを削除しますか？")) deleteTodo(t); }} style={{ flexShrink: 0, background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14 }}>🗑</button>
+              </div>
+            ))}
+            {selectedTodosDone.length > 0 && (
+              <>
+                <div style={{ fontSize: 10, color: C.muted, margin: "8px 0 4px" }}>完了</div>
+                {selectedTodosDone.map(t => (
+                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 8, background: C.bg, border: `1px solid ${C.borderDim}`, marginBottom: 6 }}>
+                    <div onClick={() => toggleTodo(t.id)} style={{ flexShrink: 0, width: 22, height: 22, borderRadius: 6, background: C.success, border: `2px solid ${C.success}`, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 14, cursor: "pointer" }}>✓</div>
+                    <div style={{ flex: 1, fontSize: 13, color: C.muted, textDecoration: "line-through" }}>{t.text}</div>
+                    <button onClick={() => { if (window.confirm("このToDoを削除しますか？")) deleteTodo(t); }} style={{ flexShrink: 0, background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14 }}>🗑</button>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -7203,8 +7269,15 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               <input type="date" style={inp} value={eventForm.date} onChange={e => setEventForm(p => ({ ...p, date: e.target.value }))} />
             </Field>
             <Field label="時間">
-              <input type="time" style={inp} value={eventForm.time} onChange={e => setEventForm(p => ({ ...p, time: e.target.value }))} />
+              <input type="time" style={{ ...inp, opacity: eventForm.allDay ? 0.4 : 1 }} disabled={!!eventForm.allDay} value={eventForm.allDay ? "" : eventForm.time} onChange={e => setEventForm(p => ({ ...p, time: e.target.value }))} />
             </Field>
+          </div>
+          {/* 🆕 v9.73: 終日トグル */}
+          <div onClick={() => setEventForm(p => ({ ...p, allDay: !p.allDay }))} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none", marginBottom: 16 }}>
+            <div style={{ width: 42, height: 24, borderRadius: 12, background: eventForm.allDay ? C.accent : C.borderDim, position: "relative", transition: "0.2s", flex: "none" }}>
+              <div style={{ position: "absolute", top: 2, left: eventForm.allDay ? 20 : 2, width: 20, height: 20, borderRadius: "50%", background: "#fff", transition: "0.2s" }} />
+            </div>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>📅 終日（時間を指定しない）</span>
           </div>
           <Field label="場所">
             <input style={inp} value={eventForm.location} onChange={e => setEventForm(p => ({ ...p, location: e.target.value }))} placeholder="現地 / 事務所 / Zoom" />
