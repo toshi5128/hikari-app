@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.99-dashboard-grid-fit";
+const APP_VERSION = "2026-06-11-v9.101-route-lasso";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -17746,7 +17746,26 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             };
             const routeMinimize = () => setRoute(r => ({ ...r, minimized: true }));
             const routeExpand = () => setRoute(r => ({ ...r, minimized: false }));
-            const routeOnStopTap = (id) => routeRecompute(route.count, String(id) === String(route.endId) ? "" : id);
+            const routeOnStopTap = (id) => {
+              // 件数自動モードは従来どおり（件数＋最終地点で再計算）
+              if (route.mode === "auto") { routeRecompute(route.count, String(id) === String(route.endId) ? "" : id); return; }
+              // 🆕 v9.101: なぞって囲む／自分で選ぶ では件数を減らさず、選んだ所を最後（最終地点）に並べ替えるだけ
+              if (!currentLoc) return;
+              setRoute(prev => {
+                const isEnd = String(prev.endId) === String(id);
+                const list = prev.stops.slice();
+                const idx = list.findIndex(s => String(s.id) === String(id));
+                if (idx < 0) return prev;
+                const chosen = list.splice(idx, 1)[0];
+                routeRoadKeyRef.current = "";
+                if (isEnd) {
+                  const reordered = routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, [...list, chosen], 999, "");
+                  return { ...prev, stops: reordered, endId: "", targetIndex: 0, road: null };
+                }
+                const rest = routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, list, 999, "");
+                return { ...prev, stops: [...rest, chosen], endId: id, targetIndex: 0, road: null };
+              });
+            };
             // 🆕 v9.52: ピンの「📍訪問結果を記録する」→ ピン詳細を開く（既存の訪問記録UIへ）
             const routeOnStopOpen = (id) => {
               const it = itemsWithCoord.find(x => String(x.id != null ? x.id : x.rawId) === String(id));
