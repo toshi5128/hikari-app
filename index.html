@@ -3026,7 +3026,7 @@ function MainApp({ onLock, onSwitchUser }) {
 
   // 🆕 v9.81: インパクト通知（全画面フラッシュ・音・バイブ）
   const [flashNotif, setFlashNotif] = useState(null);
-  const lastSeenActivityRef = useRef(null); // 既読基準（このタイムスタンプより新しい他人の関係アクティビティを検知）
+  const seenActivityIdsRef = useRef(null); // 🆕 v9.93: 既に出した（または既読基準にした）アクティビティID集合。並び順に依存せず重複を防ぐ
   const _buildFlash = (e) => {
     const map = {
       stock: { icon: "🏠", color: "#0ea5e9" }, jiage: { icon: "🚧", color: "#a855f7" },
@@ -3043,16 +3043,22 @@ function MainApp({ onLock, onSwitchUser }) {
     try {
       const log = (merged && merged.activityLog) || [];
       if (log.length === 0) return;
-      const newestTs = log[0].timestamp;
-      if (isInitial || lastSeenActivityRef.current == null) { lastSeenActivityRef.current = newestTs; return; } // 初回は基準だけ
-      const prevSeen = lastSeenActivityRef.current;
-      lastSeenActivityRef.current = newestTs;
-      if (localStorage.getItem('hikari_flash_on') === 'false') return; // 設定オフ
+      const _markAllSeen = () => { const s = seenActivityIdsRef.current; log.forEach(e => { if (e && e.id != null) s.add(e.id); }); };
+      // 初回（or 未初期化）は、今あるエントリを全部「既読」にしてベースラインにする（鳴らさない）
+      if (seenActivityIdsRef.current == null) { seenActivityIdsRef.current = new Set(); _markAllSeen(); return; }
+      if (isInitial) { _markAllSeen(); return; }
+      const seen = seenActivityIdsRef.current;
+      // 設定オフでも、再評価しないよう既読にだけしておく
+      if (localStorage.getItem('hikari_flash_on') === 'false') { _markAllSeen(); return; }
       const me = getCurrentUser() || "";
-      if (!me) return;
-      const fresh = log.filter(e => e && e.timestamp > prevSeen && e.user !== me && Array.isArray(e.assignees) && isAssignedTo(e.assignees, me));
+      if (!me) { _markAllSeen(); return; }
+      // 未読（IDが既読集合に無い）かつ 他人の操作で 自分に関係するもの
+      const fresh = log.filter(e => e && e.id != null && !seen.has(e.id) && e.user !== me && Array.isArray(e.assignees) && isAssignedTo(e.assignees, me));
+      _markAllSeen(); // 評価した分は全部既読（関係ないものも二度と見ない）
+      // 集合が肥大化したら現状ログのIDだけにリセット
+      if (seen.size > 1000) seenActivityIdsRef.current = new Set(log.map(e => e && e.id).filter(x => x != null));
       if (fresh.length === 0) return;
-      setFlashNotif(_buildFlash(fresh[0]));
+      setFlashNotif(_buildFlash(fresh[0])); // 同じIDは二度と出ない
     } catch (err) {}
   };
   // 🆕 v9.81: フラッシュ発火時に 音＋バイブ、5秒で自動クローズ
