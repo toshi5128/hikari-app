@@ -4666,7 +4666,7 @@ function PendingPhotoSection({ photos, onAdd, onRemove }) {
 }
 
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteCircle, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -5153,6 +5153,76 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     routeLayerRef.current = grp;
   }, [routeOverlay, onRouteStopTap, onRoutePickToggle, onRouteStopRemove]);
 
+  // 🆕 v9.100: 円で選ぶ — 確定した円を地図に表示
+  const routeCircleRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (routeCircleRef.current) { try { map.removeLayer(routeCircleRef.current); } catch (e) {} routeCircleRef.current = null; }
+    const c = routeOverlay && routeOverlay.circle;
+    if (c && typeof c.lat === "number" && typeof c.lng === "number" && typeof c.radius === "number") {
+      routeCircleRef.current = L.circle([c.lat, c.lng], { radius: c.radius, color: "#22c55e", weight: 2, fillColor: "#22c55e", fillOpacity: 0.1, interactive: false }).addTo(map);
+    }
+  }, [routeOverlay && routeOverlay.circle && routeOverlay.circle.lat, routeOverlay && routeOverlay.circle && routeOverlay.circle.lng, routeOverlay && routeOverlay.circle && routeOverlay.circle.radius]);
+
+  // 🆕 v9.100: 円で選ぶ — 地図を長押しドラッグで円を描く（中心=押した所 / 半径=引っぱった分）
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    const circleMode = !!(routeOverlay && routeOverlay.mode === "circle" && onRouteCircle);
+    if (!circleMode) return;
+    const container = mapRef.current;
+    if (!container) return;
+    let drawing = false, pressTimer = null, startLL = null, startX = 0, startY = 0, temp = null, lastR = 0;
+    const toLL = (cx, cy) => { const rect = container.getBoundingClientRect(); return map.containerPointToLatLng(L.point(cx - rect.left, cy - rect.top)); };
+    const begin = (cx, cy) => {
+      startX = cx; startY = cy; startLL = toLL(cx, cy); lastR = 0;
+      pressTimer = setTimeout(() => {
+        drawing = true; try { map.dragging.disable(); } catch (e) {}
+        if (temp) { try { map.removeLayer(temp); } catch (e) {} }
+        temp = L.circle([startLL.lat, startLL.lng], { radius: 80, color: "#22c55e", weight: 2, dashArray: "4,6", fillColor: "#22c55e", fillOpacity: 0.12, interactive: false }).addTo(map);
+      }, 200);
+    };
+    const moveTo = (cx, cy, ev) => {
+      if (!drawing) { if (pressTimer && (Math.abs(cx - startX) > 12 || Math.abs(cy - startY) > 12)) { clearTimeout(pressTimer); pressTimer = null; } return; }
+      if (ev && ev.cancelable) ev.preventDefault();
+      const p = toLL(cx, cy);
+      lastR = Math.max(60, Math.round(map.distance([startLL.lat, startLL.lng], [p.lat, p.lng])));
+      if (temp) temp.setRadius(lastR);
+    };
+    const end = () => {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      if (drawing) {
+        drawing = false; try { map.dragging.enable(); } catch (e) {}
+        if (temp) { try { map.removeLayer(temp); } catch (e) {} temp = null; }
+        if (startLL && lastR > 0 && onRouteCircle) onRouteCircle(startLL.lat, startLL.lng, lastR);
+      }
+    };
+    const onTS = e => { if (e.touches && e.touches.length === 1) begin(e.touches[0].clientX, e.touches[0].clientY); };
+    const onTM = e => { if (e.touches && e.touches.length === 1) moveTo(e.touches[0].clientX, e.touches[0].clientY, e); };
+    const onMD = e => begin(e.clientX, e.clientY);
+    const onMM = e => moveTo(e.clientX, e.clientY, e);
+    container.addEventListener("touchstart", onTS, { passive: true });
+    container.addEventListener("touchmove", onTM, { passive: false });
+    container.addEventListener("touchend", end);
+    container.addEventListener("touchcancel", end);
+    container.addEventListener("mousedown", onMD);
+    container.addEventListener("mousemove", onMM);
+    container.addEventListener("mouseup", end);
+    return () => {
+      if (pressTimer) clearTimeout(pressTimer);
+      if (temp) { try { map.removeLayer(temp); } catch (e) {} }
+      try { map.dragging.enable(); } catch (e) {}
+      container.removeEventListener("touchstart", onTS);
+      container.removeEventListener("touchmove", onTM);
+      container.removeEventListener("touchend", end);
+      container.removeEventListener("touchcancel", end);
+      container.removeEventListener("mousedown", onMD);
+      container.removeEventListener("mousemove", onMM);
+      container.removeEventListener("mouseup", end);
+    };
+  }, [routeOverlay && routeOverlay.mode, onRouteCircle]);
+
   // 🆕 v9.51: ルート確定時に全体が見えるよう fitBounds
   React.useEffect(() => {
     const map = mapInstanceRef.current;
@@ -5228,6 +5298,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   //   Leaflet のマーカードラッグは touchmove を消費するため長押しタイマーがキャンセルされず、
   //   ドラッグ＝新規ピン登録 になってしまっていた。修正モード中は登録自体を止めて競合を解消する。
   const editingActive = !!(editPin && typeof editPin.lat === "number" && typeof editPin.lng === "number");
+  // 🆕 v9.100: 円で選ぶモード中は、長押し新規ピン登録を無効化（円ドラッグを優先）
+  const circleModeActive = !!(routeOverlay && routeOverlay.mode === "circle" && onRouteCircle);
   // 🆕 v8.127→v8.129: 地図長押しでピン立て
   //   - PC: 右クリック（contextmenu）
   //   - モバイル: 自前で touchstart/touchend を計測して 700ms 以上を長押し判定
@@ -5236,7 +5308,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    if (!onMapLongPress || editingActive) return;
+    if (!onMapLongPress || editingActive || circleModeActive) return;
 
     // PC: 右クリック
     const ctxHandler = (e) => {
@@ -5325,7 +5397,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       }
       if (pressTimer) clearTimeout(pressTimer);
     };
-  }, [onMapLongPress, editingActive]);
+  }, [onMapLongPress, editingActive, circleModeActive]);
 
   // 🆕 v9.0→v9.7: 探索ルート描画 — 週ごと色分け＋線タップで担当者表示
   const trackLayersRef = React.useRef([]);
@@ -14462,7 +14534,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   //   route = { open, count, endId, stops:[{id,lat,lng,name}], targetIndex, road:{coords,duration}|null }
   // 🆕 v9.91: ルートを localStorage に保存し、更新/リロードしても継続できるように
   const ROUTE_STATE_KEY = "hikari_route_state";
-  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null };
+  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, circle: null };
   const [route, setRoute] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(ROUTE_STATE_KEY) || "null");
@@ -17613,8 +17685,19 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               routeBuildFromPick(exists ? route.pickIds.filter(x => String(x) !== String(id)) : [...route.pickIds, id]);
             };
             const routeClearPick = () => routeBuildFromPick([]);
+            // 🆕 v9.100: 円で選ぶ — 地図に描いた円の中のピンでルートを作る
+            const routeBuildFromCircle = (lat, lng, radius) => {
+              if (!currentLoc) { alert("⚠️ 現在地がまだ取れていません。位置情報を許可してください。"); return; }
+              const within = routeAllStops.filter(s => routeDist({ lat, lng }, { lat: s.lat, lng: s.lng }) <= radius);
+              const stops = routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, within, 999, "");
+              routeRoadKeyRef.current = "";
+              setRoute(prev => ({ ...prev, open: true, minimized: false, mode: "circle", pickIds: [], endId: "", stops, targetIndex: 0, road: null, circle: { lat, lng, radius } }));
+              setRouteSel([]); setRouteCelebrate(false);
+            };
+            const routeClearCircle = () => setRoute(prev => ({ ...prev, mode: "circle", stops: [], circle: null, targetIndex: 0, road: null }));
             const routeSetMode = (m) => {
               if (m === "auto") routeRecompute(route.count, "");
+              else if (m === "circle") setRoute(prev => ({ ...prev, open: true, minimized: true, mode: "circle", pickIds: [], stops: [], circle: null, targetIndex: 0, road: null })); // 折りたたんで地図を広く→円を描く
               else routeBuildFromPick([], true); // 選択モードは折りたたみで開始（地図を広く）
             };
             // 🆕 v9.53: ルート停留所の複数選択 → 一括削除
@@ -18471,7 +18554,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         return mine.filter(p => p && typeof p.lat === "number" && (p.ts || 0) >= todayTs);
                       })()}
                       tracks={trackRecording ? null : visibleTracks}
-                      routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick") ? {
+                      routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick" || route.mode === "circle") ? {
                         start: { lat: currentLoc.lat, lng: currentLoc.lng },
                         stops: route.stops,
                         targetIndex: route.targetIndex,
@@ -18479,10 +18562,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         roadCoords: route.road && route.road.coords,
                         pickMode: route.mode === "pick",
                         pickPins: route.mode === "pick" ? routeAllStops : [],
+                        mode: route.mode,            // 🆕 v9.100
+                        circle: route.circle || null, // 🆕 v9.100
                       } : null}
                       onRouteStopTap={routeOnStopTap}
                       onRouteStopOpen={routeOnStopOpen}
                       onRoutePickToggle={routePickToggle}
+                      onRouteCircle={routeBuildFromCircle}
                       onRouteStopRemove={routeRemoveOne}
                       routeFitKey={routeFitKey}
                       editPin={pinEdit ? { lat: pinEdit.lat, lng: pinEdit.lng } : null}
@@ -18546,8 +18632,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             </div>
                             {/* 🆕 v9.63: モード切替（件数で自動 / 自分で選ぶ） */}
                             <div style={{ padding: "10px 16px 0", display: "flex", gap: 6 }}>
-                              {[{ v: "auto", l: "📋 件数で自動" }, { v: "pick", l: "👆 自分で選ぶ" }].map(o => (
-                                <button key={o.v} onClick={() => routeSetMode(o.v)} style={{ flex: 1, background: route.mode === o.v ? C.accent : C.bg, color: route.mode === o.v ? "#fff" : C.muted, border: `1.5px solid ${route.mode === o.v ? C.accent : C.borderDim}`, borderRadius: 10, padding: "8px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>{o.l}</button>
+                              {[{ v: "auto", l: "📋 件数で自動" }, { v: "pick", l: "👆 自分で選ぶ" }, { v: "circle", l: "⭕ 円で選ぶ" }].map(o => (
+                                <button key={o.v} onClick={() => routeSetMode(o.v)} style={{ flex: 1, background: route.mode === o.v ? C.accent : C.bg, color: route.mode === o.v ? "#fff" : C.muted, border: `1.5px solid ${route.mode === o.v ? C.accent : C.borderDim}`, borderRadius: 10, padding: "8px 4px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>{o.l}</button>
                               ))}
                             </div>
                             {/* コントロール */}
@@ -18564,6 +18650,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   <b style={{ color: "#f59e0b" }}>{route.endId ? ((route.stops.find(s => String(s.id) === String(route.endId)) || {}).name || "選択中").slice(0, 14) : "地図のピンをタップ"}</b>
                                   {route.endId && <button onClick={() => routeRecompute(route.count, "")} style={{ background: "#f59e0b", border: "none", color: "#fff", width: 20, height: 20, borderRadius: "50%", fontSize: 13, fontWeight: 900, cursor: "pointer", lineHeight: 1 }}>×</button>}
                                 </span>
+                              </div>
+                            ) : route.mode === "circle" ? (
+                              <div style={{ padding: "10px 16px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12, borderBottom: `1px solid ${C.borderDim}` }}>
+                                <span style={{ color: C.muted, fontSize: 11 }}>地図を<b style={{ color: "#22c55e" }}>長押しドラッグ</b>で円を描く → 円内のピンでルート（<b style={{ color: "#22c55e" }}>{route.stops.length}</b>件）</span>
+                                {route.circle && <button onClick={routeClearCircle} style={{ background: C.bg, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>円をクリア</button>}
                               </div>
                             ) : (
                               <div style={{ padding: "10px 16px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12, borderBottom: `1px solid ${C.borderDim}` }}>
