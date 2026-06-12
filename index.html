@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.86-todo-reminder-style";
+const APP_VERSION = "2026-06-11-v9.90-owner-same-place-toggle";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8148,6 +8148,15 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           <Field label="所有者住所">
             <input style={inp} value={quickEditJiageForm.ownerAddr || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, ownerAddr: e.target.value }))} placeholder="謄本記載の住所" />
           </Field>
+          {/* 🆕 v9.90: 所有者＝物件と同じ場所トグル（ON＝所有者住所マップから除外） */}
+          <div onClick={() => setQuickEditJiageForm(p => ({ ...p, ownerSameAsProperty: !p.ownerSameAsProperty }))} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", userSelect: "none", marginBottom: 16, padding: "10px 12px", background: quickEditJiageForm.ownerSameAsProperty ? C.danger + "11" : C.bg, border: `1px solid ${quickEditJiageForm.ownerSameAsProperty ? C.danger + "55" : C.borderDim}`, borderRadius: 10 }}>
+            <div style={{ width: 44, height: 26, borderRadius: 13, background: quickEditJiageForm.ownerSameAsProperty ? C.danger : C.borderDim, position: "relative", flex: "none", transition: "0.2s" }}>
+              <div style={{ position: "absolute", top: 2, left: quickEditJiageForm.ownerSameAsProperty ? 20 : 2, width: 22, height: 22, borderRadius: "50%", background: "#fff", transition: "0.2s" }} />
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>所有者は物件と同じ場所
+              <div style={{ fontSize: 10, fontWeight: 400, color: C.muted, marginTop: 2 }}>ON＝所有者住所マップに出さない（地番↔住居表示の表記違いなど）</div>
+            </div>
+          </div>
           <Field label="👤 担当者">
             <select style={inp} value={quickEditJiageForm.assignee} onChange={e => setQuickEditJiageForm(p => ({ ...p, assignee: e.target.value }))}>
               {MEMBERS.map(m => <option key={m}>{m}</option>)}
@@ -17514,7 +17523,19 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             const itemsWithCoord = filtered.filter(i => {
               const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
               const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
-              return typeof lat === "number" && typeof lng === "number";
+              if (typeof lat !== "number" || typeof lng !== "number") return false;
+              // 🆕 v9.87: 所有者住所モードでは、所有者住所＝物件住所のもの（同じ場所で重複）は除外
+              if (mapPinTarget === "ownerAddr") {
+                // 🆕 v9.90: 手動で「所有者は物件と同じ場所」にしたものは除外
+                if (i.raw && i.raw.ownerSameAsProperty === true) return false;
+                const _norm = s => String(s || "").replace(/\s|　/g, "").trim();
+                const _oa = _norm(i.ownerAddress), _pa = _norm(i.address);
+                if (_oa && _pa && _oa === _pa) return false;
+                // 🆕 v9.89: 距離での自動除外は廃止（「裏の家」など近接する別所有者を誤って消すため）。
+                //   座標が完全一致（同じ地点として登録済み）のものだけ除外する。
+                if (typeof i.lat === "number" && typeof i.lng === "number" && i.ownerLat === i.lat && i.ownerLng === i.lng) return false;
+              }
+              return true;
             });
             const itemsNoCoord = filtered.filter(i => {
               const addr = mapPinTarget === "ownerAddr" ? i.ownerAddress : i.address;
