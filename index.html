@@ -4666,7 +4666,7 @@ function PendingPhotoSection({ photos, onAdd, onRemove }) {
 }
 
 // 🗺️ Leafletマップコンポーネント
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteCircle, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -5153,50 +5153,46 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     routeLayerRef.current = grp;
   }, [routeOverlay, onRouteStopTap, onRoutePickToggle, onRouteStopRemove]);
 
-  // 🆕 v9.100: 円で選ぶ — 確定した円を地図に表示
-  const routeCircleRef = React.useRef(null);
+  // 🆕 v9.100: なぞって囲む — 確定した囲み（ポリゴン）を地図に表示
+  const routeLassoRef = React.useRef(null);
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    if (routeCircleRef.current) { try { map.removeLayer(routeCircleRef.current); } catch (e) {} routeCircleRef.current = null; }
-    const c = routeOverlay && routeOverlay.circle;
-    if (c && typeof c.lat === "number" && typeof c.lng === "number" && typeof c.radius === "number") {
-      routeCircleRef.current = L.circle([c.lat, c.lng], { radius: c.radius, color: "#22c55e", weight: 2, fillColor: "#22c55e", fillOpacity: 0.1, interactive: false }).addTo(map);
+    if (routeLassoRef.current) { try { map.removeLayer(routeLassoRef.current); } catch (e) {} routeLassoRef.current = null; }
+    const poly = routeOverlay && routeOverlay.lasso;
+    if (Array.isArray(poly) && poly.length >= 3) {
+      routeLassoRef.current = L.polygon(poly, { color: "#22c55e", weight: 2, fillColor: "#22c55e", fillOpacity: 0.1, interactive: false }).addTo(map);
     }
-  }, [routeOverlay && routeOverlay.circle && routeOverlay.circle.lat, routeOverlay && routeOverlay.circle && routeOverlay.circle.lng, routeOverlay && routeOverlay.circle && routeOverlay.circle.radius]);
+  }, [routeOverlay && routeOverlay.lasso ? routeOverlay.lasso.length : 0, routeOverlay && routeOverlay.lasso && routeOverlay.lasso[0] ? routeOverlay.lasso[0][0] : 0]);
 
-  // 🆕 v9.100: 円で選ぶ — 地図を長押しドラッグで円を描く（中心=押した所 / 半径=引っぱった分）
+  // 🆕 v9.100: なぞって囲む — 地図を指でなぞってフリーハンドで囲む（その間は地図移動OFF）
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    const circleMode = !!(routeOverlay && routeOverlay.mode === "circle" && onRouteCircle);
-    if (!circleMode) return;
+    const lassoMode = !!(routeOverlay && routeOverlay.mode === "lasso" && onRouteLasso);
+    if (!lassoMode) return;
     const container = mapRef.current;
     if (!container) return;
-    let drawing = false, pressTimer = null, startLL = null, startX = 0, startY = 0, temp = null, lastR = 0;
+    try { map.dragging.disable(); } catch (e) {}
+    let drawing = false, path = [], line = null;
     const toLL = (cx, cy) => { const rect = container.getBoundingClientRect(); return map.containerPointToLatLng(L.point(cx - rect.left, cy - rect.top)); };
     const begin = (cx, cy) => {
-      startX = cx; startY = cy; startLL = toLL(cx, cy); lastR = 0;
-      pressTimer = setTimeout(() => {
-        drawing = true; try { map.dragging.disable(); } catch (e) {}
-        if (temp) { try { map.removeLayer(temp); } catch (e) {} }
-        temp = L.circle([startLL.lat, startLL.lng], { radius: 80, color: "#22c55e", weight: 2, dashArray: "4,6", fillColor: "#22c55e", fillOpacity: 0.12, interactive: false }).addTo(map);
-      }, 200);
+      drawing = true; path = [];
+      const p = toLL(cx, cy); path.push([p.lat, p.lng]);
+      if (line) { try { map.removeLayer(line); } catch (e) {} }
+      line = L.polyline(path, { color: "#22c55e", weight: 3, interactive: false }).addTo(map);
     };
     const moveTo = (cx, cy, ev) => {
-      if (!drawing) { if (pressTimer && (Math.abs(cx - startX) > 12 || Math.abs(cy - startY) > 12)) { clearTimeout(pressTimer); pressTimer = null; } return; }
+      if (!drawing) return;
       if (ev && ev.cancelable) ev.preventDefault();
-      const p = toLL(cx, cy);
-      lastR = Math.max(60, Math.round(map.distance([startLL.lat, startLL.lng], [p.lat, p.lng])));
-      if (temp) temp.setRadius(lastR);
+      const p = toLL(cx, cy); path.push([p.lat, p.lng]);
+      if (line) line.setLatLngs(path);
     };
     const end = () => {
-      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-      if (drawing) {
-        drawing = false; try { map.dragging.enable(); } catch (e) {}
-        if (temp) { try { map.removeLayer(temp); } catch (e) {} temp = null; }
-        if (startLL && lastR > 0 && onRouteCircle) onRouteCircle(startLL.lat, startLL.lng, lastR);
-      }
+      if (!drawing) return;
+      drawing = false;
+      if (line) { try { map.removeLayer(line); } catch (e) {} line = null; }
+      if (path.length >= 3 && onRouteLasso) onRouteLasso(path.slice());
     };
     const onTS = e => { if (e.touches && e.touches.length === 1) begin(e.touches[0].clientX, e.touches[0].clientY); };
     const onTM = e => { if (e.touches && e.touches.length === 1) moveTo(e.touches[0].clientX, e.touches[0].clientY, e); };
@@ -5210,8 +5206,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     container.addEventListener("mousemove", onMM);
     container.addEventListener("mouseup", end);
     return () => {
-      if (pressTimer) clearTimeout(pressTimer);
-      if (temp) { try { map.removeLayer(temp); } catch (e) {} }
+      if (line) { try { map.removeLayer(line); } catch (e) {} }
       try { map.dragging.enable(); } catch (e) {}
       container.removeEventListener("touchstart", onTS);
       container.removeEventListener("touchmove", onTM);
@@ -5221,7 +5216,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       container.removeEventListener("mousemove", onMM);
       container.removeEventListener("mouseup", end);
     };
-  }, [routeOverlay && routeOverlay.mode, onRouteCircle]);
+  }, [routeOverlay && routeOverlay.mode, onRouteLasso]);
 
   // 🆕 v9.51: ルート確定時に全体が見えるよう fitBounds
   React.useEffect(() => {
@@ -5298,8 +5293,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   //   Leaflet のマーカードラッグは touchmove を消費するため長押しタイマーがキャンセルされず、
   //   ドラッグ＝新規ピン登録 になってしまっていた。修正モード中は登録自体を止めて競合を解消する。
   const editingActive = !!(editPin && typeof editPin.lat === "number" && typeof editPin.lng === "number");
-  // 🆕 v9.100: 円で選ぶモード中は、長押し新規ピン登録を無効化（円ドラッグを優先）
-  const circleModeActive = !!(routeOverlay && routeOverlay.mode === "circle" && onRouteCircle);
+  // 🆕 v9.100: なぞって囲むモード中は、長押し新規ピン登録を無効化（なぞり描きを優先）
+  const lassoModeActive = !!(routeOverlay && routeOverlay.mode === "lasso" && onRouteLasso);
   // 🆕 v8.127→v8.129: 地図長押しでピン立て
   //   - PC: 右クリック（contextmenu）
   //   - モバイル: 自前で touchstart/touchend を計測して 700ms 以上を長押し判定
@@ -5308,7 +5303,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    if (!onMapLongPress || editingActive || circleModeActive) return;
+    if (!onMapLongPress || editingActive || lassoModeActive) return;
 
     // PC: 右クリック
     const ctxHandler = (e) => {
@@ -5397,7 +5392,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       }
       if (pressTimer) clearTimeout(pressTimer);
     };
-  }, [onMapLongPress, editingActive, circleModeActive]);
+  }, [onMapLongPress, editingActive, lassoModeActive]);
 
   // 🆕 v9.0→v9.7: 探索ルート描画 — 週ごと色分け＋線タップで担当者表示
   const trackLayersRef = React.useRef([]);
@@ -14534,7 +14529,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   //   route = { open, count, endId, stops:[{id,lat,lng,name}], targetIndex, road:{coords,duration}|null }
   // 🆕 v9.91: ルートを localStorage に保存し、更新/リロードしても継続できるように
   const ROUTE_STATE_KEY = "hikari_route_state";
-  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, circle: null };
+  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, lasso: null };
   const [route, setRoute] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(ROUTE_STATE_KEY) || "null");
@@ -17685,19 +17680,29 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               routeBuildFromPick(exists ? route.pickIds.filter(x => String(x) !== String(id)) : [...route.pickIds, id]);
             };
             const routeClearPick = () => routeBuildFromPick([]);
-            // 🆕 v9.100: 円で選ぶ — 地図に描いた円の中のピンでルートを作る
-            const routeBuildFromCircle = (lat, lng, radius) => {
+            // 🆕 v9.100: なぞって囲む — 地図でなぞった囲み（ポリゴン）の中のピンでルートを作る
+            const _pointInPoly = (pt, poly) => {
+              let inside = false;
+              for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+                const hit = ((yi > pt.lat) !== (yj > pt.lat)) && (pt.lng < (xj - xi) * (pt.lat - yi) / (yj - yi) + xi);
+                if (hit) inside = !inside;
+              }
+              return inside;
+            };
+            const routeBuildFromLasso = (poly) => {
               if (!currentLoc) { alert("⚠️ 現在地がまだ取れていません。位置情報を許可してください。"); return; }
-              const within = routeAllStops.filter(s => routeDist({ lat, lng }, { lat: s.lat, lng: s.lng }) <= radius);
+              if (!Array.isArray(poly) || poly.length < 3) return;
+              const within = routeAllStops.filter(s => _pointInPoly({ lat: s.lat, lng: s.lng }, poly));
               const stops = routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, within, 999, "");
               routeRoadKeyRef.current = "";
-              setRoute(prev => ({ ...prev, open: true, minimized: false, mode: "circle", pickIds: [], endId: "", stops, targetIndex: 0, road: null, circle: { lat, lng, radius } }));
+              setRoute(prev => ({ ...prev, open: true, minimized: false, mode: "lasso", pickIds: [], endId: "", stops, targetIndex: 0, road: null, lasso: poly }));
               setRouteSel([]); setRouteCelebrate(false);
             };
-            const routeClearCircle = () => setRoute(prev => ({ ...prev, mode: "circle", stops: [], circle: null, targetIndex: 0, road: null }));
+            const routeClearLasso = () => setRoute(prev => ({ ...prev, mode: "lasso", stops: [], lasso: null, targetIndex: 0, road: null }));
             const routeSetMode = (m) => {
               if (m === "auto") routeRecompute(route.count, "");
-              else if (m === "circle") setRoute(prev => ({ ...prev, open: true, minimized: true, mode: "circle", pickIds: [], stops: [], circle: null, targetIndex: 0, road: null })); // 折りたたんで地図を広く→円を描く
+              else if (m === "lasso") setRoute(prev => ({ ...prev, open: true, minimized: true, mode: "lasso", pickIds: [], stops: [], lasso: null, targetIndex: 0, road: null })); // 折りたたんで地図を広く→なぞって囲む
               else routeBuildFromPick([], true); // 選択モードは折りたたみで開始（地図を広く）
             };
             // 🆕 v9.53: ルート停留所の複数選択 → 一括削除
@@ -18554,7 +18559,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         return mine.filter(p => p && typeof p.lat === "number" && (p.ts || 0) >= todayTs);
                       })()}
                       tracks={trackRecording ? null : visibleTracks}
-                      routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick" || route.mode === "circle") ? {
+                      routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick" || route.mode === "lasso") ? {
                         start: { lat: currentLoc.lat, lng: currentLoc.lng },
                         stops: route.stops,
                         targetIndex: route.targetIndex,
@@ -18563,12 +18568,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         pickMode: route.mode === "pick",
                         pickPins: route.mode === "pick" ? routeAllStops : [],
                         mode: route.mode,            // 🆕 v9.100
-                        circle: route.circle || null, // 🆕 v9.100
+                        lasso: route.lasso || null,  // 🆕 v9.100
                       } : null}
                       onRouteStopTap={routeOnStopTap}
                       onRouteStopOpen={routeOnStopOpen}
                       onRoutePickToggle={routePickToggle}
-                      onRouteCircle={routeBuildFromCircle}
+                      onRouteLasso={routeBuildFromLasso}
                       onRouteStopRemove={routeRemoveOne}
                       routeFitKey={routeFitKey}
                       editPin={pinEdit ? { lat: pinEdit.lat, lng: pinEdit.lng } : null}
@@ -18632,7 +18637,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             </div>
                             {/* 🆕 v9.63: モード切替（件数で自動 / 自分で選ぶ） */}
                             <div style={{ padding: "10px 16px 0", display: "flex", gap: 6 }}>
-                              {[{ v: "auto", l: "📋 件数で自動" }, { v: "pick", l: "👆 自分で選ぶ" }, { v: "circle", l: "⭕ 円で選ぶ" }].map(o => (
+                              {[{ v: "auto", l: "📋 件数で自動" }, { v: "pick", l: "👆 自分で選ぶ" }, { v: "lasso", l: "✏️ なぞって囲む" }].map(o => (
                                 <button key={o.v} onClick={() => routeSetMode(o.v)} style={{ flex: 1, background: route.mode === o.v ? C.accent : C.bg, color: route.mode === o.v ? "#fff" : C.muted, border: `1.5px solid ${route.mode === o.v ? C.accent : C.borderDim}`, borderRadius: 10, padding: "8px 4px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>{o.l}</button>
                               ))}
                             </div>
@@ -18651,10 +18656,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   {route.endId && <button onClick={() => routeRecompute(route.count, "")} style={{ background: "#f59e0b", border: "none", color: "#fff", width: 20, height: 20, borderRadius: "50%", fontSize: 13, fontWeight: 900, cursor: "pointer", lineHeight: 1 }}>×</button>}
                                 </span>
                               </div>
-                            ) : route.mode === "circle" ? (
+                            ) : route.mode === "lasso" ? (
                               <div style={{ padding: "10px 16px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12, borderBottom: `1px solid ${C.borderDim}` }}>
-                                <span style={{ color: C.muted, fontSize: 11 }}>地図を<b style={{ color: "#22c55e" }}>長押しドラッグ</b>で円を描く → 円内のピンでルート（<b style={{ color: "#22c55e" }}>{route.stops.length}</b>件）</span>
-                                {route.circle && <button onClick={routeClearCircle} style={{ background: C.bg, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>円をクリア</button>}
+                                <span style={{ color: C.muted, fontSize: 11 }}>地図を<b style={{ color: "#22c55e" }}>指でなぞって囲む</b> → 囲んだ中のピンでルート（<b style={{ color: "#22c55e" }}>{route.stops.length}</b>件）</span>
+                                {route.lasso && <button onClick={routeClearLasso} style={{ background: C.bg, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>囲みをクリア</button>}
                               </div>
                             ) : (
                               <div style={{ padding: "10px 16px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12, borderBottom: `1px solid ${C.borderDim}` }}>
