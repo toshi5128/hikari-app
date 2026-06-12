@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.85-todo-list-button";
+const APP_VERSION = "2026-06-11-v9.86-todo-reminder-style";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7472,29 +7472,55 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
         </BottomSheet>
       )}
 
-      {/* 🆕 v9.85: ToDo一覧（日付ごとにまとめて表示） */}
+      {/* 🆕 v9.86: ToDo一覧（リマインダー風・テーマ追従） */}
       {showTodoList && (
-        <BottomSheet title="✓ ToDo一覧（自分用）" onClose={() => setShowTodoList(false)}>
+        <BottomSheet title="✓ ToDo" onClose={() => setShowTodoList(false)}>
           {(() => {
-            const groups = {};
-            myTodos.forEach(t => { const d = t.createdDate || today; (groups[d] = groups[d] || []).push(t); });
-            const dates = Object.keys(groups).sort();
-            if (dates.length === 0) return <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "24px 0" }}>ToDoはまだありません</div>;
             const md = (ds) => `${Number(ds.slice(5, 7))}月${Number(ds.slice(8, 10))}日`;
-            const totalUndone = myTodos.filter(t => !t.done).length;
+            const dOf = (t) => t.createdDate || today;
+            const open = myTodos.filter(t => !t.done);
+            const stats = [
+              { l: "今日", n: open.filter(t => dOf(t) === today).length, c: C.danger, ic: "📅" },
+              { l: "繰り越し", n: open.filter(t => dOf(t) < today).length, c: "#fb923c", ic: "⏰" },
+              { l: "予定", n: open.filter(t => dOf(t) > today).length, c: C.accent, ic: "🗓" },
+              { l: "未完了 計", n: open.length, c: C.purple, ic: "📋" },
+              { l: "完了済み", n: myTodos.filter(t => t.done).length, c: C.success, ic: "✓" },
+              { l: "全体", n: myTodos.length, c: C.muted, ic: "🗂" },
+            ];
+            const sorted = [...myTodos].sort((a, b) => { if (a.done !== b.done) return a.done ? 1 : -1; return String(dOf(a)).localeCompare(String(dOf(b))); });
+            const subOf = (t) => t.done ? "完了" : (dOf(t) === today ? "今日" : dOf(t) < today ? `繰り越し・${md(dOf(t))}に追加` : md(dOf(t)));
+            const addNow = () => { const v = (todoInput || "").trim(); if (!v) return; setData(d => ({ ...d, todos: [...(d.todos || []), { id: Date.now(), text: v, done: false, doneDate: "", owner: _todoUser, createdDate: today, createdAt: new Date().toISOString() }] })); setTodoInput(""); };
             return (
-              <div style={{ display: "grid", gap: 14 }}>
-                <div style={{ fontSize: 12, color: C.muted }}>未完了 <b style={{ color: C.success }}>{totalUndone}</b> 件・未完了は今日に繰り越されます</div>
-                {dates.map(ds => (
-                  <div key={ds}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: C.accent, marginBottom: 6 }}>{md(ds)}のToDo{ds < today && groups[ds].some(t => !t.done) ? "（繰り越しあり）" : ""}</div>
-                    {groups[ds].map(t => (
-                      <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 8, background: C.bg, border: `1px solid ${C.borderDim}`, marginBottom: 6 }}>
-                        <div onClick={() => toggleTodo(t.id)} style={{ flexShrink: 0, width: 22, height: 22, borderRadius: 6, border: `2px solid ${t.done ? C.success : C.muted}`, background: t.done ? C.success : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 14, cursor: "pointer" }}>{t.done ? "✓" : ""}</div>
-                        <div style={{ flex: 1, fontSize: 13, color: t.done ? C.muted : C.text, textDecoration: t.done ? "line-through" : "none" }}>{t.text}</div>
-                        <button onClick={() => { if (window.confirm("このToDoを削除しますか？")) deleteTodo(t); }} style={{ flexShrink: 0, background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14 }}>🗑</button>
+              <div>
+                {/* ステータスタイル */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
+                  {stats.map(s => (
+                    <div key={s.l} style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: "10px 10px 9px", minHeight: 78, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: s.c + "22", color: s.c, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>{s.ic}</div>
+                      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 11, color: C.muted }}>{s.l}</span>
+                        <span style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{s.n}</span>
                       </div>
-                    ))}
+                    </div>
+                  ))}
+                </div>
+                {/* 追加バー */}
+                <div style={{ display: "flex", alignItems: "center", gap: 10, background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 24, padding: "8px 14px", marginBottom: 14 }}>
+                  <span style={{ color: C.success, fontSize: 18 }}>＋</span>
+                  <input value={todoInput} onChange={e => setTodoInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addNow(); }} placeholder="ToDoを追加（今日）" style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: C.text, fontSize: 14, fontFamily: "inherit" }} />
+                  <button onClick={addNow} style={{ flexShrink: 0, background: C.success, border: "none", color: "#fff", width: 30, height: 30, borderRadius: "50%", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>＋</button>
+                </div>
+                {/* リスト */}
+                {sorted.length === 0 ? (
+                  <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "24px 0" }}>ToDoはまだありません</div>
+                ) : sorted.map(t => (
+                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: "12px 14px", marginBottom: 10 }}>
+                    <div onClick={() => toggleTodo(t.id)} style={{ flexShrink: 0, width: 24, height: 24, borderRadius: "50%", border: `2px solid ${t.done ? C.success : C.muted}`, background: t.done ? C.success : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 14, cursor: "pointer" }}>{t.done ? "✓" : ""}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: t.done ? C.muted : C.text, textDecoration: t.done ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.text}</div>
+                      <div style={{ fontSize: 12, color: (dOf(t) < today && !t.done) ? "#fb923c" : C.muted, marginTop: 2 }}>{subOf(t)}</div>
+                    </div>
+                    <button onClick={() => { if (window.confirm("このToDoを削除しますか？")) deleteTodo(t); }} style={{ flexShrink: 0, background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14 }}>🗑</button>
                   </div>
                 ))}
               </div>
