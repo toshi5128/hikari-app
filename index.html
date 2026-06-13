@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.105-result-multiselect";
+const APP_VERSION = "2026-06-13-v9.106-track-decimate";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -14256,6 +14256,29 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     });
     return result;
   }, [data && data.tracks, trackVisibleMembers, trackPeriodRange]);
+  // 🆕 v9.106: 地図描画用に総ポイント数の上限を設けて間引く（端末メモリ保護）
+  //   ・「全期間」など長期間を選ぶと全点が描画され、ズーム時の再描画でメモリが急増し
+  //     端末（特に長島端末）がページごとリロード→ホーム(dashboard)に戻る不具合の対策。
+  //   ・線の形は保ったまま、全メンバー合計でおよそ上限点数になるよう等間隔で間引く。
+  //   ・各メンバーの始点・終点は必ず残す（▶始点/■終点マーカーの位置がズレないように）。
+  //   ・距離計算は visibleTracks（間引き前）を使うので数値は正確なまま。
+  const MAX_DISPLAY_TRACK_POINTS = 2500;
+  const displayTracks = React.useMemo(() => {
+    const total = Object.values(visibleTracks).reduce((s, pts) => s + (Array.isArray(pts) ? pts.length : 0), 0);
+    if (total <= MAX_DISPLAY_TRACK_POINTS) return visibleTracks;
+    const stride = Math.ceil(total / MAX_DISPLAY_TRACK_POINTS);
+    const out = {};
+    Object.entries(visibleTracks).forEach(([m, pts]) => {
+      if (!Array.isArray(pts) || pts.length === 0) return;
+      if (pts.length <= 2) { out[m] = pts; return; }
+      const thinned = [];
+      for (let i = 0; i < pts.length; i += stride) thinned.push(pts[i]);
+      const last = pts[pts.length - 1];
+      if (thinned[thinned.length - 1] !== last) thinned.push(last); // 終点を必ず含める
+      out[m] = thinned;
+    });
+    return out;
+  }, [visibleTracks]);
   // 🆕 v9.28: 探索中の軽量化描画 — 自分の今日分だけ、5点に1点間引き
   //   ・「どこ通ったか分かる」 を保ちながら、 描画ポイント数を 1/10 程度に減らす
   //   ・メモリ pressure を下げる ( 長島端末対策 )
@@ -18593,7 +18616,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         const todayTs = todayStart.getTime();
                         return mine.filter(p => p && typeof p.lat === "number" && (p.ts || 0) >= todayTs);
                       })()}
-                      tracks={trackRecording ? null : visibleTracks}
+                      tracks={trackRecording ? null : displayTracks}
                       routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick" || route.mode === "lasso") ? {
                         start: { lat: currentLoc.lat, lng: currentLoc.lng },
                         stops: route.stops,
