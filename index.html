@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.103-empty-map-switch";
+const APP_VERSION = "2026-06-13-v9.104-filter-union";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15551,7 +15551,11 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         if (JIAGE_AREAS.includes(item.area)) return false;
       } else if (item.area !== areaFilter) return false;
     }
-    if (filterStatuses.length && !filterStatuses.includes(item.status)) return false;
+    // 🆕 v9.104: 訪問結果フィルタ（不在/居留守/訪問禁止）と営業ステータスを同時選択したときは
+    //   「両方に当てはまる(AND)」ではなく「どちらかのピンを表示(OR=和集合)」にする。
+    //   ここでは結果フィルタ同時選択時はステータスで弾かず、下の結果ブロックで和集合判定する。
+    const _resultFilterActive = (quickFilter === "result_absent" || quickFilter === "result_ignore" || quickFilter === "result_rejected");
+    if (filterStatuses.length && !filterStatuses.includes(item.status) && !_resultFilterActive) return false;
     if (filterMember !== "__ALL__" && !isAssignedTo([item.assignee], filterMember)) return false;
     if (search) {
       const s = search;
@@ -15665,8 +15669,15 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     //   （基本段階の status ＝ 未訪問/初訪/再訪/訪問済 のとき、最新の訪問結果が一致するもの）
     if (quickFilter === "result_absent" || quickFilter === "result_ignore" || quickFilter === "result_rejected") {
       const want = quickFilter === "result_absent" ? "absent" : quickFilter === "result_ignore" ? "ignore" : "rejected";
-      if (!isBasicStageStatus(item.status)) return false;
-      if (latestVisitResultKey(item.raw) !== want) return false;
+      const passResult = isBasicStageStatus(item.status) && latestVisitResultKey(item.raw) === want;
+      if (filterStatuses.length) {
+        // 🆕 v9.104: 営業ステータスも同時選択 → 和集合（結果一致 か ステータス一致 のどちらかで表示）
+        const passStatus = filterStatuses.includes(item.status);
+        if (!(passResult || passStatus)) return false;
+      } else {
+        // 不在/居留守/訪問禁止 のみ → 結果一致が必須
+        if (!passResult) return false;
+      }
     }
     // ⏰ 今この時間ベスト（現在の曜日×時間帯で過去 不在/居留守 を除外）
     if (quickFilter === "now_best") {
