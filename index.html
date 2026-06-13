@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.104-filter-union";
+const APP_VERSION = "2026-06-13-v9.105-result-multiselect";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -14417,6 +14417,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   const [typeFilter, setTypeFilter] = useState("all");
   const [areaFilter, setAreaFilter] = useState("すべて");
   const [filterStatuses, setFilterStatuses] = useState([]);
+  // 🆕 v9.105: 訪問結果フィルタ（不在/居留守/訪問禁止）を複数選択可に（quickFilterから分離）
+  const [resultFilters, setResultFilters] = useState([]); // ["result_absent","result_ignore","result_rejected"] のうち選択中
   const [filterMember, setFilterMember] = useState("__ALL__"); // 在庫・営業tabと統一（単一選択ドロップダウン）
   const [actionExpanded, setActionExpanded] = useState(false); // 「今日の行動」折りたたみ状態
   const [statusExpanded, setStatusExpanded] = useState(false); // 「状況で絞り込み」折りたたみ状態
@@ -15551,11 +15553,18 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         if (JIAGE_AREAS.includes(item.area)) return false;
       } else if (item.area !== areaFilter) return false;
     }
-    // 🆕 v9.104: 訪問結果フィルタ（不在/居留守/訪問禁止）と営業ステータスを同時選択したときは
-    //   「両方に当てはまる(AND)」ではなく「どちらかのピンを表示(OR=和集合)」にする。
-    //   ここでは結果フィルタ同時選択時はステータスで弾かず、下の結果ブロックで和集合判定する。
-    const _resultFilterActive = (quickFilter === "result_absent" || quickFilter === "result_ignore" || quickFilter === "result_rejected");
-    if (filterStatuses.length && !filterStatuses.includes(item.status) && !_resultFilterActive) return false;
+    // 🆕 v9.105: 訪問結果フィルタ（不在/居留守/訪問禁止・複数選択可）＋営業ステータス（複数選択可）を
+    //   「和集合(OR)」で判定。どちらかが選択されていれば、選ばれたカテゴリのいずれかに一致するピンだけ表示。
+    {
+      const _hasResultF = resultFilters.length > 0;
+      const _hasStatusF = filterStatuses.length > 0;
+      if (_hasResultF || _hasStatusF) {
+        const _lvk = isBasicStageStatus(item.status) ? latestVisitResultKey(item.raw) : null; // "absent"/"ignore"/"rejected"/null
+        const _passResult = _hasResultF && !!_lvk && resultFilters.includes("result_" + _lvk);
+        const _passStatus = _hasStatusF && filterStatuses.includes(item.status);
+        if (!(_passResult || _passStatus)) return false;
+      }
+    }
     if (filterMember !== "__ALL__" && !isAssignedTo([item.assignee], filterMember)) return false;
     if (search) {
       const s = search;
@@ -15667,18 +15676,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     }
     // 🆕 v9.71: 訪問結果フィルター（不在/居留守/訪問禁止）。ピンの絵文字と同じ条件で一致させる
     //   （基本段階の status ＝ 未訪問/初訪/再訪/訪問済 のとき、最新の訪問結果が一致するもの）
-    if (quickFilter === "result_absent" || quickFilter === "result_ignore" || quickFilter === "result_rejected") {
-      const want = quickFilter === "result_absent" ? "absent" : quickFilter === "result_ignore" ? "ignore" : "rejected";
-      const passResult = isBasicStageStatus(item.status) && latestVisitResultKey(item.raw) === want;
-      if (filterStatuses.length) {
-        // 🆕 v9.104: 営業ステータスも同時選択 → 和集合（結果一致 か ステータス一致 のどちらかで表示）
-        const passStatus = filterStatuses.includes(item.status);
-        if (!(passResult || passStatus)) return false;
-      } else {
-        // 不在/居留守/訪問禁止 のみ → 結果一致が必須
-        if (!passResult) return false;
-      }
-    }
+    // 🆕 v9.105: 訪問結果フィルタ（不在/居留守/訪問禁止）の判定は上部の和集合ブロックに統合（resultFilters）。
     // ⏰ 今この時間ベスト（現在の曜日×時間帯で過去 不在/居留守 を除外）
     if (quickFilter === "now_best") {
       const log = (item.raw && item.raw.visitLog) || [];
@@ -15693,7 +15691,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       if (sameBucketFail) return false;
     }
     return true;
-  }), [allItems, typeFilter, areaFilter, filterStatuses, filterMember, search, searchTarget, quickFilter, today]);
+  }), [allItems, typeFilter, areaFilter, filterStatuses, resultFilters, filterMember, search, searchTarget, quickFilter, today]);
 
   // 🆕 最新訪問日（visitLog の中で最新のもの）を取り出す
   const getLatestVisit = (item) => {
@@ -18816,7 +18814,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         : C.muted);
                       const pinStateKeys = ["pending_lot","lookup_pending","excluded","lookup_failed","dm_ready"];
                       const activePinFilter = quickFilter && pinStateKeys.includes(quickFilter) ? 1 : 0;
-                      const totalSelected = filterStatuses.length + activePinFilter;
+                      const totalSelected = filterStatuses.length + activePinFilter + resultFilters.length; // 🆕 v9.105: 訪問結果（複数）も件数に含める
                       return (
                         <>
                           {/* FAB - ズーム +/- の上に配置 ( 地図左下、 ズームコントロールは bottomleft ) */}
@@ -18899,11 +18897,17 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   { key: "result_ignore",  label: "🙈 居留守",   color: "#b45309", count: _resultCount("ignore") },
                                   { key: "result_rejected",label: "🚷 訪問禁止", color: "#7f1d1d", count: _resultCount("rejected") },
                                 ]; })().map(p => {
-                                  const isActive = quickFilter === p.key;
+                                  // 🆕 v9.105: 訪問結果（不在/居留守/訪問禁止）は複数選択（resultFilters）。それ以外は従来どおり単一選択（quickFilter）。
+                                  const isResult = (p.key === "result_absent" || p.key === "result_ignore" || p.key === "result_rejected");
+                                  const isActive = isResult ? resultFilters.includes(p.key) : quickFilter === p.key;
                                   const isLight = ["#fde047","#cbd5e1"].includes(p.color);
                                   return (
                                     <button key={p.key} onClick={() => {
-                                      setQuickFilter(prev => prev === p.key ? null : p.key);
+                                      if (isResult) {
+                                        setResultFilters(prev => prev.includes(p.key) ? prev.filter(k => k !== p.key) : [...prev, p.key]);
+                                      } else {
+                                        setQuickFilter(prev => prev === p.key ? null : p.key);
+                                      }
                                       setFilterMember("__ALL__");
                                     }} style={{
                                       padding: "4px 9px", borderRadius: 14, cursor: "pointer", fontSize: 11,
@@ -18939,7 +18943,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                 })}
                               </div>
                               {totalSelected > 0 && (
-                                <button onClick={() => { setFilterStatuses([]); setQuickFilter(null); }} style={{
+                                <button onClick={() => { setFilterStatuses([]); setQuickFilter(null); setResultFilters([]); }} style={{
                                   marginTop: 10, width: "100%", padding: "7px 10px",
                                   background: "transparent", border: `1px solid ${C.borderDim}`,
                                   color: C.muted, borderRadius: 8,
