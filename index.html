@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-11-v9.101-route-lasso";
+const APP_VERSION = "2026-06-13-v9.103-empty-map-switch";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -19006,14 +19006,64 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     </div>
                   </>
                 ) : (
-                  <div style={{ background: C.warnBg, border: `1px solid ${C.warn}55`, borderRadius: 10, padding: "20px 16px", textAlign: "center", marginBottom: 10 }}>
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>🗺️</div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 6 }}>まだピンを立てる準備ができていません</div>
-                    <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
-                      上のボタンで「ジオコーディング」を実行すると、<br />
-                      住所を緯度経度に変換してピンを立てられます
-                    </div>
-                  </div>
+                  (() => {
+                    // 🆕 v9.103: 空マップの賢い案内 — 「条件に合うピンが無い」「別の住所モードなら出せる」「本当にジオコーディング未実行」を区別
+                    const _other = mapPinTarget === "ownerAddr" ? "address" : "ownerAddr";
+                    const _hasCoordIn = (tgt) => filtered.filter(i => {
+                      const lat = tgt === "ownerAddr" ? i.ownerLat : i.lat;
+                      const lng = tgt === "ownerAddr" ? i.ownerLng : i.lng;
+                      if (typeof lat !== "number" || typeof lng !== "number") return false;
+                      if (tgt === "ownerAddr") {
+                        if (i.raw && i.raw.ownerSameAsProperty === true) return false;
+                        const _norm = s => String(s || "").replace(/\s|　/g, "").trim();
+                        const _oa = _norm(i.ownerAddress), _pa = _norm(i.address);
+                        if (_oa && _pa && _oa === _pa) return false;
+                        if (typeof i.lat === "number" && typeof i.lng === "number" && i.ownerLat === i.lat && i.ownerLng === i.lng) return false;
+                      }
+                      return true;
+                    }).length;
+                    const otherCount = _hasCoordIn(_other);
+                    const otherLabel = _other === "ownerAddr" ? "所有者住所" : "物件住所";
+                    const nowLabel = mapPinTarget === "ownerAddr" ? "所有者住所" : "物件住所";
+                    // ① 条件に合う物件が1件もない
+                    if (filtered.length === 0) {
+                      return (
+                        <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "20px 16px", textAlign: "center", marginBottom: 10 }}>
+                          <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 6 }}>条件に合うピンがありません</div>
+                          <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>絞り込み条件を変えるか、上の絞り込みを解除してください。</div>
+                        </div>
+                      );
+                    }
+                    // ② 物件はあるが、今の住所モードでは座標が無い。別モードなら出せる
+                    if (otherCount > 0) {
+                      return (
+                        <div style={{ background: (C.accent + "18"), border: `1.5px solid ${C.accent}`, borderRadius: 10, padding: "20px 16px", textAlign: "center", marginBottom: 10 }}>
+                          <div style={{ fontSize: 32, marginBottom: 8 }}>🗺️</div>
+                          <div style={{ fontSize: 13, fontWeight: 800, color: C.text, marginBottom: 6 }}>この条件のピンは「{otherLabel}」で表示できます</div>
+                          <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginBottom: 12 }}>
+                            今は「{nowLabel}」で表示中で、この条件に合うピンの{nowLabel}は座標がありません。<br />
+                            {otherLabel}に切り替えると <b>{otherCount}件</b> のピンが出ます。
+                          </div>
+                          <button onClick={() => setMapPinTarget(_other)} style={{
+                            padding: "11px 18px", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 800,
+                            fontFamily: "inherit", background: C.accent, color: "#fff", border: "none",
+                          }}>📍 {otherLabel} に切り替える（{otherCount}件）</button>
+                        </div>
+                      );
+                    }
+                    // ③ どちらのモードでも座標が無い（ジオコーディング未実行）
+                    return (
+                      <div style={{ background: C.warnBg, border: `1px solid ${C.warn}55`, borderRadius: 10, padding: "20px 16px", textAlign: "center", marginBottom: 10 }}>
+                        <div style={{ fontSize: 32, marginBottom: 8 }}>🗺️</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 6 }}>まだピンを立てる準備ができていません</div>
+                        <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+                          上のボタンで「ジオコーディング」を実行すると、<br />
+                          住所を緯度経度に変換してピンを立てられます
+                        </div>
+                      </div>
+                    );
+                  })()
                 )}
               </div>
             );
