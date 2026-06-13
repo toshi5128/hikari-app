@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -42,6 +42,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::
 <div id="root"><div id="hikari-loading" style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:'Noto Sans JP',sans-serif;flex-direction:column;gap:14px;padding:20px;text-align:center"><div style="font-size:36px">🏠</div><div style="font-size:18px;color:#0ea5e9;font-weight:700">ひかり不動産</div><div style="font-size:13px;color:#475569" id="hikari-loading-msg">読み込み中...</div><div style="width:200px;height:4px;background:#1a2535;border-radius:2px;overflow:hidden"><div style="width:0;height:100%;background:#0ea5e9;animation:hikariProgress 30s linear forwards" id="hikari-progress-bar"></div></div><button onclick="window.__showHikariRecovery__&&window.__showHikariRecovery__()" style="background:none;border:1px solid ${C.borderDim};color:#475569;padding:8px 16px;border-radius:8px;font-size:11px;cursor:pointer;font-family:inherit;margin-top:20px">読み込みが終わらない場合</button></div></div>
 <style>@keyframes hikariProgress{0%{width:0}100%{width:100%}}
 @keyframes hikariGoldPulse{0%,100%{box-shadow:0 0 15px rgba(252,211,77,0.35),inset 0 0 20px rgba(252,211,77,0.06)}50%{box-shadow:0 0 35px rgba(252,211,77,0.7),inset 0 0 40px rgba(252,211,77,0.12)}}
+@keyframes hikariBluePulse{0%,100%{box-shadow:0 0 15px rgba(59,130,246,0.35),inset 0 0 20px rgba(59,130,246,0.06)}50%{box-shadow:0 0 35px rgba(59,130,246,0.75),inset 0 0 40px rgba(59,130,246,0.14)}}
 @keyframes hikariRipple{0%{transform:scale(0.3);opacity:0.85}100%{transform:scale(3);opacity:0}}
 @keyframes hikariRippleCore{0%{transform:scale(0.5);opacity:1}100%{transform:scale(1.5);opacity:0}}
 @keyframes hikariFlashPulse{0%{opacity:0}15%{opacity:0.95}100%{opacity:0.82}}
@@ -178,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.109-companion-counter";
+const APP_VERSION = "2026-06-13-v9.110-visited-today-glow";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4839,6 +4840,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       try { return new Date(r.createdAt).toDateString() === _todayStr; }
       catch (e) { return false; }
     };
+    // 🆕 v9.110: 今日訪問したピン判定（visitLog に今日の日付の記録があるか・raw経由）
+    const _todayYmd = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })();
+    const isVisitedToday = (it) => {
+      const r = _raw(it);
+      const log = (r && r.visitLog) || [];
+      return log.some(v => v && v.date === _todayYmd);
+    };
     // 🆕 v8.41→v8.125: 30日以内にポスティングした案件（raw経由）
     const _todayMs = Date.now();
     const _postedRecently = (it) => {
@@ -4914,18 +4922,25 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         const e = statusEmoji(s);
         return e || "📍";
       })();
-      // 🆕 v8.99→v8.104: 「今日かつ地番待ち」のみ halo + 「今日」バッジで強調
+      // 🆕 v8.99→v8.104: 「今日かつ地番待ち」のみ halo + 「今日」バッジで強調（金色）
       const createdToday = isCreatedToday(it) && pendingLot;
-      const outerSize = createdToday ? 42 : 26;
-      const innerOffset = createdToday ? 10 : 0;
+      // 🆕 v9.110: 「今日訪問した」ピンは青く halo（新規地上=金色 と差別化・一目で判別）
+      const visitedToday = !createdToday && isVisitedToday(it);
+      const glowToday = createdToday || visitedToday;
+      const outerSize = glowToday ? 42 : 26;
+      const innerOffset = glowToday ? 10 : 0;
       const anchor = outerSize / 2;
-      const haloHtml = createdToday
-        ? `<div style="position:absolute;top:0;left:0;width:${outerSize}px;height:${outerSize}px;border-radius:50%;background:radial-gradient(circle,rgba(252,211,77,0.6) 25%,rgba(252,211,77,0) 70%);animation:hikariGoldPulse 1.6s ease-in-out infinite;pointer-events:none;"></div>`
+      const _haloRgb = createdToday ? "252,211,77" : "59,130,246";       // 今日新規=金 / 今日訪問=青
+      const _haloAnim = createdToday ? "hikariGoldPulse" : "hikariBluePulse";
+      const haloHtml = glowToday
+        ? `<div style="position:absolute;top:0;left:0;width:${outerSize}px;height:${outerSize}px;border-radius:50%;background:radial-gradient(circle,rgba(${_haloRgb},0.6) 25%,rgba(${_haloRgb},0) 70%);animation:${_haloAnim} 1.6s ease-in-out infinite;pointer-events:none;"></div>`
         : "";
       const todayBadgeHtml = createdToday
         ? `<div style="position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);background:#fbbf24;color:#000;font-size:8px;padding:1px 5px;border-radius:5px;font-weight:800;border:1.5px solid white;white-space:nowrap;line-height:1.1;box-shadow:0 1px 3px rgba(0,0,0,0.4);">今日</div>`
-        : "";
-      const innerBorder = createdToday ? "2.5px solid #fbbf24" : "2.5px solid white";
+        : (visitedToday
+          ? `<div style="position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);background:#3b82f6;color:#fff;font-size:8px;padding:1px 5px;border-radius:5px;font-weight:800;border:1.5px solid white;white-space:nowrap;line-height:1.1;box-shadow:0 1px 3px rgba(0,0,0,0.4);">訪問</div>`
+          : "");
+      const innerBorder = createdToday ? "2.5px solid #fbbf24" : (visitedToday ? "2.5px solid #3b82f6" : "2.5px solid white");
       // 🆕 v8.134: 色付き丸の中央に絵文字を描画
       const innerPinHtml = `<div style="position:absolute;top:${innerOffset}px;left:${innerOffset}px;width:26px;height:26px;">
         <div style="background:${color};width:26px;height:26px;border-radius:50%;border:${innerBorder};box-shadow:0 1px 4px rgba(0,0,0,0.5);box-sizing:border-box;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;">
