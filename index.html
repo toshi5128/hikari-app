@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.108-counter-emoji-match";
+const APP_VERSION = "2026-06-13-v9.109-companion-counter";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15936,6 +15936,23 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     const withMembersArr = Array.isArray(visitForm.withMembers)
       ? visitForm.withMembers.filter(m => m && m !== (visitForm.assignee || "")).slice(0, 2)
       : [];
+    // 🆕 v9.109: 訪問結果→ステータス・加算項目を共通化（同行者にも一部加算するため）
+    const resDef = VISIT_RESULTS.find(r => r.key === visitForm.result);
+    const newStatus = resDef ? resDef.autoStatus : null;
+    const _finalStatus = visitForm.status || newStatus;
+    // 訪問記録1件から +1 されるカウンター項目（result / status / posted から算出）
+    const computeBumpItems = (result, finalStatus, posted) => {
+      const items = [];
+      const _resultToItem = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止" };
+      const _statusToCounter = { "再訪": "地上再訪", "仕入": "地上仕入" };
+      if (_resultToItem[result]) items.push(_resultToItem[result]);
+      if (finalStatus && ATTACK_STATUSES.includes(finalStatus)) items.push(_statusToCounter[finalStatus] || finalStatus);
+      if (posted) items.push("ポスティング");
+      return items;
+    };
+    // 🆕 v9.109: 同行者にも加算する「訪問行動系」項目。
+    //   KPI/成果系（見込み・中長期見込・見込無し・交渉中・媒介・仕入）は本人(メイン担当)のみ。
+    const COMPANION_ITEMS = new Set(["面談", "居留守", "地上不在", "訪問禁止", "初訪", "地上再訪", "ポスティング"]);
     const newEntry = {
       id: isEdit ? visitForm.editingId : Date.now(),
       date: visitForm.date,
@@ -15950,6 +15967,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       recordedBy: visitForm.assignee || (isEdit ? null : getCurrentUser()) || MEMBERS[0],
       // 🆕 v9.13: 同行者
       withMembers: withMembersArr,
+      // 🆕 v9.109: この記録で加算したステータス（同行統合時に同行者へ初訪/再訪を再現するため）
+      bumpedStatus: _finalStatus,
       // 🆕 v8.47: 編集時刻（マージで他端末の古い版に負けないように）
       updatedAt: Date.now(),
     };
@@ -15988,8 +16007,22 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
           const targetId = visitRecordTarget.rawId || visitRecordTarget.id;
           setData(d => {
             const arr = targetType === "jiage" ? "jiage" : "owners";
+            let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
+            // 🆕 v9.109: 同行統合で参加した本人(myName)に「訪問行動系」だけ加算（地上げのみ・KPIは加算しない）
+            if (targetType === "jiage" && myName) {
+              const compItems = computeBumpItems(other.result, other.bumpedStatus, other.posted).filter(it => COMPANION_ITEMS.has(it));
+              if (compItems.length) {
+                const todayStr = new Date().toISOString().split("T")[0];
+                compItems.forEach((ci, i) => {
+                  const idx = appr.findIndex(a => a.member === myName && a.date === todayStr);
+                  if (idx >= 0) appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), [ci]: ((appr[idx].values || {})[ci] || 0) + 1 } };
+                  else appr.push({ id: Date.now() + Math.floor(Math.random() * 100000) + i, member: myName, date: todayStr, values: { [ci]: 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
+                });
+              }
+            }
             return {
               ...d,
+              approaches: appr,
               [arr]: (d[arr] || []).map(x => {
                 if (x.id !== targetId) return x;
                 return { ...x, visitLog: (x.visitLog || []).map(v => v.id === other.id ? mergedEntry : v) };
@@ -16041,9 +16074,6 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       return;
     }
     // 以下は新規追加モード
-    const resDef = VISIT_RESULTS.find(r => r.key === visitForm.result);
-    const newStatus = resDef ? resDef.autoStatus : null;
-    
     const targetType = visitRecordTarget.type;
     const targetId = visitRecordTarget.rawId || visitRecordTarget.id;
     
@@ -16055,32 +16085,26 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
         //   ・担当者は visitForm.assignee 優先、無ければ案件の担当者、それも無ければ現在のユーザー
         const target = d.jiage.find(j => j.id === targetId);
         const bumpMember = visitForm.assignee || (target && target.assignee) || getCurrentUser() || "";
-        const bumpItems = [];
-        // 訪問結果 → カウンター（地上げ専用の内部キーで業者カウンターと分離）
-        const _resultToItem = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止" };
-        const _resItem = _resultToItem[visitForm.result];
-        if (_resItem) bumpItems.push(_resItem);
-        // ステータス → カウンター（保存後のステータス値で）
-        //   ・再訪/仕入 は業者のものと混ざらないように 地上再訪/地上仕入 にマップ
-        const _statusToCounter = { "再訪": "地上再訪", "仕入": "地上仕入" };
-        const _finalStatus = visitForm.status || newStatus;
-        if (_finalStatus && ATTACK_STATUSES.includes(_finalStatus)) {
-          bumpItems.push(_statusToCounter[_finalStatus] || _finalStatus);
-        }
-        // 🆕 v8.41: ポスティング済 → カウンター
-        if (visitForm.posted) bumpItems.push("ポスティング");
+        // 🆕 v9.109: 加算項目を共通関数で算出（result / status / posted）
+        const bumpItems = computeBumpItems(visitForm.result, _finalStatus, visitForm.posted);
         let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
-        if (bumpMember) {
-          const todayStr = new Date().toISOString().split("T")[0];
-          bumpItems.forEach((counterItem, i) => {
-            const idx = appr.findIndex(a => a.member === bumpMember && a.date === todayStr);
+        const todayStr = new Date().toISOString().split("T")[0];
+        const _bumpFor = (member, items) => {
+          if (!member || !items || !items.length) return;
+          items.forEach((counterItem, i) => {
+            const idx = appr.findIndex(a => a.member === member && a.date === todayStr);
             if (idx >= 0) {
               appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), [counterItem]: ((appr[idx].values || {})[counterItem] || 0) + 1 } };
             } else {
-              appr.push({ id: Date.now() + Math.floor(Math.random() * 100000) + i, member: bumpMember, date: todayStr, values: { [counterItem]: 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
+              appr.push({ id: Date.now() + Math.floor(Math.random() * 100000) + i + (member ? member.length : 0), member, date: todayStr, values: { [counterItem]: 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
             }
           });
-        }
+        };
+        // 本人（メイン担当）には全項目を加算
+        _bumpFor(bumpMember, bumpItems);
+        // 🆕 v9.109: 同行者（最大2人）には訪問行動系だけ加算（見込み等のKPIは本人のみ）
+        const _companionItems = bumpItems.filter(it => COMPANION_ITEMS.has(it));
+        withMembersArr.filter(m => m && m !== bumpMember).forEach(m => _bumpFor(m, _companionItems));
         return {
           ...d,
           approaches: appr,
