@@ -178,7 +178,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.106-track-decimate";
+const APP_VERSION = "2026-06-13-v9.107-pin-drag-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -5237,22 +5237,41 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     } catch (e) {}
   }, [routeFitKey]);
 
-  // 🆕 v9.54: ピン位置の現地修正用ドラッグマーカー
+  // 🆕 v9.54 → v9.107: ピン位置の現地修正用ドラッグマーカー
+  //   ・onEditPinMove を ref で安定化し、依存から外す（毎レンダーでの作り直しを防ぐ）。
+  //   ・作成/破棄は「編集中か否か」だけで判定 → GPS現在地が毎秒更新されても作り直さない。
+  //     （以前はドラッグ途中にマーカーが破棄→再生成され、ピンが元位置に戻ってしまっていた）
+  //   ・位置の反映（ドラッグ確定後・「現在地に合わせる」）は別 effect で setLatLng（作り直さない）。
   const editMarkerRef = React.useRef(null);
+  const onEditPinMoveRef = React.useRef(onEditPinMove);
+  onEditPinMoveRef.current = onEditPinMove;
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    if (editMarkerRef.current) { try { map.removeLayer(editMarkerRef.current); } catch (e) {} editMarkerRef.current = null; }
-    if (!editPin || typeof editPin.lat !== "number" || typeof editPin.lng !== "number") return;
+    if (!editPin || typeof editPin.lat !== "number" || typeof editPin.lng !== "number") {
+      if (editMarkerRef.current) { try { map.removeLayer(editMarkerRef.current); } catch (e) {} editMarkerRef.current = null; }
+      return;
+    }
+    if (editMarkerRef.current) return; // 既に作成済みなら作り直さない（ドラッグ中に消えない）
     const mk = L.marker([editPin.lat, editPin.lng], {
       draggable: true,
       icon: L.divIcon({ html: `<div class="hk-pinedit">📍</div>`, className: "", iconSize: [34, 34], iconAnchor: [17, 17] }),
       zIndexOffset: 2000,
     });
-    mk.on("dragend", () => { const ll = mk.getLatLng(); if (onEditPinMove) onEditPinMove(ll.lat, ll.lng); });
+    mk.on("dragend", () => { const ll = mk.getLatLng(); if (onEditPinMoveRef.current) onEditPinMoveRef.current(ll.lat, ll.lng); });
     mk.addTo(map);
     editMarkerRef.current = mk;
-  }, [editPin && editPin.lat, editPin && editPin.lng, onEditPinMove]);
+    return () => { if (editMarkerRef.current) { try { map.removeLayer(editMarkerRef.current); } catch (e) {} editMarkerRef.current = null; } };
+  }, [editPin ? "on" : "off"]);
+  // 位置だけ後追い反映（マーカーは作り直さない）
+  React.useEffect(() => {
+    const mk = editMarkerRef.current;
+    if (!mk || !editPin || typeof editPin.lat !== "number" || typeof editPin.lng !== "number") return;
+    const cur = mk.getLatLng();
+    if (cur.lat !== editPin.lat || cur.lng !== editPin.lng) {
+      try { mk.setLatLng([editPin.lat, editPin.lng]); } catch (e) {}
+    }
+  }, [editPin && editPin.lat, editPin && editPin.lng]);
 
   // 🆕 v8.96: fitBoundsKey が変わったら手動で全件表示（「全件表示」ボタン用）
   React.useEffect(() => {
