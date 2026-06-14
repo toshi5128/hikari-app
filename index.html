@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.111-track-canvas-memory";
+const APP_VERSION = "2026-06-13-v9.112-track-rdp-shape";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -14301,22 +14301,62 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   //   ・線の形は保ったまま、全メンバー合計でおよそ上限点数になるよう等間隔で間引く。
   //   ・各メンバーの始点・終点は必ず残す（▶始点/■終点マーカーの位置がズレないように）。
   //   ・距離計算は visibleTracks（間引き前）を使うので数値は正確なまま。
-  const MAX_DISPLAY_TRACK_POINTS = 1500; // 🆕 v9.111: 2500→1500（長島端末のメモリ対策。線の形は維持・距離はvisibleTracksで正確）
+  // 🆕 v9.112: ルートが「道なり」に表示されない不具合の修正。
+  //   旧(stride): 一定間隔で間引く → 曲がり角の点まで捨て、街区を斜め横断する直線になっていた。
+  //   新(RDP): 直線部だけ間引き・曲がり角は残す Ramer–Douglas–Peucker → 実際に通った道なりの形を維持。
+  //   共有canvas化(v9.111)で点数によるメモリ問題は解消済みのため、上限は余裕を持たせる。
+  //   距離計算は visibleTracks（簡略化前）を使うので数値は正確なまま。
+  const MAX_DISPLAY_TRACK_POINTS = 8000;
+  const _trackPerpDistM = (p, a, b) => {
+    // 線分 a-b への点 p の垂直距離（メートル近似・経度はcos補正）
+    const mLat = 111320;
+    const mLng = 111320 * Math.cos((a.lat + b.lat) / 2 * Math.PI / 180);
+    const ax = a.lng * mLng, ay = a.lat * mLat;
+    const bx = b.lng * mLng, by = b.lat * mLat;
+    const px = p.lng * mLng, py = p.lat * mLat;
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Math.hypot(px - ax, py - ay);
+    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  };
+  const _simplifyRDP = (pts, epsM) => {
+    if (!Array.isArray(pts) || pts.length < 3) return Array.isArray(pts) ? pts.slice() : [];
+    const keep = new Array(pts.length).fill(false);
+    keep[0] = keep[pts.length - 1] = true;
+    const stack = [[0, pts.length - 1]]; // 反復版（深い再帰のスタック溢れ回避）
+    while (stack.length) {
+      const seg = stack.pop();
+      const s = seg[0], e = seg[1];
+      let maxD = 0, idx = -1;
+      for (let i = s + 1; i < e; i++) {
+        const d = _trackPerpDistM(pts[i], pts[s], pts[e]);
+        if (d > maxD) { maxD = d; idx = i; }
+      }
+      if (maxD > epsM && idx > 0) { keep[idx] = true; stack.push([s, idx], [idx, e]); }
+    }
+    return pts.filter((_, i) => keep[i]);
+  };
   const displayTracks = React.useMemo(() => {
-    const total = Object.values(visibleTracks).reduce((s, pts) => s + (Array.isArray(pts) ? pts.length : 0), 0);
-    if (total <= MAX_DISPLAY_TRACK_POINTS) return visibleTracks;
-    const stride = Math.ceil(total / MAX_DISPLAY_TRACK_POINTS);
-    const out = {};
-    Object.entries(visibleTracks).forEach(([m, pts]) => {
-      if (!Array.isArray(pts) || pts.length === 0) return;
-      if (pts.length <= 2) { out[m] = pts; return; }
-      const thinned = [];
-      for (let i = 0; i < pts.length; i += stride) thinned.push(pts[i]);
-      const last = pts[pts.length - 1];
-      if (thinned[thinned.length - 1] !== last) thinned.push(last); // 終点を必ず含める
-      out[m] = thinned;
-    });
-    return out;
+    const simplifyAll = (epsM) => {
+      const o = {}; let total = 0;
+      Object.entries(visibleTracks).forEach(([m, pts]) => {
+        if (!Array.isArray(pts) || pts.length === 0) return;
+        const sorted = pts.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        const s = sorted.length > 2 ? _simplifyRDP(sorted, epsM) : sorted;
+        o[m] = s; total += s.length;
+      });
+      return { o, total };
+    };
+    let epsM = 4; // まず約4m（GPSノイズ程度）で軽く簡略化＝形はほぼそのまま
+    let res = simplifyAll(epsM);
+    // 点数が多すぎる時だけ、形を保ったまま epsilon を上げて段階的に削減
+    while (res.total > MAX_DISPLAY_TRACK_POINTS && epsM < 50) {
+      epsM *= 1.8;
+      res = simplifyAll(epsM);
+    }
+    return res.o;
   }, [visibleTracks]);
   // 🆕 v9.28: 探索中の軽量化描画 — 自分の今日分だけ、5点に1点間引き
   //   ・「どこ通ったか分かる」 を保ちながら、 描画ポイント数を 1/10 程度に減らす
