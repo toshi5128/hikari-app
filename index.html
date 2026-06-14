@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.110-visited-today-glow";
+const APP_VERSION = "2026-06-13-v9.111-track-canvas-memory";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -5478,6 +5478,11 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     const sortedWeeks = Array.from(allWeekIdx).sort((a, b) => a - b);
     const weekToRelative = new Map(sortedWeeks.map((w, i) => [w, i]));
 
+    // 🆕 v9.111: 全セグメントで canvas を1個だけ共有する（長島端末対策）。
+    //   以前は polyline ごとに L.canvas() を生成 → 「全期間」等でセグメントが大量になると
+    //   canvas要素が数百個でき、ズーム再描画でメモリ急増→端末がページごとリロード→ホームに戻る不具合。
+    const _trackRenderer = L.canvas({ padding: 0.5 });
+
     Object.entries(tracks).forEach(([member, points]) => {
       if (!Array.isArray(points) || points.length < 2) return;
       const valid = points
@@ -5533,7 +5538,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           smoothFactor: 0.5,
           lineCap: "round",
           lineJoin: "round",
-          renderer: L.canvas(),
+          renderer: _trackRenderer,
           interactive: true,
         }).addTo(map);
         const weekYear = Math.floor(seg.weekIdx / 100);
@@ -14296,7 +14301,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   //   ・線の形は保ったまま、全メンバー合計でおよそ上限点数になるよう等間隔で間引く。
   //   ・各メンバーの始点・終点は必ず残す（▶始点/■終点マーカーの位置がズレないように）。
   //   ・距離計算は visibleTracks（間引き前）を使うので数値は正確なまま。
-  const MAX_DISPLAY_TRACK_POINTS = 2500;
+  const MAX_DISPLAY_TRACK_POINTS = 1500; // 🆕 v9.111: 2500→1500（長島端末のメモリ対策。線の形は維持・距離はvisibleTracksで正確）
   const displayTracks = React.useMemo(() => {
     const total = Object.values(visibleTracks).reduce((s, pts) => s + (Array.isArray(pts) ? pts.length : 0), 0);
     if (total <= MAX_DISPLAY_TRACK_POINTS) return visibleTracks;
