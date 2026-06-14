@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.112-track-rdp-shape";
+const APP_VERSION = "2026-06-13-v9.113-track-segment-rdp";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4666,6 +4666,41 @@ function PendingPhotoSection({ photos, onAdd, onRemove }) {
   );
 }
 
+// 🆕 v9.113: 軌跡の道なり簡略化（RDP）。モジュール定義で LeafletMap からも親からも使える。
+//   直線部の点だけ間引き・曲がり角は残す＝実際に通った道なりの形を維持。
+//   ※必ず「連続区間ごと」に呼ぶこと（途切れ判定の後に）。区間をまたいで呼ぶと straight で線が切れる。
+const _trackPerpDistM = (p, a, b) => {
+  // 線分 a-b への点 p の垂直距離（メートル近似・経度はcos補正）
+  const mLat = 111320;
+  const mLng = 111320 * Math.cos((a.lat + b.lat) / 2 * Math.PI / 180);
+  const ax = a.lng * mLng, ay = a.lat * mLat;
+  const bx = b.lng * mLng, by = b.lat * mLat;
+  const px = p.lng * mLng, py = p.lat * mLat;
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+};
+const _simplifyRDP = (pts, epsM) => {
+  if (!Array.isArray(pts) || pts.length < 3) return Array.isArray(pts) ? pts.slice() : [];
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = keep[pts.length - 1] = true;
+  const stack = [[0, pts.length - 1]]; // 反復版（深い再帰のスタック溢れ回避）
+  while (stack.length) {
+    const seg = stack.pop();
+    const s = seg[0], e = seg[1];
+    let maxD = 0, idx = -1;
+    for (let i = s + 1; i < e; i++) {
+      const d = _trackPerpDistM(pts[i], pts[s], pts[e]);
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD > epsM && idx > 0) { keep[idx] = true; stack.push([s, idx], [idx, e]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+};
+
 // 🗺️ Leafletマップコンポーネント
 function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
@@ -5529,7 +5564,11 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
 
       segments.forEach(seg => {
         if (seg.pts.length < 2) return;
-        const latlngs = seg.pts.map(p => [p.lat, p.lng]);
+        // 🆕 v9.113: 連続区間（途切れ判定後）ごとに RDP 簡略化＝直線部だけ間引き・曲がり角は残す。
+        //   途切れ判定の"後"に行うので、straight でも線が途切れない（距離は seg.pts で正確に計算）。
+        const drawPts = seg.pts.length > 2 ? _simplifyRDP(seg.pts, 4) : seg.pts;
+        if (drawPts.length < 2) return;
+        const latlngs = drawPts.map(p => [p.lat, p.lng]);
         const color = WEEK_COLORS[seg.weekRel % WEEK_COLORS.length];
         const polyline = L.polyline(latlngs, {
           color,
@@ -14295,69 +14334,11 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
     });
     return result;
   }, [data && data.tracks, trackVisibleMembers, trackPeriodRange]);
-  // 🆕 v9.106: 地図描画用に総ポイント数の上限を設けて間引く（端末メモリ保護）
-  //   ・「全期間」など長期間を選ぶと全点が描画され、ズーム時の再描画でメモリが急増し
-  //     端末（特に長島端末）がページごとリロード→ホーム(dashboard)に戻る不具合の対策。
-  //   ・線の形は保ったまま、全メンバー合計でおよそ上限点数になるよう等間隔で間引く。
-  //   ・各メンバーの始点・終点は必ず残す（▶始点/■終点マーカーの位置がズレないように）。
-  //   ・距離計算は visibleTracks（間引き前）を使うので数値は正確なまま。
-  // 🆕 v9.112: ルートが「道なり」に表示されない不具合の修正。
-  //   旧(stride): 一定間隔で間引く → 曲がり角の点まで捨て、街区を斜め横断する直線になっていた。
-  //   新(RDP): 直線部だけ間引き・曲がり角は残す Ramer–Douglas–Peucker → 実際に通った道なりの形を維持。
-  //   共有canvas化(v9.111)で点数によるメモリ問題は解消済みのため、上限は余裕を持たせる。
-  //   距離計算は visibleTracks（簡略化前）を使うので数値は正確なまま。
-  const MAX_DISPLAY_TRACK_POINTS = 8000;
-  const _trackPerpDistM = (p, a, b) => {
-    // 線分 a-b への点 p の垂直距離（メートル近似・経度はcos補正）
-    const mLat = 111320;
-    const mLng = 111320 * Math.cos((a.lat + b.lat) / 2 * Math.PI / 180);
-    const ax = a.lng * mLng, ay = a.lat * mLat;
-    const bx = b.lng * mLng, by = b.lat * mLat;
-    const px = p.lng * mLng, py = p.lat * mLat;
-    const dx = bx - ax, dy = by - ay;
-    const len2 = dx * dx + dy * dy;
-    if (len2 === 0) return Math.hypot(px - ax, py - ay);
-    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
-    t = t < 0 ? 0 : t > 1 ? 1 : t;
-    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
-  };
-  const _simplifyRDP = (pts, epsM) => {
-    if (!Array.isArray(pts) || pts.length < 3) return Array.isArray(pts) ? pts.slice() : [];
-    const keep = new Array(pts.length).fill(false);
-    keep[0] = keep[pts.length - 1] = true;
-    const stack = [[0, pts.length - 1]]; // 反復版（深い再帰のスタック溢れ回避）
-    while (stack.length) {
-      const seg = stack.pop();
-      const s = seg[0], e = seg[1];
-      let maxD = 0, idx = -1;
-      for (let i = s + 1; i < e; i++) {
-        const d = _trackPerpDistM(pts[i], pts[s], pts[e]);
-        if (d > maxD) { maxD = d; idx = i; }
-      }
-      if (maxD > epsM && idx > 0) { keep[idx] = true; stack.push([s, idx], [idx, e]); }
-    }
-    return pts.filter((_, i) => keep[i]);
-  };
-  const displayTracks = React.useMemo(() => {
-    const simplifyAll = (epsM) => {
-      const o = {}; let total = 0;
-      Object.entries(visibleTracks).forEach(([m, pts]) => {
-        if (!Array.isArray(pts) || pts.length === 0) return;
-        const sorted = pts.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
-        const s = sorted.length > 2 ? _simplifyRDP(sorted, epsM) : sorted;
-        o[m] = s; total += s.length;
-      });
-      return { o, total };
-    };
-    let epsM = 4; // まず約4m（GPSノイズ程度）で軽く簡略化＝形はほぼそのまま
-    let res = simplifyAll(epsM);
-    // 点数が多すぎる時だけ、形を保ったまま epsilon を上げて段階的に削減
-    while (res.total > MAX_DISPLAY_TRACK_POINTS && epsM < 50) {
-      epsM *= 1.8;
-      res = simplifyAll(epsM);
-    }
-    return res.o;
-  }, [visibleTracks]);
+  // 🆕 v9.113: 軌跡の簡略化は「描画側で連続区間ごとに RDP」で行う（_simplifyRDP はモジュール定義）。
+  //   ここでは生データをそのまま渡す。途切れ判定（時間/距離）を生の密な点で正確に行い、
+  //   その後で各区間を RDP 簡略化するため、直線の途中で線が切れない（v9.112の細切れ不具合の修正）。
+  //   メモリは共有canvas化(v9.111)で解決済み。距離は visibleTracks で計算するので数値も正確。
+  const displayTracks = visibleTracks;
   // 🆕 v9.28: 探索中の軽量化描画 — 自分の今日分だけ、5点に1点間引き
   //   ・「どこ通ったか分かる」 を保ちながら、 描画ポイント数を 1/10 程度に減らす
   //   ・メモリ pressure を下げる ( 長島端末対策 )
