@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-13-v9.113-track-segment-rdp";
+const APP_VERSION = "2026-06-14-v9.114-show-past-while-recording";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -14339,6 +14339,21 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   //   その後で各区間を RDP 簡略化するため、直線の途中で線が切れない（v9.112の細切れ不具合の修正）。
   //   メモリは共有canvas化(v9.111)で解決済み。距離は visibleTracks で計算するので数値も正確。
   const displayTracks = visibleTracks;
+  // 🆕 v9.114: 探索中でも「以前回った過去ルート」を表示（再訪防止）。
+  //   ・今日ぶんはライブ線が担当するので、過去ルート層からは今日ぶんを除外する。
+  //     → 過去日の点数は記録中に増えないので、描画effectの依存シグネチャ（member:count）が変わらず、
+  //       30秒ごとのGPS flush でも履歴の再描画churn が起きない（長島端末対策を維持したまま過去を表示）。
+  //   ・期間フィルタで「全期間/30日」を選べば、その範囲の過去日がすべて出る。
+  const recordingPastTracks = React.useMemo(() => {
+    if (!trackRecording) return null;
+    const d = new Date(); d.setHours(0, 0, 0, 0); const todayStartMs = d.getTime();
+    const o = {};
+    Object.entries(visibleTracks).forEach(([m, pts]) => {
+      const past = (pts || []).filter(p => p && (p.ts || 0) < todayStartMs);
+      if (past.length > 1) o[m] = past;
+    });
+    return o;
+  }, [trackRecording, visibleTracks]);
   // 🆕 v9.28: 探索中の軽量化描画 — 自分の今日分だけ、5点に1点間引き
   //   ・「どこ通ったか分かる」 を保ちながら、 描画ポイント数を 1/10 程度に減らす
   //   ・メモリ pressure を下げる ( 長島端末対策 )
@@ -18700,7 +18715,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         const todayTs = todayStart.getTime();
                         return mine.filter(p => p && typeof p.lat === "number" && (p.ts || 0) >= todayTs);
                       })()}
-                      tracks={trackRecording ? null : displayTracks}
+                      tracks={trackRecording ? recordingPastTracks : displayTracks}
                       routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick" || route.mode === "lasso") ? {
                         start: { lat: currentLoc.lat, lng: currentLoc.lng },
                         stops: route.stops,
