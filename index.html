@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-14-v9.115-calendar-event-detail";
+const APP_VERSION = "2026-06-14-v9.116-private-event";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6245,7 +6245,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const [calShowFilters, setCalShowFilters] = useState(true); // 🆕 v9.73: 種類/担当者を最初から表示（フィルタ自体はall）
   const [showEventForm, setShowEventForm] = useState(false);
   const [editingEvent, setEditingEvent] = useState(null);
-  const eventEmpty = { title: "", date: today, time: "", allDay: false, location: "", memo: "", assignees: [], reminderMinutes: 0 };
+  const eventEmpty = { title: "", date: today, time: "", allDay: false, location: "", memo: "", assignees: [], reminderMinutes: 0, private: false };
   const [eventForm, setEventForm] = useState(eventEmpty);
   const [todoInput, setTodoInput] = useState(""); // 🆕 v9.73: ToDo入力
   const [showAddChoice, setShowAddChoice] = useState(false); // 🆕 v9.75: 追加時の予定/ToDo選択シート
@@ -6614,6 +6614,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       // 旧データの assignee (単一) も吸収して assignees (配列) に統一
       assignees: ev.assignees || (ev.assignee ? [ev.assignee] : []),
       reminderMinutes: ev.reminderMinutes || 0,
+      private: !!ev.private,  // 🆕 v9.116: 非公開フラグ
     });
     setEditingEvent(ev);
     setShowEventForm(true);
@@ -6644,6 +6645,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       memo: eventForm.memo,
       assignees,
       reminderMinutes: eventForm.reminderMinutes || 0,
+      private: !!eventForm.private,  // 🆕 v9.116: 非公開（作成者本人のみ表示）
       createdAt: editingEvent?.createdAt || new Date().toISOString(),
       createdBy: editingEvent?.createdBy || me,
       notified: editingEvent?.notified || false,
@@ -6653,6 +6655,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       const next = { ...d, customEvents: editingEvent
         ? (d.customEvents || []).map(e => e.id === editingEvent.id ? item : e)
         : [...(d.customEvents || []), item] };
+      // 🆕 v9.116: 非公開予定は共有の活動ログ・通知に出さない（本人だけのもの）
+      if (item.private) return next;
       const assigneeLabel = item.assignees.length > 0 ? `（${item.assignees.join("・")}）` : "";
       return appendLogAndNotify(next, editingEvent ? "update" : "add", "event", `予定「${item.title}」${assigneeLabel}（${item.date}${item.time ? " " + item.time : ""}）`, item, { skipPush: !editingEvent });
     });
@@ -6665,7 +6669,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     }
 
     // ★ Web Push 送信：担当者の端末にリアルタイム通知（アプリ閉じてても届く）
-    if (!editingEvent && assignees.length > 0) {
+    // 🆕 v9.116: 非公開予定は他メンバーに通知しない
+    if (!editingEvent && assignees.length > 0 && !item.private) {
       const otherAssignees = assignees.filter(a => a !== me);
       const allTargets = expandAssignees(otherAssignees); // 「比嘉・下田」など分解
       if (allTargets.length > 0) {
@@ -6860,6 +6865,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     });
     // カスタム予定
     (data.customEvents || []).forEach(ev => {
+      // 🆕 v9.116: 非公開予定は作成者本人にだけ表示（他メンバーのカレンダーには出さない）
+      if (ev.private && ev.createdBy && ev.createdBy !== currentUser) return;
       // 旧データの assignee (単一) も吸収
       const assignees = ev.assignees || (ev.assignee ? [ev.assignee] : []);
       list.push({
@@ -7761,6 +7768,25 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                 ※ 通知はアプリを開いている時のみ届きます。<br />初回設定時にブラウザの通知許可が求められます。
               </div>
             )}
+          </Field>
+          {/* 🆕 v9.116: 公開範囲（自分だけ / 全員） */}
+          <Field label="🔒 公開範囲">
+            <button
+              type="button"
+              onClick={() => setEventForm(p => ({ ...p, private: !p.private }))}
+              style={{
+                width: "100%", padding: "11px 12px", borderRadius: 8, cursor: "pointer",
+                fontFamily: "inherit", fontSize: 13, fontWeight: 700, textAlign: "left",
+                background: eventForm.private ? C.purple + "22" : C.bg,
+                border: `1.5px solid ${eventForm.private ? C.purple : C.borderDim}`,
+                color: eventForm.private ? C.purple : C.text,
+              }}
+            >{eventForm.private ? "🔒 自分だけ（非公開）" : "👥 全員に公開"}　<span style={{ fontSize: 11, fontWeight: 600, color: C.muted }}>タップで切替</span></button>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+              {eventForm.private
+                ? "この予定はあなたのカレンダーにだけ表示されます。他のメンバーのカレンダー・通知・活動ログには出ません。"
+                : "通常どおり全員のカレンダーに表示されます。"}
+            </div>
           </Field>
           {/* 💬 コメント欄（編集モード時のみ） */}
           {editingEvent && (() => {
