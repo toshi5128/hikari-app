@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-14-v9.118-multiday-event";
+const APP_VERSION = "2026-06-14-v9.119-calendar-return";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4157,7 +4157,7 @@ function MainApp({ onLock, onSwitchUser }) {
         {page === "dashboard" && <Dashboard data={data} setData={setData} setPage={setPage} setPendingNav={setPendingNav} />}
         {page === "stock" && <StockPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
         {page === "approach" && <ApproachPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
-        {page === "jiage" && <JiagePage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
+        {page === "jiage" && <JiagePage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} setPage={setPage} />}
         {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} onSwitchUser={onSwitchUser} />}
       </div>
 
@@ -6574,11 +6574,11 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     if (!setPage || !setPendingNav) return;
     switch (e.type) {
       case "jiage":
-        setPendingNav({ tab: "jiage", jiageLinkId: e.rawId });
+        setPendingNav({ tab: "jiage", jiageLinkId: e.rawId, returnTo: "dashboard" });
         setPage("jiage");
         break;
       case "owner":
-        setPendingNav({ tab: "jiage", ownerLinkId: e.rawId });
+        setPendingNav({ tab: "jiage", ownerLinkId: e.rawId, returnTo: "dashboard" });
         setPage("jiage");
         break;
       case "sekisan":
@@ -14296,7 +14296,7 @@ function inferAreaFromAddress(address) {
   return "";
 }
 
-function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
+function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
@@ -14495,7 +14495,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
       // 🆕 v9.117: 物件の詳細シートを直接開く（カレンダーの「物件・案件を開く」で詳細まで遷移）
       //   一覧/地図どちらの表示モードでも確実に開けるよう setSelected を使う（スクロールはDOMがある時の補助）。
       const _found = (allItems || []).find(it => it.rawId === targetId);
-      if (_found) setSelected({ item: _found });
+      if (_found) { setSelected({ item: _found }); if (pendingNav.returnTo) setNavReturnTo(pendingNav.returnTo); }
       let retries = 0;
       const tryScroll = () => {
         const el = document.getElementById(`jiage-item-${targetId}`);
@@ -14636,6 +14636,15 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav }) {
   // 手動マップ選択モード（緯度経度をマップタップで指定）
   const [manualPinTarget, setManualPinTarget] = useState(null); // { item, target: "address" | "ownerAddr" }
   const [selected, setSelected] = useState(null);
+  // 🆕 v9.119: カレンダー等から物件詳細を開いた時の「戻り先」。詳細を閉じたら元の画面（カレンダー）へ戻す。
+  const [navReturnTo, setNavReturnTo] = useState(null);
+  useEffect(() => {
+    if (!selected && navReturnTo) {
+      const dest = navReturnTo;
+      setNavReturnTo(null);
+      if (setPage) setPage(dest);
+    }
+  }, [selected]);
   const [showAdd, setShowAdd] = useState(false);
   const [addType, setAddType] = useState("jiage");
   const [editItem, setEditItem] = useState(null);
