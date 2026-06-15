@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-14-v9.120-reopen-day-panel";
+const APP_VERSION = "2026-06-14-v9.121-multiday-bars";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6947,6 +6947,41 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     return m;
   }, [calFilteredEvents]);
 
+  // 🆕 v9.121: 複数日にまたがる予定を「連続した帯」で表示するためのレーン割当
+  //   ・calFilteredEvents 内の multiDay エントリ（日ごとに展開済み）を rawId でまとめてスパンを復元
+  //   ・開始日順に貪欲法でレーン（行）を割当 → 重なる帯は別レーンに（参照アプリ風）
+  //   ・byDate[日付][レーン] = { ev, isStart, isEnd } を作り、各セルで同じレーン位置に描画＝横に連続
+  const calMultiDay = useMemo(() => {
+    const byId = {};
+    calFilteredEvents.forEach(e => {
+      if (!e.multiDay || !e.isCustom) return;
+      if (!byId[e.rawId]) byId[e.rawId] = { id: e.rawId, title: e.title, color: e.color, dates: [] };
+      byId[e.rawId].dates.push(e.date);
+    });
+    const evs = Object.values(byId).map(g => {
+      const sorted = g.dates.slice().sort();
+      const start = sorted[0], end = sorted[sorted.length - 1];
+      return { ...g, start, end, startMs: new Date(start + "T00:00:00").getTime(), endMs: new Date(end + "T00:00:00").getTime() };
+    }).sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    const laneEnd = [];
+    evs.forEach(ev => {
+      let lane = 0;
+      while (lane < laneEnd.length && laneEnd[lane] >= ev.startMs) lane++;
+      laneEnd[lane] = ev.endMs;
+      ev.lane = lane;
+    });
+    const byDate = {};
+    evs.forEach(ev => {
+      const cur = new Date(ev.startMs), end = new Date(ev.endMs); let g = 0;
+      while (cur <= end && g < 400) {
+        const ds = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
+        (byDate[ds] ||= {})[ev.lane] = { ev, isStart: ds === ev.start, isEnd: ds === ev.end };
+        cur.setDate(cur.getDate() + 1); g++;
+      }
+    });
+    return { byDate, maxLanes: laneEnd.length };
+  }, [calFilteredEvents]);
+
   // 月の42日（6週分）を生成
   const calMonthDays = useMemo(() => {
     const y = calCursor.getFullYear(), mo = calCursor.getMonth();
@@ -7273,9 +7308,28 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                       fontSize: 11, fontWeight: isToday ? 800 : 600,
                     }}>{d.getDate()}</span>
                   </div>
-                  {/* 予定タイトル（最大2件）- タップで編集 or 該当画面へ */}
+                  {/* 予定（複数日は連続した帯、単日はチップ）- タップで該当日のポップアップ */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 1, overflow: "hidden" }}>
-                    {events.slice(0, 2).map((e, j) => {
+                    {/* 🆕 v9.121: 複数日にまたがる予定はレーンで連続した帯として表示 */}
+                    {calMultiDay.maxLanes > 0 && Array.from({ length: calMultiDay.maxLanes }).map((_, lane) => {
+                      const slot = calMultiDay.byDate[dateStr] && calMultiDay.byDate[dateStr][lane];
+                      if (!slot) return <div key={`ln${lane}`} style={{ height: 15, marginBottom: 1 }} />; // 空レーン（横位置合わせ用）
+                      const { ev: mev, isStart, isEnd } = slot;
+                      const isWeekStart = dow === 0, isWeekEnd = dow === 6;
+                      const roundL = isStart || isWeekStart, roundR = isEnd || isWeekEnd;
+                      const showTitle = isStart || isWeekStart;
+                      return (
+                        <div key={`ln${lane}`} style={{
+                          height: 15, marginBottom: 1, lineHeight: "15px",
+                          background: mev.color, color: "#fff",
+                          marginLeft: roundL ? 0 : -4, marginRight: roundR ? 0 : -4,
+                          borderRadius: `${roundL ? 4 : 0}px ${roundR ? 4 : 0}px ${roundR ? 4 : 0}px ${roundL ? 4 : 0}px`,
+                          padding: showTitle ? "0 4px" : 0, fontSize: 9, fontWeight: 700,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        }}>{showTitle ? `📆${mev.title}` : " "}</div>
+                      );
+                    })}
+                    {events.filter(e => !e.multiDay).slice(0, 2).map((e, j) => {
                       const customEv = e.isCustom ? (data.customEvents || []).find(ev => ev.id === e.rawId) : null;
                       const editable = (customEv && canEdit(customEv)) || (!e.isCustom && e.rawId);
                       return (
@@ -7291,8 +7345,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                           }}>{e.icon}{e.title}</div>
                       );
                     })}
-                    {events.length > 2 && (
-                      <div style={{ fontSize: 9, color: C.muted, padding: "0 3px", fontWeight: 700 }}>+{events.length - 2}件</div>
+                    {events.filter(e => !e.multiDay).length > 2 && (
+                      <div style={{ fontSize: 9, color: C.muted, padding: "0 3px", fontWeight: 700 }}>+{events.filter(e => !e.multiDay).length - 2}件</div>
                     )}
                   </div>
                 </div>
