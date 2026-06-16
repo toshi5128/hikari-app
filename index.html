@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-14-v9.121-multiday-bars";
+const APP_VERSION = "2026-06-16-v9.122-satei-server-link";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16614,6 +16614,26 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
     }
   };
 
+  // 🆕 売買価格査定書 ( 道1 / 段階1 ): 会社PCサーバー(/generate)へデータ送信し雛形PDFを取得して開く
+  const SATEI_URL_KEY = "hikari_satei_server_url";
+  const sendToSateiServer = async (data) => {
+    const base = (localStorage.getItem(SATEI_URL_KEY) || "").trim().replace(/\/+$/, "");
+    if (!base) { alert("先に「売買価格査定書サーバーURL」を設定してください。"); return; }
+    try {
+      const res = await fetch(base + "/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      window.open(URL.createObjectURL(blob), "_blank");
+    } catch (e) {
+      alert("売買価格査定書の生成に失敗しました:\n" + (e && e.message ? e.message : e) +
+        "\n\n・会社PCで「査定書サーバー起動.bat」が動いているか\n・URLが最新か を確認してください。");
+    }
+  };
+
   // 🆕 v9.46.5/v9.46.7: PDF から テキストを抽出 ( pdf.js → 空ならOCRにフォールバック )
   const extractPdfText = async (file, opts = {}) => {
     if (!window.pdfjsLib) throw new Error("pdf.js が未ロードです");
@@ -20361,6 +20381,39 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 </div>
                 <div style={{ marginTop: 4, fontSize: 9, color: C.muted }}>
                   ※ キーは端末のローカル ( localStorage ) にのみ保存。 サーバーには送信されません。
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* 🆕 売買価格査定書 ( 道1/段階1 ): 会社PCサーバー URL 設定 ＋ 接続テスト */}
+          {(() => {
+            const savedUrl = localStorage.getItem("hikari_satei_server_url") || "";
+            return (
+              <div style={{
+                background: savedUrl ? C.success + "11" : "#fbbf2422",
+                border: `1px solid ${savedUrl ? C.success + "66" : "#fbbf2466"}`,
+                borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11,
+              }}>
+                <div style={{ fontWeight: 700, color: savedUrl ? C.success : "#fbbf24", marginBottom: 6 }}>
+                  {savedUrl ? "📄 売買価格査定書サーバー: 設定済 ( 会社PC連携 )" : "📄 売買価格査定書サーバー URL 未設定"}
+                </div>
+                <div style={{ color: C.text, lineHeight: 1.7, marginBottom: 8 }}>
+                  会社PCで <b>「査定書サーバー起動.bat」</b> を実行し、 表示された URL ( https://〜.trycloudflare.com ) を ↓ に貼り付けてください。
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input type="text" defaultValue={savedUrl} placeholder="https://〜.trycloudflare.com"
+                    style={{ ...inp, flex: 1, fontSize: 11 }}
+                    onChange={e => {
+                      const v = e.target.value.trim();
+                      if (v) localStorage.setItem("hikari_satei_server_url", v);
+                      else localStorage.removeItem("hikari_satei_server_url");
+                    }} />
+                  <button onClick={() => sendToSateiServer({ date: "接続テスト", atena: "接続テスト 殿", cost: { sale: 10000000, stamp: -10000 } })}
+                    style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, whiteSpace: "nowrap" }}>接続テスト</button>
+                </div>
+                <div style={{ marginTop: 4, fontSize: 9, color: C.muted }}>
+                  ※ URL は会社PCの起動ごとに変わります。 最新を貼り直してください。 「接続テスト」 でサンプルPDFが開けば成功です。
                 </div>
               </div>
             );
