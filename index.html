@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.128-touki-via-server";
+const APP_VERSION = "2026-06-16-v9.129-comps-reins";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16616,6 +16616,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       sPubKouji: "",     // 地価公示
       sPubKoteiHyoka: "",// 固定資産税評価額
       sChikaLoading: false,
+      // 🆕 v9.129: 成約事例（土地成約=最大4 / 建物=最大3）。{desc,price,unit,area}/{desc,price,year,note}
+      sLandDeal: [{}, {}, {}, {}],
+      sBldgDeal: [{}, {}, {}],
     });
     // 🆕 v9.47.2: ピン座標があれば周辺施設を非同期で自動取得 ( OpenStreetMap Overpass API )
     if (j.lat && j.lng) {
@@ -16733,7 +16736,34 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       cost: { sale: num(f.sSale), stamp: num(f.sStamp) },
       bldg_eval: { kotei: num(f.sKotei), rebuild_demo: f.sRebuildDemo || "" },
       public: { koji: f.sPubKouji || "", rosen: f.sPubSouzoku || "", chosa: f.sPubKoteiRosen || "", kotei: f.sPubKoteiHyoka || "" },
+      // 土地の成約状況・建物の募集状況（レインズ等の成約事例）
+      land_deal: (f.sLandDeal || []).filter(r => r && ((r.desc || "").trim() || (r.price || "").trim()))
+        .map(r => ({ desc: (r.desc || "").trim(), price: (r.price || "").trim(), unit: (r.unit || "").trim(), area: (r.area || "").trim() })),
+      bldg_deal: (f.sBldgDeal || []).filter(r => r && ((r.desc || "").trim() || (r.price || "").trim()))
+        .map(r => ({ desc: (r.desc || "").trim(), price: (r.price || "").trim(), year: (r.year || "").trim(), note: (r.note || "").trim() })),
     };
+  };
+
+  // 🆕 v9.129: Step3でアップロードしたレインズ事例を成約事例欄へ取り込む
+  const importReinsToComps = () => {
+    const rows = (assessmentForm && assessmentForm.reins && assessmentForm.reins.rows) || [];
+    if (!rows.length) { alert("先に Step 3 でレインズPDFをアップロードしてください。"); return; }
+    const cl = v => (v && v !== "—") ? String(v).trim() : "";
+    const land = rows.slice(0, 4).map(r => ({ desc: cl(r.addr), price: cl(r.price), unit: "", area: cl(r.land) }));
+    const bldg = rows.slice(0, 3).map(r => ({ desc: cl(r.addr), price: cl(r.price), year: cl(r.age), note: cl(r.building) }));
+    while (land.length < 4) land.push({});
+    while (bldg.length < 3) bldg.push({});
+    setAssessmentForm(f => f ? { ...f, sLandDeal: land, sBldgDeal: bldg } : f);
+    alert("レインズ事例を取り込みました。 下の欄で確認・修正できます。");
+  };
+  // 成約事例セルの1項目を更新
+  const setDealCell = (key, i, field, val) => {
+    setAssessmentForm(f => {
+      if (!f) return f;
+      const arr = (f[key] || []).slice();
+      arr[i] = { ...(arr[i] || {}), [field]: val };
+      return { ...f, [key]: arr };
+    });
   };
 
   // 🆕 v9.123: 住所から公的指標（一物四価）を会社PCサーバー経由で取得して埋める
@@ -20929,6 +20959,29 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   <div key={k} style={{ marginBottom: 6 }}>
                     <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>{label}</div>
                     <input style={inp} value={assessmentForm[k] || ""} onChange={e => setAssessmentForm(f => ({ ...f, [k]: e.target.value }))} placeholder="例: 54,000円/㎡" />
+                  </div>
+                ))}
+              </div>
+              <div style={{ background: "#7a1f2b11", border: "1px solid #7a1f2b33", borderRadius: 8, padding: 10, marginTop: 4, marginBottom: 8 }}>
+                <div style={{ fontWeight: 700, fontSize: 12, color: C.text, marginBottom: 6 }}>🏘 成約事例（土地の成約状況・建物の募集状況）</div>
+                <button style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, marginBottom: 8 }}
+                  onClick={importReinsToComps}>📥 レインズ事例を取込（Step3でアップロード後）</button>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, margin: "4px 0" }}>土地の成約状況（最大4件）</div>
+                {(assessmentForm.sLandDeal || []).map((r, i) => (
+                  <div key={"ld" + i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr", gap: 4, marginBottom: 4 }}>
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.desc || ""} placeholder="物件概要" onChange={e => setDealCell("sLandDeal", i, "desc", e.target.value)} />
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.price || ""} placeholder="成約価格" onChange={e => setDealCell("sLandDeal", i, "price", e.target.value)} />
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.unit || ""} placeholder="坪単価" onChange={e => setDealCell("sLandDeal", i, "unit", e.target.value)} />
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.area || ""} placeholder="地積" onChange={e => setDealCell("sLandDeal", i, "area", e.target.value)} />
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, margin: "8px 0 4px" }}>建物の募集状況（最大3件）</div>
+                {(assessmentForm.sBldgDeal || []).map((r, i) => (
+                  <div key={"bd" + i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr", gap: 4, marginBottom: 4 }}>
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.desc || ""} placeholder="物件概要" onChange={e => setDealCell("sBldgDeal", i, "desc", e.target.value)} />
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.price || ""} placeholder="価格" onChange={e => setDealCell("sBldgDeal", i, "price", e.target.value)} />
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.year || ""} placeholder="築年" onChange={e => setDealCell("sBldgDeal", i, "year", e.target.value)} />
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.note || ""} placeholder="備考" onChange={e => setDealCell("sBldgDeal", i, "note", e.target.value)} />
                   </div>
                 ))}
               </div>
