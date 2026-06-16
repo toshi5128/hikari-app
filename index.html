@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.129-comps-reins";
+const APP_VERSION = "2026-06-16-v9.130-comps-manual";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16616,7 +16616,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       sPubKouji: "",     // 地価公示
       sPubKoteiHyoka: "",// 固定資産税評価額
       sChikaLoading: false,
-      // 🆕 v9.129: 成約事例（土地成約=最大4 / 建物=最大3）。{desc,price,unit,area}/{desc,price,year,note}
+      // 🆕 成約事例（手入力）。土地販売=在庫 / 土地成約 / 建物募集
+      sLandSale: [{}, {}, {}, {}],
       sLandDeal: [{}, {}, {}, {}],
       sBldgDeal: [{}, {}, {}],
     });
@@ -16736,7 +16737,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       cost: { sale: num(f.sSale), stamp: num(f.sStamp) },
       bldg_eval: { kotei: num(f.sKotei), rebuild_demo: f.sRebuildDemo || "" },
       public: { koji: f.sPubKouji || "", rosen: f.sPubSouzoku || "", chosa: f.sPubKoteiRosen || "", kotei: f.sPubKoteiHyoka || "" },
-      // 土地の成約状況・建物の募集状況（レインズ等の成約事例）
+      // 在庫・成約事例（手入力）：土地販売状況／土地成約状況／建物募集状況
+      land_sale: (f.sLandSale || []).filter(r => r && ((r.desc || "").trim() || (r.price || "").trim()))
+        .map(r => ({ desc: (r.desc || "").trim(), price: (r.price || "").trim(), unit: (r.unit || "").trim(), area: (r.area || "").trim() })),
       land_deal: (f.sLandDeal || []).filter(r => r && ((r.desc || "").trim() || (r.price || "").trim()))
         .map(r => ({ desc: (r.desc || "").trim(), price: (r.price || "").trim(), unit: (r.unit || "").trim(), area: (r.area || "").trim() })),
       bldg_deal: (f.sBldgDeal || []).filter(r => r && ((r.desc || "").trim() || (r.price || "").trim()))
@@ -20858,37 +20861,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             </div>
           </div>
 
-          {/* Step 3: レインズアップロード */}
+          {/* Step 3: 物件詳細 ( 編集可 ) */}
           <div style={stepCard(true)}>
-            <div><span style={stepNum(true)}>3</span><b style={{ fontSize: 13, color: C.text }}>レインズ成約事例 PDF</b>
-              {assessmentForm.reins && <span style={{ marginLeft: 8, fontSize: 9, background: C.success, color: "#fff", padding: "2px 6px", borderRadius: 8, fontWeight: 800 }}>✅ {assessmentForm.reins.rows.length}件</span>}
-            </div>
-            <div style={stepBody}>
-              <label style={{
-                display: "block",
-                border: `2px dashed ${assessmentForm.reins ? C.success : "#0ea5e966"}`,
-                borderRadius: 8, padding: 12, textAlign: "center",
-                color: assessmentForm.reins ? C.success : "#0ea5e9",
-                fontSize: 11, background: assessmentForm.reins ? C.success + "11" : "#0ea5e911",
-                cursor: assessmentForm.reinsParsing ? "wait" : "pointer", fontWeight: 700,
-              }}>
-                {assessmentForm.reinsParsing ? "⏳ 解析中..." :
-                  assessmentForm.reins ? `✅ ${assessmentForm.reins.fileName} ( ${assessmentForm.reins.rows.length}件抽出 )` : "📎 タップして PDF を選択"}
-                <input type="file" accept="application/pdf" style={{ display: "none" }}
-                  onChange={e => { if (e.target.files[0]) handleReinsUpload(e.target.files[0]); e.target.value = ""; }} />
-              </label>
-              <div style={{ marginTop: 4, fontSize: 10 }}>類似条件の成約事例を抽出して 査定書 にテーブルとして反映します</div>
-              {assessmentForm.reins && assessmentForm.reins.rows.length === 0 && (
-                <div style={{ marginTop: 6, padding: 8, background: C.warn + "22", borderRadius: 6, fontSize: 10, color: C.warn }}>
-                  ⚠️ PDF から事例を抽出できませんでした。 査定書には反映されません ( 査定書 PDF の構造が複雑な場合があります )。
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Step 4: 物件詳細 ( 編集可 ) */}
-          <div style={stepCard(true)}>
-            <div style={{ marginBottom: 8 }}><span style={stepNum(true)}>4</span><b style={{ fontSize: 13, color: C.text }}>物件詳細 ( 編集可 )</b></div>
+            <div style={{ marginBottom: 8 }}><span style={stepNum(true)}>3</span><b style={{ fontSize: 13, color: C.text }}>物件詳細 ( 編集可 )</b></div>
 
           <Field label="物件住所">
             <input style={inp} value={assessmentForm.address}
@@ -20923,9 +20898,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           </div>
           {/* Step 4 end */}
 
-          {/* 🆕 v9.123: Step 5 売買価格査定書（雛形どおり・会社PC連携／旧査定書を置換） */}
+          {/* 🆕 Step 4 売買価格査定書（雛形どおり・会社PC連携／旧査定書を置換） */}
           <div style={stepCard(true)}>
-            <div><span style={stepNum(true)}>5</span><b style={{ fontSize: 13, color: C.text }}>売買価格査定書（雛形どおり・会社PCで生成）</b></div>
+            <div><span style={stepNum(true)}>4</span><b style={{ fontSize: 13, color: C.text }}>売買価格査定書（雛形どおり・会社PCで生成）</b></div>
             <div style={stepBody}>
               会社PCのサーバーに送って、雛形そのままの売買価格査定書（A4横2枚PDF）を作ります。対象物件・謄本の情報は上で入力済みのものを使います。
             </div>
@@ -20963,10 +20938,17 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 ))}
               </div>
               <div style={{ background: "#7a1f2b11", border: "1px solid #7a1f2b33", borderRadius: 8, padding: 10, marginTop: 4, marginBottom: 8 }}>
-                <div style={{ fontWeight: 700, fontSize: 12, color: C.text, marginBottom: 6 }}>🏘 成約事例（土地の成約状況・建物の募集状況）</div>
-                <button style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, marginBottom: 8 }}
-                  onClick={importReinsToComps}>📥 レインズ事例を取込（Step3でアップロード後）</button>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, margin: "4px 0" }}>土地の成約状況（最大4件）</div>
+                <div style={{ fontWeight: 700, fontSize: 12, color: C.text, marginBottom: 6 }}>🏘 在庫・成約事例（手入力）</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, margin: "4px 0" }}>土地の販売状況（在庫・最大4件）</div>
+                {(assessmentForm.sLandSale || []).map((r, i) => (
+                  <div key={"ls" + i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr", gap: 4, marginBottom: 4 }}>
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.desc || ""} placeholder="物件概要" onChange={e => setDealCell("sLandSale", i, "desc", e.target.value)} />
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.price || ""} placeholder="価格" onChange={e => setDealCell("sLandSale", i, "price", e.target.value)} />
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.unit || ""} placeholder="坪単価" onChange={e => setDealCell("sLandSale", i, "unit", e.target.value)} />
+                    <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.area || ""} placeholder="土地面積" onChange={e => setDealCell("sLandSale", i, "area", e.target.value)} />
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, margin: "8px 0 4px" }}>土地の成約状況（成約・最大4件）</div>
                 {(assessmentForm.sLandDeal || []).map((r, i) => (
                   <div key={"ld" + i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr", gap: 4, marginBottom: 4 }}>
                     <input style={{ ...inp, fontSize: 10, padding: 5 }} value={r.desc || ""} placeholder="物件概要" onChange={e => setDealCell("sLandDeal", i, "desc", e.target.value)} />
