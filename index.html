@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.133-remarks-taxyear";
+const APP_VERSION = "2026-06-16-v9.134-comp-town-prefill";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16557,9 +16557,20 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
   };
 
   // 🆕 v9.46: 査定書作成モーダルを開く
+  // 🆕 v9.134: 住所から「市・町名」を抽出（例: 埼玉県深谷市上野台123 → 深谷市上野台）。成約事例の頭出し用
+  const extractTown = (addr) => {
+    if (!addr) return "";
+    const a = String(addr).replace(/^(北海道|東京都|大阪府|京都府|.{2,3}県)/, "");
+    const m = a.match(/([一-龥ぁ-んァ-ヶー]{2,8}市|[一-龥ぁ-んァ-ヶー]{2,5}郡[一-龥ぁ-んァ-ヶー]{2,5}[町村]|[一-龥ぁ-んァ-ヶー]{1,5}区)([一-龥ぁ-んァ-ヶー大字字]{1,15}?)(?=[0-9０-９一二三四五六七八九十○〇丁番号−-]|$)/);
+    if (m) return (m[1] + m[2]).replace(/大字|字/g, "");
+    const m2 = a.match(/([一-龥ぁ-んァ-ヶー]{2,8}市)/);
+    return m2 ? m2[1] : "";
+  };
+
   const openAssessment = (item) => {
     if (!item) return;
     const j = item.raw || {};
+    const _town = extractTown(j.address || "");
     // ピンに記録済みの情報からデフォルト値を作る ( ユーザー入力データは触らない )
     setAssessmentTarget({ item });
     setAssessmentForm({
@@ -16619,9 +16630,9 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       sPubKoteiHyoka: "",// 固定資産税評価額
       sChikaLoading: false,
       // 🆕 成約事例（手入力）。土地販売=在庫 / 土地成約 / 建物募集
-      sLandSale: [{}],
-      sLandDeal: [{}],
-      sBldgDeal: [{}],
+      sLandSale: [{ desc: _town }],
+      sLandDeal: [{ desc: _town }],
+      sBldgDeal: [{ desc: _town }],
     });
     // 🆕 v9.47.2: ピン座標があれば周辺施設を非同期で自動取得 ( OpenStreetMap Overpass API )
     if (j.lat && j.lng) {
@@ -16799,7 +16810,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
     if (!f) return f;
     const arr = (f[key] || []).slice();
     if (arr.length >= COMP_MAX[key]) { alert("査定書の雛形では「" + COMP_LABEL[key] + "」は最大" + COMP_MAX[key] + "件までです。"); return f; }
-    arr.push({});
+    arr.push({ desc: extractTown(f.address || "") });
     return { ...f, [key]: arr };
   });
   const removeDealRow = (key, i) => setAssessmentForm(f => {
