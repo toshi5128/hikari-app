@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.125-remove-buyside-steps";
+const APP_VERSION = "2026-06-16-v9.126-satei-popup-loading-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16630,9 +16630,41 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
 
   // 🆕 売買価格査定書 ( 道1 / 段階1 ): 会社PCサーバー(/generate)へデータ送信し雛形PDFを取得して開く
   const SATEI_URL_KEY = "hikari_satei_server_url";
+  // 生成中オーバーレイ（DOM直挿し・Reactステート不要）
+  const _sateiOverlay = (show) => {
+    let ov = document.getElementById("__satei_ov");
+    if (show) {
+      if (!ov) {
+        ov = document.createElement("div");
+        ov.id = "__satei_ov";
+        ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px";
+        ov.innerHTML = "<div style='background:#fff;border-radius:12px;padding:22px 26px;font-size:15px;font-weight:700;color:#1a1a1a'>売買価格査定書を作成中…<br><span style='font-size:12px;font-weight:400;color:#777'>会社PCのExcelで生成中（30〜60秒）。お待ちください</span></div>";
+        document.body.appendChild(ov);
+      }
+      ov.style.display = "flex";
+    } else if (ov) {
+      ov.style.display = "none";
+    }
+  };
+
+  // 接続テスト（軽量・即時）: PDFを作らずにサーバー応答だけ確認
+  const testSateiServer = async () => {
+    const base = (localStorage.getItem(SATEI_URL_KEY) || "").trim().replace(/\/+$/, "");
+    if (!base) { alert("先に「売買価格査定書サーバーURL」を入力してください。"); return; }
+    try {
+      const res = await fetch(base + "/", { method: "GET" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      alert("✅ サーバーに接続できました。\n下の「📄 売買価格査定書を作成」で査定書PDFを生成できます。");
+    } catch (e) {
+      alert("接続できませんでした:\n" + (e && e.message ? e.message : e) +
+        "\n\n・会社PCで「査定書サーバー起動.bat」が動いているか\n・URLが最新（https://〜.trycloudflare.com）か を確認してください。");
+    }
+  };
+
   const sendToSateiServer = async (data) => {
     const base = (localStorage.getItem(SATEI_URL_KEY) || "").trim().replace(/\/+$/, "");
     if (!base) { alert("先に「売買価格査定書サーバーURL」を設定してください。"); return; }
+    _sateiOverlay(true);
     try {
       const res = await fetch(base + "/generate", {
         method: "POST",
@@ -16641,10 +16673,18 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       });
       if (!res.ok) throw new Error(await res.text());
       const blob = await res.blob();
-      window.open(URL.createObjectURL(blob), "_blank");
+      const url = URL.createObjectURL(blob);
+      const w = window.open(url, "_blank");
+      if (!w) {   // ポップアップがブロックされたらダウンロードにフォールバック
+        const a = document.createElement("a");
+        a.href = url; a.download = "売買価格査定書.pdf";
+        document.body.appendChild(a); a.click(); a.remove();
+      }
     } catch (e) {
       alert("売買価格査定書の生成に失敗しました:\n" + (e && e.message ? e.message : e) +
         "\n\n・会社PCで「査定書サーバー起動.bat」が動いているか\n・URLが最新か を確認してください。");
+    } finally {
+      _sateiOverlay(false);
     }
   };
 
@@ -20475,11 +20515,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       if (v) localStorage.setItem("hikari_satei_server_url", v);
                       else localStorage.removeItem("hikari_satei_server_url");
                     }} />
-                  <button onClick={() => sendToSateiServer({ date: "接続テスト", atena: "接続テスト 殿", cost: { sale: 10000000, stamp: -10000 } })}
+                  <button onClick={() => testSateiServer()}
                     style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, whiteSpace: "nowrap" }}>接続テスト</button>
                 </div>
                 <div style={{ marginTop: 4, fontSize: 9, color: C.muted }}>
-                  ※ URL は会社PCの起動ごとに変わります。 最新を貼り直してください。 「接続テスト」 でサンプルPDFが開けば成功です。
+                  ※ URL は会社PCの起動ごとに変わります。 最新を貼り直してください。 「接続テスト」 で「接続できました」 と出れば成功です。
                 </div>
               </div>
             );
