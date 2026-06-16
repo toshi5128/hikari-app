@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.127-satei-url-autofetch";
+const APP_VERSION = "2026-06-16-v9.128-touki-via-server";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16990,6 +16990,30 @@ out body 30;`;
   const handleLandDocUpload = async (file) => {
     if (!file) return;
     setAssessmentForm(f => ({ ...f, legalDocLandParsing: true, ocrProgress: null }));
+    // 🆕 v9.128: まず会社PCサーバーで高精度抽出（Geminiキー不要・Google Vision）。失敗時のみ Gemini/OCR へ。
+    try {
+      await autoFetchSateiUrl();
+      const su = (localStorage.getItem(SATEI_URL_KEY) || "").trim().replace(/\/+$/, "");
+      if (su) {
+        const fd = new FormData(); fd.append("files", file);
+        const res = await fetch(su + "/parse_touki", { method: "POST", body: fd });
+        if (res.ok) {
+          const d = await res.json();
+          const fields = {};
+          if (d.land_loc) fields.locationLand = d.land_loc;
+          if (d.land_area) fields.landArea = String(d.land_area).replace(/[^0-9.]/g, "");
+          if (d.land_chimoku) fields.chimoku = d.land_chimoku;
+          if (fields.landArea || fields.locationLand) {
+            setAssessmentForm(f => ({
+              ...f, legalDocLandParsing: false, ocrProgress: null, geminiError: null,
+              legalDocLand: { fileName: file.name, raw: "", fields, candidates: [], source: "server" },
+              landArea: f.landArea || fields.landArea || "",
+            }));
+            return;
+          }
+        }
+      }
+    } catch (e) { console.warn("[土地謄本 サーバー抽出 失敗→Gemini/OCR]", e); }
     const hasGeminiKey = !!localStorage.getItem("hikari_gemini_api_key");
     if (hasGeminiKey) {
       try {
@@ -17076,6 +17100,33 @@ out body 30;`;
   const handleBuildingDocUpload = async (file) => {
     if (!file) return;
     setAssessmentForm(f => ({ ...f, legalDocBuildingParsing: true, ocrProgress: null }));
+    // 🆕 v9.128: まず会社PCサーバーで高精度抽出（Geminiキー不要・Google Vision）。失敗時のみ Gemini/OCR へ。
+    try {
+      await autoFetchSateiUrl();
+      const su = (localStorage.getItem(SATEI_URL_KEY) || "").trim().replace(/\/+$/, "");
+      if (su) {
+        const fd = new FormData(); fd.append("files", file);
+        const res = await fetch(su + "/parse_touki", { method: "POST", body: fd });
+        if (res.ok) {
+          const d = await res.json();
+          const fields = {};
+          if (d.bldg_type) fields.kashuType = d.bldg_type;
+          if (d.bldg_kozo) fields.structure = d.bldg_kozo;
+          if (d.bldg_built) fields.builtYear = d.bldg_built;
+          if (d.bldg_area) { fields.floorAreas = d.bldg_area; fields.buildingArea = String(d.bldg_area).replace(/㎡[\s\S]*$/, "").replace(/[^0-9.]/g, ""); }
+          if (fields.structure || fields.buildingArea || fields.kashuType) {
+            setAssessmentForm(f => ({
+              ...f, legalDocBuildingParsing: false, ocrProgress: null, geminiError: null,
+              legalDocBuilding: { fileName: file.name, raw: "", fields, candidates: [], source: "server" },
+              buildingArea: f.buildingArea || fields.buildingArea || "",
+              builtYear: f.builtYear || fields.builtYear || "",
+              structure: (f.structure === "木造2階建" && fields.structure) ? fields.structure : (fields.structure || f.structure),
+            }));
+            return;
+          }
+        }
+      }
+    } catch (e) { console.warn("[建物謄本 サーバー抽出 失敗→Gemini/OCR]", e); }
     const hasGeminiKey = !!localStorage.getItem("hikari_gemini_api_key");
     if (hasGeminiKey) {
       try {
@@ -20488,9 +20539,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 </div>
                 {!savedKey && (
                   <div style={{ color: C.text, lineHeight: 1.7, marginBottom: 8 }}>
-                    謄本 PDF を <b>自動で読み取る</b> ために、 Google Gemini API キーが必要です ( 1日 1,500回まで無料 )。<br />
-                    1. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style={{ color: "#0ea5e9" }}>Google AI Studio</a> でキーを取得 ( 無料 )<br />
-                    2. ↓ に貼り付けて「保存」 をタップ
+                    <b>※ 通常は不要です。</b> 謄本の読み取りは <b>会社PCサーバー</b>（高精度・キー不要）が行います。<br />
+                    会社PCが使えない時の<b>予備</b>として Gemini キーを入れたい場合のみ：<a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style={{ color: "#0ea5e9" }}>Google AI Studio</a> で取得 → ↓ に貼り付け
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 6 }}>
