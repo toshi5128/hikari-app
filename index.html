@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.122-satei-server-link";
+const APP_VERSION = "2026-06-16-v9.124-satei-replace-output";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16602,6 +16602,20 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       yoseki: "",
       reins: null,       // { fileName, rows: [{addr, age, land, building, price, date}] }
       reinsParsing: false,
+      // 🆕 v9.123: 売買価格査定書（雛形・PC連携）用フィールド
+      sAtena: j.ownerName ? (j.ownerName + "　殿") : "",
+      sSale: "",         // 売却額（円）
+      sStamp: "",        // 収入印紙（円・マイナス）
+      sValue: "",        // 不動産評価額（査定額・表示文字列）
+      sBreakdown: "",    // 内訳
+      sBldgNote: "",     // 建物評価注記
+      sKotei: "",        // 建物 固定資産税評価額（円）
+      sRebuildDemo: "",  // 再建築費／解体費 概算
+      sPubSouzoku: "",   // 相続税路線価
+      sPubKoteiRosen: "",// 固定資産税路線価
+      sPubKouji: "",     // 地価公示
+      sPubKoteiHyoka: "",// 固定資産税評価額
+      sChikaLoading: false,
     });
     // 🆕 v9.47.2: ピン座標があれば周辺施設を非同期で自動取得 ( OpenStreetMap Overpass API )
     if (j.lat && j.lng) {
@@ -16631,6 +16645,58 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
     } catch (e) {
       alert("売買価格査定書の生成に失敗しました:\n" + (e && e.message ? e.message : e) +
         "\n\n・会社PCで「査定書サーバー起動.bat」が動いているか\n・URLが最新か を確認してください。");
+    }
+  };
+
+  // 🆕 v9.123: 査定フォーム → 売買価格査定書(/generate)用データへ変換
+  const buildSateiData = (f) => {
+    const num = v => { const n = parseFloat(String(v == null ? "" : v).replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : n; };
+    const now = new Date();
+    const date = "令和" + (now.getFullYear() - 2018) + "年" + (now.getMonth() + 1) + "月" + now.getDate() + "日";
+    const land = (f.legalDocLand && f.legalDocLand.fields) || {};
+    const bldg = (f.legalDocBuilding && f.legalDocBuilding.fields) || {};
+    const areaStr = (v, u) => v ? (String(v) + (u || "")) : "";
+    return {
+      date,
+      atena: f.sAtena || "",
+      company: {
+        name: "ひかり不動産\nひかり合同会社",
+        addr: "埼玉県熊谷市籠原南1丁目225番地",
+        lic: "埼玉県知事（1）第25131号",
+        tanto: f.assignee ? ("担当者：" + f.assignee) : "",
+        mobile: "携帯電話　090-8558-4078",
+        tel: "TEL　048-511-0227",
+      },
+      land: { loc: f.address || "", area: areaStr(f.landArea, "㎡"), chimoku: land.chimoku || "", kenpei: f.kenpei || "", yoseki: f.yoseki || "" },
+      bldg: { area: areaStr(f.buildingArea, "㎡"), type: bldg.kashuType || "", kozo: f.structure || "", built: f.builtYear || "", park: "" },
+      price: { real_estate: f.sValue || "", breakdown: f.sBreakdown || "", bldg_note: f.sBldgNote || "" },
+      cost: { sale: num(f.sSale), stamp: num(f.sStamp) },
+      bldg_eval: { kotei: num(f.sKotei), rebuild_demo: f.sRebuildDemo || "" },
+      public: { koji: f.sPubKouji || "", rosen: f.sPubSouzoku || "", chosa: f.sPubKoteiRosen || "", kotei: f.sPubKoteiHyoka || "" },
+    };
+  };
+
+  // 🆕 v9.123: 住所から公的指標（一物四価）を会社PCサーバー経由で取得して埋める
+  const fetchChikaApp = async () => {
+    const base = (localStorage.getItem(SATEI_URL_KEY) || "").trim().replace(/\/+$/, "");
+    if (!base) { alert("先に「売買価格査定書サーバーURL」を設定してください。"); return; }
+    const addr = ((assessmentForm && assessmentForm.address) || "").trim();
+    if (!addr) { alert("物件の住所がありません。"); return; }
+    setAssessmentForm(f => f ? { ...f, sChikaLoading: true } : f);
+    try {
+      const res = await fetch(base + "/fetch_chika", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: addr }) });
+      if (!res.ok) throw new Error(await res.text());
+      const d = await res.json();
+      const yen = n => (n || n === 0) ? (Number(n).toLocaleString("ja-JP") + "円/㎡") : "";
+      setAssessmentForm(f => f ? { ...f,
+        sPubSouzoku: d.souzoku_rosenka ? yen(d.souzoku_rosenka) : f.sPubSouzoku,
+        sPubKoteiRosen: d.kotei_rosenka ? yen(d.kotei_rosenka) : f.sPubKoteiRosen,
+        sPubKouji: d.kouji ? yen(d.kouji) : f.sPubKouji,
+        sPubKoteiHyoka: d.kotei_hyoka ? yen(d.kotei_hyoka) : f.sPubKoteiHyoka,
+        sChikaLoading: false } : f);
+    } catch (e) {
+      setAssessmentForm(f => f ? { ...f, sChikaLoading: false } : f);
+      alert("公的指標の取得に失敗しました:\n" + (e && e.message ? e.message : e));
     }
   };
 
@@ -20838,19 +20904,54 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           </div>
           {/* Step 4 end */}
 
-          {/* Step 5: プレビュー → 出力 */}
+          {/* 🆕 v9.123: Step 5 売買価格査定書（雛形どおり・会社PC連携／旧査定書を置換） */}
           <div style={stepCard(true)}>
-            <div><span style={stepNum(true)}>5</span><b style={{ fontSize: 13, color: C.text }}>査定書を表示 → 印刷 / PDF保存</b></div>
+            <div><span style={stepNum(true)}>5</span><b style={{ fontSize: 13, color: C.text }}>売買価格査定書（雛形どおり・会社PCで生成）</b></div>
             <div style={stepBody}>
-              新しいタブで査定書が開きます。 右上の「🖨 PDFとして保存 / 印刷」 ボタンで PDF 化 ( ブラウザの印刷機能 ) または 紙印刷ができます。
+              会社PCのサーバーに送って、雛形そのままの売買価格査定書（A4横2枚PDF）を作ります。対象物件・謄本の情報は上で入力済みのものを使います。
+            </div>
+            <div style={{ marginTop: 6 }}>
+              {[
+                ["sAtena", "宛名", "有限会社○○　殿"],
+                ["sSale", "売却額（円・数字のみ）", "98400000"],
+                ["sStamp", "収入印紙（円・マイナス）", "-30000"],
+                ["sValue", "不動産評価額（査定額）", "９８，４００，０００円前後"],
+                ["sBreakdown", "内訳", "（土地評価額 44,650,000＋20,000,000円）"],
+                ["sBldgNote", "建物評価注記", "（建物評価額は査定上は33,750,000円）"],
+                ["sKotei", "建物 固定資産税評価額（円）", "44932100"],
+                ["sRebuildDemo", "再建築費／解体費 概算", "5,000,000 円"],
+              ].map(([k, label, ph]) => (
+                <div key={k} style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>{label}</div>
+                  <input style={inp} value={assessmentForm[k] || ""} onChange={e => setAssessmentForm(f => ({ ...f, [k]: e.target.value }))} placeholder={ph} />
+                </div>
+              ))}
+              <div style={{ background: "#0ea5e911", border: "1px solid #0ea5e933", borderRadius: 8, padding: 10, marginTop: 4, marginBottom: 8 }}>
+                <div style={{ fontWeight: 700, fontSize: 12, color: C.text, marginBottom: 6 }}>📍 公的指標（一物四価）</div>
+                <button style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, marginBottom: 8 }}
+                  disabled={assessmentForm.sChikaLoading}
+                  onClick={fetchChikaApp}>{assessmentForm.sChikaLoading ? "取得中…（数十秒）" : "住所から自動取得"}</button>
+                {[
+                  ["sPubSouzoku", "相続税路線価"],
+                  ["sPubKoteiRosen", "固定資産税路線価"],
+                  ["sPubKouji", "地価公示価格"],
+                  ["sPubKoteiHyoka", "固定資産税評価額"],
+                ].map(([k, label]) => (
+                  <div key={k} style={{ marginBottom: 6 }}>
+                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>{label}</div>
+                    <input style={inp} value={assessmentForm[k] || ""} onChange={e => setAssessmentForm(f => ({ ...f, [k]: e.target.value }))} placeholder="例: 54,000円/㎡" />
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>↓ 下の「📄 売買価格査定書を作成」で会社PCにて雛形PDFを生成します。</div>
             </div>
           </div>
 
           <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }}
               onClick={() => { setAssessmentTarget(null); setAssessmentForm(null); }}>キャンセル</button>
-            <button style={{ ...btnStyle(), flex: 1, background: "#0ea5e9", borderColor: "#0ea5e9" }}
-              onClick={() => generateAndOpenAssessment(assessmentForm)}>📄 査定書を表示</button>
+            <button style={{ ...btnStyle(), flex: 1, background: "#7a1f2b", borderColor: "#7a1f2b" }}
+              onClick={() => sendToSateiServer(buildSateiData(assessmentForm))}>📄 売買価格査定書を作成</button>
           </div>
         </BottomSheet>
         );
