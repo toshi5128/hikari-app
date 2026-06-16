@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.131-comps-dynamic";
+const APP_VERSION = "2026-06-16-v9.132-baikai-inshi-auto";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16605,7 +16605,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       // 🆕 v9.123: 売買価格査定書（雛形・PC連携）用フィールド
       sAtena: j.ownerName ? (j.ownerName + "　殿") : "",
       sSale: "",         // 売却額（円）
-      sStamp: "",        // 収入印紙（円・マイナス）
+      sBaikai: "",       // 媒介手数料（円・売却額から自動）
+      sStamp: "",        // 収入印紙（円・売却額から自動）
       sValue: "",        // 不動産評価額（査定額・表示文字列）
       sBreakdown: "",    // 内訳
       sBldgNote: "",     // 建物評価注記
@@ -16713,6 +16714,28 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
   };
 
   // 🆕 v9.123: 査定フォーム → 売買価格査定書(/generate)用データへ変換
+  // 🆕 v9.132: 売却額から媒介手数料・収入印紙を自動計算
+  const _num = v => parseFloat(String(v == null ? "" : v).replace(/[^0-9.]/g, "")) || 0;
+  const calcSateiBaikai = (sale) => {
+    const s = _num(sale);
+    if (s <= 0) return "";
+    // 800万以下は一律33万円 / 800万超は (売却額×3%+6万)×1.1
+    return String(s <= 8000000 ? 330000 : Math.round((s * 0.03 + 60000) * 1.1));
+  };
+  const calcSateiInshi = (sale) => {
+    const p = _num(sale);
+    if (p <= 0) return "";
+    let v = 200;
+    if (p > 100000000) v = (p <= 500000000) ? 60000 : 100000;
+    else if (p > 50000000) v = 30000;
+    else if (p > 10000000) v = 10000;
+    else if (p > 5000000) v = 5000;
+    else if (p > 1000000) v = 1000;
+    else if (p > 500000) v = 500;
+    return String(v);
+  };
+  const onSateiSaleChange = (val) => setAssessmentForm(f => f ? { ...f, sSale: val, sBaikai: calcSateiBaikai(val), sStamp: calcSateiInshi(val) } : f);
+
   const buildSateiData = (f) => {
     const num = v => { const n = parseFloat(String(v == null ? "" : v).replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : n; };
     const now = new Date();
@@ -16734,7 +16757,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       land: { loc: f.address || "", area: areaStr(f.landArea, "㎡"), chimoku: land.chimoku || "", kenpei: f.kenpei || "", yoseki: f.yoseki || "" },
       bldg: { area: areaStr(f.buildingArea, "㎡"), type: bldg.kashuType || "", kozo: f.structure || "", built: f.builtYear || "", park: "" },
       price: { real_estate: f.sValue || "", breakdown: f.sBreakdown || "", bldg_note: f.sBldgNote || "" },
-      cost: { sale: num(f.sSale), stamp: num(f.sStamp) },
+      cost: { sale: num(f.sSale), baikai: num(f.sBaikai), stamp: num(f.sStamp) },
       bldg_eval: { kotei: num(f.sKotei), rebuild_demo: f.sRebuildDemo || "" },
       public: { koji: f.sPubKouji || "", rosen: f.sPubSouzoku || "", chosa: f.sPubKoteiRosen || "", kotei: f.sPubKoteiHyoka || "" },
       // 在庫・成約事例（手入力）：土地販売状況／土地成約状況／建物募集状況
@@ -20921,8 +20944,6 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             <div style={{ marginTop: 6 }}>
               {[
                 ["sAtena", "宛名", "有限会社○○　殿"],
-                ["sSale", "売却額（円・数字のみ）", "98400000"],
-                ["sStamp", "収入印紙（円・マイナス）", "-30000"],
                 ["sValue", "不動産評価額（査定額）", "９８，４００，０００円前後"],
                 ["sBreakdown", "内訳", "（土地評価額 44,650,000＋20,000,000円）"],
                 ["sBldgNote", "建物評価注記", "（建物評価額は査定上は33,750,000円）"],
@@ -20934,6 +20955,25 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   <input style={inp} value={assessmentForm[k] || ""} onChange={e => setAssessmentForm(f => ({ ...f, [k]: e.target.value }))} placeholder={ph} />
                 </div>
               ))}
+              <div style={{ background: "#fff7e6", border: "1px solid #d9770644", borderRadius: 8, padding: 10, marginTop: 4, marginBottom: 8 }}>
+                <div style={{ fontWeight: 700, fontSize: 12, color: C.text, marginBottom: 6 }}>💴 成約時の費用概算額</div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>売却額（円・数字のみ）</div>
+                  <input style={inp} inputMode="numeric" value={assessmentForm.sSale || ""} placeholder="98400000"
+                    onChange={e => onSateiSaleChange(e.target.value)} />
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>媒介手数料（円・売却額から自動／手修正可）</div>
+                  <input style={inp} inputMode="numeric" value={assessmentForm.sBaikai || ""} placeholder="（売却額を入れると自動）"
+                    onChange={e => setAssessmentForm(f => ({ ...f, sBaikai: e.target.value }))} />
+                </div>
+                <div style={{ marginBottom: 4 }}>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>収入印紙（円・売却額から自動／手修正可）</div>
+                  <input style={inp} inputMode="numeric" value={assessmentForm.sStamp || ""} placeholder="（売却額を入れると自動）"
+                    onChange={e => setAssessmentForm(f => ({ ...f, sStamp: e.target.value }))} />
+                </div>
+                <div style={{ fontSize: 9, color: C.muted }}>※媒介手数料＝800万円以下は一律33万円／800万円超は(売却額×3%+6万)×1.1。差引受取額は査定書側で自動計算。</div>
+              </div>
               <div style={{ background: "#0ea5e911", border: "1px solid #0ea5e933", borderRadius: 8, padding: 10, marginTop: 4, marginBottom: 8 }}>
                 <div style={{ fontWeight: 700, fontSize: 12, color: C.text, marginBottom: 6 }}>📍 公的指標（一物四価）</div>
                 <button style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, marginBottom: 8 }}
