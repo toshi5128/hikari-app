@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.138-relabel-eval";
+const APP_VERSION = "2026-06-17-v9.139-excel-output";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16785,25 +16785,31 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
     }
   };
 
-  const sendToSateiServer = async (data) => {
+  const sendToSateiServer = async (data, fmt = "pdf") => {
     _sateiOverlay(true);
     await autoFetchSateiUrl();   // 会社PCの現在URLを自動取得
     const base = (localStorage.getItem(SATEI_URL_KEY) || "").trim().replace(/\/+$/, "");
     if (!base) { _sateiOverlay(false); alert("会社PCのサーバーURLが取得できませんでした。\n会社PCで「査定書サーバー起動.bat」が動いているか確認してください。"); return; }
     try {
-      const res = await fetch(base + "/generate", {
+      const res = await fetch(base + "/generate?fmt=" + fmt, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       });
       if (!res.ok) throw new Error(await res.text());
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const w = window.open(url, "_blank");
-      if (!w) {   // ポップアップがブロックされたらダウンロードにフォールバック
+      const dlUrl = URL.createObjectURL(blob);
+      if (fmt === "xlsx") {
         const a = document.createElement("a");
-        a.href = url; a.download = "売買価格査定書.pdf";
+        a.href = dlUrl; a.download = "売買価格査定書.xlsx";
         document.body.appendChild(a); a.click(); a.remove();
+      } else {
+        const w = window.open(dlUrl, "_blank");
+        if (!w) {   // ポップアップがブロックされたらダウンロードにフォールバック
+          const a = document.createElement("a");
+          a.href = dlUrl; a.download = "売買価格査定書.pdf";
+          document.body.appendChild(a); a.click(); a.remove();
+        }
       }
     } catch (e) {
       alert("売買価格査定書の生成に失敗しました:\n" + (e && e.message ? e.message : e) +
@@ -21118,15 +21124,17 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   </div>
                 ))}
               </div>
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>↓ 下の「📄 売買価格査定書を作成」で会社PCにて雛形PDFを生成します。</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>↓ 下のボタンで会社PCにて査定書を生成します（30〜60秒）。</div>
             </div>
           </div>
 
           <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }}
               onClick={() => { setAssessmentTarget(null); setAssessmentForm(null); }}>キャンセル</button>
-            <button style={{ ...btnStyle(), flex: 1, background: "#7a1f2b", borderColor: "#7a1f2b" }}
-              onClick={() => sendToSateiServer(buildSateiData(assessmentForm))}>📄 売買価格査定書を作成</button>
+            <button style={{ ...btnStyle(), flex: "0 0 auto", background: "#7a1f2b", borderColor: "#7a1f2b", padding: "0 14px" }}
+              onClick={() => sendToSateiServer(buildSateiData(assessmentForm), "pdf")}>📄 PDF</button>
+            <button style={{ ...btnStyle(), flex: "0 0 auto", background: "#1a5c2b", borderColor: "#1a5c2b", padding: "0 14px" }}
+              onClick={() => sendToSateiServer(buildSateiData(assessmentForm), "xlsx")}>📊 Excel</button>
           </div>
         </BottomSheet>
         );
