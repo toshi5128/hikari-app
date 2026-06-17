@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-17-v9.143-dm-exclude-self-addr";
+const APP_VERSION = "2026-06-17-v9.144-dm-gaiji-exclude";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22520,6 +22520,8 @@ function dmWareki() { const n = new Date(); return `令和${n.getFullYear() - 20
 function dmTodayStr() { const n = new Date(); return `${n.getFullYear()}/${String(n.getMonth() + 1).padStart(2, "0")}/${String(n.getDate()).padStart(2, "0")}`; }
 function dmNewId() { return "dm" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function dmNorm(s) { return String(s || "").replace(/[\s　〒]/g, "").replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); }
+// 🆕 v9.144: 私用領域(PUA)＝謄本の戸籍外字。標準フォントで□になり氏名が出ないので検出に使う。
+function dmHasGaiji(s) { return /[-]/.test(String(s || "")); }
 // 🆕 v9.143: 住所の表記ゆれを吸収した比較キー（地番↔住居表示の番地/丁目/全角/漢数字/大字 を統一）。
 //   「所有者住所＝物件住所（空き家本人宛）」の判定に使う。dm_judge.normalize_addr 相当。
 function dmAddrKey(s) {
@@ -22660,8 +22662,8 @@ function DMPage({ data, setData, onBack }) {
       const isVacantSelf = (addr) => propKey && dmAddrKey(addr) === propKey;
       const names = dmSplitParts(ownerName(j)), addrs = dmSplitParts(mailAddr(j)), zips = dmSplitParts(j.ownerZip || "");
       if (names.length > 1 && names.length === addrs.length) {
-        names.forEach((nm, i) => { if (!isVacantSelf(addrs[i])) out.push({ ...j, _lkey: `${j.id}#${i}`, owner: nm, ownerName: nm, ownerAddr: addrs[i], ownerZip: zips[i] || "" }); });
-      } else if (!isVacantSelf(mailAddr(j))) {
+        names.forEach((nm, i) => { if (!isVacantSelf(addrs[i]) && !dmHasGaiji(nm)) out.push({ ...j, _lkey: `${j.id}#${i}`, owner: nm, ownerName: nm, ownerAddr: addrs[i], ownerZip: zips[i] || "" }); });
+      } else if (!isVacantSelf(mailAddr(j)) && !dmHasGaiji(ownerName(j))) {
         out.push({ ...j, _lkey: String(j.id) });
       }
     });
@@ -22705,6 +22707,7 @@ function DMPage({ data, setData, onBack }) {
         </div>
         <div style={{ fontSize: 12, color: C.accent, background: C.accentBg, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "8px 10px", marginBottom: 12, lineHeight: 1.6 }}>👁 <b>窓付き封筒方式</b>：手紙だけ印刷すれば、青枠の宛名が封筒の窓から見えます（封筒への宛名印刷は不要）。<br />※ 実際の封筒に合わせて、初回だけ宛名の位置を微調整してください。</div>
         {missing > 0 && <div style={{ background: "#ef444422", border: "1px solid #ef4444", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fca5a5", marginBottom: 10 }}>⚠ 送付先住所が未登録の {missing}件 は印刷から除外しました。</div>}
+        {selPins().some(j => mailAddr(j) && dmHasGaiji(ownerName(j))) && <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fbbf24", marginBottom: 10 }}>⚠ 氏名に外字（□）を含む {selPins().filter(j => mailAddr(j) && dmHasGaiji(ownerName(j))).length}件 は印刷から除外しました。謄本で氏名を修正（詳細の✏️）すると送付対象に戻ります。</div>}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, color: C.muted, fontSize: 12 }}>
           <button onClick={() => setPIdx(i => (i - 1 + ps.length) % Math.max(1, ps.length))} style={{ background: C.bg, border: `1px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 800 }}>◀</button>
           <span>{ps.length ? Math.min(pIdx, ps.length - 1) + 1 : 0} / {ps.length} 件目</span>
