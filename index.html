@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-17-v9.150-dm-share-edit";
+const APP_VERSION = "2026-06-17-v9.151-dm-share-split";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22538,7 +22538,8 @@ function dmAddrKey(s) {
 // 🆕 v9.60.1: DM手紙の宛名・本文から持分割合（例「永瀬浩10分の3」→「永瀬浩」）を除去する
 function dmCleanName(s) {
   return String(s || "")
-    .replace(/(持分)?[\s　]*[0-9０-９]+\s*分\s*の\s*[0-9０-９]+/g, "")
+    // 🆕 v9.151: 持分割合をカッコごと除去（「田部田陽司（10分の4）」→「田部田陽司」）
+    .replace(/[（(]?\s*(持分)?[\s　]*[0-9０-９]+\s*分\s*の\s*[0-9０-９]+\s*[）)]?/g, "")
     .replace(/[\s　]+$/, "")
     .trim();
 }
@@ -22552,10 +22553,21 @@ function dmNameBad(s) {
   if (!/[぀-ヿ㐀-鿿々ヶヵ]/.test(core)) return true; // かな・漢字が1つも無い＝壊れている
   return false;
 }
-// 🆕 v9.146: 共有名義を「・」で分割
+// 🆕 v9.146: 「・」で分割（住所・〒用）
 function dmNameParts(s) { return String(s || "").split("・").map(x => x.trim()).filter(Boolean); }
-// 🆕 v9.146: 共有のうち「全員」の氏名が壊れている時だけ true（1人でも正常なら送付対象のまま）
-function dmAllNamesBad(s) { const ps = dmNameParts(s); return ps.length ? ps.every(dmNameBad) : true; }
+// 🆕 v9.151: 共有名義の「氏名」を分割。区切りが「・」のものも、全角スペース区切り（持分付き連名等）も拾う。
+//   半角スペースは姓名区切りの可能性があるので、持分割合が2つ以上ある＝連名が確実な時だけ区切りに使う。
+function dmOwnerNames(s) {
+  const t = String(s || "").trim();
+  if (!t) return [];
+  if (t.indexOf("・") >= 0) return t.split("・").map(x => x.trim()).filter(Boolean);
+  const shareCount = (t.match(/[0-9０-９]+\s*分\s*の\s*[0-9０-９]+/g) || []).length;
+  const sep = shareCount >= 2 ? /[\s　]+/ : /　+/; // 持分が複数なら半角空白も区切り、それ以外は全角空白のみ
+  const parts = t.split(sep).map(x => x.trim()).filter(Boolean);
+  return parts.length ? parts : [t];
+}
+// 🆕 v9.146/151: 共有のうち「全員」の氏名が壊れている時だけ true（1人でも正常なら送付対象のまま）
+function dmAllNamesBad(s) { const ps = dmOwnerNames(s); return ps.length ? ps.every(dmNameBad) : true; }
 // 🆕 v9.149: 住所・〒は埋まっているが「届くか微妙」な宛先を検出。送る前に目視確認するための理由リストを返す。
 function dmDeliveryRisk(addr, zip) {
   const reasons = [];
@@ -22639,7 +22651,7 @@ function DMPage({ data, setData, onBack }) {
       // ② 氏名・住所由来の状態（送付対象/要確認/住所未取得）。共有は人単位に分割。
       const propKey = dmAddrKey(propAddr(j));
       const isVacantSelf = (addr) => propKey && dmAddrKey(addr) === propKey;
-      const names = dmNameParts(ownerName(j)), addrs = dmNameParts(mailAddr(j)), zips = dmNameParts(j.ownerZip || "");
+      const names = dmOwnerNames(ownerName(j)), addrs = dmNameParts(mailAddr(j)), zips = dmNameParts(j.ownerZip || ""); // 🆕 v9.151: 氏名はスペース区切り連名も分割
       if (names.length > 1 && names.length === addrs.length) {
         names.forEach((nm, i) => {
           const addr = addrs[i] || "";
@@ -22749,7 +22761,7 @@ function DMPage({ data, setData, onBack }) {
   // 🆕 v9.150: 共有名義を「氏名・住所・〒」まとめて編集（1行に1人）。行数を揃えると一人ずつに分かれる。
   const openShareEdit = (j) => setEditShare({
     id: j.id,
-    names: dmNameParts(j._origName || ownerName(j)).join("\n"),
+    names: dmOwnerNames(j._origName || ownerName(j)).join("\n"),
     addrs: dmNameParts(j._origAddr != null ? j._origAddr : mailAddr(j)).join("\n"),
     zips: dmNameParts(j._origZip != null ? j._origZip : (j.ownerZip || "")).join("\n"),
   });
@@ -22823,7 +22835,7 @@ function DMPage({ data, setData, onBack }) {
   // ===== 作成画面 =====
   if (screen === "create") {
     const ps = printable(), missing = selPins().filter(j => !mailAddr(j)).length, o = ps[Math.min(pIdx, ps.length - 1)] || ps[0];
-    const gaijiPersons = selPins().reduce((a, j) => a + dmNameParts(ownerName(j)).filter(dmNameBad).length, 0); // 🆕 v9.146: 共有の外字メンバー数
+    const gaijiPersons = selPins().reduce((a, j) => a + dmOwnerNames(ownerName(j)).filter(dmNameBad).length, 0); // 🆕 v9.146: 共有の外字メンバー数
     const riskPs = ps.filter(j => dmDeliveryRisk(mailAddr(j), j.ownerZip).length > 0); // 🆕 v9.149: 配達が微妙な宛先
     return (
       <div>
