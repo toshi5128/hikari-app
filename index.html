@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-17-v9.148-dm-per-person";
+const APP_VERSION = "2026-06-17-v9.149-dm-delivery-check";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22556,6 +22556,19 @@ function dmNameBad(s) {
 function dmNameParts(s) { return String(s || "").split("・").map(x => x.trim()).filter(Boolean); }
 // 🆕 v9.146: 共有のうち「全員」の氏名が壊れている時だけ true（1人でも正常なら送付対象のまま）
 function dmAllNamesBad(s) { const ps = dmNameParts(s); return ps.length ? ps.every(dmNameBad) : true; }
+// 🆕 v9.149: 住所・〒は埋まっているが「届くか微妙」な宛先を検出。送る前に目視確認するための理由リストを返す。
+function dmDeliveryRisk(addr, zip) {
+  const reasons = [];
+  const a = String(addr || "").trim();
+  if (!a) return reasons; // 住所なしは「住所未取得」側で扱う（ここでは送付対象の微妙さだけ）
+  const an = a.normalize("NFKC");
+  const z = String(zip || "").normalize("NFKC").replace(/[\s　]/g, "");
+  if (dmHasGaiji(a)) reasons.push("住所に外字□");
+  if (!/^\d{3}-?\d{4}$/.test(z)) reasons.push("〒が未設定/不正");
+  else if (/0000$/.test(z)) reasons.push("〒が市の代表（町域不明）");
+  if (!/[0-9〇一二三四五六七八九十]/.test(an)) reasons.push("番地が無い");
+  return reasons;
+}
 function dmLetterBody(name, prop) {
   return `突然のお手紙を失礼いたします。埼玉県熊谷市で空き家の買取・活用を行っております、ひかり不動産の比嘉（ひが）と申します。\n\n空き家の調査をしております折に、${name}様がご所有の『${prop}』が目に留まり、ご連絡を差し上げました。\n\n最近、管理が行き届かない空き家が空き巣・不審者・不審火などの標的になりやすく、近隣でも被害のご相談が増えております。遠方にお住まいの場合、万一の際のご対応やご近所への責任が及ぶ点も、ご心配の種ではないでしょうか。\n\nもし当てはまるようでしたら、お片付け・解体・残置物の処分は不要で、現状のまま当社が買い取らせていただくことが可能です。遠方の方やお手続きにご不安のある方も、すべて当社で進めますのでご安心ください。\n\n「防犯面が心配」「処分に困っている」「管理が負担」「まずは価格だけ知りたい」——どんなご相談でも構いません。同封のチラシもご覧のうえ、比嘉まで一度お電話いただけますと幸いです。\n\n※しつこい営業は一切いたしません。\n※今すぐでなくても、将来のご検討やご質問だけでも歓迎いたします。`;
 }
@@ -22576,6 +22589,7 @@ function DMPage({ data, setData, onBack }) {
   const me = (typeof getCurrentUser === "function" && getCurrentUser()) || "";
   const [view, setView] = useState("送付対象");
   const [fCount, setFCount] = useState("all");
+  const [fRisk, setFRisk] = useState(false); // 🆕 v9.149: 配達が微妙なものだけ表示
   const [fArea, setFArea] = useState("すべて");
   const [fAsg, setFAsg] = useState("すべて");
   const [sel, setSel] = useState([]);
@@ -22648,9 +22662,12 @@ function DMPage({ data, setData, onBack }) {
     return [ownerName(j), j.ownerKana, mailAddr(j), propAddr(j), j.area, j.assignee, j.ownerZip]
       .some(f => qnorm(f).indexOf(needle) >= 0);
   };
+  const riskOf = r => dmDeliveryRisk(mailAddr(r), r.ownerZip); // 🆕 v9.149
+  const riskCount = personRows.filter(r => r._state === "送付対象" && areaA(r) && asgA(r) && riskOf(r).length > 0).length;
   const visible = () => {
     let base = personRows.filter(r => r._state === view && areaA(r) && asgA(r));
     if (view === "送付対象") base = base.filter(r => fCount === "all" || (fCount === 3 ? sentCount(r) >= 3 : sentCount(r) === fCount));
+    if (view === "送付対象" && fRisk) base = base.filter(r => riskOf(r).length > 0);
     return base.filter(matchQ);
   };
   // 成果集計（エリア・担当で絞り込み）
@@ -22776,6 +22793,7 @@ function DMPage({ data, setData, onBack }) {
   if (screen === "create") {
     const ps = printable(), missing = selPins().filter(j => !mailAddr(j)).length, o = ps[Math.min(pIdx, ps.length - 1)] || ps[0];
     const gaijiPersons = selPins().reduce((a, j) => a + dmNameParts(ownerName(j)).filter(dmNameBad).length, 0); // 🆕 v9.146: 共有の外字メンバー数
+    const riskPs = ps.filter(j => dmDeliveryRisk(mailAddr(j), j.ownerZip).length > 0); // 🆕 v9.149: 配達が微妙な宛先
     return (
       <div>
         <div id="dm-print-root">{printing ? printing.map(Letter) : null}</div>
@@ -22786,6 +22804,7 @@ function DMPage({ data, setData, onBack }) {
         <div style={{ fontSize: 12, color: C.accent, background: C.accentBg, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "8px 10px", marginBottom: 12, lineHeight: 1.6 }}>👁 <b>窓付き封筒方式</b>：手紙だけ印刷すれば、青枠の宛名が封筒の窓から見えます（封筒への宛名印刷は不要）。<br />※ 実際の封筒に合わせて、初回だけ宛名の位置を微調整してください。</div>
         {missing > 0 && <div style={{ background: "#ef444422", border: "1px solid #ef4444", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fca5a5", marginBottom: 10 }}>⚠ 送付先住所が未登録の {missing}件 は印刷から除外しました。</div>}
         {gaijiPersons > 0 && <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fbbf24", marginBottom: 10 }}>⚠ 氏名に外字（□）を含む {gaijiPersons}名分 は宛名に出せないため除外しました（共有の場合、正常な方には送付されます）。謄本で氏名を修正（一覧の✏️）すると追加されます。</div>}
+        {riskPs.length > 0 && <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fbbf24", marginBottom: 10, lineHeight: 1.6 }}>⚠ <b>配達が微妙な宛先が {riskPs.length}通</b> 含まれています（番地が無い／〒が市の代表・末尾0000／〒不正／住所に外字 など）。印刷はできますが、戻って住所・〒を確認することをおすすめします。</div>}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, color: C.muted, fontSize: 12 }}>
           <button onClick={() => setPIdx(i => (i - 1 + ps.length) % Math.max(1, ps.length))} style={{ background: C.bg, border: `1px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 800 }}>◀</button>
           <span>{ps.length ? Math.min(pIdx, ps.length - 1) + 1 : 0} / {ps.length} 件目</span>
@@ -22850,6 +22869,10 @@ function DMPage({ data, setData, onBack }) {
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {Chip("all", "すべて", "")}{Chip(0, "未送信", countSend(0))}{Chip(1, "1回", countSend(1))}{Chip(2, "2回", countSend(2))}{Chip(3, "3回以上", countSend(3))}
           </div>
+          {/* 🆕 v9.149: 配達が微妙な宛先（住所・〒は埋まっているが届くか怪しい）だけ表示 */}
+          <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, margin: "10px 0 6px" }}>配達チェック</div>
+          <button onClick={() => { setFRisk(v => !v); setSel([]); }} style={{ background: fRisk ? "#f59e0b" : C.bg, color: fRisk ? "#fff" : (riskCount > 0 ? "#fbbf24" : C.muted), border: `1.5px solid ${fRisk ? "#f59e0b" : (riskCount > 0 ? "#f59e0b" : C.borderDim)}`, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>⚠ 配達が微妙なものだけ {riskCount}</button>
+          {riskCount > 0 && <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>※ 番地が無い／〒が市の代表（末尾0000・町域不明）／〒が不正／住所に外字 のいずれか。送る前に住所を直すか、要否を判断してください。</div>}
         </div>
       )}
 
@@ -22867,8 +22890,9 @@ function DMPage({ data, setData, onBack }) {
         const st = j._state, selected = sel.includes(j._lkey), n = sentCount(j), oc = otherCnt(j); // 🆕 v9.148: 人単位
         const col = n >= 3 ? "#f43f5e" : n === 2 ? "#f59e0b" : n === 1 ? "#0ea5e9" : "#64748b";
         const sendLbl = n === 0 ? "未送信" : `送信 ${n}回`;
+        const risk = mailAddr(j) ? riskOf(j) : []; // 🆕 v9.149: 配達が微妙な理由
         return (
-          <div key={j._lkey} style={{ background: selected ? "#0ea5e914" : C.cardBg, border: `1px solid ${selected ? C.accent : C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+          <div key={j._lkey} style={{ background: selected ? "#0ea5e914" : C.cardBg, border: `1px solid ${selected ? C.accent : risk.length ? "#f59e0b" : C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
             <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
               {st === "送付対象" && <button onClick={() => toggle(j._lkey)} style={{ flex: "none", width: 22, height: 22, borderRadius: 6, border: `2px solid ${selected ? C.accent : C.borderDim}`, background: selected ? C.accent : "transparent", color: "#fff", fontSize: 14, fontWeight: 900, cursor: "pointer", marginTop: 2 }}>{selected ? "✓" : ""}</button>}
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -22878,8 +22902,10 @@ function DMPage({ data, setData, onBack }) {
                   {j._shared && <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: "#7c3aed", color: "#fff" }}>👥 共有{j._shareTotal ? `(${j._shareTotal}名)` : ""}</span>}
                 </div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}>⚠ 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 担当 {j.assignee || "—"}{j._shared && <span style={{ color: "#a78bfa", fontWeight: 700 }}>／👥 この物件は共有名義（一人ずつ個別に送付）</span>}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／👥この所有者は他に{oc}件</span>}</div>
+                {risk.length > 0 && <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5, color: "#fbbf24", fontWeight: 700 }}>⚠ 配達注意：{risk.join("・")}{j._shared && <span style={{ fontWeight: 400 }}>（共有のため住所修正は地上げ詳細から）</span>}</div>}
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
                   {st === "送付対象" && <>
+                    {risk.length > 0 && !j._shared && <button onClick={() => openAddrEdit(j)} style={dmActBtn("#f59e0b")}>✏️ 住所/〒を直す</button>}
                     <button onClick={() => markReturn(j)} style={dmActBtn("#ef4444")}>📩 返送</button>
                     <button onClick={() => markReaction(j)} style={dmActBtn("#a855f7")}>🔥 連絡あり</button>
                     <button onClick={() => markNo(j)} style={dmActBtn("#64748b")}>🚫 もう送らない</button>
