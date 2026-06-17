@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-17-v9.147-dm-shared-name";
+const APP_VERSION = "2026-06-17-v9.148-dm-per-person";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22610,8 +22610,37 @@ function DMPage({ data, setData, onBack }) {
 
   const areas = ["すべて", ...Array.from(new Set(universe.map(j => j.area || "").filter(Boolean)))];
   const asgs = ["すべて", ...Array.from(new Set(universe.map(j => j.assignee || "").filter(Boolean)))];
-  const nState = s => universe.filter(j => stateOf(j) === s).length;
-  const countSend = n => universe.filter(j => stateOf(j) === "送付対象" && (n === 3 ? sentCount(j) >= 3 : sentCount(j) === n) && areaA(j) && asgA(j)).length;
+
+  // 🆕 v9.148: 一覧を「人単位」に展開。共有名義（氏名・住所が「・」で同数）は共有者ごとに1行に分ける。
+  //   各行に _lkey（人単位の選択キー）・_state・_shared・_origName（編集用＝元の連結氏名）を持たせる。
+  const personRows = React.useMemo(() => {
+    const rows = [];
+    universe.forEach(j => {
+      // ① まず送付ログ由来の状態（返送/反応/不要）。これは物件（ピン）単位なので分割せず1行。
+      let logSt = ""; dmlog(j).forEach(e => { if (e.t === "不要") logSt = "不要"; else if (e.t === "反応") logSt = "反応"; else if (e.t === "返送") logSt = "返送"; else if (e.t === "住所修正") { if (logSt === "返送") logSt = ""; } else if (e.t === "復活") logSt = ""; });
+      if (!logSt && !dmlog(j).some(e => ["不要", "反応", "返送"].includes(e.t)) && j.dm === "📩返送") logSt = "返送";
+      if (logSt) { rows.push({ ...j, _lkey: String(j.id), _shared: false, _state: logSt, _origName: ownerName(j) }); return; }
+      // ② 氏名・住所由来の状態（送付対象/要確認/住所未取得）。共有は人単位に分割。
+      const propKey = dmAddrKey(propAddr(j));
+      const isVacantSelf = (addr) => propKey && dmAddrKey(addr) === propKey;
+      const names = dmNameParts(ownerName(j)), addrs = dmNameParts(mailAddr(j)), zips = dmNameParts(j.ownerZip || "");
+      if (names.length > 1 && names.length === addrs.length) {
+        names.forEach((nm, i) => {
+          const addr = addrs[i] || "";
+          if (isVacantSelf(addr)) return; // 発送先＝物件住所（空き家本人宛）は除外＝住所違いだけ送る
+          const st = dmNameBad(nm) ? "要確認" : (addr ? "送付対象" : "住所未取得");
+          rows.push({ ...j, _lkey: `${j.id}#${i}`, _shared: true, _shareTotal: names.length, _state: st, _origName: ownerName(j), owner: nm, ownerName: nm, ownerAddr: addr, ownerZip: zips[i] || "" });
+        });
+      } else {
+        const st = dmAllNamesBad(ownerName(j)) ? "要確認" : (mailAddr(j) ? "送付対象" : "住所未取得");
+        rows.push({ ...j, _lkey: String(j.id), _shared: false, _state: st, _origName: ownerName(j) });
+      }
+    });
+    return rows;
+  }, [data.jiage]);
+
+  const nState = s => personRows.filter(r => r._state === s).length;
+  const countSend = n => personRows.filter(r => r._state === "送付対象" && (n === 3 ? sentCount(r) >= 3 : sentCount(r) === n) && areaA(r) && asgA(r)).length;
   // 🆕 v9.146: 名前・住所・ワードで横断検索（全角半角・空白・大小文字を吸収。部分一致）
   const qnorm = s => String(s || "").normalize("NFKC").replace(/[\s　]/g, "").toLowerCase();
   const matchQ = j => {
@@ -22620,8 +22649,9 @@ function DMPage({ data, setData, onBack }) {
       .some(f => qnorm(f).indexOf(needle) >= 0);
   };
   const visible = () => {
-    if (view === "送付対象") return universe.filter(j => stateOf(j) === "送付対象" && (fCount === "all" || (fCount === 3 ? sentCount(j) >= 3 : sentCount(j) === fCount)) && areaA(j) && asgA(j)).filter(matchQ);
-    return universe.filter(j => stateOf(j) === view).filter(matchQ);
+    let base = personRows.filter(r => r._state === view && areaA(r) && asgA(r));
+    if (view === "送付対象") base = base.filter(r => fCount === "all" || (fCount === 3 ? sentCount(r) >= 3 : sentCount(r) === fCount));
+    return base.filter(matchQ);
   };
   // 成果集計（エリア・担当で絞り込み）
   const stats = (() => {
@@ -22675,7 +22705,8 @@ function DMPage({ data, setData, onBack }) {
   };
 
   // 🆕 v9.145: 氏名の修正（外字□など壊れた氏名 → 正しい氏名に直す＝送付対象に戻る）
-  const openNameEdit = (j) => setEditName({ id: j.id, name: ownerName(j) });
+  //   共有のときは元の連結氏名（_origName）全体を編集対象にする（一部だけ上書きして他の共有者を消さない）
+  const openNameEdit = (j) => setEditName({ id: j.id, name: j._origName || ownerName(j), shared: !!j._shared });
   const saveNameEdit = () => {
     if (!editName) return;
     const newName = String(editName.name || "").trim();
@@ -22694,7 +22725,8 @@ function DMPage({ data, setData, onBack }) {
   };
 
   // ===== 作成・印刷 =====
-  const selPins = () => universe.filter(j => sel.includes(j.id));
+  // 🆕 v9.148: 選択は人単位キー（_lkey）。選択キーから重複なしの物件（ピン）に戻すヘルパー。
+  const selPins = () => { const ids = new Set(sel.map(k => String(k).split("#")[0])); return universe.filter(j => ids.has(String(j.id))); };
   // 🆕 v9.142: 共有名義（所有者・住所が「・」区切りで数が一致＝複数）は各人に分けて1通ずつ。
   //   ※「ダオ・ティ・リエン」等、1人の氏名に・が入るケースは住所が1つなので分割しない。
   const dmSplitParts = (s) => String(s || "").split("・").map(x => x.trim()).filter(Boolean);
@@ -22713,13 +22745,14 @@ function DMPage({ data, setData, onBack }) {
     });
     return out;
   };
-  const printable = () => expandForLetters(selPins().filter(j => mailAddr(j)));
+  // 🆕 v9.148: 印刷対象＝選択された「人単位」の送付対象行（personRowsが既に共有を分割済み）
+  const printable = () => personRows.filter(r => r._state === "送付対象" && mailAddr(r) && sel.includes(r._lkey));
   const doPrint = () => { const p = printable(); if (p.length) setPrinting(p); };
   React.useEffect(() => { if (printing) { const t = setTimeout(() => { try { window.print(); } catch (e) {} setPrinting(null); }, 200); return () => clearTimeout(t); } }, [printing]);
-  const markSent = () => { const p = printable(); if (!p.length) return; const ids = [...new Set(p.map(j => j.id))]; appendLog(ids, "送付"); setSel([]); setScreen("board"); setView("送付対象"); alert(`✅ ${ids.length}件を送付済みにしました（手紙 ${p.length}通／履歴に記録＝同期で消えません）。`); };
+  const markSent = () => { const p = printable(); if (!p.length) return; const ids = [...new Set(p.map(j => j.id))]; appendLog(ids, "送付"); setSel([]); setScreen("board"); setView("送付対象"); alert(`✅ ${p.length}通を送付済みにしました（${ids.length}件の物件／履歴に記録＝同期で消えません）。`); };
 
-  const toggle = id => setSel(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
-  const selectAll = () => { const v = visible().map(j => j.id); setSel(sel.length > 0 ? [] : v); };
+  const toggle = key => setSel(s => s.includes(key) ? s.filter(x => x !== key) : [...s, key]);
+  const selectAll = () => { const v = visible().map(r => r._lkey); setSel(sel.length > 0 ? [] : v); };
 
   // ===== 手紙ビュー =====
   const Letter = (j) => (
@@ -22760,9 +22793,9 @@ function DMPage({ data, setData, onBack }) {
         </div>
         {o ? Letter(o) : <div style={{ textAlign: "center", color: C.muted, padding: 30 }}>印刷できる宛先がありません</div>}
         <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-          <button onClick={doPrint} style={{ ...btnStyle(), flex: 2, padding: 13 }}>🖨 手紙を印刷（{ps.length}件）</button>
+          <button onClick={doPrint} style={{ ...btnStyle(), flex: 2, padding: 13 }}>🖨 手紙を印刷（{ps.length}通）</button>
         </div>
-        <button onClick={markSent} style={{ width: "100%", marginTop: 8, background: C.success, color: "#fff", border: "none", borderRadius: 10, padding: 13, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✅ この {ps.length} 件を送付済みに（履歴に+1）</button>
+        <button onClick={markSent} style={{ width: "100%", marginTop: 8, background: C.success, color: "#fff", border: "none", borderRadius: 10, padding: 13, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✅ この {ps.length} 通を送付済みに（履歴に+1）</button>
       </div>
     );
   }
@@ -22822,7 +22855,7 @@ function DMPage({ data, setData, onBack }) {
 
       {/* 🆕 v9.145: 要確認の説明 */}
       {view === "要確認" && (
-        <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fbbf24", marginBottom: 10, lineHeight: 1.6 }}>🔍 氏名が正しく取れていない宛先です（謄本の<b>戸籍外字（□）</b>などで文字化け）。このままでは宛名が出ないため送付対象から外しています。謄本を見て <b>✏️ 氏名を直す</b> と送付対象に戻ります。</div>
+        <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fbbf24", marginBottom: 10, lineHeight: 1.6 }}>🔍 氏名が正しく取れていない宛先です（謄本の<b>戸籍外字（□）</b>などで文字化け）。このままでは宛名が出ないため送付対象から外しています。謄本を見て <b>✏️ 氏名を直す</b> と送付対象に戻ります。<br /><span style={{ color: "#a78bfa", fontWeight: 700 }}>👥 共有</span> の表示があるものは、その共有者だけが文字化けしています（正常な共有者へは送付対象から送れます）。</div>
       )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
@@ -22831,27 +22864,25 @@ function DMPage({ data, setData, onBack }) {
       </div>
 
       {list.length === 0 ? <div style={{ textAlign: "center", color: C.muted, padding: 30, fontSize: 13 }}>対象がありません</div> : list.map(j => {
-        const st = stateOf(j), selected = sel.includes(j.id), n = sentCount(j), oc = otherCnt(j);
+        const st = j._state, selected = sel.includes(j._lkey), n = sentCount(j), oc = otherCnt(j); // 🆕 v9.148: 人単位
         const col = n >= 3 ? "#f43f5e" : n === 2 ? "#f59e0b" : n === 1 ? "#0ea5e9" : "#64748b";
         const sendLbl = n === 0 ? "未送信" : `送信 ${n}回`;
-        const parts = dmNameParts(ownerName(j)), badParts = parts.filter(dmNameBad), isShared = parts.length > 1; // 🆕 v9.146
         return (
-          <div key={j.id} style={{ background: selected ? "#0ea5e914" : C.cardBg, border: `1px solid ${selected ? C.accent : C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+          <div key={j._lkey} style={{ background: selected ? "#0ea5e914" : C.cardBg, border: `1px solid ${selected ? C.accent : C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
             <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-              {st === "送付対象" && <button onClick={() => toggle(j.id)} style={{ flex: "none", width: 22, height: 22, borderRadius: 6, border: `2px solid ${selected ? C.accent : C.borderDim}`, background: selected ? C.accent : "transparent", color: "#fff", fontSize: 14, fontWeight: 900, cursor: "pointer", marginTop: 2 }}>{selected ? "✓" : ""}</button>}
+              {st === "送付対象" && <button onClick={() => toggle(j._lkey)} style={{ flex: "none", width: 22, height: 22, borderRadius: 6, border: `2px solid ${selected ? C.accent : C.borderDim}`, background: selected ? C.accent : "transparent", color: "#fff", fontSize: 14, fontWeight: 900, cursor: "pointer", marginTop: 2 }}>{selected ? "✓" : ""}</button>}
               <div style={{ flex: 1, minWidth: 0 }}>
-                {j.ownerKana && <div style={{ fontSize: 10, color: "#0ea5e9", lineHeight: 1 }}>{j.ownerKana}</div>}
+                {j.ownerKana && !j._shared && <div style={{ fontSize: 10, color: "#0ea5e9", lineHeight: 1 }}>{j.ownerKana}</div>}
                 <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{ownerName(j)} 様
                   <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: st === "送付対象" ? col : st === "返送" ? "#ef4444" : st === "反応" ? "#a855f7" : st === "要確認" ? "#f59e0b" : "#475569", color: "#fff" }}>{st === "送付対象" ? sendLbl : st}</span>
+                  {j._shared && <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: "#7c3aed", color: "#fff" }}>👥 共有{j._shareTotal ? `(${j._shareTotal}名)` : ""}</span>}
                 </div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}>⚠ 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 担当 {j.assignee || "—"}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／👥この所有者は他に{oc}件</span>}</div>
-                {isShared && st === "送付対象" && <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5, color: "#22c55e", fontWeight: 700 }}>👥 共有 {parts.length}名 → 一人ずつ個別に <b>{parts.length - badParts.length}通</b> 送付{badParts.length > 0 && <span style={{ color: "#fbbf24" }}>／<b>{badParts.join("・")}</b> 様は外字のため除外中（✏️で氏名を直すと追加）</span>}</div>}
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}>⚠ 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 担当 {j.assignee || "—"}{j._shared && <span style={{ color: "#a78bfa", fontWeight: 700 }}>／👥 この物件は共有名義（一人ずつ個別に送付）</span>}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／👥この所有者は他に{oc}件</span>}</div>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
                   {st === "送付対象" && <>
                     <button onClick={() => markReturn(j)} style={dmActBtn("#ef4444")}>📩 返送</button>
                     <button onClick={() => markReaction(j)} style={dmActBtn("#a855f7")}>🔥 連絡あり</button>
                     <button onClick={() => markNo(j)} style={dmActBtn("#64748b")}>🚫 もう送らない</button>
-                    {badParts.length > 0 && <button onClick={() => openNameEdit(j)} style={dmActBtn("#f59e0b")}>✏️ 氏名を直す</button>}
                   </>}
                   {st === "要確認" && <button onClick={() => openNameEdit(j)} style={dmActBtn("#f59e0b")}>✏️ 氏名を直す</button>}
                   {st === "住所未取得" && <button onClick={() => openAddrEdit(j)} style={dmActBtn("#0ea5e9")}>✏️ 住所を入力</button>}
@@ -22868,7 +22899,7 @@ function DMPage({ data, setData, onBack }) {
       {/* 送付対象：作成ボタン */}
       {view === "送付対象" && (
         <div style={{ position: "sticky", bottom: 0, paddingTop: 10 }}>
-          <button onClick={() => { setPIdx(0); setScreen("create"); }} disabled={sel.length === 0} style={{ width: "100%", border: "none", borderRadius: 10, padding: 14, fontSize: 14, fontWeight: 800, cursor: sel.length ? "pointer" : "default", fontFamily: "inherit", background: sel.length ? C.accent : C.borderDim, color: sel.length ? "#fff" : C.muted }}>📨 選択した {sel.length} 件でDMを作成</button>
+          <button onClick={() => { setPIdx(0); setScreen("create"); }} disabled={sel.length === 0} style={{ width: "100%", border: "none", borderRadius: 10, padding: 14, fontSize: 14, fontWeight: 800, cursor: sel.length ? "pointer" : "default", fontFamily: "inherit", background: sel.length ? C.accent : C.borderDim, color: sel.length ? "#fff" : C.muted }}>📨 選択した {sel.length} 名でDMを作成</button>
         </div>
       )}
 
@@ -22895,7 +22926,7 @@ function DMPage({ data, setData, onBack }) {
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 3000, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => setEditName(null)}>
           <div onClick={e => e.stopPropagation()} style={{ background: C.cardBg, width: "100%", maxWidth: 560, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 18 }}>
             <div style={{ fontSize: 15, fontWeight: 800, color: C.text, marginBottom: 10 }}>✏️ 氏名を直す</div>
-            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>謄本（登記簿）を見て、正しい氏名を入力してください。外字（□）は正しい漢字に置き換えます。</div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>謄本（登記簿）を見て、正しい氏名を入力してください。外字（□）は正しい漢字に置き換えます。{editName.shared && <><br /><b style={{ color: "#a78bfa" }}>※ 共有名義です。表示されている全員分（「・」区切り）をそのまま残し、□の方だけ直してください。</b></>}</div>
             <label style={{ fontSize: 11, color: C.muted }}>氏名</label>
             <input value={editName.name} onChange={e => setEditName(a => ({ ...a, name: e.target.value }))} placeholder="例：土屋花江" style={{ ...inp, marginBottom: 12 }} />
             <div style={{ display: "flex", gap: 8 }}>
