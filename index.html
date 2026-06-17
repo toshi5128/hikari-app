@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.135-event-related-property";
+const APP_VERSION = "2026-06-16-v9.136-related-unique-match";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6611,28 +6611,31 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     }
   };
 
-  // 🆕 v9.135: カスタム予定のタイトルから「関連する地上げ物件」を自動判定する。
-  //   例「【地上げ】柿沼荻原様回答確認」→ 所有者名(荻原)＋エリア(柿沼)が一致する jiage を返す。
-  //   所有者名が一致しても、住所の地名がタイトルに無い"名前だけ一致"は誤マッチ防止で除外。
+  // 🆕 v9.135→v9.136: カスタム予定のタイトルから「関連する地上げ物件」を自動判定する。
+  //   所有者名がタイトルに含まれる jiage を探す。名前一致が1件だけなら地名が無くても採用、
+  //   複数なら住所の地名一致で絞り込む（旧字・異体字も吸収）。
   const findRelatedJiage = (title) => {
-    const t = String(title || "");
+    const _kvar = (s) => String(s || "").replace(/澁/g, "渋").replace(/髙/g, "高").replace(/﨑/g, "崎").replace(/栁/g, "柳").replace(/邊|邉/g, "辺").replace(/齋|齊/g, "斎").replace(/眞/g, "真").replace(/濵/g, "浜");
+    const t = _kvar(title);
     if (!t.trim()) return null;
     const cands = [];
     (data.jiage || []).forEach(x => {
-      const o = String(x.owner || x.ownerName || "").trim();
+      const o = _kvar(String(x.owner || x.ownerName || "").trim());
       if (!o) return;
       const nameHit = t.includes(o) || (o.length >= 3 && t.includes(o.slice(0, 3))) || (o.length >= 2 && t.includes(o.slice(0, 2)));
       if (!nameHit) return;
-      const addr = String(x.address || "");
+      const addr = _kvar(String(x.address || ""));
       let areaScore = 0;
       (addr.match(/[一-龥]{2,4}/g) || []).forEach(tok => { if (tok.length >= 2 && t.includes(tok)) areaScore += tok.length; });
-      const score = (t.includes(o) ? 100 : 0) + areaScore * 10 + (t.includes(o.slice(0, 2)) ? 2 : 0);
-      cands.push({ x, score });
+      cands.push({ x, full: t.includes(o), areaScore });
     });
     if (!cands.length) return null;
-    cands.sort((a, b) => b.score - a.score);
-    if (cands[0].score < 10) return null; // 名前2文字だけ＝地名の裏付け無し → 誤マッチ防止でスキップ
-    return cands[0].x;
+    // 名前一致が1件だけ＝一意 → タイトルに地名が無くても採用（「澁谷様…」等）
+    if (cands.length === 1) return cands[0].x;
+    // 複数候補 → フルネーム一致＞地名一致 で絞り込み。裏付けが無ければ曖昧なので出さない
+    cands.sort((a, b) => (Number(b.full) - Number(a.full)) || (b.areaScore - a.areaScore));
+    if (cands[0].full || cands[0].areaScore >= 2) return cands[0].x;
+    return null;
   };
 
   const openEditEvent = (ev) => {
