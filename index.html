@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-17-v9.142-dm-share-split";
+const APP_VERSION = "2026-06-17-v9.143-dm-exclude-self-addr";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22520,6 +22520,19 @@ function dmWareki() { const n = new Date(); return `令和${n.getFullYear() - 20
 function dmTodayStr() { const n = new Date(); return `${n.getFullYear()}/${String(n.getMonth() + 1).padStart(2, "0")}/${String(n.getDate()).padStart(2, "0")}`; }
 function dmNewId() { return "dm" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function dmNorm(s) { return String(s || "").replace(/[\s　〒]/g, "").replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); }
+// 🆕 v9.143: 住所の表記ゆれを吸収した比較キー（地番↔住居表示の番地/丁目/全角/漢数字/大字 を統一）。
+//   「所有者住所＝物件住所（空き家本人宛）」の判定に使う。dm_judge.normalize_addr 相当。
+function dmAddrKey(s) {
+  const KN = { '〇': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+  let t = String(s || "").normalize("NFKC").replace(/[\s　〒]/g, "");
+  t = t.replace(/^(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)/, "");
+  t = t.replace(/[〇一二三四五六七八九十]+/g, m => {
+    if (m.indexOf("十") >= 0) { const p = m.split("十"); const tens = p[0] ? (KN[p[0]] != null ? KN[p[0]] : 1) : 1; const ones = p[1] ? (KN[p[1]] || 0) : 0; return String(tens * 10 + ones); }
+    return Array.from(m).map(c => KN[c]).join("");
+  });
+  t = t.replace(/大字|字/g, "").replace(/丁目|番地|番|号|の/g, "-").replace(/[‐-―−ー－ｰ\-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  return t;
+}
 // 🆕 v9.60.1: DM手紙の宛名・本文から持分割合（例「永瀬浩10分の3」→「永瀬浩」）を除去する
 function dmCleanName(s) {
   return String(s || "")
@@ -22642,10 +22655,13 @@ function DMPage({ data, setData, onBack }) {
   const expandForLetters = (lst) => {
     const out = [];
     lst.forEach(j => {
+      // 🆕 v9.143: 発送先(所有者住所)が物件住所と同じ＝空き家本人宛になるものは送らない（住所違いだけに送る）
+      const propKey = dmAddrKey(propAddr(j));
+      const isVacantSelf = (addr) => propKey && dmAddrKey(addr) === propKey;
       const names = dmSplitParts(ownerName(j)), addrs = dmSplitParts(mailAddr(j)), zips = dmSplitParts(j.ownerZip || "");
       if (names.length > 1 && names.length === addrs.length) {
-        names.forEach((nm, i) => out.push({ ...j, _lkey: `${j.id}#${i}`, owner: nm, ownerName: nm, ownerAddr: addrs[i], ownerZip: zips[i] || "" }));
-      } else {
+        names.forEach((nm, i) => { if (!isVacantSelf(addrs[i])) out.push({ ...j, _lkey: `${j.id}#${i}`, owner: nm, ownerName: nm, ownerAddr: addrs[i], ownerZip: zips[i] || "" }); });
+      } else if (!isVacantSelf(mailAddr(j))) {
         out.push({ ...j, _lkey: String(j.id) });
       }
     });
