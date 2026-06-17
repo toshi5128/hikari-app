@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-17-v9.145-dm-needs-check";
+const APP_VERSION = "2026-06-17-v9.146-dm-search";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22580,6 +22580,7 @@ function DMPage({ data, setData, onBack }) {
   const [printing, setPrinting] = useState(null);
   const [editAddr, setEditAddr] = useState(null); // { id, addr, zip }
   const [editName, setEditName] = useState(null); // { id, name } 🆕 v9.145
+  const [q, setQ] = useState(""); // 🆕 v9.146: 検索（名前・住所・ワード）
 
   const jiage = Array.isArray(data.jiage) ? data.jiage : [];
   const ownerName = j => String(j.owner || j.ownerName || "").trim();
@@ -22607,9 +22608,16 @@ function DMPage({ data, setData, onBack }) {
   const asgs = ["すべて", ...Array.from(new Set(universe.map(j => j.assignee || "").filter(Boolean)))];
   const nState = s => universe.filter(j => stateOf(j) === s).length;
   const countSend = n => universe.filter(j => stateOf(j) === "送付対象" && (n === 3 ? sentCount(j) >= 3 : sentCount(j) === n) && areaA(j) && asgA(j)).length;
+  // 🆕 v9.146: 名前・住所・ワードで横断検索（全角半角・空白・大小文字を吸収。部分一致）
+  const qnorm = s => String(s || "").normalize("NFKC").replace(/[\s　]/g, "").toLowerCase();
+  const matchQ = j => {
+    const needle = qnorm(q); if (!needle) return true;
+    return [ownerName(j), j.ownerKana, mailAddr(j), propAddr(j), j.area, j.assignee, j.ownerZip]
+      .some(f => qnorm(f).indexOf(needle) >= 0);
+  };
   const visible = () => {
-    if (view === "送付対象") return universe.filter(j => stateOf(j) === "送付対象" && (fCount === "all" || (fCount === 3 ? sentCount(j) >= 3 : sentCount(j) === fCount)) && areaA(j) && asgA(j));
-    return universe.filter(j => stateOf(j) === view);
+    if (view === "送付対象") return universe.filter(j => stateOf(j) === "送付対象" && (fCount === "all" || (fCount === 3 ? sentCount(j) >= 3 : sentCount(j) === fCount)) && areaA(j) && asgA(j)).filter(matchQ);
+    return universe.filter(j => stateOf(j) === view).filter(matchQ);
   };
   // 成果集計（エリア・担当で絞り込み）
   const stats = (() => {
@@ -22788,6 +22796,13 @@ function DMPage({ data, setData, onBack }) {
       {/* タブ */}
       <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 12, paddingBottom: 2 }}>
         {Tab("送付対象", "📨 送付対象")}{Tab("要確認", "🔍 要確認")}{Tab("住所未取得", "🏠 住所未取得")}{Tab("返送", "📩 返送")}{Tab("反応", "🔥 反応")}{Tab("不要", "🚫 不要")}
+      </div>
+
+      {/* 🆕 v9.146: 検索（名前・住所・ワード） */}
+      <div style={{ position: "relative", marginBottom: 12 }}>
+        <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, pointerEvents: "none" }}>🔍</span>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="名前・住所・ワードで検索（例：川口／東平／善ヶ島）" style={{ ...inp, paddingLeft: 34, paddingRight: q ? 34 : 12 }} />
+        {q && <button onClick={() => setQ("")} title="クリア" style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: C.muted, fontSize: 16, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>✕</button>}
       </div>
 
       {/* 絞り込み（送付対象のみ） */}
