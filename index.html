@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-17-v9.149-dm-delivery-check";
+const APP_VERSION = "2026-06-17-v9.150-dm-share-edit";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22598,6 +22598,7 @@ function DMPage({ data, setData, onBack }) {
   const [printing, setPrinting] = useState(null);
   const [editAddr, setEditAddr] = useState(null); // { id, addr, zip }
   const [editName, setEditName] = useState(null); // { id, name } 🆕 v9.145
+  const [editShare, setEditShare] = useState(null); // { id, names, addrs, zips } 🆕 v9.150: 共有を一括編集
   const [q, setQ] = useState(""); // 🆕 v9.146: 検索（名前・住所・ワード）
 
   const jiage = Array.isArray(data.jiage) ? data.jiage : [];
@@ -22633,7 +22634,8 @@ function DMPage({ data, setData, onBack }) {
       // ① まず送付ログ由来の状態（返送/反応/不要）。これは物件（ピン）単位なので分割せず1行。
       let logSt = ""; dmlog(j).forEach(e => { if (e.t === "不要") logSt = "不要"; else if (e.t === "反応") logSt = "反応"; else if (e.t === "返送") logSt = "返送"; else if (e.t === "住所修正") { if (logSt === "返送") logSt = ""; } else if (e.t === "復活") logSt = ""; });
       if (!logSt && !dmlog(j).some(e => ["不要", "反応", "返送"].includes(e.t)) && j.dm === "📩返送") logSt = "返送";
-      if (logSt) { rows.push({ ...j, _lkey: String(j.id), _shared: false, _state: logSt, _origName: ownerName(j) }); return; }
+      const orig = { _origName: ownerName(j), _origAddr: mailAddr(j), _origZip: String(j.ownerZip || "") };
+      if (logSt) { rows.push({ ...j, ...orig, _lkey: String(j.id), _shared: false, _state: logSt }); return; }
       // ② 氏名・住所由来の状態（送付対象/要確認/住所未取得）。共有は人単位に分割。
       const propKey = dmAddrKey(propAddr(j));
       const isVacantSelf = (addr) => propKey && dmAddrKey(addr) === propKey;
@@ -22643,11 +22645,14 @@ function DMPage({ data, setData, onBack }) {
           const addr = addrs[i] || "";
           if (isVacantSelf(addr)) return; // 発送先＝物件住所（空き家本人宛）は除外＝住所違いだけ送る
           const st = dmNameBad(nm) ? "要確認" : (addr ? "送付対象" : "住所未取得");
-          rows.push({ ...j, _lkey: `${j.id}#${i}`, _shared: true, _shareTotal: names.length, _state: st, _origName: ownerName(j), owner: nm, ownerName: nm, ownerAddr: addr, ownerZip: zips[i] || "" });
+          rows.push({ ...j, ...orig, _lkey: `${j.id}#${i}`, _shared: true, _shareTotal: names.length, _state: st, owner: nm, ownerName: nm, ownerAddr: addr, ownerZip: zips[i] || "" });
         });
+      } else if (names.length > 1) {
+        // 🆕 v9.150: 共有だが「氏名・住所・〒」の数が合わず一人ずつに分けられない → 要確認で手当て
+        rows.push({ ...j, ...orig, _lkey: String(j.id), _shared: true, _shareTotal: names.length, _state: "要確認", _mismatch: { n: names.length, a: addrs.length, z: zips.length } });
       } else {
         const st = dmAllNamesBad(ownerName(j)) ? "要確認" : (mailAddr(j) ? "送付対象" : "住所未取得");
-        rows.push({ ...j, _lkey: String(j.id), _shared: false, _state: st, _origName: ownerName(j) });
+        rows.push({ ...j, ...orig, _lkey: String(j.id), _shared: false, _state: st });
       }
     });
     return rows;
@@ -22739,6 +22744,32 @@ function DMPage({ data, setData, onBack }) {
       return { ...prev, jiage: next };
     });
     setEditName(null);
+  };
+
+  // 🆕 v9.150: 共有名義を「氏名・住所・〒」まとめて編集（1行に1人）。行数を揃えると一人ずつに分かれる。
+  const openShareEdit = (j) => setEditShare({
+    id: j.id,
+    names: dmNameParts(j._origName || ownerName(j)).join("\n"),
+    addrs: dmNameParts(j._origAddr != null ? j._origAddr : mailAddr(j)).join("\n"),
+    zips: dmNameParts(j._origZip != null ? j._origZip : (j.ownerZip || "")).join("\n"),
+  });
+  const _lines = s => String(s || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const saveShareEdit = () => {
+    if (!editShare) return;
+    const names = _lines(editShare.names), addrs = _lines(editShare.addrs), zips = _lines(editShare.zips);
+    if (!names.length) { setEditShare(null); return; }
+    const joinedName = names.join("・"), joinedAddr = addrs.join("・"), joinedZip = zips.join("・");
+    setData(prev => {
+      const arr = Array.isArray(prev.jiage) ? prev.jiage : [];
+      const next = arr.map(j => {
+        if (String(j.id) !== String(editShare.id)) return j;
+        const _now = Date.now();
+        const fu = { ...(j._fieldUpdatedAt || {}), owner: _now, ownerName: _now, ownerAddr: _now, ownerZip: _now };
+        return { ...j, owner: joinedName, ownerName: joinedName, ownerAddr: joinedAddr, ownerZip: joinedZip, updatedAt: _now, _fieldUpdatedAt: fu };
+      });
+      return { ...prev, jiage: next };
+    });
+    setEditShare(null);
   };
 
   // ===== 作成・印刷 =====
@@ -22902,15 +22933,19 @@ function DMPage({ data, setData, onBack }) {
                   {j._shared && <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: "#7c3aed", color: "#fff" }}>👥 共有{j._shareTotal ? `(${j._shareTotal}名)` : ""}</span>}
                 </div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}>⚠ 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 担当 {j.assignee || "—"}{j._shared && <span style={{ color: "#a78bfa", fontWeight: 700 }}>／👥 この物件は共有名義（一人ずつ個別に送付）</span>}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／👥この所有者は他に{oc}件</span>}</div>
-                {risk.length > 0 && <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5, color: "#fbbf24", fontWeight: 700 }}>⚠ 配達注意：{risk.join("・")}{j._shared && <span style={{ fontWeight: 400 }}>（共有のため住所修正は地上げ詳細から）</span>}</div>}
+                {j._mismatch && <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5, color: "#fbbf24", fontWeight: 700 }}>⚠ 共有：氏名{j._mismatch.n}・住所{j._mismatch.a}・〒{j._mismatch.z} で数が合わず、一人ずつに分けられません。<b>✏️ 共有を編集</b>で1行ずつ揃えると分かれます。</div>}
+                {!j._mismatch && risk.length > 0 && <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5, color: "#fbbf24", fontWeight: 700 }}>⚠ 配達注意：{risk.join("・")}</div>}
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
                   {st === "送付対象" && <>
                     {risk.length > 0 && !j._shared && <button onClick={() => openAddrEdit(j)} style={dmActBtn("#f59e0b")}>✏️ 住所/〒を直す</button>}
+                    {j._shared && <button onClick={() => openShareEdit(j)} style={dmActBtn("#7c3aed")}>✏️ 共有を編集</button>}
                     <button onClick={() => markReturn(j)} style={dmActBtn("#ef4444")}>📩 返送</button>
                     <button onClick={() => markReaction(j)} style={dmActBtn("#a855f7")}>🔥 連絡あり</button>
                     <button onClick={() => markNo(j)} style={dmActBtn("#64748b")}>🚫 もう送らない</button>
                   </>}
-                  {st === "要確認" && <button onClick={() => openNameEdit(j)} style={dmActBtn("#f59e0b")}>✏️ 氏名を直す</button>}
+                  {st === "要確認" && (j._mismatch
+                    ? <button onClick={() => openShareEdit(j)} style={dmActBtn("#7c3aed")}>✏️ 共有を編集</button>
+                    : <button onClick={() => openNameEdit(j)} style={dmActBtn("#f59e0b")}>✏️ 氏名を直す</button>)}
                   {st === "住所未取得" && <button onClick={() => openAddrEdit(j)} style={dmActBtn("#0ea5e9")}>✏️ 住所を入力</button>}
                   {st === "返送" && <button onClick={() => openAddrEdit(j)} style={dmActBtn("#0ea5e9")}>✏️ 住所を直して送付対象に戻す</button>}
                   {st === "反応" && <button onClick={() => undo(j)} style={dmActBtn("#64748b")}>DMに戻す</button>}
@@ -22962,6 +22997,32 @@ function DMPage({ data, setData, onBack }) {
           </div>
         </div>
       )}
+
+      {/* 🆕 v9.150: 共有編集モーダル（氏名・住所・〒を1行に1人で揃える → 一人ずつに分かれる） */}
+      {editShare && (() => {
+        const cn = _lines(editShare.names).length, ca = _lines(editShare.addrs).length, cz = _lines(editShare.zips).length;
+        const aligned = cn > 0 && cn === ca;
+        const ta = { ...inp, minHeight: 84, resize: "vertical", lineHeight: 1.5, fontFamily: "inherit" };
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 3000, display: "flex", alignItems: "flex-end", justifyContent: "center", overflowY: "auto" }} onClick={() => setEditShare(null)}>
+            <div onClick={e => e.stopPropagation()} style={{ background: C.cardBg, width: "100%", maxWidth: 560, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 18 }}>
+              <div style={{ fontSize: 15, fontWeight: 800, color: C.text, marginBottom: 6 }}>✏️ 共有名義を編集</div>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.6 }}><b>1行に1人</b>ずつ入力してください。氏名・住所・郵便番号の<b>行数と順番を揃える</b>と、自動で一人ずつのDMに分かれます。不要な行は削除、足りない行は追加してください。</div>
+              <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 10, padding: "6px 10px", borderRadius: 8, background: aligned ? "#22c55e22" : "#f59e0b22", color: aligned ? "#22c55e" : "#fbbf24", border: `1px solid ${aligned ? "#22c55e" : "#f59e0b"}` }}>{aligned ? `✅ 氏名${cn}・住所${ca}・〒${cz}：氏名と住所の数が揃いました（〒は空欄でもOK）` : `⚠ 氏名${cn}・住所${ca}・〒${cz}：氏名と住所の行数を揃えてください`}</div>
+              <label style={{ fontSize: 11, color: C.muted }}>氏名（1行に1人）</label>
+              <textarea value={editShare.names} onChange={e => setEditShare(a => ({ ...a, names: e.target.value }))} style={{ ...ta, marginBottom: 8 }} />
+              <label style={{ fontSize: 11, color: C.muted }}>送付先住所（氏名と同じ順で1行に1人）</label>
+              <textarea value={editShare.addrs} onChange={e => setEditShare(a => ({ ...a, addrs: e.target.value }))} style={{ ...ta, marginBottom: 8 }} />
+              <label style={{ fontSize: 11, color: C.muted }}>郵便番号（同じ順・分かる人だけ）</label>
+              <textarea value={editShare.zips} onChange={e => setEditShare(a => ({ ...a, zips: e.target.value }))} style={{ ...ta, marginBottom: 12 }} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setEditShare(null)} style={{ flex: 1, background: C.bg, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>キャンセル</button>
+                <button onClick={saveShareEdit} style={{ flex: 2, ...btnStyle(), padding: 12 }}>保存</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
