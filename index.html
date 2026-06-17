@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-17-v9.141-dm-print-1page";
+const APP_VERSION = "2026-06-17-v9.142-dm-share-split";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22636,17 +22636,32 @@ function DMPage({ data, setData, onBack }) {
 
   // ===== 作成・印刷 =====
   const selPins = () => universe.filter(j => sel.includes(j.id));
-  const printable = () => selPins().filter(j => mailAddr(j));
+  // 🆕 v9.142: 共有名義（所有者・住所が「・」区切りで数が一致＝複数）は各人に分けて1通ずつ。
+  //   ※「ダオ・ティ・リエン」等、1人の氏名に・が入るケースは住所が1つなので分割しない。
+  const dmSplitParts = (s) => String(s || "").split("・").map(x => x.trim()).filter(Boolean);
+  const expandForLetters = (lst) => {
+    const out = [];
+    lst.forEach(j => {
+      const names = dmSplitParts(ownerName(j)), addrs = dmSplitParts(mailAddr(j)), zips = dmSplitParts(j.ownerZip || "");
+      if (names.length > 1 && names.length === addrs.length) {
+        names.forEach((nm, i) => out.push({ ...j, _lkey: `${j.id}#${i}`, owner: nm, ownerName: nm, ownerAddr: addrs[i], ownerZip: zips[i] || "" }));
+      } else {
+        out.push({ ...j, _lkey: String(j.id) });
+      }
+    });
+    return out;
+  };
+  const printable = () => expandForLetters(selPins().filter(j => mailAddr(j)));
   const doPrint = () => { const p = printable(); if (p.length) setPrinting(p); };
   React.useEffect(() => { if (printing) { const t = setTimeout(() => { try { window.print(); } catch (e) {} setPrinting(null); }, 200); return () => clearTimeout(t); } }, [printing]);
-  const markSent = () => { const p = printable(); if (!p.length) return; appendLog(p.map(j => j.id), "送付"); setSel([]); setScreen("board"); setView("送付対象"); alert(`✅ ${p.length}件を送付済みにしました（履歴に記録＝同期で消えません）。`); };
+  const markSent = () => { const p = printable(); if (!p.length) return; const ids = [...new Set(p.map(j => j.id))]; appendLog(ids, "送付"); setSel([]); setScreen("board"); setView("送付対象"); alert(`✅ ${ids.length}件を送付済みにしました（手紙 ${p.length}通／履歴に記録＝同期で消えません）。`); };
 
   const toggle = id => setSel(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
   const selectAll = () => { const v = visible().map(j => j.id); setSel(sel.length > 0 ? [] : v); };
 
   // ===== 手紙ビュー =====
   const Letter = (j) => (
-    <div className="dm-letter" key={j.id} style={{ background: "#fff", color: "#1a1a1a", padding: "16mm 14mm", fontSize: 13, lineHeight: 1.85, fontFamily: "'Noto Sans JP',serif", borderRadius: screen === "create" ? 10 : 0, marginBottom: screen === "create" ? 0 : 0 }}>
+    <div className="dm-letter" key={j._lkey || j.id} style={{ background: "#fff", color: "#1a1a1a", padding: "16mm 14mm", fontSize: 13, lineHeight: 1.85, fontFamily: "'Noto Sans JP',serif", borderRadius: screen === "create" ? 10 : 0, marginBottom: screen === "create" ? 0 : 0 }}>
       <div style={{ textAlign: "right", fontSize: 12, color: "#333", marginBottom: 16 }}>{dmWareki()}</div>
       <div className="dm-window-box" style={{ border: "1.5px dashed #0ea5e9", borderRadius: 6, padding: "8px 10px", position: "relative", maxWidth: "88mm", lineHeight: 1.5 }}>
         <span className="dm-window-guide" style={{ position: "absolute", top: -9, left: 8, background: "#fff", color: "#0ea5e9", fontSize: 9, fontWeight: 800, padding: "0 5px" }}>👁 封筒の窓に出る部分</span>
@@ -22664,7 +22679,7 @@ function DMPage({ data, setData, onBack }) {
 
   // ===== 作成画面 =====
   if (screen === "create") {
-    const ps = printable(), missing = selPins().length - ps.length, o = ps[Math.min(pIdx, ps.length - 1)] || ps[0];
+    const ps = printable(), missing = selPins().filter(j => !mailAddr(j)).length, o = ps[Math.min(pIdx, ps.length - 1)] || ps[0];
     return (
       <div>
         <div id="dm-print-root">{printing ? printing.map(Letter) : null}</div>
