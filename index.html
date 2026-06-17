@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.134-comp-town-prefill";
+const APP_VERSION = "2026-06-16-v9.135-event-related-property";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6611,6 +6611,30 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     }
   };
 
+  // 🆕 v9.135: カスタム予定のタイトルから「関連する地上げ物件」を自動判定する。
+  //   例「【地上げ】柿沼荻原様回答確認」→ 所有者名(荻原)＋エリア(柿沼)が一致する jiage を返す。
+  //   所有者名が一致しても、住所の地名がタイトルに無い"名前だけ一致"は誤マッチ防止で除外。
+  const findRelatedJiage = (title) => {
+    const t = String(title || "");
+    if (!t.trim()) return null;
+    const cands = [];
+    (data.jiage || []).forEach(x => {
+      const o = String(x.owner || x.ownerName || "").trim();
+      if (!o) return;
+      const nameHit = t.includes(o) || (o.length >= 3 && t.includes(o.slice(0, 3))) || (o.length >= 2 && t.includes(o.slice(0, 2)));
+      if (!nameHit) return;
+      const addr = String(x.address || "");
+      let areaScore = 0;
+      (addr.match(/[一-龥]{2,4}/g) || []).forEach(tok => { if (tok.length >= 2 && t.includes(tok)) areaScore += tok.length; });
+      const score = (t.includes(o) ? 100 : 0) + areaScore * 10 + (t.includes(o.slice(0, 2)) ? 2 : 0);
+      cands.push({ x, score });
+    });
+    if (!cands.length) return null;
+    cands.sort((a, b) => b.score - a.score);
+    if (cands[0].score < 10) return null; // 名前2文字だけ＝地名の裏付け無し → 誤マッチ防止でスキップ
+    return cands[0].x;
+  };
+
   const openEditEvent = (ev) => {
     if (!canEdit(ev)) {
       const assigneeLabel = (ev.assignees || []).length > 0 ? ev.assignees.join("・") : (ev.createdBy || "他のメンバー");
@@ -7795,6 +7819,22 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           <Field label="タイトル *">
             <input style={inp} value={eventForm.title} onChange={e => setEventForm(p => ({ ...p, title: e.target.value }))} placeholder="比嘉さんとMTG" autoFocus />
           </Field>
+          {/* 🆕 v9.135: タイトルから関連する地上げ物件を自動判定して詳細＋「物件を開く」を表示 */}
+          {(() => {
+            const rel = findRelatedJiage(eventForm.title);
+            if (!rel) return null;
+            const ro = String(rel.owner || rel.ownerName || "").trim();
+            return (
+              <div style={{ background: C.panelBg, border: `1px solid ${C.accent}44`, borderLeft: `4px solid ${C.accent}`, borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
+                <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, marginBottom: 4 }}>🔗 関連する地上げ物件（自動判定）</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{rel.address}</div>
+                <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>所有者: <b style={{ color: C.text }}>{ro || "（未取得）"}</b>{rel.ownerAddr ? ` / ${rel.ownerAddr}` : ""}</div>
+                <div style={{ fontSize: 12, color: C.muted }}>状況: <b style={{ color: C.text }}>{rel.status || "未訪問"}</b></div>
+                <button type="button" onClick={() => { try { localStorage.setItem("hikari_cal_reopen_date", calSelectedDate); } catch (e) {} setShowEventForm(false); setEditingEvent(null); navigateToEvent({ type: "jiage", rawId: rel.id }); }}
+                  style={{ width: "100%", marginTop: 8, padding: "9px", background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>📋 この物件の詳細を開く</button>
+              </div>
+            );
+          })()}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="開始日 *">
               <input type="date" style={inp} value={eventForm.date} onChange={e => setEventForm(p => ({ ...p, date: e.target.value }))} />
