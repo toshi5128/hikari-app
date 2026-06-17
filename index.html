@@ -179,7 +179,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-16-v9.136-related-unique-match";
+const APP_VERSION = "2026-06-16-v9.137-event-detail-button";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6245,6 +6245,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const [calShowFilters, setCalShowFilters] = useState(true); // 🆕 v9.73: 種類/担当者を最初から表示（フィルタ自体はall）
   const [showEventForm, setShowEventForm] = useState(false);
   const [editingEvent, setEditingEvent] = useState(null);
+  const [eventDetail, setEventDetail] = useState(null); // 🆕 v9.137: 予定の詳細（読むだけ）ポップアップ対象 { e }
   const eventEmpty = { title: "", date: today, endDate: "", time: "", allDay: false, location: "", memo: "", assignees: [], reminderMinutes: 0, private: false };
   const [eventForm, setEventForm] = useState(eventEmpty);
   const [todoInput, setTodoInput] = useState(""); // 🆕 v9.73: ToDo入力
@@ -7564,6 +7565,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                         {e.isCustom && customEv && canEdit(customEv) && (
                           <>
                             <button onClick={(clickEvt) => { clickEvt.stopPropagation(); openEditEvent(customEv); }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
+                            <button onClick={(clickEvt) => { clickEvt.stopPropagation(); setEventDetail({ e }); }} style={{ background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>📋 詳細</button>
                             <button onClick={(clickEvt) => { clickEvt.stopPropagation(); handleDeleteEvent(e.rawId); }} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
                           </>
                         )}
@@ -7575,6 +7577,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                           return (
                             <>
                               <button onClick={(clickEvt) => { clickEvt.stopPropagation(); openLinkedEdit(e); }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
+                              <button onClick={(clickEvt) => { clickEvt.stopPropagation(); setEventDetail({ e }); }} style={{ background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>📋 詳細</button>
                               <button onClick={(clickEvt) => { clickEvt.stopPropagation(); clearLinkedDate(e); }} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
                             </>
                           );
@@ -7817,6 +7820,48 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       )}
 
       {/* 📌 カスタム予定の追加・編集 BottomSheet */}
+      {/* 🆕 v9.137: 予定の詳細（読むだけ）ポップアップ */}
+      {eventDetail && (() => {
+        const e = eventDetail.e;
+        const customEv = e.isCustom ? (data.customEvents || []).find(ev => ev.id === e.rawId) : null;
+        let rel = null, relNav = null;
+        if (e.isCustom) { rel = findRelatedJiage(e.title); if (rel) relNav = { type: "jiage", rawId: rel.id }; }
+        else if (e.type === "jiage" || e.type === "owner") {
+          const src = e.type === "jiage" ? "jiage" : "owners";
+          rel = (data[src] || []).find(p => p.id === e.rawId);
+          if (rel) relNav = { type: e.type, rawId: e.rawId };
+        }
+        const relOwner = rel ? String(rel.owner || rel.ownerName || "").trim() : "";
+        const assignees = e.assignees && e.assignees.length ? e.assignees : (e.assignee ? [e.assignee] : []);
+        const Row = ({ label, children }) => (
+          <div style={{ display: "flex", gap: 8, padding: "8px 0", borderBottom: `1px solid ${C.borderDim}`, fontSize: 13 }}>
+            <div style={{ width: 64, flexShrink: 0, color: C.muted, fontWeight: 700 }}>{label}</div>
+            <div style={{ flex: 1, color: C.text, wordBreak: "break-word" }}>{children}</div>
+          </div>
+        );
+        return (
+          <BottomSheet title="📋 予定の詳細" onClose={() => setEventDetail(null)}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: C.text, marginBottom: 8 }}>{e.icon} {e.title}</div>
+            <Row label="日時">{e.date}{customEv && customEv.endDate && customEv.endDate > e.date ? ` 〜 ${customEv.endDate}` : ""}{e.allDay ? "（終日）" : (e.time ? ` ${e.time}〜` : "")}</Row>
+            {e.location ? <Row label="場所">{e.location}</Row> : null}
+            {e.memo ? <Row label="メモ"><span style={{ whiteSpace: "pre-wrap" }}>{e.memo}</span></Row> : null}
+            {assignees.length ? <Row label="担当">{assignees.map((m, i) => <span key={i} style={{ marginRight: 4 }}><MemberTag name={m} /></span>)}</Row> : null}
+            {customEv && customEv.private ? <Row label="公開">🔒 自分だけ（非公開）</Row> : null}
+            {rel ? (
+              <div style={{ marginTop: 12, background: C.panelBg, border: `1px solid ${C.accent}44`, borderLeft: `4px solid ${C.accent}`, borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, marginBottom: 4 }}>🔗 関連する地上げ物件</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{rel.address}</div>
+                <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>所有者: <b style={{ color: C.text }}>{relOwner || "（未取得）"}</b>{rel.ownerAddr ? ` / ${rel.ownerAddr}` : ""}</div>
+                <div style={{ fontSize: 12, color: C.muted }}>状況: <b style={{ color: C.text }}>{rel.status || "未訪問"}</b></div>
+                <button type="button" onClick={() => { try { localStorage.setItem("hikari_cal_reopen_date", calSelectedDate); } catch (er) {} setEventDetail(null); navigateToEvent(relNav); }}
+                  style={{ width: "100%", marginTop: 8, padding: "9px", background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>📋 この物件の詳細を開く</button>
+              </div>
+            ) : null}
+            <button type="button" onClick={() => { const ev2 = e, ce = customEv; setEventDetail(null); if (ce) openEditEvent(ce); else openLinkedEdit(ev2); }}
+              style={{ width: "100%", marginTop: 14, padding: "11px", background: C.cardBg, border: `1.5px solid ${C.borderDim}`, color: C.text, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit" }}>✏️ 編集する</button>
+          </BottomSheet>
+        );
+      })()}
       {showEventForm && (
         <BottomSheet title={editingEvent ? "📌 予定を編集" : "📌 新しい予定を追加"} onClose={() => { setShowEventForm(false); setEditingEvent(null); }}>
           <Field label="タイトル *">
