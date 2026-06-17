@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-17-v9.146-dm-search";
+const APP_VERSION = "2026-06-17-v9.147-dm-shared-name";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22552,6 +22552,10 @@ function dmNameBad(s) {
   if (!/[぀-ヿ㐀-鿿々ヶヵ]/.test(core)) return true; // かな・漢字が1つも無い＝壊れている
   return false;
 }
+// 🆕 v9.146: 共有名義を「・」で分割
+function dmNameParts(s) { return String(s || "").split("・").map(x => x.trim()).filter(Boolean); }
+// 🆕 v9.146: 共有のうち「全員」の氏名が壊れている時だけ true（1人でも正常なら送付対象のまま）
+function dmAllNamesBad(s) { const ps = dmNameParts(s); return ps.length ? ps.every(dmNameBad) : true; }
 function dmLetterBody(name, prop) {
   return `突然のお手紙を失礼いたします。埼玉県熊谷市で空き家の買取・活用を行っております、ひかり不動産の比嘉（ひが）と申します。\n\n空き家の調査をしております折に、${name}様がご所有の『${prop}』が目に留まり、ご連絡を差し上げました。\n\n最近、管理が行き届かない空き家が空き巣・不審者・不審火などの標的になりやすく、近隣でも被害のご相談が増えております。遠方にお住まいの場合、万一の際のご対応やご近所への責任が及ぶ点も、ご心配の種ではないでしょうか。\n\nもし当てはまるようでしたら、お片付け・解体・残置物の処分は不要で、現状のまま当社が買い取らせていただくことが可能です。遠方の方やお手続きにご不安のある方も、すべて当社で進めますのでご安心ください。\n\n「防犯面が心配」「処分に困っている」「管理が負担」「まずは価格だけ知りたい」——どんなご相談でも構いません。同封のチラシもご覧のうえ、比嘉まで一度お電話いただけますと幸いです。\n\n※しつこい営業は一切いたしません。\n※今すぐでなくても、将来のご検討やご質問だけでも歓迎いたします。`;
 }
@@ -22564,7 +22568,7 @@ function dmStateFor(j) {
   let st = ""; dmLogSortedFor(j).forEach(e => { if (e.t === "不要") st = "不要"; else if (e.t === "反応") st = "反応"; else if (e.t === "返送") st = "返送"; else if (e.t === "住所修正") { if (st === "返送") st = ""; } else if (e.t === "復活") st = ""; });
   if (!st && !dmLogSortedFor(j).some(e => ["不要", "反応", "返送"].includes(e.t)) && j.dm === "📩返送") st = "返送";
   if (st) return st;
-  if (dmNameBad(j.owner || j.ownerName)) return "要確認"; // 🆕 v9.145: 氏名が壊れている（外字等）→ 要確認
+  if (dmAllNamesBad(j.owner || j.ownerName)) return "要確認"; // 🆕 v9.145/146: 氏名が壊れている（共有は全員壊れている時だけ）→ 要確認
   return String(j.ownerAddr || "").trim() ? "送付対象" : "住所未取得";
 }
 
@@ -22596,7 +22600,7 @@ function DMPage({ data, setData, onBack }) {
     let st = ""; dmlog(j).forEach(e => { if (e.t === "不要") st = "不要"; else if (e.t === "反応") st = "反応"; else if (e.t === "返送") st = "返送"; else if (e.t === "住所修正") { if (st === "返送") st = ""; } else if (e.t === "復活") st = ""; });
     if (!st && !dmlog(j).some(e => ["不要", "反応", "返送"].includes(e.t)) && j.dm === "📩返送") st = "返送";
     if (st) return st;
-    if (dmNameBad(ownerName(j))) return "要確認"; // 🆕 v9.145: 氏名が壊れている（外字等）→ 要確認
+    if (dmAllNamesBad(ownerName(j))) return "要確認"; // 🆕 v9.145/146: 氏名が壊れている（共有は全員壊れている時だけ）→ 要確認
     return mailAddr(j) ? "送付対象" : "住所未取得";
   };
   const okey = j => ownerName(j) + "|" + dmNorm(mailAddr(j));
@@ -22702,8 +22706,8 @@ function DMPage({ data, setData, onBack }) {
       const isVacantSelf = (addr) => propKey && dmAddrKey(addr) === propKey;
       const names = dmSplitParts(ownerName(j)), addrs = dmSplitParts(mailAddr(j)), zips = dmSplitParts(j.ownerZip || "");
       if (names.length > 1 && names.length === addrs.length) {
-        names.forEach((nm, i) => { if (!isVacantSelf(addrs[i]) && !dmHasGaiji(nm)) out.push({ ...j, _lkey: `${j.id}#${i}`, owner: nm, ownerName: nm, ownerAddr: addrs[i], ownerZip: zips[i] || "" }); });
-      } else if (!isVacantSelf(mailAddr(j)) && !dmHasGaiji(ownerName(j))) {
+        names.forEach((nm, i) => { if (!isVacantSelf(addrs[i]) && !dmNameBad(nm)) out.push({ ...j, _lkey: `${j.id}#${i}`, owner: nm, ownerName: nm, ownerAddr: addrs[i], ownerZip: zips[i] || "" }); });
+      } else if (!isVacantSelf(mailAddr(j)) && !dmNameBad(ownerName(j))) {
         out.push({ ...j, _lkey: String(j.id) });
       }
     });
@@ -22738,6 +22742,7 @@ function DMPage({ data, setData, onBack }) {
   // ===== 作成画面 =====
   if (screen === "create") {
     const ps = printable(), missing = selPins().filter(j => !mailAddr(j)).length, o = ps[Math.min(pIdx, ps.length - 1)] || ps[0];
+    const gaijiPersons = selPins().reduce((a, j) => a + dmNameParts(ownerName(j)).filter(dmNameBad).length, 0); // 🆕 v9.146: 共有の外字メンバー数
     return (
       <div>
         <div id="dm-print-root">{printing ? printing.map(Letter) : null}</div>
@@ -22747,7 +22752,7 @@ function DMPage({ data, setData, onBack }) {
         </div>
         <div style={{ fontSize: 12, color: C.accent, background: C.accentBg, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "8px 10px", marginBottom: 12, lineHeight: 1.6 }}>👁 <b>窓付き封筒方式</b>：手紙だけ印刷すれば、青枠の宛名が封筒の窓から見えます（封筒への宛名印刷は不要）。<br />※ 実際の封筒に合わせて、初回だけ宛名の位置を微調整してください。</div>
         {missing > 0 && <div style={{ background: "#ef444422", border: "1px solid #ef4444", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fca5a5", marginBottom: 10 }}>⚠ 送付先住所が未登録の {missing}件 は印刷から除外しました。</div>}
-        {selPins().some(j => mailAddr(j) && dmHasGaiji(ownerName(j))) && <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fbbf24", marginBottom: 10 }}>⚠ 氏名に外字（□）を含む {selPins().filter(j => mailAddr(j) && dmHasGaiji(ownerName(j))).length}件 は印刷から除外しました。謄本で氏名を修正（詳細の✏️）すると送付対象に戻ります。</div>}
+        {gaijiPersons > 0 && <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fbbf24", marginBottom: 10 }}>⚠ 氏名に外字（□）を含む {gaijiPersons}名分 は宛名に出せないため除外しました（共有の場合、正常な方には送付されます）。謄本で氏名を修正（一覧の✏️）すると追加されます。</div>}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, color: C.muted, fontSize: 12 }}>
           <button onClick={() => setPIdx(i => (i - 1 + ps.length) % Math.max(1, ps.length))} style={{ background: C.bg, border: `1px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 800 }}>◀</button>
           <span>{ps.length ? Math.min(pIdx, ps.length - 1) + 1 : 0} / {ps.length} 件目</span>
@@ -22829,6 +22834,7 @@ function DMPage({ data, setData, onBack }) {
         const st = stateOf(j), selected = sel.includes(j.id), n = sentCount(j), oc = otherCnt(j);
         const col = n >= 3 ? "#f43f5e" : n === 2 ? "#f59e0b" : n === 1 ? "#0ea5e9" : "#64748b";
         const sendLbl = n === 0 ? "未送信" : `送信 ${n}回`;
+        const parts = dmNameParts(ownerName(j)), badParts = parts.filter(dmNameBad), isShared = parts.length > 1; // 🆕 v9.146
         return (
           <div key={j.id} style={{ background: selected ? "#0ea5e914" : C.cardBg, border: `1px solid ${selected ? C.accent : C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
             <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -22839,11 +22845,13 @@ function DMPage({ data, setData, onBack }) {
                   <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: st === "送付対象" ? col : st === "返送" ? "#ef4444" : st === "反応" ? "#a855f7" : st === "要確認" ? "#f59e0b" : "#475569", color: "#fff" }}>{st === "送付対象" ? sendLbl : st}</span>
                 </div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}>⚠ 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 担当 {j.assignee || "—"}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／👥この所有者は他に{oc}件</span>}</div>
+                {isShared && st === "送付対象" && <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5, color: "#22c55e", fontWeight: 700 }}>👥 共有 {parts.length}名 → 一人ずつ個別に <b>{parts.length - badParts.length}通</b> 送付{badParts.length > 0 && <span style={{ color: "#fbbf24" }}>／<b>{badParts.join("・")}</b> 様は外字のため除外中（✏️で氏名を直すと追加）</span>}</div>}
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
                   {st === "送付対象" && <>
                     <button onClick={() => markReturn(j)} style={dmActBtn("#ef4444")}>📩 返送</button>
                     <button onClick={() => markReaction(j)} style={dmActBtn("#a855f7")}>🔥 連絡あり</button>
                     <button onClick={() => markNo(j)} style={dmActBtn("#64748b")}>🚫 もう送らない</button>
+                    {badParts.length > 0 && <button onClick={() => openNameEdit(j)} style={dmActBtn("#f59e0b")}>✏️ 氏名を直す</button>}
                   </>}
                   {st === "要確認" && <button onClick={() => openNameEdit(j)} style={dmActBtn("#f59e0b")}>✏️ 氏名を直す</button>}
                   {st === "住所未取得" && <button onClick={() => openAddrEdit(j)} style={dmActBtn("#0ea5e9")}>✏️ 住所を入力</button>}
