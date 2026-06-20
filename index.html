@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-20-v9.154-areas-namegawa-konosu-yorii";
+const APP_VERSION = "2026-06-20-v9.155-onsite-pin-backup";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1318,6 +1318,27 @@ const JUDGMENTS = [
 const SUPABASE_URL = "https://ckcykbvislsjwvkizkqc.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrY3lrYnZpc2xzand2a2l6a3FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0Njk1MzIsImV4cCI6MjA5NDA0NTUzMn0.Yf2EnNHRi6M5mwaaNFwBATNZb8jVBG3LsFxMt6eDfH8";
 const DATA_ID = "hikari_main";
+
+// 🆕 v9.155: 現地ピンの「独立バックアップ」。クラウド同期・キャッシュ上書きと一切無関係に、
+//   立てた瞬間に端末へ追記保存する保険。圏外で保存が失敗しても・画面から消えても、ここから復元できる。
+const ONSITE_BACKUP_KEY = "hikari_onsite_backup_v1";
+function backupOnsitePin(p) {
+  try {
+    const raw = localStorage.getItem(ONSITE_BACKUP_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    arr.push({
+      id: p.id, address: p.address || "", landmark: p.landmark || "",
+      lat: p.lat, lng: p.lng, assignee: p.assignee || "", memo: p.memo || "",
+      area: p.area || "", createdAt: p.createdAt || p.id, savedAt: Date.now(),
+    });
+    const trimmed = arr.length > 5000 ? arr.slice(arr.length - 5000) : arr; // 直近5000件保持
+    localStorage.setItem(ONSITE_BACKUP_KEY, JSON.stringify(trimmed));
+  } catch (e) { /* localStorage満杯等でも本処理は止めない */ }
+}
+function loadOnsiteBackup() {
+  try { const raw = localStorage.getItem(ONSITE_BACKUP_KEY); return raw ? JSON.parse(raw) : []; }
+  catch (e) { return []; }
+}
 
 // ===================== 🔊 v9.19: ボタンタップ効果音 =====================
 // Web Audio API で短いクリック音を生成 (外部ファイル不要、 軽量)
@@ -15272,6 +15293,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       visitLog: [],
       family: [],
     };
+    // 🆕 v9.155: 同期より先に「独立バックアップ」へ即追記（圏外・保存失敗でも消えないための保険）
+    backupOnsitePin(newJiage);
     const pinLat = pendingPin.lat;
     const pinLng = pendingPin.lng;
     // 🆕 v8.100: 担当者の本日 approach の「新規地上」を自動で +1
@@ -15428,6 +15451,46 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
     lines.push("→ このCSVを Claude Code に渡して謄本一括取得 → 結果をインポート");
     alert(lines.join("\n"));
   };
+
+  // 🆕 v9.155: 現地ピンの独立バックアップ → CSV出力（同期と無関係に端末へ溜めた全件。圏外保険）
+  const downloadOnsiteBackupCSV = () => {
+    const bk = loadOnsiteBackup();
+    if (!bk.length) { alert("バックアップはまだありません（この端末で立てた現地ピンが対象です）"); return; }
+    const headers = ["ID", "作成日", "地番", "目印住所", "担当者", "緯度", "経度", "ステータス", "メモ"];
+    const rows = bk.map(b => [b.id, b.createdAt ? new Date(b.createdAt).toLocaleDateString("ja-JP") : "", b.address || "", b.landmark || "", b.assignee || "", b.lat, b.lng, "未訪問", (b.memo || "").replace(/[\r\n]+/g, " ")]);
+    const escape = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    const csv = [headers, ...rows].map(r => r.map(escape).join(",")).join("\r\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; const ts = new Date().toISOString().slice(0, 10);
+    a.download = `genchi_pin_backup_${ts}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    alert(`🛟 バックアップ ${bk.length}件 を出力しました（genchi_pin_backup_${ts}.csv）。\nこの端末で立てた現地ピンの控えです。`);
+  };
+
+  // 🆕 v9.155: バックアップから「アプリに無いピン」を復元（圏外で保存できず消えた分を戻す。削除済みは尊重）
+  const restoreFromOnsiteBackup = () => {
+    const bk = loadOnsiteBackup();
+    if (!bk.length) { alert("バックアップはまだありません"); return; }
+    const existing = new Set((data.jiage || []).map(j => String(j.id)));
+    const tomb = (data.tombstones && data.tombstones.jiage) || {};
+    const missing = bk.filter(b => !existing.has(String(b.id)) && !(Number(tomb[String(b.id)]) > 0));
+    if (!missing.length) { alert("✅ バックアップとアプリは一致しています（復元が必要なピンはありません）"); return; }
+    if (!window.confirm(`🛟 アプリに無い現地ピン ${missing.length}件 をバックアップから復元します。\n（あなたが削除したピンは戻しません）\n復元しますか？`)) return;
+    const now = Date.now();
+    const recovered = missing.map(b => ({
+      id: b.id, address: b.address || "", landmark: b.landmark || "",
+      lat: b.lat, lng: b.lng, assignee: b.assignee || currentUser || MEMBERS[0],
+      memo: b.memo || "", status: "未訪問", dm: "未", visit: "未",
+      coordsManual: true, source: "現地ピン(復元)", area: b.area || "",
+      ownerName: "", ownerAddr: "", createdAt: b.createdAt || b.id, updatedAt: now,
+      history: [], visitLog: [], family: [],
+    }));
+    setData(d => ({ ...d, jiage: [...(d.jiage || []), ...recovered] }));
+    alert(`✅ ${recovered.length}件を復元しました。地図に戻ります（クラウドにも同期されます）。`);
+  };
+
   const propNavDest = item => hasPin(item) ? `${item.lat},${item.lng}` : item.address;
 
   // Excelファイル直接インポート用state
@@ -18060,7 +18123,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 <button onClick={() => { setAddType("jiage"); setForm(emptyJiage); setEditItem(null); setShowAdd(true); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid ${C.borderDim}` }}>📍 物件を追加</button>
                 <button onClick={() => { fileInputRef.current?.click(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.success, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid ${C.borderDim}` }}>📥 Excel/CSVをインポート</button>
                 {/* 🆕 v8.95→v8.112: 謄本待ちCSV出力（謄本取得用） */}
-                <button onClick={() => { downloadOnsitePinCSV(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.accent, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>📥 謄本待ちCSV出力（謄本取得用）</button>
+                <button onClick={() => { downloadOnsitePinCSV(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.accent, padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid ${C.borderDim}` }}>📥 謄本待ちCSV出力（謄本取得用）</button>
+                {/* 🆕 v9.155: 現地ピンの圏外保険（独立バックアップ） */}
+                <button onClick={() => { restoreFromOnsiteBackup(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: "#f59e0b", padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left", borderBottom: `1px solid ${C.borderDim}`, fontWeight: 700 }}>🛟 消えたピンを復元（バックアップ照合）</button>
+                <button onClick={() => { downloadOnsiteBackupCSV(); setShowAddMenu(false); }} style={{ display: "block", width: "100%", background: "none", border: "none", color: "#f59e0b", padding: "14px 16px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", textAlign: "left" }}>🛟 現地ピンの控えを出力（バックアップCSV）</button>
               </div>
             )}
           </div>
