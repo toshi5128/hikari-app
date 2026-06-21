@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-21-v9.161-dm-preview-a4";
+const APP_VERSION = "2026-06-21-v9.162-dm-print-iframe";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22919,7 +22919,36 @@ function DMPage({ data, setData, onBack }) {
   // 🆕 v9.148: 印刷対象＝選択された「人単位」の送付対象行（personRowsが既に共有を分割済み）
   const printable = () => personRows.filter(r => r._state === "送付対象" && mailAddr(r) && sel.includes(r._lkey));
   const doPrint = () => { const p = printable(); if (p.length) setPrinting(p); };
-  React.useEffect(() => { if (printing) { const t = setTimeout(() => { try { window.print(); } catch (e) {} setPrinting(null); }, 200); return () => clearTimeout(t); } }, [printing]);
+  // 🆕 v9.162: 印刷は隔離iframeで行う（アプリDOMの干渉=ページ増殖/空白/縮小 を根絶。検証済PDFと同じCSS）
+  React.useEffect(() => {
+    if (!printing) return;
+    const t = setTimeout(() => {
+      try {
+        const src = document.getElementById("dm-print-root");
+        if (src && src.innerHTML) {
+          const css = "@page{size:A4;margin:15mm 16mm;}*{box-sizing:border-box;}html,body{margin:0;padding:0;}"
+            + "body{font-family:'Yu Gothic','游ゴシック','Noto Sans JP',sans-serif;color:#1a1a1a;}"
+            + ".dm-letter{padding:0 !important;border-radius:0 !important;min-height:260mm;display:flex;flex-direction:column;page-break-after:always;}"
+            + ".dm-letter:last-child{page-break-after:auto;}.dm-foot{margin-top:auto;}"
+            + ".dm-window-guide{display:none !important;}.dm-window-box{border:none !important;padding:0 !important;}";
+          const ifr = document.createElement("iframe");
+          ifr.setAttribute("aria-hidden", "true");
+          ifr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+          document.body.appendChild(ifr);
+          const doc = ifr.contentWindow.document;
+          doc.open();
+          doc.write("<!doctype html><html lang='ja'><head><meta charset='utf-8'><style>" + css + "</style></head><body>" + src.innerHTML + "</body></html>");
+          doc.close();
+          setTimeout(() => {
+            try { ifr.contentWindow.focus(); ifr.contentWindow.print(); } catch (e) {}
+            setTimeout(() => { try { document.body.removeChild(ifr); } catch (e) {} }, 1500);
+          }, 350);
+        }
+      } catch (e) { console.warn("print failed", e); }
+      setPrinting(null);
+    }, 200);
+    return () => clearTimeout(t);
+  }, [printing]);
   const markSent = () => { const p = printable(); if (!p.length) return; const ids = [...new Set(p.map(j => j.id))]; appendLog(ids, "送付"); setSel([]); setScreen("board"); setView("送付対象"); alert(`✅ ${p.length}通を送付済みにしました（${ids.length}件の物件／履歴に記録＝同期で消えません）。`); };
 
   const toggle = key => setSel(s => s.includes(key) ? s.filter(x => x !== key) : [...s, key]);
