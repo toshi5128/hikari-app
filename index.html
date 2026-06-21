@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-21-v9.168-dm-kengai-group";
+const APP_VERSION = "2026-06-22-v9.169-jiage-visit-time";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6445,7 +6445,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const openLinkedEdit = (e) => {
     const config = {
-      jiage: { dateField: "nextVisit", dateLabel: "次回訪問日", source: "jiage" },
+      jiage: { dateField: "nextVisit", timeField: "nextVisitTime", dateLabel: "次回訪問日", source: "jiage" },
       owner: { dateField: "nextFollowDate", dateLabel: "次回フォロー日", source: "owners" },
       buyContract: { dateField: "buyContractDate", dateLabel: "仕入契約日", source: "stocks" },
       buy: { dateField: "buyDate", dateLabel: "仕入決済日", source: "stocks" },
@@ -6492,6 +6492,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       parentId: e.rawId,
       dateField: cfg.dateField,
       dateValue: parent[cfg.dateField] || "",
+      timeField: cfg.timeField || "",
+      timeValue: cfg.timeField ? (parent[cfg.timeField] || "") : "",
       parentName: parent.name || parent.address || "(無題)",
       dateLabel: cfg.dateLabel,
       source: cfg.source,
@@ -6503,7 +6505,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const saveLinkedEdit = () => {
     if (!linkedEditForm) return;
-    const { source, parentId, dateField, dateValue, isViewing, viewingIdx, timeValue } = linkedEditForm;
+    const { source, parentId, dateField, dateValue, isViewing, viewingIdx, timeValue, timeField } = linkedEditForm;
     if (!dateValue) {
       alert("⚠️ 日付を入力してください\n削除する場合は「🗑️ この日付をクリア」を押してください。");
       return;
@@ -6527,14 +6529,14 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     }
     setData(d => ({
       ...d,
-      [source]: (d[source] || []).map(p => p.id === parentId ? { ...p, [dateField]: dateValue } : p),
+      [source]: (d[source] || []).map(p => p.id === parentId ? { ...p, [dateField]: dateValue, ...(timeField ? { [timeField]: timeValue || "" } : {}) } : p),
     }));
     setLinkedEditForm(null);
   };
 
   const clearLinkedDate = (e) => {
     const config = {
-      jiage: { dateField: "nextVisit", dateLabel: "次回訪問日", source: "jiage" },
+      jiage: { dateField: "nextVisit", timeField: "nextVisitTime", dateLabel: "次回訪問日", source: "jiage" },
       owner: { dateField: "nextFollowDate", dateLabel: "次回フォロー日", source: "owners" },
       buyContract: { dateField: "buyContractDate", dateLabel: "仕入契約日", source: "stocks" },
       buy: { dateField: "buyDate", dateLabel: "仕入決済日", source: "stocks" },
@@ -6575,14 +6577,14 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     if (!window.confirm(`「${parentName}」の${cfg.dateLabel}をクリアしますか?\n(この予定がカレンダーから消えます)`)) return;
     setData(d => ({
       ...d,
-      [cfg.source]: (d[cfg.source] || []).map(p => p.id === e.rawId ? { ...p, [cfg.dateField]: "" } : p),
+      [cfg.source]: (d[cfg.source] || []).map(p => p.id === e.rawId ? { ...p, [cfg.dateField]: "", ...(cfg.timeField ? { [cfg.timeField]: "" } : {}) } : p),
     }));
     setLinkedEditForm(null);
   };
 
   const clearLinkedFromModal = () => {
     if (!linkedEditForm) return;
-    const { source, parentId, dateField, parentName, dateLabel, isViewing, viewingIdx, customer } = linkedEditForm;
+    const { source, parentId, dateField, parentName, dateLabel, isViewing, viewingIdx, customer, timeField } = linkedEditForm;
     // 🆕 案内予定の場合：visitDate と visitTime をクリア（反響データは残す）
     if (isViewing) {
       if (!window.confirm(`「${parentName}」の案内予定（${customer || "顧客未設定"}）をカレンダーから削除しますか？\n反響データ（顧客情報・予算など）は残ります。`)) return;
@@ -6604,7 +6606,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     if (!window.confirm(`「${parentName}」の${dateLabel}をクリアしますか？\n(この予定がカレンダーから消えます)`)) return;
     setData(d => ({
       ...d,
-      [source]: (d[source] || []).map(p => p.id === parentId ? { ...p, [dateField]: "" } : p),
+      [source]: (d[source] || []).map(p => p.id === parentId ? { ...p, [dateField]: "", ...(timeField ? { [timeField]: "" } : {}) } : p),
     }));
     setLinkedEditForm(null);
   };
@@ -6896,7 +6898,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const calEvents = useMemo(() => {
     const list = [];
     (data.jiage || []).forEach(j => {
-      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `訪問予定・${j.status}`, assignee: j.assignee, rawId: j.id });
+      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `${j.nextVisitTime ? "🕐 " + j.nextVisitTime + " ・ " : ""}訪問予定・${j.status}`, time: j.nextVisitTime || "", assignee: j.assignee, rawId: j.id });
     });
     (data.owners || []).forEach(o => {
       if (o.nextFollowDate) list.push({ date: o.nextFollowDate, type: "owner", icon: "👤", color: C.accent, title: o.address || "(無住所)", sub: `所有者フォロー・${o.status}`, assignee: o.assignee, rawId: o.id });
@@ -8135,6 +8137,26 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                 />
               </Field>
             </div>
+          ) : linkedEditForm.timeField ? (
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
+              <Field label={linkedEditForm.dateLabel + " *"}>
+                <input
+                  type="date"
+                  style={inp}
+                  value={linkedEditForm.dateValue}
+                  onChange={e => setLinkedEditForm(p => ({ ...p, dateValue: e.target.value }))}
+                  autoFocus
+                />
+              </Field>
+              <Field label="時間">
+                <input
+                  type="time"
+                  style={inp}
+                  value={linkedEditForm.timeValue || ""}
+                  onChange={e => setLinkedEditForm(p => ({ ...p, timeValue: e.target.value }))}
+                />
+              </Field>
+            </div>
           ) : (
             <Field label={linkedEditForm.dateLabel + " *"}>
               <input
@@ -8608,8 +8630,11 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
             </select>
           </Field>
           {(() => { const dow = dayOfWeekLabel(quickEditJiageForm.nextVisit); return (
-            <Field label={<>📅 次回訪問日{dow && <span style={{ color: dow.color, marginLeft: 8, fontWeight: 800 }}>（{dow.label}）</span>}</>}>
-              <input type="date" style={inp} value={quickEditJiageForm.nextVisit || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisit: e.target.value }))} />
+            <Field label={<>📅 次回訪問日時{dow && <span style={{ color: dow.color, marginLeft: 8, fontWeight: 800 }}>（{dow.label}）</span>}</>}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input type="date" style={{ ...inp, flex: 2 }} value={quickEditJiageForm.nextVisit || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisit: e.target.value }))} />
+                <input type="time" style={{ ...inp, flex: 1 }} value={quickEditJiageForm.nextVisitTime || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisitTime: e.target.value }))} disabled={!quickEditJiageForm.nextVisit} />
+              </div>
             </Field>
           ); })()}
           <Field label="📝 メモ">
@@ -14156,8 +14181,11 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
                 {ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}
               </select>
             </Field>
-            <Field label="📅 次回訪問">
-              <input type="date" style={inp} value={editingJiage.nextVisit || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisit: e.target.value })} />
+            <Field label="📅 次回訪問日時">
+              <div style={{ display: "flex", gap: 6 }}>
+                <input type="date" style={{ ...inp, flex: 2, minWidth: 0 }} value={editingJiage.nextVisit || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisit: e.target.value })} />
+                <input type="time" style={{ ...inp, flex: 1, minWidth: 0 }} value={editingJiage.nextVisitTime || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisitTime: e.target.value })} disabled={!editingJiage.nextVisit} />
+              </div>
             </Field>
             <Field label="👥 担当者">
               <select style={inp} value={editingJiage.assignee || ""} onChange={e => setEditingJiage({ ...editingJiage, assignee: e.target.value })}>
@@ -18075,7 +18103,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
     setSelected(null);
   };
 
-  const emptyJiage = { address: "", owner: "", ownerAddr: "", ownerContact: "", dm: "未", visit: "未", status: "未訪問", assignee: currentUser || MEMBERS[0], memo: "", nextVisit: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
+  const emptyJiage = { address: "", owner: "", ownerAddr: "", ownerContact: "", dm: "未", visit: "未", status: "未訪問", assignee: currentUser || MEMBERS[0], memo: "", nextVisit: "", nextVisitTime: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
   const [form, setForm] = useState(emptyJiage);
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
 
@@ -21660,7 +21688,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               <Field label="DM状況"><select style={inp} value={form.dm || "未"} onChange={f("dm")}>{DM_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
               <Field label="住所確認"><select style={inp} value={form.visit || "未"} onChange={f("visit")}>{["未", "済", "異"].map(s => <option key={s}>{s}</option>)}</select></Field>
               <Field label="訪問状況"><select style={inp} value={form.status} onChange={f("status")}>{ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
-              <Field label="次回訪問日"><input type="date" style={inp} value={form.nextVisit || ""} onChange={f("nextVisit")} /></Field>
+              <Field label="次回訪問日時"><div style={{ display: "flex", gap: 8 }}><input type="date" style={{ ...inp, flex: 2 }} value={form.nextVisit || ""} onChange={f("nextVisit")} /><input type="time" style={{ ...inp, flex: 1 }} value={form.nextVisitTime || ""} onChange={f("nextVisitTime")} disabled={!form.nextVisit} /></div></Field>
             </>
           ) : (
             <>
