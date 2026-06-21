@@ -187,7 +187,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-22-v9.174-todo-glow";
+const APP_VERSION = "2026-06-22-v9.175-day-timeline";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7510,6 +7510,69 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               <span style={{ fontSize: 11 }}>右下の「＋」ボタンから予定・ToDoを追加できます</span>
             </div>
           ) : (
+            <>
+            {/* 🆕 v9.175: Googleカレンダー風 縦タイムライン（終日は上、時刻付きは時間軸に高さ付きで配置） */}
+            {(() => {
+              const HP = 46; // 1時間=46px
+              const parse = t => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ""); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+              const timed = [], allday = [];
+              selectedEvents.forEach(e => {
+                const s = e.allDay ? null : parse(e.time);
+                if (s == null) { allday.push(e); return; }
+                const en = parse(e.endTime);
+                timed.push({ e, start: s, end: (en != null && en > s) ? en : s + 60, lane: 0, lanes: 1 });
+              });
+              const sorted = timed.sort((a, b) => a.start - b.start || a.end - b.end);
+              let ci = 0;
+              while (ci < sorted.length) {
+                let cj = ci, cEnd = sorted[ci].end; const cl = [sorted[ci]];
+                while (cj + 1 < sorted.length && sorted[cj + 1].start < cEnd) { cj++; cl.push(sorted[cj]); cEnd = Math.max(cEnd, sorted[cj].end); }
+                const laneEnd = [];
+                cl.forEach(ev => { let pl = false; for (let l = 0; l < laneEnd.length; l++) { if (laneEnd[l] <= ev.start) { ev.lane = l; laneEnd[l] = ev.end; pl = true; break; } } if (!pl) { ev.lane = laneEnd.length; laneEnd.push(ev.end); } });
+                cl.forEach(ev => ev.lanes = laneEnd.length);
+                ci = cj + 1;
+              }
+              let startH = 8, endH = 20;
+              if (sorted.length) { startH = Math.min(startH, Math.floor(sorted[0].start / 60)); endH = Math.max(endH, Math.ceil(Math.max.apply(null, sorted.map(x => x.end)) / 60)); }
+              startH = Math.max(0, startH); endH = Math.min(24, Math.max(endH, startH + 1));
+              const hours = []; for (let h = startH; h <= endH; h++) hours.push(h);
+              const gridH = (endH - startH) * HP, GUT = 42;
+              return (
+                <div style={{ marginBottom: 12 }}>
+                  {allday.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                      {allday.map((e, k) => (
+                        <button key={k} onClick={() => setEventDetail({ e })} style={{ background: (e.color || C.accent) + "33", border: `1px solid ${e.color || C.accent}`, color: C.text, borderRadius: 7, padding: "4px 9px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                          <span>{e.icon}</span>{e.title}{e.allDay ? "" : (e.time ? ` ${e.time}` : "")}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {sorted.length > 0 && (
+                    <div style={{ position: "relative", height: gridH, border: `1px solid ${C.borderDim}`, borderRadius: 10, background: C.bg, overflow: "hidden" }}>
+                      {hours.map((h, hi) => (
+                        <div key={h} style={{ position: "absolute", top: hi * HP, left: 0, right: 0, height: HP, borderTop: hi === 0 ? "none" : `1px solid ${C.borderDim}55` }}>
+                          <span style={{ position: "absolute", top: -7, left: 4, fontSize: 10, color: C.muted, background: C.bg, padding: "0 2px" }}>{h}時</span>
+                        </div>
+                      ))}
+                      {sorted.map((it, k) => {
+                        const top = (it.start - startH * 60) / 60 * HP;
+                        const hgt = Math.max((it.end - it.start) / 60 * HP - 2, 20);
+                        const w = `calc((100% - ${GUT}px) / ${it.lanes})`;
+                        const left = `calc(${GUT}px + (100% - ${GUT}px) / ${it.lanes} * ${it.lane})`;
+                        const e = it.e;
+                        return (
+                          <button key={k} onClick={() => setEventDetail({ e })} title={e.title} style={{ position: "absolute", top, height: hgt, left, width: w, background: (e.color || C.accent), border: "1px solid rgba(255,255,255,0.25)", borderRadius: 6, padding: "3px 6px", textAlign: "left", cursor: "pointer", fontFamily: "inherit", overflow: "hidden", color: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.4)" }}>
+                            <div style={{ fontSize: 11, fontWeight: 800, lineHeight: 1.15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.icon} {e.title}</div>
+                            <div style={{ fontSize: 9, opacity: 0.92, lineHeight: 1.2 }}>{e.time}{e.endTime ? `〜${e.endTime}` : ""}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <div style={{ display: "grid", gap: 6 }}>
               {selectedEvents.map((e, i) => {
                 const customEv = e.isCustom ? (data.customEvents || []).find(ev => ev.id === e.rawId) : null;
@@ -7703,6 +7766,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               );
               })}
             </div>
+            </>
           )}
           {/* 🆕 v9.73: ToDo（自分用・未完了は翌日繰り越し・シンプル） */}
           <div style={{ marginTop: 14, borderTop: `1px dashed ${C.borderDim}`, paddingTop: 12 }}>
