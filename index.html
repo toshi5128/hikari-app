@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-21-v9.165-dm-logo-bigger";
+const APP_VERSION = "2026-06-21-v9.166-dm-fix-tab";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22767,14 +22767,16 @@ function DMPage({ data, setData, onBack }) {
         names.forEach((nm, i) => {
           const addr = addrs[i] || "";
           if (isVacantSelf(addr)) return; // 発送先＝物件住所（空き家本人宛）は除外＝住所違いだけ送る
-          const st = dmNameBad(nm) ? "要確認" : (addr ? "送付対象" : "住所未取得");
+          let st = dmNameBad(nm) ? "要確認" : (addr ? "送付対象" : "住所未取得");
+          if (st === "送付対象" && dmDeliveryRisk(addr, zips[i] || "").length) st = "要修正"; // 🆕 v9.166: 配達が微妙なものは送付対象から外す
           rows.push({ ...j, ...orig, _lkey: `${j.id}#${i}`, _shared: true, _shareTotal: names.length, _state: st, owner: nm, ownerName: nm, ownerAddr: addr, ownerZip: zips[i] || "" });
         });
       } else if (names.length > 1) {
         // 🆕 v9.150: 共有だが「氏名・住所・〒」の数が合わず一人ずつに分けられない → 要確認で手当て
         rows.push({ ...j, ...orig, _lkey: String(j.id), _shared: true, _shareTotal: names.length, _state: "要確認", _mismatch: { n: names.length, a: addrs.length, z: zips.length } });
       } else {
-        const st = dmAllNamesBad(ownerName(j)) ? "要確認" : (mailAddr(j) ? "送付対象" : "住所未取得");
+        let st = dmAllNamesBad(ownerName(j)) ? "要確認" : (mailAddr(j) ? "送付対象" : "住所未取得");
+        if (st === "送付対象" && dmDeliveryRisk(mailAddr(j), j.ownerZip).length) st = "要修正"; // 🆕 v9.166: 配達が微妙なものは送付対象から外す
         rows.push({ ...j, ...orig, _lkey: String(j.id), _shared: false, _state: st });
       }
     });
@@ -22791,11 +22793,10 @@ function DMPage({ data, setData, onBack }) {
       .some(f => qnorm(f).indexOf(needle) >= 0);
   };
   const riskOf = r => dmDeliveryRisk(mailAddr(r), r.ownerZip); // 🆕 v9.149
-  const riskCount = personRows.filter(r => r._state === "送付対象" && areaA(r) && asgA(r) && riskOf(r).length > 0).length;
+  const riskCount = personRows.filter(r => r._state === "要修正" && areaA(r) && asgA(r)).length; // 🆕 v9.166: 要修正(配達微妙)件数
   const visible = () => {
     let base = personRows.filter(r => r._state === view && areaA(r) && asgA(r));
     if (view === "送付対象") base = base.filter(r => fCount === "all" || (fCount === 3 ? sentCount(r) >= 3 : sentCount(r) === fCount));
-    if (view === "送付対象" && fRisk) base = base.filter(r => riskOf(r).length > 0);
     return base.filter(matchQ);
   };
   // 成果集計（エリア・担当で絞り込み）
@@ -23058,7 +23059,7 @@ function DMPage({ data, setData, onBack }) {
 
       {/* タブ */}
       <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 12, paddingBottom: 2 }}>
-        {Tab("送付対象", "📨 送付対象")}{Tab("要確認", "🔍 要確認")}{Tab("住所未取得", "🏠 住所未取得")}{Tab("返送", "📩 返送")}{Tab("反応", "🔥 反応")}{Tab("不要", "🚫 不要")}
+        {Tab("送付対象", "📨 送付対象")}{Tab("要修正", "🔧 要修正")}{Tab("要確認", "🔍 要確認")}{Tab("住所未取得", "🏠 住所未取得")}{Tab("返送", "📩 返送")}{Tab("反応", "🔥 反応")}{Tab("不要", "🚫 不要")}
       </div>
 
       {/* 🆕 v9.146: 検索（名前・住所・ワード） */}
@@ -23075,11 +23076,13 @@ function DMPage({ data, setData, onBack }) {
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {Chip("all", "すべて", "")}{Chip(0, "未送信", countSend(0))}{Chip(1, "1回", countSend(1))}{Chip(2, "2回", countSend(2))}{Chip(3, "3回以上", countSend(3))}
           </div>
-          {/* 🆕 v9.149: 配達が微妙な宛先（住所・〒は埋まっているが届くか怪しい）だけ表示 */}
-          <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, margin: "10px 0 6px" }}>配達チェック</div>
-          <button onClick={() => { setFRisk(v => !v); setSel([]); }} style={{ background: fRisk ? "#f59e0b" : C.bg, color: fRisk ? "#fff" : (riskCount > 0 ? "#fbbf24" : C.muted), border: `1.5px solid ${fRisk ? "#f59e0b" : (riskCount > 0 ? "#f59e0b" : C.borderDim)}`, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>⚠ 配達が微妙なものだけ {riskCount}</button>
-          {riskCount > 0 && <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>※ 番地が無い／〒が市の代表（末尾0000・町域不明）／〒が不正／住所に外字 のいずれか。送る前に住所を直すか、要否を判断してください。</div>}
+          {riskCount > 0 && <div style={{ fontSize: 11, color: "#fbbf24", marginTop: 10, lineHeight: 1.5, fontWeight: 700 }}>⚠ 配達が微妙な宛先 {riskCount}件 は「🔧 要修正」タブにまとめてあります（印刷対象から除外）。住所・〒を直すと自動で送付対象に戻ります。</div>}
         </div>
+      )}
+
+      {/* 🆕 v9.166: 要修正の説明（配達が微妙＝印刷対象から外している） */}
+      {view === "要修正" && (
+        <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#fbbf24", marginBottom: 10, lineHeight: 1.6 }}>🔧 住所・〒は埋まっていますが、<b>このままでは届くか微妙な宛先</b>です（番地が無い／〒が市の代表・末尾0000／〒が不正／住所に外字 など）。<b>誤配を防ぐため印刷対象から外しています。</b> <b>✏️ 住所/〒を直す</b> と、問題が解消され次第これらは自動的に「📨 送付対象」へ戻ります。</div>
       )}
 
       {/* 🆕 v9.145: 要確認の説明 */}
@@ -23104,7 +23107,7 @@ function DMPage({ data, setData, onBack }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 {j.ownerKana && !j._shared && <div style={{ fontSize: 10, color: "#0ea5e9", lineHeight: 1 }}>{j.ownerKana}</div>}
                 <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{ownerName(j)} 様
-                  <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: st === "送付対象" ? col : st === "返送" ? "#ef4444" : st === "反応" ? "#a855f7" : st === "要確認" ? "#f59e0b" : "#475569", color: "#fff" }}>{st === "送付対象" ? sendLbl : st}</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: st === "送付対象" ? col : st === "返送" ? "#ef4444" : st === "反応" ? "#a855f7" : st === "要修正" ? "#f97316" : st === "要確認" ? "#f59e0b" : "#475569", color: "#fff" }}>{st === "送付対象" ? sendLbl : st}</span>
                   {j._shared && <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: "#7c3aed", color: "#fff" }}>👥 共有{j._shareTotal ? `(${j._shareTotal}名)` : ""}</span>}
                 </div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}>⚠ 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 担当 {j.assignee || "—"}{j._shared && <span style={{ color: "#a78bfa", fontWeight: 700 }}>／👥 この物件は共有名義（一人ずつ個別に送付）</span>}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／👥この所有者は他に{oc}件</span>}</div>
@@ -23116,6 +23119,12 @@ function DMPage({ data, setData, onBack }) {
                     {j._shared && <button onClick={() => openShareEdit(j)} style={dmActBtn("#7c3aed")}>✏️ 共有を編集</button>}
                     <button onClick={() => markReturn(j)} style={dmActBtn("#ef4444")}>📩 返送</button>
                     <button onClick={() => markReaction(j)} style={dmActBtn("#a855f7")}>🔥 連絡あり</button>
+                    <button onClick={() => markNo(j)} style={dmActBtn("#64748b")}>🚫 もう送らない</button>
+                  </>}
+                  {st === "要修正" && <>
+                    {j._shared
+                      ? <button onClick={() => openShareEdit(j)} style={dmActBtn("#7c3aed")}>✏️ 共有を編集</button>
+                      : <button onClick={() => openAddrEdit(j)} style={dmActBtn("#f59e0b")}>✏️ 住所/〒を直す</button>}
                     <button onClick={() => markNo(j)} style={dmActBtn("#64748b")}>🚫 もう送らない</button>
                   </>}
                   {st === "要確認" && (j._mismatch
