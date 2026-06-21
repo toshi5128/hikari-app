@@ -191,7 +191,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-22-v9.179-timeline-create";
+const APP_VERSION = "2026-06-22-v9.180-timeline-select";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6277,7 +6277,10 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   };
 
   // ===== カレンダー用 state =====
-  const [tlDrag, setTlDrag] = useState(null); // 🆕 v9.179: タイムラインのドラッグ選択 {startMin,curMin,moved}
+  const [tlSel, setTlSel] = useState(null); // 🆕 v9.180: タイムラインの選択枠 {start,end}（タップで配置→つまみ調整→再タップで作成）
+  const [tlResize, setTlResize] = useState(null); // "start" | "end" ドラッグ中の端
+  const tlGridRef = React.useRef(null);
+  React.useEffect(() => { setTlSel(null); setTlResize(null); }, [calSelectedDate]); // 日付切替で選択枠をクリア
   const [calMode, setCalMode] = useState("month"); // "month" | "week"
   const [calCursor, setCalCursor] = useState(() => new Date());
   const [calSelectedDate, setCalSelectedDate] = useState(today);
@@ -7572,19 +7575,34 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                       ))}
                     </div>
                   )}
-                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>💡 空き時間をタップで1時間の予定／ドラッグで時間を指定して新規作成</div>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>💡 空き時間をタップ→枠が出ます／つまみ（●）を上下にドラッグで時間調節→枠をもう一度タップで作成</div>
                   <div
-                    style={{ position: "relative", height: gridH, border: `1px solid ${C.borderDim}`, borderRadius: 10, background: C.bg, overflow: "hidden", touchAction: "none", cursor: "pointer", userSelect: "none" }}
-                    onPointerDown={ev => { const r = ev.currentTarget.getBoundingClientRect(); let m = startH * 60 + ((ev.clientY - r.top) / HP) * 60; m = Math.max(startH * 60, Math.min(endH * 60, Math.round(m / 15) * 15)); try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (_e) {} setTlDrag({ startMin: m, curMin: m, moved: false }); }}
-                    onPointerMove={ev => { const r = ev.currentTarget.getBoundingClientRect(); let m = startH * 60 + ((ev.clientY - r.top) / HP) * 60; m = Math.max(startH * 60, Math.min(endH * 60, Math.round(m / 15) * 15)); setTlDrag(p => p ? { ...p, curMin: m, moved: p.moved || Math.abs(m - p.startMin) >= 15 } : p); }}
-                    onPointerUp={() => { const p = tlDrag; setTlDrag(null); if (!p) return; let lo, hi; if (p.moved) { lo = Math.min(p.startMin, p.curMin); hi = Math.max(p.startMin, p.curMin); if (hi - lo < 15) hi = lo + 60; } else { lo = p.startMin; hi = lo + 60; } openNewEventAt(calSelectedDate, lo, hi); }}
-                    onPointerCancel={() => setTlDrag(null)}>
+                    ref={tlGridRef}
+                    style={{ position: "relative", height: gridH, border: `1px solid ${C.borderDim}`, borderRadius: 10, background: C.bg, overflow: "hidden", cursor: "pointer", userSelect: "none" }}
+                    onClick={ev => { if (ev.target.closest("[data-evt]") || ev.target.closest("[data-sel]")) return; const r = ev.currentTarget.getBoundingClientRect(); let m = startH * 60 + ((ev.clientY - r.top) / HP) * 60; m = Math.max(startH * 60, Math.min(endH * 60 - 15, Math.round(m / 15) * 15)); setTlSel({ start: m, end: Math.min(endH * 60, m + 60) }); }}>
                       {hours.map((h, hi) => (
                         <div key={h} style={{ position: "absolute", top: hi * HP, left: 0, right: 0, height: HP, borderTop: hi === 0 ? "none" : `1px solid ${C.borderDim}55` }}>
                           <span style={{ position: "absolute", top: -7, left: 4, fontSize: 10, color: C.muted, background: C.bg, padding: "0 2px" }}>{h}時</span>
                         </div>
                       ))}
-                      {tlDrag && (() => { const lo = tlDrag.moved ? Math.min(tlDrag.startMin, tlDrag.curMin) : tlDrag.startMin; const hi = tlDrag.moved ? Math.max(tlDrag.startMin, tlDrag.curMin) : tlDrag.startMin + 60; const tp = (lo - startH * 60) / 60 * HP; const hh2 = Math.max((hi - lo) / 60 * HP, 16); return <div style={{ position: "absolute", top: tp, height: hh2, left: GUT, right: 4, background: C.accent + "44", border: `1.5px dashed ${C.accent}`, borderRadius: 6, pointerEvents: "none", display: "flex", alignItems: "center", justifyContent: "center", color: C.accent, fontSize: 11, fontWeight: 800 }}>＋ {minToHHMM(lo)}〜{minToHHMM(hi)}</div>; })()}
+                      {tlSel && (() => {
+                        const top = (tlSel.start - startH * 60) / 60 * HP;
+                        const h = Math.max((tlSel.end - tlSel.start) / 60 * HP, 30);
+                        const clampMin = m => Math.max(startH * 60, Math.min(endH * 60, Math.round(m / 15) * 15));
+                        const onHandle = edge => ev => { ev.stopPropagation(); try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (_e) {} setTlResize(edge); };
+                        const onHandleMove = edge => ev => { if (tlResize !== edge) return; ev.stopPropagation(); const r = tlGridRef.current.getBoundingClientRect(); const m = clampMin(startH * 60 + ((ev.clientY - r.top) / HP) * 60); setTlSel(s => { if (!s) return s; return edge === "start" ? { ...s, start: Math.min(m, s.end - 15) } : { ...s, end: Math.max(m, s.start + 15) }; }); };
+                        const endHandle = ev => { ev.stopPropagation(); setTlResize(null); };
+                        const grip = { position: "absolute", left: "50%", transform: "translateX(-50%)", width: 54, height: 18, borderRadius: 9, background: C.accent, border: "2px solid #fff", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "ns-resize", touchAction: "none", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 900, lineHeight: 1 };
+                        return (
+                          <div data-sel="1" onClick={ev => { ev.stopPropagation(); openNewEventAt(calSelectedDate, tlSel.start, tlSel.end); setTlSel(null); setTlResize(null); }}
+                            style={{ position: "absolute", top, height: h, left: GUT, right: 4, background: C.accent + "33", border: `2px solid ${C.accent}`, borderRadius: 8, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: C.accent, fontWeight: 800, fontSize: 12, textAlign: "center", padding: "0 6px", boxSizing: "border-box" }}>
+                            <div>{minToHHMM(tlSel.start)} 〜 {minToHHMM(tlSel.end)}</div>
+                            <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.85 }}>タップで作成</div>
+                            <div onPointerDown={onHandle("start")} onPointerMove={onHandleMove("start")} onPointerUp={endHandle} onPointerCancel={endHandle} onClick={ev => ev.stopPropagation()} style={{ ...grip, top: -9 }}>⋯</div>
+                            <div onPointerDown={onHandle("end")} onPointerMove={onHandleMove("end")} onPointerUp={endHandle} onPointerCancel={endHandle} onClick={ev => ev.stopPropagation()} style={{ ...grip, bottom: -9 }}>⋯</div>
+                          </div>
+                        );
+                      })()}
                       {sorted.map((it, k) => {
                         const top = (it.start - startH * 60) / 60 * HP;
                         const hgt = Math.max((it.end - it.start) / 60 * HP - 2, 20);
