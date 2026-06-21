@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-22-v9.172-visit-time-24h";
+const APP_VERSION = "2026-06-22-v9.173-event-endtime";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6274,7 +6274,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const [showEventForm, setShowEventForm] = useState(false);
   const [editingEvent, setEditingEvent] = useState(null);
   const [eventDetail, setEventDetail] = useState(null); // 🆕 v9.137: 予定の詳細（読むだけ）ポップアップ対象 { e }
-  const eventEmpty = { title: "", date: today, endDate: "", time: "", allDay: false, location: "", memo: "", assignees: [], reminderMinutes: 0, private: false };
+  const eventEmpty = { title: "", date: today, endDate: "", time: "", endTime: "", allDay: false, location: "", memo: "", assignees: [], reminderMinutes: 0, private: false };
   const [eventForm, setEventForm] = useState(eventEmpty);
   const [todoInput, setTodoInput] = useState(""); // 🆕 v9.73: ToDo入力
   const [showAddChoice, setShowAddChoice] = useState(false); // 🆕 v9.75: 追加時の予定/ToDo選択シート
@@ -6679,6 +6679,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       title: ev.title || "",
       date: ev.date || today,
       time: ev.time || "",
+      endTime: ev.endTime || "",  // 🆕 v9.173: 終了時刻
       allDay: !!ev.allDay,  // 🆕 v9.73: 終日
       location: ev.location || "",
       memo: ev.memo || "",
@@ -6697,6 +6698,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     if (!eventForm.date) { alert("日付を入力してください"); return; }
     // 🆕 v9.118: 終了日は開始日以降のみ
     if (eventForm.endDate && eventForm.endDate < eventForm.date) { alert("終了日は開始日（日付）以降にしてください"); return; }
+    // 🆕 v9.173: 同日内で終了時刻が開始時刻より前ならエラー（複数日にまたがる場合は除く）
+    if (!eventForm.allDay && !eventForm.endDate && eventForm.time && eventForm.endTime && eventForm.endTime < eventForm.time) { alert("終了時刻は開始時刻より後にしてください"); return; }
     // 保険：編集時の権限チェック
     if (editingEvent && !canEdit(editingEvent)) {
       alert("⚠️ 編集権限がありません");
@@ -6715,6 +6718,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       date: eventForm.date,
       allDay: !!eventForm.allDay,            // 🆕 v9.73: 終日
       time: eventForm.allDay ? "" : eventForm.time,  // 終日なら時刻なし
+      endTime: eventForm.allDay ? "" : (eventForm.endTime || ""),  // 🆕 v9.173: 終了時刻（終日なら空）
       location: eventForm.location,
       memo: eventForm.memo,
       assignees,
@@ -6966,11 +6970,12 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
         list.push({
           date: ds, type: "custom", icon: isMulti ? "📆" : (ev.allDay ? "📅" : "📌"), color: "#f97316",
           title: ev.title,
-          sub: `${isMulti ? `📆 ${rangeLabel}（${di + 1}/${dayList.length}日目）` : (ev.allDay ? "終日" : (ev.time ? ev.time + "〜" : ""))}${ev.location ? ((isMulti || ev.allDay || ev.time) ? " " : "") + "@" + ev.location : ""}${ev.memo ? " | " + ev.memo : ""}`,
+          sub: `${isMulti ? `📆 ${rangeLabel}（${di + 1}/${dayList.length}日目）` : (ev.allDay ? "終日" : (ev.time ? ev.time + "〜" + (ev.endTime || "") : ""))}${ev.location ? ((isMulti || ev.allDay || ev.time) ? " " : "") + "@" + ev.location : ""}${ev.memo ? " | " + ev.memo : ""}`,
           assignee: assignees[0] || "", // 後方互換
           assignees, // 配列で保持
           allDay: !!ev.allDay, // 🆕 v9.73: 終日
           time: ev.time,
+          endTime: ev.endTime || "", // 🆕 v9.173: 終了時刻
           location: ev.location,
           memo: ev.memo,
           reminderMinutes: ev.reminderMinutes,
@@ -7553,7 +7558,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                   <div style={{ gridColumn: 2, gridRow: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span style={{ color: C.text, fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 0", minWidth: 0 }}>{e.title}</span>
                     {e.isCustom && e.allDay && <span style={{ color: "#fbbf24", fontSize: 11, fontWeight: 800, flexShrink: 0, background: "#fbbf2422", border: "1px solid #fbbf2455", borderRadius: 5, padding: "1px 6px" }}>📅 終日</span>}
-                    {(e.isCustom || e.type === "jiage") && !e.allDay && e.time && <span style={{ color: "#f97316", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>🕐 {e.time}</span>}
+                    {(e.isCustom || e.type === "jiage") && !e.allDay && e.time && <span style={{ color: "#f97316", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>🕐 {e.time}{e.endTime ? `〜${e.endTime}` : ""}</span>}
                     {e.isCustom && e.reminderMinutes > 0 && <span style={{ color: C.muted, fontSize: 10, flexShrink: 0 }}>🔔{e.reminderMinutes < 60 ? `${e.reminderMinutes}分前` : `${Math.round(e.reminderMinutes/60)}時間前`}</span>}
                     {/* 🆕 v8.60: 反響予定にタイトル横「詳細」ボタン。タップで反響内容を展開 */}
                     {e.type === "viewing" && cmtTarget && (
@@ -7872,7 +7877,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
         return (
           <BottomSheet title="📋 予定の詳細" onClose={() => setEventDetail(null)}>
             <div style={{ fontSize: 16, fontWeight: 800, color: C.text, marginBottom: 8 }}>{e.icon} {e.title}</div>
-            <Row label="日時">{e.date}{customEv && customEv.endDate && customEv.endDate > e.date ? ` 〜 ${customEv.endDate}` : ""}{e.allDay ? "（終日）" : (e.time ? ` ${e.time}〜` : "")}</Row>
+            <Row label="日時">{e.date}{customEv && customEv.endDate && customEv.endDate > e.date ? ` 〜 ${customEv.endDate}` : ""}{e.allDay ? "（終日）" : (e.time ? ` ${e.time}〜${e.endTime || ""}` : "")}</Row>
             {e.location ? <Row label="場所">{e.location}</Row> : null}
             {e.memo ? <Row label="メモ"><span style={{ whiteSpace: "pre-wrap" }}>{e.memo}</span></Row> : null}
             {assignees.length ? <Row label="担当">{assignees.map((m, i) => <span key={i} style={{ marginRight: 4 }}><MemberTag name={m} /></span>)}</Row> : null}
@@ -7913,14 +7918,19 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               </div>
             );
           })()}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Field label="開始日 *">
-              <input type="date" style={inp} value={eventForm.date} onChange={e => setEventForm(p => ({ ...p, date: e.target.value }))} />
+          <Field label="開始日 *">
+            <input type="date" style={inp} value={eventForm.date} onChange={e => setEventForm(p => ({ ...p, date: e.target.value }))} />
+          </Field>
+          {/* 🆕 v9.173: 開始〜終了の時刻（終日のときは非表示） */}
+          {!eventForm.allDay && (
+            <Field label="🕐 時間（開始 〜 終了）">
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <select style={{ ...inp, flex: 1, minWidth: 0 }} value={eventForm.time || ""} onChange={e => setEventForm(p => ({ ...p, time: e.target.value }))}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "開始時刻" : t}</option>)}</select>
+                <span style={{ color: C.muted, flex: "none", fontWeight: 700 }}>〜</span>
+                <select style={{ ...inp, flex: 1, minWidth: 0 }} value={eventForm.endTime || ""} onChange={e => setEventForm(p => ({ ...p, endTime: e.target.value }))}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "終了時刻" : t}</option>)}</select>
+              </div>
             </Field>
-            <Field label="時間">
-              <input type="time" style={{ ...inp, opacity: eventForm.allDay ? 0.4 : 1 }} disabled={!!eventForm.allDay} value={eventForm.allDay ? "" : eventForm.time} onChange={e => setEventForm(p => ({ ...p, time: e.target.value }))} />
-            </Field>
-          </div>
+          )}
           {/* 🆕 v9.118: 終了日（複数日にまたがる予定） */}
           <Field label="終了日（数日にまたがる予定のとき）">
             <input type="date" style={inp} value={eventForm.endDate || ""} min={eventForm.date || undefined}
