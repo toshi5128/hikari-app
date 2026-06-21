@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-20-v9.155-onsite-pin-backup";
+const APP_VERSION = "2026-06-21-v9.156-old-address-convert";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -14463,6 +14463,25 @@ function analyzeVisitLog(visitLog) {
   return { total: visitLog.length, absent: absent.length, ignore: ignore.length, home: home.length, buckets };
 }
 
+// 🆕 v9.156: 旧市町村名→現市名（平成大合併で消滅した町村のみ。伊奈町/千代田町/寄居町等の現存町は変換しない）
+const KYUJU_MAP = {
+  "北足立郡吹上町": "鴻巣市", "北埼玉郡川里町": "鴻巣市",
+  "大里郡岡部町": "深谷市", "大里郡川本町": "深谷市", "大里郡花園町": "深谷市", "大里郡花園村": "深谷市",
+  "大里郡江南町": "熊谷市", "大里郡妻沼町": "熊谷市", "大里郡大里町": "熊谷市",
+  "入間郡鶴ヶ島町": "鶴ヶ島市", "児玉郡児玉町": "本庄市児玉町", "北埼玉郡南河原村": "行田市",
+};
+function toNewAddr(s) {
+  s = String(s || "");
+  for (const old in KYUJU_MAP) {
+    if (s.indexOf(old) >= 0) {
+      const cand = s.replace(old, KYUJU_MAP[old]).replace(/(市|町)大字/g, "$1");
+      if (/市[0-9０-９]/.test(cand)) return s; // 大字欠落で市＋番地直結＝誤変換防止でそのまま
+      return cand;
+    }
+  }
+  return s;
+}
+
 // 住所からエリアを推測（「○○市」を含むかどうか）
 function inferAreaFromAddress(address) {
   if (!address) return "";
@@ -15259,8 +15278,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
   };
   const saveOnsitePin = () => {
     if (!pendingPin) return;
-    const address = (pinForm.address || "").trim();
-    const landmark = (pinForm.landmark || "").trim();
+    const address = toNewAddr((pinForm.address || "").trim());   // 🆕 v9.156: 旧住所→新市名
+    const landmark = toNewAddr((pinForm.landmark || "").trim()); // 🆕 v9.156
     // 🆕 v8.98: address は空でもOK（地番待ち）。landmark のみ or 両方入力可能
     // ただし「両方とも空」だと識別不能なので拒否
     if (!address && !landmark) {
@@ -15634,7 +15653,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
     dataRows.forEach(row => {
       const getRaw = (key) => mapping[key] !== undefined ? row[mapping[key]] : "";
       const get = (key) => String(getRaw(key) || "").trim();
-      const address = get("address");
+      const address = toNewAddr(get("address")); // 🆕 v9.156: 旧住所は新市名に自動変換
       if (!address) return;
       
       const bikou = get("bikou");
@@ -15673,7 +15692,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
         bmPage: get("bmPage"),
         address,
         owner: get("owner"),
-        ownerAddr: get("ownerAddr"),
+        ownerAddr: toNewAddr(get("ownerAddr")), // 🆕 v9.156: 所有者住所も旧→新変換
+
         ownerContact: get("contact"),
         dm: get("dm") || "未",
         visit: get("visit") || "未",
