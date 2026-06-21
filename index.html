@@ -184,7 +184,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-21-v9.166-dm-fix-tab";
+const APP_VERSION = "2026-06-21-v9.167-dm-pref-filter";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22691,6 +22691,24 @@ function dmDeliveryRisk(addr, zip) {
   if (!/[0-9〇一二三四五六七八九十]/.test(an)) reasons.push("番地が無い");
   return reasons;
 }
+// 🆕 v9.167: 郵送先住所の都道府県を判定（県外を都道府県別にまとめるため）
+const JP_PREFS = ["北海道","青森県","岩手県","宮城県","秋田県","山形県","福島県","茨城県","栃木県","群馬県","埼玉県","千葉県","東京都","神奈川県","新潟県","富山県","石川県","福井県","山梨県","長野県","岐阜県","静岡県","愛知県","三重県","滋賀県","京都府","大阪府","兵庫県","奈良県","和歌山県","鳥取県","島根県","岡山県","広島県","山口県","徳島県","香川県","愛媛県","高知県","福岡県","佐賀県","長崎県","熊本県","大分県","宮崎県","鹿児島県","沖縄県"];
+// 〒先頭3桁→都道府県（住所に県表記が無いとき用。境界は概ね正しい近似）
+const ZIP_PREF = [[1,9,"北海道"],[10,19,"秋田県"],[20,29,"岩手県"],[30,39,"青森県"],[40,99,"北海道"],[100,208,"東京都"],[210,259,"神奈川県"],[260,299,"千葉県"],[300,319,"茨城県"],[320,329,"栃木県"],[330,369,"埼玉県"],[370,379,"群馬県"],[380,399,"長野県"],[400,409,"山梨県"],[410,439,"静岡県"],[440,498,"愛知県"],[500,509,"岐阜県"],[510,519,"三重県"],[520,529,"滋賀県"],[530,599,"大阪府"],[600,629,"京都府"],[630,639,"奈良県"],[640,649,"和歌山県"],[650,679,"兵庫県"],[680,689,"鳥取県"],[690,699,"島根県"],[700,719,"岡山県"],[720,739,"広島県"],[740,759,"山口県"],[760,769,"香川県"],[770,779,"徳島県"],[780,789,"高知県"],[790,799,"愛媛県"],[800,839,"福岡県"],[840,849,"佐賀県"],[850,859,"長崎県"],[860,869,"熊本県"],[870,879,"大分県"],[880,889,"宮崎県"],[890,899,"鹿児島県"],[900,909,"沖縄県"],[910,919,"福井県"],[920,929,"石川県"],[930,939,"富山県"],[940,959,"新潟県"],[960,979,"福島県"],[980,989,"宮城県"],[990,999,"山形県"]];
+function dmPrefByZip(zip) {
+  const z = String(zip || "").normalize("NFKC").replace(/[^0-9]/g, "");
+  if (z.length < 3) return "";
+  const n = parseInt(z.slice(0, 3), 10);
+  for (const r of ZIP_PREF) { if (n >= r[0] && n <= r[1]) return r[2]; }
+  return "";
+}
+function dmPrefOf(addr, zip) {
+  const a = String(addr || "").trim().normalize("NFKC");
+  for (const p of JP_PREFS) { if (a.startsWith(p)) return p; }
+  const byZip = dmPrefByZip(zip);
+  if (byZip) return byZip;
+  return a ? "埼玉県" : ""; // 都道府県表記も〒も無い住所は県内とみなす
+}
 function dmLetterBody(name, prop, agent) {
   const a = agent || dmAgentFor(""); // 既定＝比嘉
   return `突然のお手紙を失礼いたします。埼玉県熊谷市で空き家の買取・活用を行っております、ひかり不動産の${a.name}（${a.reading}）と申します。\n\n空き家の調査をしております折に、${name}様がご所有の『${prop}』が目に留まり、ご連絡を差し上げました。\n\n最近、管理が行き届かない空き家が空き巣・不審者・不審火などの標的になりやすく、近隣でも被害のご相談が増えております。遠方にお住まいの場合、万一の際のご対応やご近所への責任が及ぶ点も、ご心配の種ではないでしょうか。\n\nもし当てはまるようでしたら、お片付け・解体・残置物の処分は不要で、現状のまま当社が買い取らせていただくことが可能です。遠方の方やお手続きにご不安のある方も、すべて当社で進めますのでご安心ください。\n\n「防犯面が心配」「処分に困っている」「管理が負担」「まずは価格だけ知りたい」——どんなご相談でも構いません。同封のチラシもご覧のうえ、${a.name}まで一度お電話いただけますと幸いです。\n\n※しつこい営業は一切いたしません。\n※今すぐでなくても、将来のご検討やご質問だけでも歓迎いたします。`;
@@ -22715,6 +22733,7 @@ function DMPage({ data, setData, onBack }) {
   const [fRisk, setFRisk] = useState(false); // 🆕 v9.149: 配達が微妙なものだけ表示
   const [fArea, setFArea] = useState("すべて");
   const [fAsg, setFAsg] = useState("すべて");
+  const [fPref, setFPref] = useState("すべて"); // 🆕 v9.167: 郵送先 都道府県で絞り込み
   const [sel, setSel] = useState([]);
   const [screen, setScreen] = useState("board");
   const [pIdx, setPIdx] = useState(0);
@@ -22745,6 +22764,7 @@ function DMPage({ data, setData, onBack }) {
   const otherCnt = j => universe.filter(p => p.id !== j.id && okey(p) === okey(j)).length;
   const areaA = j => fArea === "すべて" || (j.area || "") === fArea;
   const asgA = j => fAsg === "すべて" || (j.assignee || "") === fAsg;
+  const prefA = j => fPref === "すべて" || dmPrefOf(mailAddr(j), j.ownerZip) === fPref; // 🆕 v9.167
 
   const areas = ["すべて", ...Array.from(new Set(universe.map(j => j.area || "").filter(Boolean)))];
   const asgs = ["すべて", ...Array.from(new Set(universe.map(j => j.assignee || "").filter(Boolean)))];
@@ -22784,7 +22804,12 @@ function DMPage({ data, setData, onBack }) {
   }, [data.jiage]);
 
   const nState = s => personRows.filter(r => r._state === s).length;
-  const countSend = n => personRows.filter(r => r._state === "送付対象" && (n === 3 ? sentCount(r) >= 3 : sentCount(r) === n) && areaA(r) && asgA(r)).length;
+  const countSend = n => personRows.filter(r => r._state === "送付対象" && (n === 3 ? sentCount(r) >= 3 : sentCount(r) === n) && areaA(r) && asgA(r) && prefA(r)).length;
+  // 🆕 v9.167: 郵送先 都道府県の一覧（埼玉県を先頭、県外は件数順）。件数は personRows ベース。
+  const prefCounts = {};
+  personRows.forEach(r => { const p = dmPrefOf(mailAddr(r), r.ownerZip); if (p) prefCounts[p] = (prefCounts[p] || 0) + 1; });
+  const prefList = Object.keys(prefCounts).sort((a, b) => a === "埼玉県" ? -1 : b === "埼玉県" ? 1 : prefCounts[b] - prefCounts[a]);
+  const prefs = ["すべて", ...prefList];
   // 🆕 v9.146: 名前・住所・ワードで横断検索（全角半角・空白・大小文字を吸収。部分一致）
   const qnorm = s => String(s || "").normalize("NFKC").replace(/[\s　]/g, "").toLowerCase();
   const matchQ = j => {
@@ -22793,15 +22818,15 @@ function DMPage({ data, setData, onBack }) {
       .some(f => qnorm(f).indexOf(needle) >= 0);
   };
   const riskOf = r => dmDeliveryRisk(mailAddr(r), r.ownerZip); // 🆕 v9.149
-  const riskCount = personRows.filter(r => r._state === "要修正" && areaA(r) && asgA(r)).length; // 🆕 v9.166: 要修正(配達微妙)件数
+  const riskCount = personRows.filter(r => r._state === "要修正" && areaA(r) && asgA(r) && prefA(r)).length; // 🆕 v9.166: 要修正(配達微妙)件数
   const visible = () => {
-    let base = personRows.filter(r => r._state === view && areaA(r) && asgA(r));
+    let base = personRows.filter(r => r._state === view && areaA(r) && asgA(r) && prefA(r));
     if (view === "送付対象") base = base.filter(r => fCount === "all" || (fCount === 3 ? sentCount(r) >= 3 : sentCount(r) === fCount));
     return base.filter(matchQ);
   };
   // 成果集計（エリア・担当で絞り込み）
   const stats = (() => {
-    const base = universe.filter(j => areaA(j) && asgA(j));
+    const base = universe.filter(j => areaA(j) && asgA(j) && prefA(j));
     const sp = base.filter(j => sentCount(j) > 0);
     const sou = sp.length, tsu = sp.reduce((a, j) => a + sentCount(j), 0);
     const ret = sp.filter(everRet).length, rea = sp.filter(everRea).length, no = sp.filter(everNo).length;
@@ -23043,7 +23068,9 @@ function DMPage({ data, setData, onBack }) {
 
       {/* 成果集計 */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>📊 成果集計（エリア・担当で絞り込み）</div>
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>📊 成果集計・絞り込み（郵送先 都道府県・エリア・担当）</div>
+        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, marginBottom: 4 }}>📮 郵送先 都道府県（県外は都道府県ごと）</div>
+        <select value={fPref} onChange={e => { setFPref(e.target.value); setSel([]); }} style={{ ...inp, width: "100%", fontSize: 12, padding: 8, marginBottom: 8 }}>{prefs.map(p => <option key={p} value={p}>{p === "すべて" ? "すべて（全都道府県）" : `${p}（${prefCounts[p] || 0}）`}</option>)}</select>
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <select value={fArea} onChange={e => { setFArea(e.target.value); setSel([]); }} style={{ ...inp, flex: 1, fontSize: 12, padding: 8 }}>{areas.map(a => <option key={a}>{a}</option>)}</select>
           <select value={fAsg} onChange={e => { setFAsg(e.target.value); setSel([]); }} style={{ ...inp, flex: 1, fontSize: 12, padding: 8 }}>{asgs.map(a => <option key={a}>{a}</option>)}</select>
@@ -23054,7 +23081,7 @@ function DMPage({ data, setData, onBack }) {
           {Kpi("🔥反応", sc.rea + "件", `反応率 ${sc.reaP}%`, "#a855f7")}
           {Kpi("🚫不要", sc.no + "件", `${sc.noP}%`, C.muted)}
         </div>
-        <div style={{ fontSize: 10, color: C.muted, marginTop: 8 }}>※ 率は「送付先数」に対する割合（{fArea === "すべて" ? "全エリア" : fArea}・{fAsg === "すべて" ? "全担当" : fAsg}）</div>
+        <div style={{ fontSize: 10, color: C.muted, marginTop: 8 }}>※ 率は「送付先数」に対する割合（{fPref === "すべて" ? "全都道府県" : fPref}・{fArea === "すべて" ? "全エリア" : fArea}・{fAsg === "すべて" ? "全担当" : fAsg}）</div>
       </div>
 
       {/* タブ */}
@@ -23109,6 +23136,7 @@ function DMPage({ data, setData, onBack }) {
                 <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{ownerName(j)} 様
                   <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: st === "送付対象" ? col : st === "返送" ? "#ef4444" : st === "反応" ? "#a855f7" : st === "要修正" ? "#f97316" : st === "要確認" ? "#f59e0b" : "#475569", color: "#fff" }}>{st === "送付対象" ? sendLbl : st}</span>
                   {j._shared && <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: "#7c3aed", color: "#fff" }}>👥 共有{j._shareTotal ? `(${j._shareTotal}名)` : ""}</span>}
+                  {(() => { const pf = dmPrefOf(mailAddr(j), j.ownerZip); return pf && pf !== "埼玉県" ? <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: "#0891b2", color: "#fff" }}>📮 {pf}</span> : null; })()}
                 </div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}>⚠ 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 担当 {j.assignee || "—"}{j._shared && <span style={{ color: "#a78bfa", fontWeight: 700 }}>／👥 この物件は共有名義（一人ずつ個別に送付）</span>}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／👥この所有者は他に{oc}件</span>}</div>
                 {j._mismatch && <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5, color: "#fbbf24", fontWeight: 700 }}>⚠ 共有：氏名{j._mismatch.n}・住所{j._mismatch.a}・〒{j._mismatch.z} で数が合わず、一人ずつに分けられません。<b>✏️ 共有を編集</b>で1行ずつ揃えると分かれます。</div>}
