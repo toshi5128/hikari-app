@@ -74,10 +74,11 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::
 #dm-print-root{display:none;}
 @media print{
   @page{size:A4;margin:15mm 16mm;}
-  body *{visibility:hidden !important;}
-  #dm-print-root, #dm-print-root *{visibility:visible !important;}
-  #dm-print-root{display:block !important;position:absolute;left:0;top:0;width:100%;}
-  /* 1通=A4 1枚。@pageの余白で外側、min-height+フッター下固定で全体に広げる(検証済) */
+  /* 🆕 v9.159: 印刷ルートはbody直下にポータル出力。アプリ本体(#root等)はdisplay:noneで
+     完全に消す＝visibility:hiddenだとレイアウトが残りページが増殖する不具合を解消(検証済) */
+  body > *:not(#dm-print-root){display:none !important;}
+  #dm-print-root{display:block !important;}
+  /* 1通=A4 1枚。min-height+フッター下固定で全体に広げる */
   .dm-letter{box-sizing:border-box;padding:0 !important;min-height:260mm;display:flex;flex-direction:column;}
   .dm-letter:not(:last-child){page-break-after:always;}
   .dm-foot{margin-top:auto;}
@@ -186,7 +187,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-21-v9.158-dm-print-fix";
+const APP_VERSION = "2026-06-21-v9.159-dm-print-portal";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -22628,7 +22629,7 @@ function dmAgentFor(assignee) {
   const a = DM_AGENTS[k];
   return { name: k, reading: a.reading, mobile: a.mobile, person: (a.title ? a.title + "　" : "") + k + "（" + a.reading + "）" };
 }
-function dmWareki() { const n = new Date(); return `令和${n.getFullYear() - 2018}年 ${n.getMonth() + 1}月 吉日`; }
+function dmWareki() { const n = new Date(); return `令和${n.getFullYear() - 2018}年${n.getMonth() + 1}月${n.getDate()}日`; }
 function dmTodayStr() { const n = new Date(); return `${n.getFullYear()}/${String(n.getMonth() + 1).padStart(2, "0")}/${String(n.getDate()).padStart(2, "0")}`; }
 function dmNewId() { return "dm" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function dmNorm(s) { return String(s || "").replace(/[\s　〒]/g, "").replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); }
@@ -22970,7 +22971,7 @@ function DMPage({ data, setData, onBack }) {
     const riskPs = ps.filter(j => dmDeliveryRisk(mailAddr(j), j.ownerZip).length > 0); // 🆕 v9.149: 配達が微妙な宛先
     return (
       <div>
-        <div id="dm-print-root">{printing ? printing.map(Letter) : null}</div>
+        {printing ? ReactDOM.createPortal(<div id="dm-print-root">{printing.map(Letter)}</div>, document.body) : null}
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
           <button onClick={() => setScreen("board")} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
           <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>📨 DM作成・プレビュー</div>
