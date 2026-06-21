@@ -187,7 +187,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-22-v9.175-day-timeline";
+const APP_VERSION = "2026-06-22-v9.176-visit-companions";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6907,7 +6907,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const calEvents = useMemo(() => {
     const list = [];
     (data.jiage || []).forEach(j => {
-      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `訪問予定・${j.status}`, time: j.nextVisitTime || "", assignee: j.assignee, rawId: j.id });
+      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `訪問予定・${j.status}`, time: j.nextVisitTime || "", assignee: j.assignee, assignees: Array.from(new Set([j.assignee, ...(j.nextVisitWith || [])].filter(Boolean))), rawId: j.id });
     });
     (data.owners || []).forEach(o => {
       if (o.nextFollowDate) list.push({ date: o.nextFollowDate, type: "owner", icon: "👤", color: C.accent, title: o.address || "(無住所)", sub: `所有者フォロー・${o.status}`, assignee: o.assignee, rawId: o.id });
@@ -14271,6 +14271,15 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               </select>
             </Field>
           </div>
+          {/* 🆕 v9.176: 次回訪問の同行者（複数可）。カレンダー予定にも担当として反映 */}
+          <Field label="🤝 同行者（任意・複数可）">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {MEMBERS.filter(m => m !== editingJiage.assignee).map(m => {
+                const on = (editingJiage.nextVisitWith || []).includes(m);
+                return <button key={m} type="button" onClick={() => setEditingJiage(p => { const cur = p.nextVisitWith || []; return { ...p, nextVisitWith: on ? cur.filter(x => x !== m) : [...cur, m] }; })} style={{ background: on ? C.accent : C.bg, color: on ? "#fff" : C.text, border: `1.5px solid ${on ? C.accent : C.borderDim}`, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{on ? "✓ " : ""}{m}</button>;
+              })}
+            </div>
+          </Field>
           <Field label="📝 メモ">
             <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={editingJiage.memo || ""} onChange={e => setEditingJiage({ ...editingJiage, memo: e.target.value })} />
           </Field>
@@ -16091,7 +16100,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       address: j.address, ownerName: j.owner, ownerAddress: j.ownerAddr,
       ownerContact: j.ownerContact || "", assignee: j.assignee,
       status: j.status, subStatus: `DM:${j.dm}`,
-      nextDate: j.nextVisit, nextTime: j.nextVisitTime || "", memo: j.memo, history: [],
+      nextDate: j.nextVisit, nextTime: j.nextVisitTime || "", nextWith: j.nextVisitWith || [], memo: j.memo, history: [],
       dm: j.dm, visit: j.visit, area: j.area || "", raw: j,
       lat: j.lat, lng: j.lng, ownerLat: j.ownerLat, ownerLng: j.ownerLng,
     }));
@@ -16690,6 +16699,15 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
     const updated = { ...item.raw, nextVisitTime: time };
     setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
     setSelected(s => ({ ...s, item: { ...s.item, nextTime: time, raw: updated } }));
+  };
+  // 🆕 v9.176: ピン詳細での次回訪問「同行者」設定（地上げのみ・複数可）
+  const updateNextWith = (item, member) => {
+    if (item.type !== "jiage") return;
+    const cur = item.raw.nextVisitWith || [];
+    const next = cur.includes(member) ? cur.filter(x => x !== member) : [...cur, member];
+    const updated = { ...item.raw, nextVisitWith: next };
+    setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
+    setSelected(s => ({ ...s, item: { ...s.item, nextWith: next, raw: updated } }));
   };
 
   // 地上げ → 積算表を作成（誰でも実行可）
@@ -20815,6 +20833,17 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               <input type="date" style={inp} value={selected.item.nextDate || ""} onChange={e => updateNextDate(selected.item, e.target.value)} />
             )}
           </Field>
+          {/* 🆕 v9.176: 次回訪問の同行者（地上げのみ・複数可） */}
+          {selected.item.type === "jiage" && (
+            <Field label="🤝 同行者（任意・複数可）">
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {MEMBERS.filter(m => m !== selected.item.assignee).map(m => {
+                  const on = (selected.item.nextWith || []).includes(m);
+                  return <button key={m} type="button" onClick={() => updateNextWith(selected.item, m)} style={{ background: on ? C.accent : C.bg, color: on ? "#fff" : C.text, border: `1.5px solid ${on ? C.accent : C.borderDim}`, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{on ? "✓ " : ""}{m}</button>;
+                })}
+              </div>
+            </Field>
+          )}
 
           {/* 所有者アタックの履歴 */}
           {selected.item.type === "owner" && (
