@@ -191,7 +191,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-22-v9.178-deal-rainbow";
+const APP_VERSION = "2026-06-22-v9.179-timeline-create";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6277,6 +6277,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   };
 
   // ===== カレンダー用 state =====
+  const [tlDrag, setTlDrag] = useState(null); // 🆕 v9.179: タイムラインのドラッグ選択 {startMin,curMin,moved}
   const [calMode, setCalMode] = useState("month"); // "month" | "week"
   const [calCursor, setCalCursor] = useState(() => new Date());
   const [calSelectedDate, setCalSelectedDate] = useState(today);
@@ -6460,6 +6461,15 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     setEditingEvent(null);
     setShowEventForm(true);
   };
+  // 🆕 v9.179: タイムラインのタップ/ドラッグから、開始〜終了の時刻入りで新規予定フォームを開く
+  const minToHHMM = m => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const openNewEventAt = (dateStr, startMin, endMin) => {
+    const s = Math.max(0, Math.min(1425, startMin));
+    const e2 = Math.max(s + 15, Math.min(1440, endMin));
+    setEventForm({ ...eventEmpty, date: dateStr || calSelectedDate, time: minToHHMM(s), endTime: minToHHMM(e2), allDay: false });
+    setEditingEvent(null);
+    setShowEventForm(true);
+  };
 
   // 🆕 自動連動予定（地上げ・所有者・在庫の日付）をタップ時、その場で編集できる
   const [linkedEditForm, setLinkedEditForm] = useState(null);
@@ -6467,7 +6477,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const openLinkedEdit = (e) => {
     const config = {
-      jiage: { dateField: "nextVisit", timeField: "nextVisitTime", dateLabel: "次回訪問日", source: "jiage" },
+      jiage: { dateField: "nextVisit", timeField: "nextVisitTime", endTimeField: "nextVisitEndTime", dateLabel: "次回訪問日", source: "jiage" },
       owner: { dateField: "nextFollowDate", dateLabel: "次回フォロー日", source: "owners" },
       buyContract: { dateField: "buyContractDate", dateLabel: "仕入契約日", source: "stocks" },
       buy: { dateField: "buyDate", dateLabel: "仕入決済日", source: "stocks" },
@@ -6516,6 +6526,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       dateValue: parent[cfg.dateField] || "",
       timeField: cfg.timeField || "",
       timeValue: cfg.timeField ? (parent[cfg.timeField] || "") : "",
+      endTimeField: cfg.endTimeField || "",
+      endTimeValue: cfg.endTimeField ? (parent[cfg.endTimeField] || "") : "",
       parentName: parent.name || parent.address || "(無題)",
       dateLabel: cfg.dateLabel,
       source: cfg.source,
@@ -6527,7 +6539,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const saveLinkedEdit = () => {
     if (!linkedEditForm) return;
-    const { source, parentId, dateField, dateValue, isViewing, viewingIdx, timeValue, timeField } = linkedEditForm;
+    const { source, parentId, dateField, dateValue, isViewing, viewingIdx, timeValue, timeField, endTimeField, endTimeValue } = linkedEditForm;
     if (!dateValue) {
       alert("⚠️ 日付を入力してください\n削除する場合は「🗑️ この日付をクリア」を押してください。");
       return;
@@ -6551,7 +6563,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     }
     setData(d => ({
       ...d,
-      [source]: (d[source] || []).map(p => p.id === parentId ? { ...p, [dateField]: dateValue, ...(timeField ? { [timeField]: timeValue || "" } : {}) } : p),
+      [source]: (d[source] || []).map(p => p.id === parentId ? { ...p, [dateField]: dateValue, ...(timeField ? { [timeField]: timeValue || "" } : {}), ...(endTimeField ? { [endTimeField]: endTimeValue || "" } : {}) } : p),
     }));
     setLinkedEditForm(null);
   };
@@ -6924,7 +6936,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const calEvents = useMemo(() => {
     const list = [];
     (data.jiage || []).forEach(j => {
-      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `訪問予定・${j.status}`, time: j.nextVisitTime || "", assignee: j.assignee, assignees: Array.from(new Set([j.assignee, ...(j.nextVisitWith || [])].filter(Boolean))), rawId: j.id });
+      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `訪問予定・${j.status}`, time: j.nextVisitTime || "", endTime: j.nextVisitEndTime || "", assignee: j.assignee, assignees: Array.from(new Set([j.assignee, ...(j.nextVisitWith || [])].filter(Boolean))), rawId: j.id });
     });
     (data.owners || []).forEach(o => {
       if (o.nextFollowDate) list.push({ date: o.nextFollowDate, type: "owner", icon: "👤", color: C.accent, title: o.address || "(無住所)", sub: `所有者フォロー・${o.status}`, assignee: o.assignee, rawId: o.id });
@@ -7523,14 +7535,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
             <span style={{ color: C.muted, fontSize: 12 }}>予定 {selectedEvents.length}件</span>
             <button onClick={() => setShowDayPanel(false)} aria-label="閉じる" style={{ background: "transparent", border: "none", color: C.muted, fontSize: 18, cursor: "pointer", fontFamily: "inherit", padding: "0 2px", lineHeight: 1, flexShrink: 0 }}>✕</button>
           </div>
-          {selectedEvents.length === 0 ? (
-            <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "16px 0" }}>
-              この日の予定はありません<br />
-              <span style={{ fontSize: 11 }}>右下の「＋」ボタンから予定・ToDoを追加できます</span>
-            </div>
-          ) : (
-            <>
-            {/* 🆕 v9.175: Googleカレンダー風 縦タイムライン（終日は上、時刻付きは時間軸に高さ付きで配置） */}
+          {/* 🆕 v9.175/179: Googleカレンダー風 縦タイムライン（常時表示。空き時間タップ=1時間／ドラッグ=任意範囲で新規予定） */}
             {(() => {
               const HP = 46; // 1時間=46px
               const parse = t => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ""); return m ? (+m[1]) * 60 + (+m[2]) : null; };
@@ -7567,13 +7572,19 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                       ))}
                     </div>
                   )}
-                  {sorted.length > 0 && (
-                    <div style={{ position: "relative", height: gridH, border: `1px solid ${C.borderDim}`, borderRadius: 10, background: C.bg, overflow: "hidden" }}>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>💡 空き時間をタップで1時間の予定／ドラッグで時間を指定して新規作成</div>
+                  <div
+                    style={{ position: "relative", height: gridH, border: `1px solid ${C.borderDim}`, borderRadius: 10, background: C.bg, overflow: "hidden", touchAction: "none", cursor: "pointer", userSelect: "none" }}
+                    onPointerDown={ev => { const r = ev.currentTarget.getBoundingClientRect(); let m = startH * 60 + ((ev.clientY - r.top) / HP) * 60; m = Math.max(startH * 60, Math.min(endH * 60, Math.round(m / 15) * 15)); try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (_e) {} setTlDrag({ startMin: m, curMin: m, moved: false }); }}
+                    onPointerMove={ev => { const r = ev.currentTarget.getBoundingClientRect(); let m = startH * 60 + ((ev.clientY - r.top) / HP) * 60; m = Math.max(startH * 60, Math.min(endH * 60, Math.round(m / 15) * 15)); setTlDrag(p => p ? { ...p, curMin: m, moved: p.moved || Math.abs(m - p.startMin) >= 15 } : p); }}
+                    onPointerUp={() => { const p = tlDrag; setTlDrag(null); if (!p) return; let lo, hi; if (p.moved) { lo = Math.min(p.startMin, p.curMin); hi = Math.max(p.startMin, p.curMin); if (hi - lo < 15) hi = lo + 60; } else { lo = p.startMin; hi = lo + 60; } openNewEventAt(calSelectedDate, lo, hi); }}
+                    onPointerCancel={() => setTlDrag(null)}>
                       {hours.map((h, hi) => (
                         <div key={h} style={{ position: "absolute", top: hi * HP, left: 0, right: 0, height: HP, borderTop: hi === 0 ? "none" : `1px solid ${C.borderDim}55` }}>
                           <span style={{ position: "absolute", top: -7, left: 4, fontSize: 10, color: C.muted, background: C.bg, padding: "0 2px" }}>{h}時</span>
                         </div>
                       ))}
+                      {tlDrag && (() => { const lo = tlDrag.moved ? Math.min(tlDrag.startMin, tlDrag.curMin) : tlDrag.startMin; const hi = tlDrag.moved ? Math.max(tlDrag.startMin, tlDrag.curMin) : tlDrag.startMin + 60; const tp = (lo - startH * 60) / 60 * HP; const hh2 = Math.max((hi - lo) / 60 * HP, 16); return <div style={{ position: "absolute", top: tp, height: hh2, left: GUT, right: 4, background: C.accent + "44", border: `1.5px dashed ${C.accent}`, borderRadius: 6, pointerEvents: "none", display: "flex", alignItems: "center", justifyContent: "center", color: C.accent, fontSize: 11, fontWeight: 800 }}>＋ {minToHHMM(lo)}〜{minToHHMM(hi)}</div>; })()}
                       {sorted.map((it, k) => {
                         const top = (it.start - startH * 60) / 60 * HP;
                         const hgt = Math.max((it.end - it.start) / 60 * HP - 2, 20);
@@ -7581,17 +7592,19 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                         const left = `calc(${GUT}px + (100% - ${GUT}px) / ${it.lanes} * ${it.lane})`;
                         const e = it.e;
                         return (
-                          <button key={k} onClick={() => setEventDetail({ e })} title={e.title} className={isDealEvent(e) ? "hk-deal-glow" : ""} style={{ position: "absolute", top, height: hgt, left, width: w, background: calMemberColor(e), border: "1px solid rgba(255,255,255,0.25)", borderRadius: 6, padding: "3px 6px", textAlign: "left", cursor: "pointer", fontFamily: "inherit", overflow: "hidden", color: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.4)" }}>
+                          <button key={k} data-evt="1" onPointerDown={ev => ev.stopPropagation()} onClick={() => setEventDetail({ e })} title={e.title} className={isDealEvent(e) ? "hk-deal-glow" : ""} style={{ position: "absolute", top, height: hgt, left, width: w, background: calMemberColor(e), border: "1px solid rgba(255,255,255,0.25)", borderRadius: 6, padding: "3px 6px", textAlign: "left", cursor: "pointer", fontFamily: "inherit", overflow: "hidden", color: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.4)" }}>
                             <div style={{ fontSize: 11, fontWeight: 800, lineHeight: 1.15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.icon} {e.title}</div>
                             <div style={{ fontSize: 9, opacity: 0.92, lineHeight: 1.2 }}>{e.time}{e.endTime ? `〜${e.endTime}` : ""}{calMemberName(e) ? `　担当 ${calMemberName(e)}` : ""}</div>
                           </button>
                         );
                       })}
                     </div>
-                  )}
                 </div>
               );
             })()}
+            {selectedEvents.length === 0 ? (
+              <div style={{ color: C.muted, fontSize: 12, textAlign: "center", padding: "8px 0" }}>登録済みの予定はありません（上のタイムラインから追加できます）</div>
+            ) : (
             <div style={{ display: "grid", gap: 6 }}>
               {selectedEvents.map((e, i) => {
                 const customEv = e.isCustom ? (data.customEvents || []).find(ev => ev.id === e.rawId) : null;
@@ -7785,8 +7798,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               );
               })}
             </div>
-            </>
-          )}
+            )}
           {/* 🆕 v9.73: ToDo（自分用・未完了は翌日繰り越し・シンプル） */}
           <div style={{ marginTop: 14, borderTop: `1px dashed ${C.borderDim}`, paddingTop: 12 }}>
             <div style={{ fontSize: 12, fontWeight: 800, color: C.success, marginBottom: 8 }}>✓ ToDo（自分用）<span style={{ fontSize: 10, color: C.muted, fontWeight: 400, marginLeft: 6 }}>{_todoUser}</span></div>
@@ -8236,7 +8248,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               </Field>
             </div>
           ) : linkedEditForm.timeField ? (
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
+            <div>
               <Field label={linkedEditForm.dateLabel + " *"}>
                 <input
                   type="date"
@@ -8246,12 +8258,20 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                   autoFocus
                 />
               </Field>
-              <Field label="時間">
-                <select
-                  style={inp}
-                  value={linkedEditForm.timeValue || ""}
-                  onChange={e => setLinkedEditForm(p => ({ ...p, timeValue: e.target.value }))}
-                >{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "時間（任意）" : t}</option>)}</select>
+              <Field label="🕐 時間（開始 〜 終了）">
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <select
+                    style={{ ...inp, flex: 1, minWidth: 0 }}
+                    value={linkedEditForm.timeValue || ""}
+                    onChange={e => setLinkedEditForm(p => ({ ...p, timeValue: e.target.value }))}
+                  >{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "開始" : t}</option>)}</select>
+                  <span style={{ color: C.muted, flex: "none", fontWeight: 700 }}>〜</span>
+                  <select
+                    style={{ ...inp, flex: 1, minWidth: 0 }}
+                    value={linkedEditForm.endTimeValue || ""}
+                    onChange={e => setLinkedEditForm(p => ({ ...p, endTimeValue: e.target.value }))}
+                  >{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "終了" : t}</option>)}</select>
+                </div>
               </Field>
             </div>
           ) : (
@@ -8728,9 +8748,11 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           </Field>
           {(() => { const dow = dayOfWeekLabel(quickEditJiageForm.nextVisit); return (
             <Field label={<>📅 次回訪問日時{dow && <span style={{ color: dow.color, marginLeft: 8, fontWeight: 800 }}>（{dow.label}）</span>}</>}>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input type="date" style={{ ...inp, flex: 2 }} value={quickEditJiageForm.nextVisit || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisit: e.target.value }))} />
-                <select style={{ ...inp, flex: 1 }} value={quickEditJiageForm.nextVisitTime || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisitTime: e.target.value }))} disabled={!quickEditJiageForm.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "時間（任意）" : t}</option>)}</select>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <input type="date" style={{ ...inp, flex: "1 1 100%" }} value={quickEditJiageForm.nextVisit || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisit: e.target.value }))} />
+                <select style={{ ...inp, flex: 1 }} value={quickEditJiageForm.nextVisitTime || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisitTime: e.target.value }))} disabled={!quickEditJiageForm.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "開始" : t}</option>)}</select>
+                <span style={{ color: C.muted, flex: "none" }}>〜</span>
+                <select style={{ ...inp, flex: 1 }} value={quickEditJiageForm.nextVisitEndTime || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisitEndTime: e.target.value }))} disabled={!quickEditJiageForm.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "終了" : t}</option>)}</select>
               </div>
             </Field>
           ); })()}
@@ -14279,9 +14301,11 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
               </select>
             </Field>
             <Field label="📅 次回訪問日時">
-              <div style={{ display: "flex", gap: 6 }}>
-                <input type="date" style={{ ...inp, flex: 2, minWidth: 0 }} value={editingJiage.nextVisit || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisit: e.target.value })} />
-                <select style={{ ...inp, flex: 1, minWidth: 0 }} value={editingJiage.nextVisitTime || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisitTime: e.target.value })} disabled={!editingJiage.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "時間（任意）" : t}</option>)}</select>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <input type="date" style={{ ...inp, flex: "1 1 100%", minWidth: 0 }} value={editingJiage.nextVisit || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisit: e.target.value })} />
+                <select style={{ ...inp, flex: 1, minWidth: 0 }} value={editingJiage.nextVisitTime || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisitTime: e.target.value })} disabled={!editingJiage.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "開始" : t}</option>)}</select>
+                <span style={{ color: C.muted, flex: "none" }}>〜</span>
+                <select style={{ ...inp, flex: 1, minWidth: 0 }} value={editingJiage.nextVisitEndTime || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisitEndTime: e.target.value })} disabled={!editingJiage.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "終了" : t}</option>)}</select>
               </div>
             </Field>
             <Field label="👥 担当者">
@@ -16119,7 +16143,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       address: j.address, ownerName: j.owner, ownerAddress: j.ownerAddr,
       ownerContact: j.ownerContact || "", assignee: j.assignee,
       status: j.status, subStatus: `DM:${j.dm}`,
-      nextDate: j.nextVisit, nextTime: j.nextVisitTime || "", nextWith: j.nextVisitWith || [], memo: j.memo, history: [],
+      nextDate: j.nextVisit, nextTime: j.nextVisitTime || "", nextEndTime: j.nextVisitEndTime || "", nextWith: j.nextVisitWith || [], memo: j.memo, history: [],
       dm: j.dm, visit: j.visit, area: j.area || "", raw: j,
       lat: j.lat, lng: j.lng, ownerLat: j.ownerLat, ownerLng: j.ownerLng,
     }));
@@ -16718,6 +16742,13 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
     const updated = { ...item.raw, nextVisitTime: time };
     setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
     setSelected(s => ({ ...s, item: { ...s.item, nextTime: time, raw: updated } }));
+  };
+  // 🆕 v9.179: ピン詳細での次回訪問「終了時刻」設定（地上げのみ）
+  const updateNextEndTime = (item, time) => {
+    if (item.type !== "jiage") return;
+    const updated = { ...item.raw, nextVisitEndTime: time };
+    setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
+    setSelected(s => ({ ...s, item: { ...s.item, nextEndTime: time, raw: updated } }));
   };
   // 🆕 v9.176: ピン詳細での次回訪問「同行者」設定（地上げのみ・複数可）
   const updateNextWith = (item, member) => {
@@ -18225,7 +18256,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
     setSelected(null);
   };
 
-  const emptyJiage = { address: "", owner: "", ownerAddr: "", ownerContact: "", dm: "未", visit: "未", status: "未訪問", assignee: currentUser || MEMBERS[0], memo: "", nextVisit: "", nextVisitTime: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
+  const emptyJiage = { address: "", owner: "", ownerAddr: "", ownerContact: "", dm: "未", visit: "未", status: "未訪問", assignee: currentUser || MEMBERS[0], memo: "", nextVisit: "", nextVisitTime: "", nextVisitEndTime: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
   const [form, setForm] = useState(emptyJiage);
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
 
@@ -20844,9 +20875,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           </Field>
           <Field label={selected.item.type === "jiage" ? "次回訪問日時" : "次回フォロー日"}>
             {selected.item.type === "jiage" ? (
-              <div style={{ display: "flex", gap: 8 }}>
-                <input type="date" style={{ ...inp, flex: 2, minWidth: 0 }} value={selected.item.nextDate || ""} onChange={e => updateNextDate(selected.item, e.target.value)} />
-                <select style={{ ...inp, flex: 1, minWidth: 0 }} value={selected.item.nextTime || ""} onChange={e => updateNextTime(selected.item, e.target.value)} disabled={!selected.item.nextDate}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "時間（任意）" : t}</option>)}</select>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <input type="date" style={{ ...inp, flex: "1 1 100%", minWidth: 0 }} value={selected.item.nextDate || ""} onChange={e => updateNextDate(selected.item, e.target.value)} />
+                <select style={{ ...inp, flex: 1, minWidth: 0 }} value={selected.item.nextTime || ""} onChange={e => updateNextTime(selected.item, e.target.value)} disabled={!selected.item.nextDate}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "開始" : t}</option>)}</select>
+                <span style={{ color: C.muted, flex: "none" }}>〜</span>
+                <select style={{ ...inp, flex: 1, minWidth: 0 }} value={selected.item.nextEndTime || ""} onChange={e => updateNextEndTime(selected.item, e.target.value)} disabled={!selected.item.nextDate}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "終了" : t}</option>)}</select>
               </div>
             ) : (
               <input type="date" style={inp} value={selected.item.nextDate || ""} onChange={e => updateNextDate(selected.item, e.target.value)} />
@@ -21828,7 +21861,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               <Field label="DM状況"><select style={inp} value={form.dm || "未"} onChange={f("dm")}>{DM_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
               <Field label="住所確認"><select style={inp} value={form.visit || "未"} onChange={f("visit")}>{["未", "済", "異"].map(s => <option key={s}>{s}</option>)}</select></Field>
               <Field label="訪問状況"><select style={inp} value={form.status} onChange={f("status")}>{ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
-              <Field label="次回訪問日時"><div style={{ display: "flex", gap: 8 }}><input type="date" style={{ ...inp, flex: 2 }} value={form.nextVisit || ""} onChange={f("nextVisit")} /><select style={{ ...inp, flex: 1 }} value={form.nextVisitTime || ""} onChange={f("nextVisitTime")} disabled={!form.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "時間（任意）" : t}</option>)}</select></div></Field>
+              <Field label="次回訪問日時"><div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}><input type="date" style={{ ...inp, flex: "1 1 100%" }} value={form.nextVisit || ""} onChange={f("nextVisit")} /><select style={{ ...inp, flex: 1 }} value={form.nextVisitTime || ""} onChange={f("nextVisitTime")} disabled={!form.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "開始" : t}</option>)}</select><span style={{ color: C.muted, flex: "none" }}>〜</span><select style={{ ...inp, flex: 1 }} value={form.nextVisitEndTime || ""} onChange={f("nextVisitEndTime")} disabled={!form.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "終了" : t}</option>)}</select></div></Field>
             </>
           ) : (
             <>
