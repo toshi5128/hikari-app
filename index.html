@@ -191,7 +191,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-23-v9.190-diff-sync";
+const APP_VERSION = "2026-06-23-v9.191-offline-resync";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3392,6 +3392,7 @@ function MainApp({ onLock, onSwitchUser }) {
   const LAST_SAVE_KEY = "hikari_last_save";
   const lastLocalSaveRef = useRef(Number(localStorage.getItem(LAST_SAVE_KEY) || 0));
   const lastRemoteUpdatedAtRef = useRef(null); // 🆕 v9.190: 差分同期。最後に取得したクラウドのupdated_at
+  const pendingPushRef = useRef(false); // 🆕 v9.191: オフライン中に保存できなかった編集がある＝接続復活時に自動アップロード
   // 🆕 v9.22: tracks save throttle 用 ( GPS 探索中の頻繁 save 抑制 )
   const lastTracksSaveRef = useRef(0);
   const pendingTrackFlushRef = useRef(null); // throttle 中の最新 next を保持、 visibilitychange で flush
@@ -3679,6 +3680,12 @@ function MainApp({ onLock, onSwitchUser }) {
       loadUpdatedAt().then(ua => {
         if (ua == null) { setSyncError(true); return; }   // クラウド未接続
         setSyncError(false);
+        // 🆕 v9.191: オフライン中にアップできなかった編集を、接続復活時に自動再送（端末のローカルキャッシュから）
+        if (pendingPushRef.current) {
+          const local = loadFromCache();
+          if (local) saveToSupabase(local).then(ok => { if (ok) { pendingPushRef.current = false; lastRemoteUpdatedAtRef.current = null; setSavedMsg(true); setTimeout(() => setSavedMsg(false), 2000); } });
+          return; // 今回は再送を優先（次回ポーリングで最新を取得）
+        }
         if (lastRemoteUpdatedAtRef.current !== null && ua === lastRemoteUpdatedAtRef.current) return; // 変化なし→全取得しない
         // 変化あり → ここで初めて全データ取得＋マージ
         loadFromSupabase().then(remote => {
@@ -4200,11 +4207,13 @@ function MainApp({ onLock, onSwitchUser }) {
       // Supabaseに保存（非同期）
       saveToSupabase(next).then(ok => {
         if (ok) {
+          pendingPushRef.current = false; // 🆕 v9.191: 送信成功＝未送信なし
           setSavedMsg(true);
           setSyncError(false);
           setTimeout(() => setSavedMsg(false), 2000);
         } else {
-          // 3回試して失敗 → ユーザーに警告表示
+          // 3回試して失敗 → ユーザーに警告表示＋未送信フラグ（接続復活時に自動再送）
+          pendingPushRef.current = true; // 🆕 v9.191
           setSyncError(true);
           setSavedMsg(false);
         }
