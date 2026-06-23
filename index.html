@@ -191,7 +191,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-23-v9.188-import-zip";
+const APP_VERSION = "2026-06-23-v9.189-offline-timeout";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1905,13 +1905,21 @@ function appendLogAndNotify(d, action, target, description, item = null, options
 
 // Supabaseからデータを取得
 async function loadFromSupabase() {
+  // 🆕 v9.189: 12秒タイムアウト。Supabaseダウン(522)時にCloudflareの応答待ちで固まらないように。
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=data`, {
-      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
-    });
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 12000);
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=data`, {
+        headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+        signal: ctrl.signal
+      });
+    } finally { clearTimeout(to); }
+    if (!res.ok) { console.warn("Supabase load: HTTP " + res.status); return null; } // 522等はnull＝オフライン扱い
     const rows = await res.json();
     if (rows && rows.length > 0 && rows[0].data) return rows[0].data;
-  } catch (e) { console.error("Supabase load error:", e); }
+  } catch (e) { console.warn("Supabase load error:", (e && e.name) || e); }
   return null;
 }
 
@@ -3597,6 +3605,9 @@ function MainApp({ onLock, onSwitchUser }) {
     // 🆕 古い削除レコード（7日以上前）を掃除
     cleanupOldDeletions();
     loadFromSupabase().then(remote => {
+      // 🆕 v9.189: 取得失敗(null=クラウド未接続)なら、ローカルキャッシュ表示のままオフライン表示に切替（「取得中」で固まらない）
+      if (!remote) { setSyncing(false); setSyncError(true); return; }
+      setSyncError(false);
       // 🆕 バージョンチェック：誰かが新版で保存してたら自動更新（カウントダウンバナー）
       if (remote?.__appVersion && isRemoteVersionNewer(remote.__appVersion, APP_VERSION)) {
         console.warn(`[ひかり不動産] ⚠ 古いバージョンを検出`);
@@ -3643,6 +3654,9 @@ function MainApp({ onLock, onSwitchUser }) {
       if (Date.now() - lastLocalSaveRef.current < 30000) return; // 直近の自分の保存はスキップ
       if (isUserEditing()) return; // 入力中はスキップ
       loadFromSupabase().then(remote => {
+        // 🆕 v9.189: クラウド復活したらオフライン表示を解除／落ちてたらオフライン表示
+        if (!remote) { setSyncError(true); return; }
+        setSyncError(false);
         // 🆕 ポーリング時もバージョンチェック（カウントダウンバナーで自動更新）
         if (remote?.__appVersion && isRemoteVersionNewer(remote.__appVersion, APP_VERSION)) {
           console.warn(`[ひかり不動産] ⚠ ポーリング中に新バージョン検出: ${remote.__appVersion}`);
