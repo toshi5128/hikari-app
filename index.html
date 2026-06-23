@@ -191,7 +191,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-23-v9.196-akiya-flyer";
+const APP_VERSION = "2026-06-23-v9.197-dm-attach-flyer";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23138,8 +23138,13 @@ function printProposal(j) {
   } catch (e) { console.warn("proposal print failed", e); alert("提案書の生成に失敗しました：" + e.message); }
 }
 // 🆕 v9.196: 空き家投函チラシ（所有者不明段階で投函するDM・窓付封筒対応・所有者名/住所なし・会社署名）
-function buildChirashiHTML() {
+function buildChirashiHTML(showAddressee) {
+  if (showAddressee === undefined) showAddressee = true;
   const L = HIKARI_LOGO;
+  // showAddressee=true: 窓付封筒用に「空き家所有者様」を表示（単独投函用）。false: 宛名なし（DM同封用＝DM手紙側に宛名があるため）
+  const top1 = showAddressee
+    ? `<div class="topwrap"><div class="window-box"><div class="addressee">空き家所有者様</div></div><div class="topright"><img src="${L}" alt="ひかり不動産"><span class="date">合同会社ひかり不動産</span></div></div>`
+    : `<div class="head"><img src="${L}" alt="ひかり不動産"><span class="date">合同会社ひかり不動産</span></div>`;
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><style>
 @page{size:A4;margin:16mm 15mm;}
 *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
@@ -23173,10 +23178,7 @@ h2.green{background:#16a34a;}
 .topright .date{display:block;margin-top:6px;font-size:11pt;font-weight:700;color:#374151;}
 </style></head><body>
 <div class="page">
-  <div class="topwrap">
-    <div class="window-box"><div class="addressee">空き家所有者様</div></div>
-    <div class="topright"><img src="${L}" alt="ひかり不動産"><span class="date">合同会社ひかり不動産</span></div>
-  </div>
+  ${top1}
   <h1 class="title">その大切なお住まい、<br>「いま」が将来を左右する分かれ道です</h1>
   <div class="sub">― 空き家のご所有者様へ ―</div>
   <div class="lead">近隣で空き家の調査をしております折に、こちらのお住まいが目に留まり、お手紙を投函させていただきました。<br>人が住まなくなった家は、わずか数年で驚くほど傷みます。<b>今ならまだ選べる選択肢が、放っておくほど一つ、また一つと狭まっていきます。</b>ご所有者様とご家族にとって後悔のない判断をしていただくために、まずは現状の「リスク」を正直にお伝えします。</div>
@@ -23247,6 +23249,7 @@ function DMPage({ data, setData, onBack }) {
   const [editName, setEditName] = useState(null); // { id, name } 🆕 v9.145
   const [editShare, setEditShare] = useState(null); // { id, names, addrs, zips } 🆕 v9.150: 共有を一括編集
   const [q, setQ] = useState(""); // 🆕 v9.146: 検索（名前・住所・ワード）
+  const [attachFlyer, setAttachFlyer] = useState(true); // 🆕 v9.197: DM手紙の後ろに空き家チラシ(表裏2P)を同封して印刷
 
   const jiage = Array.isArray(data.jiage) ? data.jiage : [];
   const ownerName = j => String(j.owner || j.ownerName || "").trim();
@@ -23459,18 +23462,28 @@ function DMPage({ data, setData, onBack }) {
       try {
         const src = document.getElementById("dm-print-root");
         if (src && src.innerHTML) {
-          const css = "@page{size:A4;margin:15mm 16mm;}*{box-sizing:border-box;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}html,body{margin:0;padding:0;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}"
+          let css = "@page{size:A4;margin:15mm 16mm;}*{box-sizing:border-box;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}html,body{margin:0;padding:0;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}"
             + "body{font-family:'Yu Gothic','游ゴシック','Noto Sans JP',sans-serif;color:#1a1a1a;}"
             + ".dm-letter{padding:0 !important;border-radius:0 !important;min-height:260mm;display:flex;flex-direction:column;page-break-after:always;}"
             + ".dm-letter:last-child{page-break-after:auto;}.dm-foot{margin-top:auto;}"
             + ".dm-window-guide{display:none !important;}.dm-window-box{border:none !important;}";
+          // 🆕 v9.197: DM手紙の後ろに空き家チラシ(宛名なし・表裏2P)を同封。各手紙の直後にチラシ2Pを差し込む（手紙→チラシ表→チラシ裏）。
+          let bodyHTML = src.innerHTML;
+          if (attachFlyer) {
+            const full = buildChirashiHTML(false);
+            const chStyle = full.slice(full.indexOf("<style>") + 7, full.indexOf("</style>")).replace(/@page\{[^}]*\}/, "");
+            const chBody = full.slice(full.indexOf("<body>") + 6, full.indexOf("</body>"));
+            css += chStyle;
+            const letters = Array.from(src.querySelectorAll(".dm-letter"));
+            if (letters.length) bodyHTML = letters.map(el => el.outerHTML + chBody).join("");
+          }
           const ifr = document.createElement("iframe");
           ifr.setAttribute("aria-hidden", "true");
           ifr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
           document.body.appendChild(ifr);
           const doc = ifr.contentWindow.document;
           doc.open();
-          doc.write("<!doctype html><html lang='ja'><head><meta charset='utf-8'><style>" + css + "</style></head><body>" + src.innerHTML + "</body></html>");
+          doc.write("<!doctype html><html lang='ja'><head><meta charset='utf-8'><style>" + css + "</style></head><body>" + bodyHTML + "</body></html>");
           doc.close();
           setTimeout(() => {
             try { ifr.contentWindow.focus(); ifr.contentWindow.print(); } catch (e) {}
@@ -23551,8 +23564,14 @@ function DMPage({ data, setData, onBack }) {
             <div style={{ width: "210mm", minHeight: "297mm", margin: "0 auto", background: "#fff", boxShadow: "0 2px 14px rgba(0,0,0,0.28)", overflow: "hidden" }}>{Letter(o)}</div>
           </div>
         ) : <div style={{ textAlign: "center", color: C.muted, padding: 30 }}>印刷できる宛先がありません</div>}
-        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-          <button onClick={doPrint} style={{ ...btnStyle(), flex: 2, padding: 13 }}>🖨 手紙を印刷（{ps.length}通）</button>
+        {/* 🆕 v9.197: 空き家チラシ(表裏2P)を同封 */}
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, padding: "10px 12px", background: attachFlyer ? C.accentBg : C.bg, border: `1.5px solid ${attachFlyer ? C.accent : C.borderDim}`, borderRadius: 10, cursor: "pointer", fontSize: 13, color: C.text }}>
+          <input type="checkbox" checked={attachFlyer} onChange={e => setAttachFlyer(e.target.checked)} style={{ width: 18, height: 18 }} />
+          <span><b>🏠 空き家チラシを同封して印刷</b>（各DMの後ろに表裏2ページで追加）</span>
+        </label>
+        {attachFlyer && <div style={{ fontSize: 11, color: C.muted, margin: "6px 2px 0", lineHeight: 1.6 }}>※ 1通あたり「DM手紙＋チラシ表＋チラシ裏」の3ページで出力されます。チラシを<b>両面印刷</b>すれば表裏1枚になります。ヘッダー・フッターは「なし」推奨。</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <button onClick={doPrint} style={{ ...btnStyle(), flex: 2, padding: 13 }}>🖨 手紙を印刷（{ps.length}通{attachFlyer ? "＋チラシ" : ""}）</button>
         </div>
         <button onClick={markSent} style={{ width: "100%", marginTop: 8, background: C.success, color: "#fff", border: "none", borderRadius: 10, padding: 13, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✅ この {ps.length} 通を送付済みに（履歴に+1）</button>
       </div>
