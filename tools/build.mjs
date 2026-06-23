@@ -93,7 +93,7 @@ mkdirSync(DIST_DIR, { recursive: true });
 writeFileSync(DIST, built);
 
 // 🆕 v8.94: PWA で必要な静的アセットも dist/ にコピー（本番デプロイ用）
-const STATIC_ASSETS = ["manifest.json", "sw.js", "icon-192.png", "icon-512.png"];
+const STATIC_ASSETS = ["manifest.json", "sw.js", "icon-192.png", "icon-512.png", "jiage-baikyaku-teian.pdf"];
 let copiedCount = 0;
 for (const f of STATIC_ASSETS) {
   const src = join(ROOT, f);
