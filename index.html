@@ -191,7 +191,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-23-v9.194-proposal-on-pin-detail";
+const APP_VERSION = "2026-06-23-v9.195-stale-save-autoresync";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1960,11 +1960,13 @@ async function saveToSupabase(data, retries = 3) {
       const remoteVer = rows && rows[0] && rows[0]["__appVersion"];
       if (remoteVer && isRemoteVersionNewer(remoteVer, APP_VERSION)) {
         console.warn(`[Supabase] ⛔ 保存拒否：リモート(${remoteVer})の方が新しいバージョン。ローカル(${APP_VERSION})は古い。`);
+        // 🆕 v9.195: ブロックした編集は直前にローカル（localStorage）へ保存済み。更新後に自動でクラウドへ再送するため永続フラグを立てる（訪問記録などの消失を防止）。
+        try { localStorage.setItem("__hikariStaleResyncPending__", "1"); } catch (e) {}
         // 画面に通知（連打防止：3秒以内に再表示しない）
         const now = Date.now();
         if (!window.__hikariStaleSaveAlertAt__ || now - window.__hikariStaleSaveAlertAt__ > 3000) {
           window.__hikariStaleSaveAlertAt__ = now;
-          alert(`⚠️ 保存できません\n\nこの端末のアプリが古いバージョン（${APP_VERSION}）のため、保存をブロックしました。\n他の端末（${remoteVer}）が新しい版を使用しています。\n\nブラウザの更新ボタン（↻）で再読み込みしてください。`);
+          alert(`🔄 アプリの更新が必要です\n\n入力内容はこの端末に保存しました（消えません）。\nアプリが最新版に更新されると、自動でクラウドへ同期されます。\n\nそのまましばらくお待ちいただくか、更新ボタン（↻）で再読み込みしてください。`);
         }
         return false;
       }
@@ -3644,6 +3646,23 @@ function MainApp({ onLock, onSwitchUser }) {
         setDataRaw(merged);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
         maybeFlashFromMerged(merged, true); // 🆕 v9.81: 初回は既読基準を設定（鳴らさない）
+
+        // 🆕 v9.195: 旧バージョンで保存ブロックされた編集（訪問記録など）を、最新版に更新できた今このタイミングで自動再送。
+        //   ・merged はローカルキャッシュ∪クラウドの統合結果（その編集を含む）なので、これをそのまま push すれば union で確実にクラウドへ反映される。
+        //   ・ここに来た＝バージョンチェックを通過＝最新版なので、saveToSupabase は再びブロックされない。
+        try {
+          if (localStorage.getItem("__hikariStaleResyncPending__")) {
+            console.log("[v9.195] 旧版でブロックされた編集を検出 → クラウドへ自動再送します");
+            saveToSupabase(merged).then(ok => {
+              if (ok) {
+                localStorage.removeItem("__hikariStaleResyncPending__");
+                lastRemoteUpdatedAtRef.current = null;
+                setSavedMsg(true); setTimeout(() => setSavedMsg(false), 2500);
+                console.log("[v9.195] 自動再送 完了：ブロックされていた編集をクラウドへ同期しました");
+              }
+            }).catch(() => {});
+          }
+        } catch (e) {}
 
         // 🆕 v8.65: 自分が新しいバージョンなら Supabase に「俺いるよ」をアナウンスして他端末のバナーを起動
         //   ・remote.__appVersion < APP_VERSION のときに自動で minimal save を発火
