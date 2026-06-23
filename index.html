@@ -191,7 +191,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-23-v9.189-offline-timeout";
+const APP_VERSION = "2026-06-23-v9.190-diff-sync";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1923,6 +1923,25 @@ async function loadFromSupabase() {
   return null;
 }
 
+// 🆕 v9.190: 差分同期用＝updated_at だけを軽量取得（数十バイト）。変化が無ければ全データ(3.7MB)を取りに行かない。
+async function loadUpdatedAt() {
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 10000);
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${DATA_ID}&select=updated_at`, {
+        headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+        signal: ctrl.signal
+      });
+    } finally { clearTimeout(to); }
+    if (!res.ok) return null;
+    const rows = await res.json();
+    if (rows && rows.length > 0) return rows[0].updated_at || "";
+  } catch (e) { /* オフライン扱い */ }
+  return null;
+}
+
 // Supabaseにデータを保存
 async function saveToSupabase(data, retries = 3) {
   // 🆕 バージョン情報を含める（自動更新通知用）
@@ -3372,6 +3391,7 @@ function MainApp({ onLock, onSwitchUser }) {
   // 🆕 直近の自分保存時刻を localStorage で永続化（強制更新後も5分ガードが効くように）
   const LAST_SAVE_KEY = "hikari_last_save";
   const lastLocalSaveRef = useRef(Number(localStorage.getItem(LAST_SAVE_KEY) || 0));
+  const lastRemoteUpdatedAtRef = useRef(null); // 🆕 v9.190: 差分同期。最後に取得したクラウドのupdated_at
   // 🆕 v9.22: tracks save throttle 用 ( GPS 探索中の頻繁 save 抑制 )
   const lastTracksSaveRef = useRef(0);
   const pendingTrackFlushRef = useRef(null); // throttle 中の最新 next を保持、 visibilitychange で flush
@@ -3608,6 +3628,8 @@ function MainApp({ onLock, onSwitchUser }) {
       // 🆕 v9.189: 取得失敗(null=クラウド未接続)なら、ローカルキャッシュ表示のままオフライン表示に切替（「取得中」で固まらない）
       if (!remote) { setSyncing(false); setSyncError(true); return; }
       setSyncError(false);
+      // 🆕 v9.190: 差分同期の基準として現在の updated_at を記憶（以後ポーリングは変化時だけ全取得）
+      loadUpdatedAt().then(ua => { if (ua != null) lastRemoteUpdatedAtRef.current = ua; });
       // 🆕 バージョンチェック：誰かが新版で保存してたら自動更新（カウントダウンバナー）
       if (remote?.__appVersion && isRemoteVersionNewer(remote.__appVersion, APP_VERSION)) {
         console.warn(`[ひかり不動産] ⚠ 古いバージョンを検出`);
@@ -3653,22 +3675,28 @@ function MainApp({ onLock, onSwitchUser }) {
       try { if (window.__hikariTrackRecording__) return; } catch (e) {}
       if (Date.now() - lastLocalSaveRef.current < 30000) return; // 直近の自分の保存はスキップ
       if (isUserEditing()) return; // 入力中はスキップ
-      loadFromSupabase().then(remote => {
-        // 🆕 v9.189: クラウド復活したらオフライン表示を解除／落ちてたらオフライン表示
-        if (!remote) { setSyncError(true); return; }
+      // 🆕 v9.190: 差分同期。まず updated_at(数十バイト)だけ確認し、変化が無ければ全データ(3.7MB)を取りに行かない＝平常時の同期が一瞬で終わる。
+      loadUpdatedAt().then(ua => {
+        if (ua == null) { setSyncError(true); return; }   // クラウド未接続
         setSyncError(false);
-        // 🆕 ポーリング時もバージョンチェック（カウントダウンバナーで自動更新）
-        if (remote?.__appVersion && isRemoteVersionNewer(remote.__appVersion, APP_VERSION)) {
-          console.warn(`[ひかり不動産] ⚠ ポーリング中に新バージョン検出: ${remote.__appVersion}`);
-          showVersionUpdateBanner(remote.__appVersion);
-          return; // 古いバージョンではマージ作業を進めない
-        }
-        const merged = mergeRemoteSafely(remote);
-        if (merged) {
-          setDataRaw(merged);
-          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
-          maybeFlashFromMerged(merged, false); // 🆕 v9.81: 自分に関係する新着を検知してフラッシュ
-        }
+        if (lastRemoteUpdatedAtRef.current !== null && ua === lastRemoteUpdatedAtRef.current) return; // 変化なし→全取得しない
+        // 変化あり → ここで初めて全データ取得＋マージ
+        loadFromSupabase().then(remote => {
+          if (!remote) { setSyncError(true); return; }
+          lastRemoteUpdatedAtRef.current = ua;
+          // 🆕 ポーリング時もバージョンチェック（カウントダウンバナーで自動更新）
+          if (remote?.__appVersion && isRemoteVersionNewer(remote.__appVersion, APP_VERSION)) {
+            console.warn(`[ひかり不動産] ⚠ ポーリング中に新バージョン検出: ${remote.__appVersion}`);
+            showVersionUpdateBanner(remote.__appVersion);
+            return; // 古いバージョンではマージ作業を進めない
+          }
+          const merged = mergeRemoteSafely(remote);
+          if (merged) {
+            setDataRaw(merged);
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
+            maybeFlashFromMerged(merged, false); // 🆕 v9.81: 自分に関係する新着を検知してフラッシュ
+          }
+        });
       });
     }, 30000); // 🆕 v9.21: 15s → 30s
     return () => clearInterval(timer);
