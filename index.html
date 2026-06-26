@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.213-points-auto";
+const APP_VERSION = "2026-06-27-v9.214-points-ai";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23410,6 +23410,7 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
   const [points, setPoints] = useState(["", "", "", ""]);
   const [reinsInfo, setReinsInfo] = useState(null);
   const [legalParsing, setLegalParsing] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
   const num = v => { const x = parseFloat(String(v).replace(/[^0-9.]/g, "")); return isNaN(x) ? 0 : x; };
   const seireki2wareki = (y) => {
     if (y >= 2019) return "令和" + (y === 2019 ? "元" : (y - 2018)) + "年";
@@ -23537,6 +23538,48 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
     setPoints(ps => (ps.some(p => p && p.trim()) ? ps : d.points));
     alert("本物件のポイントとコメントを自動生成しました。確認・修正できます。");
   };
+  // 🆕 v9.214: Gemini テキスト生成（謄本OCRと同じキー。JSONで返す）
+  const callGeminiText = async (prompt) => {
+    const apiKey = localStorage.getItem("hikari_gemini_api_key");
+    if (!apiKey) throw new Error("Gemini APIキーが未設定です（謄本OCRで使うのと同じキー）");
+    const body = { contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.4 } };
+    const models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"];
+    let lastErr = null;
+    for (const model of models) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        if (!resp.ok) { lastErr = new Error(`Gemini(${model}) ${resp.status}: ${(await resp.text()).slice(0, 200)}`); continue; }
+        const data = await resp.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) { lastErr = new Error(`Gemini(${model}) 空レスポンス`); continue; }
+        return JSON.parse(text);
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error("Gemini 全モデル失敗");
+  };
+  // 🆕 v9.214: AI（Gemini）で本物件のポイント＆コメントを生成（物件固有の切り口まで）
+  const aiFeatures = async () => {
+    if (!localStorage.getItem("hikari_gemini_api_key")) {
+      alert("Geminiキーが未設定です。謄本OCRで使うのと同じキーが必要です。\n未設定の間は『✨ 自動生成』（ルール版・無料）をお使いください。");
+      return;
+    }
+    const la = num(f.landArea); const tsubo = la ? Math.round(la / 3.305785 * 10) / 10 : "";
+    const prompt = `あなたは不動産売却査定の専門家です。以下の物件について、売主向け「売却ご提案書」に載せる`
+      + `「本物件のポイント（短い前向きな訴求フレーズ）」と「物件コメント（概要ページ下の説明文・2〜3文）」を作成してください。`
+      + `条件: 与えられた情報の範囲で事実に基づき前向きに。未確認の断定や誇大表現は禁止。専門用語は控えめ。`
+      + `出力は厳密にJSONのみ: {"points":["...","...","...","..."],"comment":"..."} / pointsは4〜5個・各12文字程度 / commentは2〜3文。`
+      + `\n\n物件情報:\n- 所在: ${f.address || "—"}\n- 土地面積: ${f.landArea || "—"}㎡（約${tsubo || "—"}坪）\n- 建物面積: ${f.buildingArea || "—"}㎡\n- 築年: ${f.builtDate || "—"}（築${f.buildingAge || "—"}年）\n- 構造: ${f.structure || "—"}\n- 耐震: ${f.earthquake || "—"}\n- 駐車: ${f.parking || "—"}\n- 現況: ${f.currentState || "—"}`;
+    setAiBusy(true);
+    try {
+      const r = await callGeminiText(prompt);
+      const pts = Array.isArray(r.points) ? r.points.filter(x => x && String(x).trim()).map(String) : [];
+      setF(s => ({ ...s, propertyComment: r.comment ? String(r.comment) : s.propertyComment }));
+      if (pts.length) setPoints(pts);
+      alert("AI（Gemini）がポイント＆コメントを生成しました。確認・修正できます。");
+    } catch (e) { console.error("[AIポイント生成]", e); alert("AI生成に失敗：" + e.message + "\n（『✨ 自動生成』のルール版は使えます）"); }
+    finally { setAiBusy(false); }
+  };
   const generate = () => {
     const nd = computeNotes(); // 🆕 v9.212: 解説文が空なら自動下書きを使う
     const ff = computeFeatures(); // 🆕 v9.213: ポイント/コメントが空ならルール生成を使う
@@ -23600,8 +23643,11 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
         <Field label="地図表示の町丁目（4P地図）"><input style={si} value={f.mapArea} onChange={set("mapArea")} placeholder="東小川5丁目" /></Field>
       </div>
       <div style={sec}>本物件のポイント（4つ程度・空欄は出ません）</div>
-      <button onClick={draftFeatures} style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, marginBottom: 4 }}>✨ ポイント＆コメントを自動生成</button>
-      <div style={{ fontSize: 10, color: C.success, fontWeight: 700, marginBottom: 6 }}>✅ 空欄のままでもOK。物件情報（築年・耐震・構造・面積・駐車・現況）から、査定書作成時に自動で入ります。上のボタンで今すぐ生成も可。</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+        <button onClick={draftFeatures} style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11 }}>✨ 自動生成（ルール・無料）</button>
+        <button onClick={aiFeatures} disabled={aiBusy} style={{ ...btnStyle("ghost"), padding: "6px 12px", fontSize: 11, borderColor: C.accent, color: C.accent }}>{aiBusy ? "🤖 AI生成中…" : "🤖 AIで考えさせる（Gemini）"}</button>
+      </div>
+      <div style={{ fontSize: 10, color: C.success, fontWeight: 700, marginBottom: 6 }}>✅ 空欄のままでもOK。物件情報から査定書作成時に自動で入ります（ルール版）。<span style={{ color: C.accent }}>🤖AIは角地・整形地・周辺環境など物件固有の切り口まで文章化（Geminiキー要・物件情報をGoogleに送信）。</span></div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
         {points.map((pt, i) => (
           <input key={i} style={ssi} value={pt} placeholder={`ポイント${i + 1}（空欄で自動）`} onChange={e => setPoints(ps => ps.map((x, j) => j === i ? e.target.value : x))} />
