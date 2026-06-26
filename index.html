@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.215-gemini-key-ui";
+const APP_VERSION = "2026-06-27-v9.216-kotei-memo-reform";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23590,6 +23590,9 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
   const generate = () => {
     const nd = computeNotes(); // 🆕 v9.212: 解説文が空なら自動下書きを使う
     const ff = computeFeatures(); // 🆕 v9.213: ポイント/コメントが空ならルール生成を使う
+    const kh = num(f.koteiHyoka); // 🆕 v9.216: 固定資産税評価証明書の額あり=倍率地域モード（根拠文を切替）
+    const khFmt = kh ? Number(String(f.koteiHyoka).replace(/[^0-9]/g, "")).toLocaleString() : "";
+    const bai = (f.baisu || "1.1").trim();
     const data = {
       mapArea: f.mapArea || townOf(f.address),
       customerName: f.customerName, personalize: !!(f.customerName && f.customerName.trim()),
@@ -23599,9 +23602,9 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
       points: (points.filter(x => x && x.trim()).length ? points.filter(x => x && x.trim()) : ff.points),
       propertyComment: f.propertyComment || ff.comment,
       yonka: [
-        { type: "① 公示価格", memo: "国土交通省／時価の指標", value: f.y1 || "—" },
-        { type: "② 相続税評価額", memo: "国税庁／相続・贈与税の基準（公示の約80%）", value: f.y2 || "—" },
-        { type: "③ 固定資産税評価額", memo: "市町村／固定資産税等の基準（公示の約70%）", value: f.y3 || "—" },
+        { type: "① 公示価格", memo: kh ? "国土交通省／公示点が無い地域のため、固定資産税評価額から推計（÷0.7）。" : "国土交通省／時価の指標", value: f.y1 || "—" },
+        { type: "② 相続税評価額", memo: kh ? `国税庁／倍率地域は「固定資産税評価額 × 倍率（${bai}）」で算定。` : "国税庁／相続・贈与税の基準（公示の約80%）", value: f.y2 || "—" },
+        { type: "③ 固定資産税評価額", memo: kh ? `お手元の<b>固定資産税課税明細書（評価額 ${khFmt}円）</b>がそのまま根拠です。全国地価マップの「固定」タブでも目安を確認できます。` : "市町村／固定資産税路線価 × 面積で算定。全国地価マップの「固定」タブでも確認できます。", value: f.y3 || "—" },
         { type: "④ 実勢価格（時価）", memo: "市場での実際の取引価格（成約事例より）", value: f.y4 || "<span style='font-size:.62em;font-weight:700;color:#9AA4B0;'>後ほどご説明します</span>", real: true },
       ],
       yonkaLow: (() => { const t = [f.y1, f.y2, f.y3].map(num).filter(x => x > 0); return t.length ? Math.min(...t) : num(f.yonkaLow); })(),
@@ -23611,7 +23614,12 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
       compNote: f.compNote,
       landStock: landStock.filter(r => r.loc || r.price),
       landSold: landSold.filter(r => r.loc || r.price),
-      buildingStock: buildingStock.filter(r => r.loc || r.price),
+      buildingStock: buildingStock.filter(r => r.loc || r.price).map(r => {
+        if (!r.reform) return r;
+        const loc = String(r.loc || "");
+        if (/リフォーム済/.test(loc)) return r;
+        return { ...r, loc: /）$/.test(loc) ? loc.replace(/）$/, "・リフォーム済）") : loc + "（リフォーム済）" };
+      }),
       landNote: f.landNote || nd.landNote, marketNote: f.marketNote || nd.marketNote,
       jissei: num(f.jissei), jisseiHigh: num(f.jisseiHigh),
       priceBuyout: num(f.priceBuyout), priceChukan: num(f.priceChukan), priceBaibai: num(f.priceBaibai), priceBaibaiHigh: num(f.priceBaibaiHigh),
@@ -23741,13 +23749,18 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
       {[
         { arr: landStock, set: setLandStock, label: "土地の在庫", cols: [["loc", "所在"], ["area", "面積"], ["price", "価格"], ["unit", "㎡単価"], ["listed", "掲載"]], blank: { loc: "", area: "", price: "", unit: "", listed: "" } },
         { arr: landSold, set: setLandSold, label: "土地の成約", cols: [["loc", "所在"], ["area", "面積"], ["price", "成約"], ["unit", "㎡単価"], ["time", "時期"]], blank: { loc: "", area: "", price: "", unit: "", time: "" } },
-        { arr: buildingStock, set: setBuildingStock, label: "戸建の在庫", cols: [["loc", "所在"], ["land", "土地"], ["bldg", "建物"], ["year", "築年"], ["price", "売出"], ["listed", "掲載"]], blank: { loc: "", land: "", bldg: "", year: "", price: "", listed: "" } },
+        { arr: buildingStock, set: setBuildingStock, label: "戸建の在庫", cols: [["loc", "所在"], ["land", "土地"], ["bldg", "建物"], ["year", "築年"], ["price", "売出"], ["listed", "掲載"]], blank: { loc: "", land: "", bldg: "", year: "", price: "", listed: "" }, reform: true },
       ].map((tbl, ti) => (
         <div key={ti} style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, margin: "4px 0" }}>{tbl.label}（{tbl.arr.length}件）</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, margin: "4px 0" }}>{tbl.label}（{tbl.arr.length}件）{tbl.reform ? <span style={{ fontWeight: 400, color: C.muted }}>　※高値はリフォーム済が多い→チェックで査定書に「リフォーム済」表示</span> : null}</div>
           {tbl.arr.map((r, i) => (
-            <div key={i} style={{ display: "grid", gridTemplateColumns: tbl.cols.map(() => "1fr").join(" ") + " 20px", gap: 4, marginBottom: 4 }}>
+            <div key={i} style={{ display: "grid", gridTemplateColumns: tbl.cols.map(() => "1fr").join(" ") + (tbl.reform ? " auto" : "") + " 20px", gap: 4, marginBottom: 4, alignItems: "center" }}>
               {tbl.cols.map(([k, ph]) => (<input key={k} style={ssi} value={r[k] || ""} placeholder={ph} onChange={e => tbl.set(cs => cs.map((c, j) => j === i ? { ...c, [k]: e.target.value } : c))} />))}
+              {tbl.reform && (
+                <label style={{ fontSize: 9, color: C.text, display: "flex", alignItems: "center", gap: 2, whiteSpace: "nowrap" }} title="この物件はリフォーム済（高値の理由）">
+                  <input type="checkbox" checked={!!r.reform} onChange={e => tbl.set(cs => cs.map((c, j) => j === i ? { ...c, reform: e.target.checked } : c))} />🔧済
+                </label>
+              )}
               <button onClick={() => tbl.set(cs => cs.filter((_, j) => j !== i))} title="削除" style={{ border: "1px solid #c33", color: "#c33", background: "#fff", borderRadius: 5, fontSize: 12, cursor: "pointer", padding: 0 }}>×</button>
             </div>
           ))}
