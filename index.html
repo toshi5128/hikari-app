@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.211-jissei-default-note";
+const APP_VERSION = "2026-06-27-v9.212-notes-auto-on-generate";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23481,7 +23481,8 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
     } catch (e) { console.error("[レインズ取込]", e); setReinsInfo({ parsing: false, error: e.message }); alert("PDFの読み込みに失敗しました：" + e.message); }
   };
   // 🆕 v9.203: 市場表の数値から解説文（landNote/marketNote）の下書きを自動生成
-  const draftNotes = () => {
+  // 🆕 v9.212: 市場の表の数値から解説文(landNote/marketNote)を組み立てて返す（ボタン＆生成時フォールバックで共用）
+  const computeNotes = () => {
     const u = a => a.map(r => parseFloat(String(r.unit).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
     const sold = landSold.map(r => parseFloat(String(r.unit).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
     const stk = u(landStock);
@@ -23490,21 +23491,27 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
     const la = num(f.landArea);
     const baseUnit = sold.length ? (sold.reduce((a, b) => a + b, 0) / sold.length) : (allU.length ? (lo + hi) / 2 : 0);
     const jissei = la && baseUnit ? Math.round(la * baseUnit) : 0;
-    const longList = landStock.filter(r => /\d+ヶ月/.test(r.listed || "")).map(r => ({ p: r.price, m: parseInt((r.listed.match(/(\d+)ヶ月/) || [])[1] || "0") })).filter(x => x.m >= 12);
-    const landDraft = allU.length
+    const longList = landStock.filter(r => /\d+ヶ月/.test(r.listed || "")).map(r => ({ p: r.price, m: parseInt((String(r.listed).match(/(\d+)ヶ月/) || [])[1] || "0") })).filter(x => x.m >= 12);
+    const landNote = allU.length
       ? `<b>■ 土地は「総額」ではなく「㎡単価」で見ます。</b> 面積が違えば総額は変わるため、比べるべきは㎡単価です。売り出し（在庫）は㎡単価${lo}〜${hi}万円とバラつき`
         + (longList.length ? `、<b>${longList.map(x => x.p).slice(0, 2).join("・")}の物件は1年以上売れ残っています</b>` : "")
         + `。一方、成約事例から見た本物件付近の実勢は<b>㎡単価約${baseUnit ? (Math.round(baseUnit * 10) / 10) : "—"}万円</b>。本物件${la || "—"}㎡なら、ここから実勢<b>約${jissei || "—"}万円</b>が導けます。`
       : "";
     const bSold = comps.map(c => parseFloat(String(c.price).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
     const bStk = buildingStock.map(c => parseFloat(String(c.price).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
-    const marketDraft = (bSold.length || bStk.length)
-      ? `売り出し中（在庫）は戸建${bStk.length ? Math.min(...bStk) + "〜" + Math.max(...bStk) + "万円" : "—"}と高めですが、実際の<b>成約</b>は${bSold.length ? Math.min(...bSold) + "〜" + Math.max(...bSold) + "万円" : "—"}です。<b>高く売り出しても、その金額では売れていない</b>のが実態。本物件の実勢は<b>${f.jissei || "—"}${f.jisseiHigh ? "〜" + f.jisseiHigh : ""}万円</b>とみています。`
+    const marketNote = (bSold.length || bStk.length)
+      ? `売り出し中（在庫）は戸建${bStk.length ? Math.min(...bStk) + "〜" + Math.max(...bStk) + "万円" : "—"}と高めですが、実際の<b>成約</b>は${bSold.length ? Math.min(...bSold) + "〜" + Math.max(...bSold) + "万円" : "—"}です。<b>高く売り出しても、その金額では売れていない</b>のが実態。本物件の実勢は<b>${f.jissei || "—"}${f.jisseiHigh ? "〜" + f.jisseiHigh : ""}万円</b>とみています${f.jissei ? `（確実な下限は${f.jissei}万円）` : ""}。`
       : "";
-    setF(s => ({ ...s, landNote: s.landNote || landDraft, marketNote: s.marketNote || marketDraft }));
+    return { landNote, marketNote };
+  };
+  const draftNotes = () => {
+    const d = computeNotes();
+    if (!d.landNote && !d.marketNote) { alert("先に市場の表（レインズPDF取込）を入れてください。数値から自動で文章を作ります。"); return; }
+    setF(s => ({ ...s, landNote: s.landNote || d.landNote, marketNote: s.marketNote || d.marketNote }));
     alert("解説文の下書きを生成しました。下のlandNote/marketNote欄で確認・修正してください。");
   };
   const generate = () => {
+    const nd = computeNotes(); // 🆕 v9.212: 解説文が空なら自動下書きを使う
     const data = {
       mapArea: f.mapArea || townOf(f.address),
       customerName: f.customerName, personalize: !!(f.customerName && f.customerName.trim()),
@@ -23527,7 +23534,7 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
       landStock: landStock.filter(r => r.loc || r.price),
       landSold: landSold.filter(r => r.loc || r.price),
       buildingStock: buildingStock.filter(r => r.loc || r.price),
-      landNote: f.landNote, marketNote: f.marketNote,
+      landNote: f.landNote || nd.landNote, marketNote: f.marketNote || nd.marketNote,
       jissei: num(f.jissei), jisseiHigh: num(f.jisseiHigh),
       priceBuyout: num(f.priceBuyout), priceChukan: num(f.priceChukan), priceBaibai: num(f.priceBaibai), priceBaibaiHigh: num(f.priceBaibaiHigh),
       brokerFee: num(f.brokerFee),
@@ -23656,9 +23663,10 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
           <button onClick={() => tbl.set(cs => [...cs, { ...tbl.blank }])} style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11 }}>＋ 行</button>
         </div>
       ))}
-      <button onClick={draftNotes} style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, marginBottom: 6 }}>✍ 解説文の下書きを生成</button>
-      <Field label="土地の解説文（landNote・&lt;b&gt;可）"><textarea style={{ ...si, height: 70, resize: "vertical" }} value={f.landNote} onChange={set("landNote")} placeholder="■ 土地は「総額」ではなく「㎡単価」で見ます…" /></Field>
-      <Field label="市場の解説文（marketNote・&lt;b&gt;可）"><textarea style={{ ...si, height: 70, resize: "vertical" }} value={f.marketNote} onChange={set("marketNote")} placeholder="売り出し中は高めだが、実際の成約は…" /></Field>
+      <button onClick={draftNotes} style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, marginBottom: 4 }}>✍ 解説文の下書きを生成（今すぐ見る）</button>
+      <div style={{ fontSize: 10, color: C.success, fontWeight: 700, marginBottom: 6 }}>✅ この2つは空欄のままでOK。査定書を作るときに、市場の表の数値から自動で文章が入ります（毎回書かなくて大丈夫）。中身を見たい/直したい時だけ上のボタンか下の欄を使ってください。</div>
+      <Field label="土地の解説文（landNote・&lt;b&gt;可・空欄で自動）"><textarea style={{ ...si, height: 70, resize: "vertical" }} value={f.landNote} onChange={set("landNote")} placeholder="空欄でOK → 自動生成（例：■ 土地は「総額」ではなく「㎡単価」で見ます…）" /></Field>
+      <Field label="市場の解説文（marketNote・&lt;b&gt;可・空欄で自動）"><textarea style={{ ...si, height: 70, resize: "vertical" }} value={f.marketNote} onChange={set("marketNote")} placeholder="空欄でOK → 自動生成（例：売り出し中は高めだが、実際の成約は…）" /></Field>
       <div style={sec}>3つの金額（万円）・手数料</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <Field label="実勢価格＝査定の核（下限）"><input style={si} value={f.jissei} onChange={set("jissei")} placeholder="350" inputMode="numeric" /></Field>
