@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.204-touki-autofill";
+const APP_VERSION = "2026-06-27-v9.205-touki-ocr-fallback";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -17878,6 +17878,26 @@ out body 30;`;
         if (Object.keys(out).length) return { ...out, source: "gemini" };
       } catch (e) { console.warn("[謄本→提案書 gemini]", e); }
     }
+    // ③ pdf.js テキスト＋画像OCR（サーバー/キー無しでもテキストPDFの謄本は自力で読める）
+    try {
+      const raw = normalizeTokiboText(await extractPdfText(file, {}));
+      const out = {};
+      // 地積
+      let m = raw.match(/地\s*積[\s\S]{0,200}?(\d{1,5})\.(\d{1,2})(?!\s*番)/) || raw.match(/(\d{1,5})\.(\d{1,2})\s*㎡/);
+      if (m) { const v = parseFloat(m[1] + "." + m[2]); if (v > 10 && v < 10000) out.landArea = m[1] + "." + m[2]; }
+      // 床面積（各階合計、無ければ「床面積 ○○」）
+      const fas = [];
+      for (const mm of raw.matchAll(/([12345])\s*階(?![建造階])[^0-9]{0,8}(\d{1,4})\.(\d{1,2})/g)) { const v = parseFloat(mm[2] + "." + mm[3]); if (v > 5 && v < 1000) fas.push(v); }
+      if (fas.length) out.buildingArea = fas.reduce((a, b) => a + b, 0).toFixed(2);
+      else { const m2 = raw.match(/床\s*面\s*積[\s\S]{0,80}?(\d{1,4})\.(\d{1,2})/); if (m2) out.buildingArea = m2[1] + "." + m2[2]; }
+      // 構造
+      const sm = raw.match(/(木造|鉄筋コンクリート造|鉄骨造|鉄筋鉄骨造|軽量鉄骨造|軽量鉄骨プレハブ造|コンクリートブロック造|れんが造)([^\s\d]{0,20})/);
+      if (sm) out.structure = (sm[1] + (sm[2] || "").trim()).replace(/\s+/g, "").slice(0, 30);
+      // 新築年（元号→西暦）
+      const em = [...raw.matchAll(/(昭和|平成|令和)\s*(\d{1,2})\s*年/g)];
+      if (em.length) { const e = em[0]; const base = e[1] === "昭和" ? 1925 : e[1] === "平成" ? 1988 : 2018; out.builtYear = String(base + parseInt(e[2])); }
+      if (Object.keys(out).length) return { ...out, source: "ocr" };
+    } catch (e) { console.warn("[謄本→提案書 ocr]", e); }
     return {};
   };
 
