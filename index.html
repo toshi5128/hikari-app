@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.207-yonka-kotei-baisu";
+const APP_VERSION = "2026-06-27-v9.208-reins-colocate";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23397,7 +23397,7 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
     alert("固定資産税評価額から①②③を計算しました（①＝÷0.7の推計、②＝×" + bai + "）。下の評価額欄で確認・修正できます。");
   };
   const compBlank = { loc: "", area: "", bldg: "", year: "", price: "", time: "", unit: "", judge: "基準採用", cls: "base" };
-  const [comps, setComps] = useState([{ ...compBlank }]);
+  const [comps, setComps] = useState([]); // レインズ取込で自動入力。空ならその表は出ない
   const setComp = (i, k, v) => setComps(cs => cs.map((c, j) => j === i ? { ...c, [k]: v } : c));
   const addComp = () => setComps(cs => [...cs, { ...compBlank }]);
   const delComp = i => setComps(cs => cs.filter((_, j) => j !== i));
@@ -23570,15 +23570,6 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
       </div>
       <button onClick={() => setPoints(ps => [...ps, ""])} style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11, marginTop: 6 }}>＋ ポイント追加</button>
       <Field label="物件コメント（概要ページ下の説明文）"><textarea style={{ ...si, height: 56, resize: "vertical" }} value={f.propertyComment} onChange={set("propertyComment")} placeholder="築37年ながら新耐震基準で、中古戸建としてそのまま活用・再販が可能な状態です…" /></Field>
-      <div style={sec}>📄 レインズPDF取込（市場の表を自動入力）</div>
-      <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>成約・在庫／土地・戸建の「売買物件概要」PDF（複数可）を読み込むと、下の市場の表・成約事例に自動で振り分けます。</div>
-      <label style={{ display: "inline-block", border: `1px solid ${C.accent}`, color: C.accent, background: "#fff", borderRadius: 6, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: (reinsInfo && reinsInfo.parsing) ? "wait" : "pointer" }}>
-        {(reinsInfo && reinsInfo.parsing) ? "⏳ 解析中…" : "📎 レインズPDFを選択（複数可）"}
-        <input type="file" accept="application/pdf" multiple style={{ display: "none" }} onChange={e => { if (e.target.files.length) handleReinsSheet(e.target.files); e.target.value = ""; }} />
-      </label>
-      {reinsInfo && !reinsInfo.parsing && reinsInfo.count != null && (
-        <div style={{ marginTop: 6, fontSize: 11, color: C.text }}>✅ 抽出 {reinsInfo.count} 件（土地在庫 {reinsInfo.ls}・土地成約 {reinsInfo.ld}・戸建在庫 {reinsInfo.bs}・戸建成約 {reinsInfo.cp}）→ 下の各表に反映しました</div>
-      )}
       <div style={sec}>一物四価（①②③は「単価 円/㎡」を入力 → 土地面積を自動でかけて評価額に）</div>
       <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>全国地価マップ等で調べた㎡単価（円/㎡）を入れると、土地面積 <b>{f.landArea || "—"}㎡</b> を自動でかけて「約○○万円」を計算します。総額を直接持っている場合は右の「評価額」欄を上書きしてもOK。</div>
       <div style={{ background: "#fff7e6", border: "1px solid #d9770633", borderRadius: 8, padding: 8, marginBottom: 8 }}>
@@ -23608,7 +23599,17 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
         <Field label="④ 実勢価格（金色・空欄なら「後ほどご説明します」）"><input style={si} value={f.y4} onChange={set("y4")} placeholder="約 350万円" /></Field>
       </div>
       <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>※「四価の最小・最大」は①②③の評価額から自動で算出します。</div>
-      <div style={sec}>近隣成約事例（レインズ）</div>
+      <div style={sec}>📄 レインズPDF取込（成約事例・市場の表を自動入力）</div>
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>成約・在庫／土地・戸建の「売買物件概要」PDF（複数可）を読み込むと、<b>すぐ下の「近隣成約事例」と「市場の動き」の表に自動で振り分けます</b>（手入力不要）。※一覧ではなく各物件の「概要」PDFを選択。</div>
+      <label style={{ display: "inline-block", border: `1px solid ${C.accent}`, color: C.accent, background: "#fff", borderRadius: 6, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: (reinsInfo && reinsInfo.parsing) ? "wait" : "pointer" }}>
+        {(reinsInfo && reinsInfo.parsing) ? "⏳ 解析中…" : "📎 レインズPDFを選択（複数可）"}
+        <input type="file" accept="application/pdf" multiple style={{ display: "none" }} onChange={e => { if (e.target.files.length) handleReinsSheet(e.target.files); e.target.value = ""; }} />
+      </label>
+      {reinsInfo && !reinsInfo.parsing && reinsInfo.count != null && (
+        <div style={{ marginTop: 6, fontSize: 11, color: C.text }}>✅ 抽出 {reinsInfo.count} 件（土地在庫 {reinsInfo.ls}・土地成約 {reinsInfo.ld}・戸建在庫 {reinsInfo.bs}・戸建成約 {reinsInfo.cp}）→ 下の各表に反映しました</div>
+      )}
+      <div style={sec}>近隣成約事例（レインズ・取込で自動／手修正可）</div>
+      <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>↑の「レインズPDF取込」で自動入力されます。<b>採用/除外の判定・「★本物件」行はここで手入力</b>（どの事例を採用するかは担当者の判断のため）。事例が無ければ空欄でOK。</div>
       {comps.map((c, i) => (
         <div key={i} style={{ border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: 8, marginBottom: 8 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
