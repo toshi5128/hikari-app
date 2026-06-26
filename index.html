@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.205-touki-ocr-fallback";
+const APP_VERSION = "2026-06-27-v9.206-yonka-unit-calc";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23365,13 +23365,23 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
     landArea: p.landArea || "", buildingArea: p.buildingArea || "", builtDate: p.builtDate || "",
     buildingAge: p.buildingAge || "", structure: p.structure || "", earthquake: "新耐震基準", parking: p.parking || "", currentState: "中古戸建（再販可能）／空家",
     mapArea: (typeof extractTown === "function" ? extractTown(p.address || "") : ""),
-    y1: "", y2: "", y3: "", y4: "", yonkaLow: "", yonkaHigh: "",
+    y1u: "", y2u: "", y3u: "", y1: "", y2: "", y3: "", y4: "", yonkaLow: "", yonkaHigh: "",
     compNote: "", jissei: "", jisseiHigh: "", priceBuyout: "", priceChukan: "", priceBaibai: "", priceBaibaiHigh: "", brokerFee: "33",
     marketNote: "", landNote: "", propertyComment: "",
     revTopDesc: "", revTop: "", revTopLbl: "", revReform: "", revExpense: "", revResult: "", revNote: "",
     company: "合同会社ひかり不動産", staff: defStaff,
   });
   const set = k => e => setF(s => ({ ...s, [k]: e.target.value }));
+  // 🆕 v9.206: 一物四価の単価（円/㎡）入力 → 土地面積を自動でかけて評価額（万円）にする
+  const setUnit = (uKey, totalKey) => e => {
+    const u = e.target.value;
+    setF(s => {
+      const a = parseFloat(String(s.landArea).replace(/[^0-9.]/g, "")) || 0;
+      const uu = parseFloat(String(u).replace(/[^0-9.]/g, "")) || 0;
+      const total = (a && uu) ? "約 " + Math.round(uu * a / 10000) + "万円" : s[totalKey];
+      return { ...s, [uKey]: u, [totalKey]: total };
+    });
+  };
   const compBlank = { loc: "", area: "", bldg: "", year: "", price: "", time: "", unit: "", judge: "基準採用", cls: "base" };
   const [comps, setComps] = useState([{ ...compBlank }]);
   const setComp = (i, k, v) => setComps(cs => cs.map((c, j) => j === i ? { ...c, [k]: v } : c));
@@ -23493,7 +23503,8 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
         { type: "③ 固定資産税評価額", memo: "市町村／固定資産税等の基準（公示の約70%）", value: f.y3 || "—" },
         { type: "④ 実勢価格（時価）", memo: "市場での実際の取引価格（成約事例より）", value: f.y4 || "<span style='font-size:.62em;font-weight:700;color:#9AA4B0;'>後ほどご説明します</span>", real: true },
       ],
-      yonkaLow: num(f.yonkaLow), yonkaHigh: num(f.yonkaHigh),
+      yonkaLow: (() => { const t = [f.y1, f.y2, f.y3].map(num).filter(x => x > 0); return t.length ? Math.min(...t) : num(f.yonkaLow); })(),
+      yonkaHigh: (() => { const t = [f.y1, f.y2, f.y3].map(num).filter(x => x > 0); return t.length ? Math.max(...t) : num(f.yonkaHigh); })(),
       draftSample: false,
       comps: comps.filter(c => c.loc || c.price),
       compNote: f.compNote,
@@ -23554,15 +23565,26 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
       {reinsInfo && !reinsInfo.parsing && reinsInfo.count != null && (
         <div style={{ marginTop: 6, fontSize: 11, color: C.text }}>✅ 抽出 {reinsInfo.count} 件（土地在庫 {reinsInfo.ls}・土地成約 {reinsInfo.ld}・戸建在庫 {reinsInfo.bs}・戸建成約 {reinsInfo.cp}）→ 下の各表に反映しました</div>
       )}
-      <div style={sec}>一物四価（値を手入力・例「約 444万円」）</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-        <Field label="① 公示価格"><input style={si} value={f.y1} onChange={set("y1")} placeholder="約 444万円" /></Field>
-        <Field label="② 相続税評価額"><input style={si} value={f.y2} onChange={set("y2")} placeholder="約 325万円" /></Field>
-        <Field label="③ 固定資産税評価額"><input style={si} value={f.y3} onChange={set("y3")} placeholder="約 295万円" /></Field>
-        <Field label="④ 実勢価格（金色）"><input style={si} value={f.y4} onChange={set("y4")} placeholder="約 350万円" /></Field>
-        <Field label="四価の最小（万円）"><input style={si} value={f.yonkaLow} onChange={set("yonkaLow")} placeholder="295" /></Field>
-        <Field label="四価の最大（万円）"><input style={si} value={f.yonkaHigh} onChange={set("yonkaHigh")} placeholder="444" /></Field>
+      <div style={sec}>一物四価（①②③は「単価 円/㎡」を入力 → 土地面積を自動でかけて評価額に）</div>
+      <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>全国地価マップ等で調べた㎡単価（円/㎡）を入れると、土地面積 <b>{f.landArea || "—"}㎡</b> を自動でかけて「約○○万円」を計算します。総額を直接持っている場合は右の「評価額」欄を上書きしてもOK。</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1.1fr", gap: 6, marginBottom: 4, fontSize: 10, color: C.muted, fontWeight: 700 }}>
+        <div></div><div>単価（円/㎡）</div><div>評価額（自動・編集可）</div>
       </div>
+      {[
+        { u: "y1u", t: "y1", label: "① 公示価格", ph: "27000" },
+        { u: "y2u", t: "y2", label: "② 相続税（路線価）", ph: "21000" },
+        { u: "y3u", t: "y3", label: "③ 固定資産税（路線価）", ph: "19000" },
+      ].map(row => (
+        <div key={row.u} style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1.1fr", gap: 6, alignItems: "center", marginBottom: 6 }}>
+          <div style={{ fontSize: 11, color: C.text, fontWeight: 700 }}>{row.label}</div>
+          <input style={ssi} value={f[row.u]} onChange={setUnit(row.u, row.t)} placeholder={row.ph} inputMode="numeric" />
+          <input style={ssi} value={f[row.t]} onChange={set(row.t)} placeholder="約○○万円" />
+        </div>
+      ))}
+      <div style={{ marginTop: 4 }}>
+        <Field label="④ 実勢価格（金色・空欄なら「後ほどご説明します」）"><input style={si} value={f.y4} onChange={set("y4")} placeholder="約 350万円" /></Field>
+      </div>
+      <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>※「四価の最小・最大」は①②③の評価額から自動で算出します。</div>
       <div style={sec}>近隣成約事例（レインズ）</div>
       {comps.map((c, i) => (
         <div key={i} style={{ border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: 8, marginBottom: 8 }}>
