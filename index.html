@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.219-fee-auto";
+const APP_VERSION = "2026-06-27-v9.220-builtdate-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -17860,7 +17860,7 @@ out body 30;`;
           if (d.land_area) out.landArea = String(d.land_area).replace(/[^0-9.]/g, "");
           if (d.bldg_area) out.buildingArea = String(d.bldg_area).replace(/㎡[\s\S]*$/, "").replace(/[^0-9.]/g, "");
           if (d.bldg_kozo) out.structure = d.bldg_kozo;
-          if (d.bldg_built) out.builtYear = String(d.bldg_built).replace(/[^0-9]/g, "");
+          if (d.bldg_built) out.built = d.bldg_built; // 生の築年月日（和暦/西暦）。年の解釈はhandleTouki側で
           if (Object.keys(out).length) return { ...out, source: "server" };
         }
       }
@@ -17874,7 +17874,7 @@ out body 30;`;
         if (g.landArea) out.landArea = String(g.landArea).replace(/[^0-9.]/g, "");
         if (g.buildingArea) out.buildingArea = String(g.buildingArea).replace(/[^0-9.]/g, "");
         if (g.structure) out.structure = g.structure;
-        if (g.builtYear) out.builtYear = String(g.builtYear).replace(/[^0-9]/g, "");
+        if (g.builtYear) out.built = String(g.builtYear); // Gem4は西暦4桁
         if (Object.keys(out).length) return { ...out, source: "gemini" };
       } catch (e) { console.warn("[謄本→提案書 gemini]", e); }
     }
@@ -17893,9 +17893,9 @@ out body 30;`;
       // 構造
       const sm = raw.match(/(木造|鉄筋コンクリート造|鉄骨造|鉄筋鉄骨造|軽量鉄骨造|軽量鉄骨プレハブ造|コンクリートブロック造|れんが造)([^\s\d]{0,20})/);
       if (sm) out.structure = (sm[1] + (sm[2] || "").trim()).replace(/\s+/g, "").slice(0, 30);
-      // 新築年（元号→西暦）
-      const em = [...raw.matchAll(/(昭和|平成|令和)\s*(\d{1,2})\s*年/g)];
-      if (em.length) { const e = em[0]; const base = e[1] === "昭和" ? 1925 : e[1] === "平成" ? 1988 : 2018; out.builtYear = String(base + parseInt(e[2])); }
+      // 新築年月（元号＋月まで・生のまま返す。年/月の解釈はhandleTouki側）
+      const em = raw.match(/(昭和|平成|令和)\s*(元|\d{1,2})\s*年(?:\s*(\d{1,2})\s*月)?/);
+      if (em) out.built = em[0];
       if (Object.keys(out).length) return { ...out, source: "ocr" };
     } catch (e) { console.warn("[謄本→提案書 ocr]", e); }
     return {};
@@ -23425,6 +23425,14 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
     if (y >= 1926) return "昭和" + (y === 1926 ? "元" : (y - 1925)) + "年";
     return String(y) + "年";
   };
+  // 🆕 v9.220: 築年月（和暦/西暦どちらでも）→ 築年数。空なら""
+  const builtToAge = (v) => {
+    const raw = String(v || "").replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    let west = 0, m = raw.match(/(令和|平成|昭和)\s*(元|\d{1,2})\s*年/);
+    if (m) { const y = (m[2] === "元" ? 1 : parseInt(m[2])); west = (m[1] === "令和" ? 2018 : m[1] === "平成" ? 1988 : 1925) + y; }
+    else { m = raw.match(/(19|20)\d{2}/); if (m) west = parseInt(m[0]); }
+    return (west > 1900 && west < 2100) ? String(new Date().getFullYear() - west) : "";
+  };
   // 🆕 v9.204: 登記簿謄本PDF（複数可）→ 地積・床面積・構造・築年を自動取得して空欄に反映
   const handleTouki = async (files) => {
     const list = files && files.length ? Array.from(files) : [];
@@ -23433,18 +23441,29 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
     try {
       let got = {};
       for (const file of list) { const r = await parseTouki(file); got = { ...got, ...r }; }
-      const labels = [got.landArea && "地積", got.buildingArea && "床面積", got.structure && "構造", got.builtYear && "築年"].filter(Boolean);
+      const labels = [got.landArea && "地積", got.buildingArea && "床面積", got.structure && "構造", got.built && "築年"].filter(Boolean);
       if (labels.length) {
         setF(s => {
           const ns = { ...s };
           if (got.landArea && !s.landArea) ns.landArea = got.landArea;
           if (got.buildingArea && !s.buildingArea) ns.buildingArea = got.buildingArea;
           if (got.structure && (!s.structure || s.structure === "木造2階建")) ns.structure = got.structure;
-          if (got.builtYear) {
-            const by = parseInt(got.builtYear);
-            if (by > 1900 && by < 2100) {
-              if (!s.buildingAge) ns.buildingAge = String(new Date().getFullYear() - by);
-              if (!s.builtDate) ns.builtDate = seireki2wareki(by);
+          if (got.built) {
+            // 🆕 v9.220: 築年月日を堅牢解釈（和暦/西暦・月付きどれでも）→ 築年月(builtDate)と築年数(buildingAge)
+            const raw = String(got.built).replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+            let west = 0, bd = "";
+            let m = raw.match(/(令和|平成|昭和)\s*(元|\d{1,2})\s*年(?:\s*(\d{1,2})\s*月)?/);
+            if (m) {
+              const era = m[1], y = (m[2] === "元" ? 1 : parseInt(m[2]));
+              west = (era === "令和" ? 2018 : era === "平成" ? 1988 : 1925) + y;
+              bd = era + (y === 1 ? "元" : y) + "年" + (m[3] ? m[3] + "月" : "");
+            } else {
+              m = raw.match(/(19|20)\d{2}/);
+              if (m) { west = parseInt(m[0]); const mm = raw.match(/年\s*(\d{1,2})\s*月/) || raw.match(/[\/\-.](\d{1,2})(?:[\/\-.]|\b)/); bd = seireki2wareki(west) + (mm ? mm[1] + "月" : ""); }
+            }
+            if (west > 1900 && west < 2100) {
+              if (!s.buildingAge) ns.buildingAge = String(new Date().getFullYear() - west);
+              if (!s.builtDate) ns.builtDate = bd || seireki2wareki(west);
             }
           }
           return ns;
@@ -23662,8 +23681,8 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <Field label="土地面積（㎡）"><input style={si} value={f.landArea} onChange={set("landArea")} placeholder="165.08" /></Field>
         <Field label="建物面積（㎡）"><input style={si} value={f.buildingArea} onChange={set("buildingArea")} placeholder="128.1" /></Field>
-        <Field label="築年月"><input style={si} value={f.builtDate} onChange={set("builtDate")} placeholder="平成1年6月" /></Field>
-        <Field label="築年数"><input style={si} value={f.buildingAge} onChange={set("buildingAge")} placeholder="37" /></Field>
+        <Field label="築年月（謄本から自動）"><input style={si} value={f.builtDate} onChange={e => setF(s => { const v = e.target.value; const a = builtToAge(v); return { ...s, builtDate: v, buildingAge: a || s.buildingAge }; })} placeholder="平成1年6月" /></Field>
+        <Field label="築年数（築年月から自動）"><input style={si} value={f.buildingAge} onChange={set("buildingAge")} placeholder="37" /></Field>
         <Field label="構造"><input style={si} value={f.structure} onChange={set("structure")} placeholder="木造スレート葺2階建" /></Field>
         <Field label="耐震"><input style={si} value={f.earthquake} onChange={set("earthquake")} /></Field>
         <Field label="駐車場"><input style={si} value={f.parking} onChange={set("parking")} placeholder="1台分" /></Field>
