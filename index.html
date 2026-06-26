@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.202-reins-pdf-import";
+const APP_VERSION = "2026-06-27-v9.203-satei-13p-app";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15155,6 +15155,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
   // 🆕 v9.46: 査定書作成モーダル
   const [assessmentTarget, setAssessmentTarget] = useState(null); // { item } または null
   const [assessmentForm, setAssessmentForm] = useState(null); // { buyPrice, demolishUnit, ... }
+  // 🆕 v9.203: 売却ご提案書(13P)モーダル（ピン詳細から開く）
+  const [proposalPin, setProposalPin] = useState(null); // 対象ピンの raw、または null
   // 🆕 v9.47: 初回面談 調査書 モーダル
   const [hearingTarget, setHearingTarget] = useState(null);
   const [hearingForm, setHearingForm] = useState(null);
@@ -20566,6 +20568,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             })()}
           </div>
 
+          {/* 🆕 v9.203: 売却ご提案書(13P・査定込み)を作成 */}
+          <button onClick={() => { setProposalPin({ ..._raw, address: _raw.address || selected.item.address || "", assignee: _raw.assignee || selected.item.assignee || "" }); setSelected(null); }}
+            style={{ width: "100%", padding: 11, marginBottom: 14, border: "none", borderRadius: 10, background: C.accent, color: "#fff", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>
+            📊 売却ご提案書（査定書）を作成
+          </button>
+
           {/* 🆕 v9.18: ピン写真セクション（全ピン共通、 現地ピン以外も含む） */}
           {(() => {
             const _pid = _raw.id || selected.item.rawId;
@@ -21137,6 +21145,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
         </BottomSheet>
         );
       })()}
+
+      {/* 🆕 v9.203: 売却ご提案書(13P・査定込み)モーダル（ピン詳細から開く） */}
+      {proposalPin && <SateiProposalSheet pin={proposalPin} onClose={() => setProposalPin(null)} />}
 
       {/* 🆕 v9.46: 査定書作成モーダル ( v9.46.2: ステップ式 UI ) */}
       {assessmentTarget && assessmentForm && (() => {
@@ -23273,7 +23284,21 @@ async function printSateiProposal(data) {
     // 新規タブに5ページの提案書を表示。Ctrl+P（または共有→印刷）→ A4・背景のグラフィックON でPDF保存。
   } catch (e) { console.warn("satei proposal failed", e); alert("提案書の生成に失敗しました：" + e.message); }
 }
-// 🆕 v9.200: 売却ご提案書(5P)の入力フォーム。物件概要はピンから自動プリフィル、一物四価・成約事例・価格は手入力。
+// 🆕 v9.203: 13ページ売却ご提案書(査定込み)。satei-hinagata-template.html を取得しDATAを注入→新規タブ表示（テンプレ無改変＝二重管理しない）。
+async function printSateiHinagata(data) {
+  try {
+    const res = await fetch("satei-hinagata-template.html?" + Date.now());
+    if (!res.ok) throw new Error("テンプレ取得失敗 HTTP " + res.status);
+    let html = await res.text();
+    const inject = "const DATA = " + JSON.stringify(data) + ";";
+    html = html.replace(/const DATA = \{[\s\S]*?\n\};/, () => inject);
+    const w = window.open("", "_blank");
+    if (!w) { alert("ポップアップがブロックされました。ブラウザでポップアップを許可してください。"); return; }
+    w.document.open(); w.document.write(html); w.document.close();
+    // 新規タブに13ページの査定書を表示。Ctrl+P（または共有→印刷）→ A4・横・背景のグラフィックON でPDF保存。
+  } catch (e) { console.warn("satei hinagata failed", e); alert("査定書の生成に失敗しました：" + e.message); }
+}
+// 🆕 v9.200/v9.203: 売却ご提案書の入力フォーム。物件概要はピンから自動プリフィル、一物四価・成約事例・価格は手入力、市場表はレインズPDF取込。
 function SateiProposalSheet({ pin, onClose }) {
   const p = pin || {};
   const n = new Date();
@@ -23284,41 +23309,118 @@ function SateiProposalSheet({ pin, onClose }) {
     customerName: cleanOwner, address: p.address || "", createdDate: todayWareki,
     landArea: p.landArea || "", buildingArea: p.buildingArea || "", builtDate: p.builtDate || "",
     buildingAge: p.buildingAge || "", structure: p.structure || "", earthquake: "新耐震基準", parking: p.parking || "", currentState: "中古戸建（再販可能）／空家",
+    mapArea: (typeof extractTown === "function" ? extractTown(p.address || "") : ""),
     y1: "", y2: "", y3: "", y4: "", yonkaLow: "", yonkaHigh: "",
-    compNote: "", jissei: "", priceBuyout: "", priceChukan: "", priceBaibai: "", brokerFee: "33",
+    compNote: "", jissei: "", jisseiHigh: "", priceBuyout: "", priceChukan: "", priceBaibai: "", priceBaibaiHigh: "", brokerFee: "33",
+    marketNote: "", landNote: "", propertyComment: "",
+    revTopDesc: "", revTop: "", revTopLbl: "", revReform: "", revExpense: "", revResult: "", revNote: "",
     company: "合同会社ひかり不動産", staff: defStaff,
   });
   const set = k => e => setF(s => ({ ...s, [k]: e.target.value }));
-  const [comps, setComps] = useState([{ loc: "", area: "", year: "", parking: "", price: "", time: "", unit: "", judge: "基準採用", cls: "base" }]);
+  const compBlank = { loc: "", area: "", bldg: "", year: "", price: "", time: "", unit: "", judge: "基準採用", cls: "base" };
+  const [comps, setComps] = useState([{ ...compBlank }]);
   const setComp = (i, k, v) => setComps(cs => cs.map((c, j) => j === i ? { ...c, [k]: v } : c));
-  const addComp = () => setComps(cs => [...cs, { loc: "", area: "", year: "", parking: "", price: "", time: "", unit: "", judge: "基準採用", cls: "base" }]);
+  const addComp = () => setComps(cs => [...cs, { ...compBlank }]);
   const delComp = i => setComps(cs => cs.filter((_, j) => j !== i));
+  // 🆕 v9.203: 市場の表（レインズPDF取込で自動・手修正可）と本物件のポイント
+  const [landStock, setLandStock] = useState([]);
+  const [landSold, setLandSold] = useState([]);
+  const [buildingStock, setBuildingStock] = useState([]);
+  const [points, setPoints] = useState(["", "", "", ""]);
+  const [reinsInfo, setReinsInfo] = useState(null);
   const num = v => { const x = parseFloat(String(v).replace(/[^0-9.]/g, "")); return isNaN(x) ? 0 : x; };
+  // 🆕 v9.203: レインズ「売買物件概要」PDF（複数可）→ 市場の表とcompsへ自動振り分け（13ページ版は㎡単価）
+  const handleReinsSheet = async (files) => {
+    const list = files && files.length ? Array.from(files) : [];
+    if (!list.length || !window.pdfjsLib || !window.REINS) { alert("PDF読み込みに必要なライブラリが未ロードです。ページを再読込してください。"); return; }
+    setReinsInfo({ parsing: true });
+    try {
+      const ls = [], ld = [], bs = [], cp = [];
+      for (const file of list) {
+        const buf = await file.arrayBuffer();
+        const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const text = window.REINS.pageLines(await pdf.getPage(i).then(pg => pg.getTextContent()));
+          if (text.indexOf("物件番号") < 0) continue;
+          const d = window.REINS.parsePage(text);
+          const isTochi = (String(d.mokuji).indexOf("売地") >= 0) || !d.bldg;
+          const zaiko = d.kind === "在庫";
+          const unit = d.unit || window.REINS.m2u(d.price, d.land); // 万円/㎡（土地表用）
+          const aN = parseFloat(String(d.land).replace(/,/g, "")), pN = parseFloat(String(d.price).replace(/,/g, ""));
+          const unitYen = (aN && pN) ? "約" + Math.round(pN * 10000 / aN).toLocaleString() + "円" : ""; // 円/㎡（comps用）
+          if (isTochi && zaiko) ls.push({ loc: d.town, area: d.land ? d.land + "㎡" : "", price: d.price ? d.price + "万円" : "", unit, listed: d.listed });
+          else if (isTochi) ld.push({ loc: d.town, area: d.land ? d.land + "㎡" : "", price: d.price ? d.price + "万円" : "", unit, time: d.time });
+          else if (zaiko) bs.push({ loc: d.town, land: d.land ? d.land + "㎡" : "", bldg: d.bldg ? d.bldg + "㎡" : "", year: d.built, price: d.price ? "売出 " + d.price + "万円" : "", listed: d.listed ? "掲載 " + d.listed : "" });
+          else cp.push({ loc: d.town, area: d.land ? d.land + "㎡" : "", bldg: d.bldg ? d.bldg + "㎡" : "", year: d.built, price: d.price ? d.price + "万円" : "", time: d.time, unit: unitYen, judge: "", cls: "base" });
+        }
+      }
+      if (ls.length) setLandStock(ls);
+      if (ld.length) setLandSold(ld);
+      if (bs.length) setBuildingStock(bs);
+      if (cp.length) setComps(cp);
+      setReinsInfo({ parsing: false, count: ls.length + ld.length + bs.length + cp.length, ls: ls.length, ld: ld.length, bs: bs.length, cp: cp.length });
+    } catch (e) { console.error("[レインズ取込]", e); setReinsInfo({ parsing: false, error: e.message }); alert("PDFの読み込みに失敗しました：" + e.message); }
+  };
+  // 🆕 v9.203: 市場表の数値から解説文（landNote/marketNote）の下書きを自動生成
+  const draftNotes = () => {
+    const u = a => a.map(r => parseFloat(String(r.unit).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
+    const sold = landSold.map(r => parseFloat(String(r.unit).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
+    const stk = u(landStock);
+    const allU = stk.concat(sold);
+    const lo = allU.length ? Math.min(...allU) : 0, hi = allU.length ? Math.max(...allU) : 0;
+    const la = num(f.landArea);
+    const baseUnit = sold.length ? (sold.reduce((a, b) => a + b, 0) / sold.length) : (allU.length ? (lo + hi) / 2 : 0);
+    const jissei = la && baseUnit ? Math.round(la * baseUnit) : 0;
+    const longList = landStock.filter(r => /\d+ヶ月/.test(r.listed || "")).map(r => ({ p: r.price, m: parseInt((r.listed.match(/(\d+)ヶ月/) || [])[1] || "0") })).filter(x => x.m >= 12);
+    const landDraft = allU.length
+      ? `<b>■ 土地は「総額」ではなく「㎡単価」で見ます。</b> 面積が違えば総額は変わるため、比べるべきは㎡単価です。売り出し（在庫）は㎡単価${lo}〜${hi}万円とバラつき`
+        + (longList.length ? `、<b>${longList.map(x => x.p).slice(0, 2).join("・")}の物件は1年以上売れ残っています</b>` : "")
+        + `。一方、成約事例から見た本物件付近の実勢は<b>㎡単価約${baseUnit ? (Math.round(baseUnit * 10) / 10) : "—"}万円</b>。本物件${la || "—"}㎡なら、ここから実勢<b>約${jissei || "—"}万円</b>が導けます。`
+      : "";
+    const bSold = comps.map(c => parseFloat(String(c.price).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
+    const bStk = buildingStock.map(c => parseFloat(String(c.price).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
+    const marketDraft = (bSold.length || bStk.length)
+      ? `売り出し中（在庫）は戸建${bStk.length ? Math.min(...bStk) + "〜" + Math.max(...bStk) + "万円" : "—"}と高めですが、実際の<b>成約</b>は${bSold.length ? Math.min(...bSold) + "〜" + Math.max(...bSold) + "万円" : "—"}です。<b>高く売り出しても、その金額では売れていない</b>のが実態。本物件の実勢は<b>${f.jissei || "—"}${f.jisseiHigh ? "〜" + f.jisseiHigh : ""}万円</b>とみています。`
+      : "";
+    setF(s => ({ ...s, landNote: s.landNote || landDraft, marketNote: s.marketNote || marketDraft }));
+    alert("解説文の下書きを生成しました。下のlandNote/marketNote欄で確認・修正してください。");
+  };
   const generate = () => {
     const data = {
-      customerName: f.customerName, address: f.address, createdDate: f.createdDate,
+      mapArea: f.mapArea || (typeof extractTown === "function" ? extractTown(f.address) : ""),
+      customerName: f.customerName, personalize: !!(f.customerName && f.customerName.trim()),
+      address: f.address, createdDate: f.createdDate, company: f.company, staff: f.staff,
       landArea: num(f.landArea), buildingArea: num(f.buildingArea), builtDate: f.builtDate,
       buildingAge: num(f.buildingAge), structure: f.structure, earthquake: f.earthquake, parking: f.parking, currentState: f.currentState,
+      points: points.filter(x => x && x.trim()),
+      propertyComment: f.propertyComment,
       yonka: [
         { type: "① 公示価格", memo: "国土交通省／時価の指標", value: f.y1 || "—" },
         { type: "② 相続税評価額", memo: "国税庁／相続・贈与税の基準（公示の約80%）", value: f.y2 || "—" },
         { type: "③ 固定資産税評価額", memo: "市町村／固定資産税等の基準（公示の約70%）", value: f.y3 || "—" },
-        { type: "④ 実勢価格（時価）", memo: "市場での実際の取引価格（成約事例より）", value: f.y4 || "—", real: true },
+        { type: "④ 実勢価格（時価）", memo: "市場での実際の取引価格（成約事例より）", value: f.y4 || "<span style='font-size:.62em;font-weight:700;color:#9AA4B0;'>後ほどご説明します</span>", real: true },
       ],
       yonkaLow: num(f.yonkaLow), yonkaHigh: num(f.yonkaHigh),
+      draftSample: false,
       comps: comps.filter(c => c.loc || c.price),
       compNote: f.compNote,
-      jissei: num(f.jissei), priceBuyout: num(f.priceBuyout), priceChukan: num(f.priceChukan), priceBaibai: num(f.priceBaibai), brokerFee: num(f.brokerFee),
-      company: f.company, staff: f.staff,
+      landStock: landStock.filter(r => r.loc || r.price),
+      landSold: landSold.filter(r => r.loc || r.price),
+      buildingStock: buildingStock.filter(r => r.loc || r.price),
+      landNote: f.landNote, marketNote: f.marketNote,
+      jissei: num(f.jissei), jisseiHigh: num(f.jisseiHigh),
+      priceBuyout: num(f.priceBuyout), priceChukan: num(f.priceChukan), priceBaibai: num(f.priceBaibai), priceBaibaiHigh: num(f.priceBaibaiHigh),
+      brokerFee: num(f.brokerFee),
+      revTopDesc: f.revTopDesc, revTop: f.revTop, revTopLbl: f.revTopLbl, revReform: f.revReform, revExpense: f.revExpense, revResult: f.revResult, revNote: f.revNote,
     };
-    printSateiProposal(data);
+    printSateiHinagata(data);
   };
   const si = { ...inp, padding: "7px 9px", fontSize: 13 };
   const ssi = { ...inp, padding: "5px 6px", fontSize: 11.5 };
   const sec = { fontSize: 12, fontWeight: 800, color: C.accent, margin: "16px 0 6px", borderBottom: `1px solid ${C.borderDim}`, paddingBottom: 4 };
   return (
-    <BottomSheet title="📊 売却ご提案書（5P・査定込み）" onClose={onClose}>
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4, lineHeight: 1.6 }}>物件概要はピンから自動入力。<b>一物四価・成約事例・価格は手入力</b>です。「提案書を表示」で新しいタブに5ページが開きます（Ctrl+P → A4・背景のグラフィックON でPDF保存）。</div>
+    <BottomSheet title="📊 売却ご提案書（13P・査定込み）" onClose={onClose}>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4, lineHeight: 1.6 }}>物件概要はピンから自動入力。<b>市場の表はレインズPDF取込で自動</b>、一物四価・価格は手入力です。「査定書を表示」で新しいタブに13ページが開きます（Ctrl+P → A4・<b>横</b>・背景のグラフィックON でPDF保存）。</div>
       <div style={sec}>宛名・物件概要</div>
       <Field label="宛名（お客様名／様は自動）"><input style={si} value={f.customerName} onChange={set("customerName")} /></Field>
       <Field label="物件住所"><input style={si} value={f.address} onChange={set("address")} /></Field>
@@ -23332,7 +23434,25 @@ function SateiProposalSheet({ pin, onClose }) {
         <Field label="耐震"><input style={si} value={f.earthquake} onChange={set("earthquake")} /></Field>
         <Field label="駐車場"><input style={si} value={f.parking} onChange={set("parking")} placeholder="1台分" /></Field>
         <Field label="現況"><input style={si} value={f.currentState} onChange={set("currentState")} /></Field>
+        <Field label="地図表示の町丁目（4P地図）"><input style={si} value={f.mapArea} onChange={set("mapArea")} placeholder="東小川5丁目" /></Field>
       </div>
+      <div style={sec}>本物件のポイント（4つ程度・空欄は出ません）</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+        {points.map((pt, i) => (
+          <input key={i} style={ssi} value={pt} placeholder={`ポイント${i + 1}`} onChange={e => setPoints(ps => ps.map((x, j) => j === i ? e.target.value : x))} />
+        ))}
+      </div>
+      <button onClick={() => setPoints(ps => [...ps, ""])} style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11, marginTop: 6 }}>＋ ポイント追加</button>
+      <Field label="物件コメント（概要ページ下の説明文）"><textarea style={{ ...si, height: 56, resize: "vertical" }} value={f.propertyComment} onChange={set("propertyComment")} placeholder="築37年ながら新耐震基準で、中古戸建としてそのまま活用・再販が可能な状態です…" /></Field>
+      <div style={sec}>📄 レインズPDF取込（市場の表を自動入力）</div>
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>成約・在庫／土地・戸建の「売買物件概要」PDF（複数可）を読み込むと、下の市場の表・成約事例に自動で振り分けます。</div>
+      <label style={{ display: "inline-block", border: `1px solid ${C.accent}`, color: C.accent, background: "#fff", borderRadius: 6, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: (reinsInfo && reinsInfo.parsing) ? "wait" : "pointer" }}>
+        {(reinsInfo && reinsInfo.parsing) ? "⏳ 解析中…" : "📎 レインズPDFを選択（複数可）"}
+        <input type="file" accept="application/pdf" multiple style={{ display: "none" }} onChange={e => { if (e.target.files.length) handleReinsSheet(e.target.files); e.target.value = ""; }} />
+      </label>
+      {reinsInfo && !reinsInfo.parsing && reinsInfo.count != null && (
+        <div style={{ marginTop: 6, fontSize: 11, color: C.text }}>✅ 抽出 {reinsInfo.count} 件（土地在庫 {reinsInfo.ls}・土地成約 {reinsInfo.ld}・戸建在庫 {reinsInfo.bs}・戸建成約 {reinsInfo.cp}）→ 下の各表に反映しました</div>
+      )}
       <div style={sec}>一物四価（値を手入力・例「約 444万円」）</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <Field label="① 公示価格"><input style={si} value={f.y1} onChange={set("y1")} placeholder="約 444万円" /></Field>
@@ -23368,16 +23488,48 @@ function SateiProposalSheet({ pin, onClose }) {
       ))}
       <button onClick={addComp} style={{ ...btnStyle("ghost"), width: "100%", padding: 9, fontSize: 12 }}>＋ 事例を追加</button>
       <Field label="成約事例の解説文（採用/除外の理由・採用単価の根拠。&lt;b&gt;で強調可）"><textarea style={{ ...si, height: 80, resize: "vertical" }} value={f.compNote} onChange={set("compNote")} placeholder="面積・築年が近い2事例を基準に採用…採用㎡単価 約21,000円 × …＝約347万円。" /></Field>
+      <div style={sec}>市場の動き（レインズ・取込で自動／手修正可）</div>
+      {[
+        { arr: landStock, set: setLandStock, label: "土地の在庫", cols: [["loc", "所在"], ["area", "面積"], ["price", "価格"], ["unit", "㎡単価"], ["listed", "掲載"]], blank: { loc: "", area: "", price: "", unit: "", listed: "" } },
+        { arr: landSold, set: setLandSold, label: "土地の成約", cols: [["loc", "所在"], ["area", "面積"], ["price", "成約"], ["unit", "㎡単価"], ["time", "時期"]], blank: { loc: "", area: "", price: "", unit: "", time: "" } },
+        { arr: buildingStock, set: setBuildingStock, label: "戸建の在庫", cols: [["loc", "所在"], ["land", "土地"], ["bldg", "建物"], ["year", "築年"], ["price", "売出"], ["listed", "掲載"]], blank: { loc: "", land: "", bldg: "", year: "", price: "", listed: "" } },
+      ].map((tbl, ti) => (
+        <div key={ti} style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, margin: "4px 0" }}>{tbl.label}（{tbl.arr.length}件）</div>
+          {tbl.arr.map((r, i) => (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: tbl.cols.map(() => "1fr").join(" ") + " 20px", gap: 4, marginBottom: 4 }}>
+              {tbl.cols.map(([k, ph]) => (<input key={k} style={ssi} value={r[k] || ""} placeholder={ph} onChange={e => tbl.set(cs => cs.map((c, j) => j === i ? { ...c, [k]: e.target.value } : c))} />))}
+              <button onClick={() => tbl.set(cs => cs.filter((_, j) => j !== i))} title="削除" style={{ border: "1px solid #c33", color: "#c33", background: "#fff", borderRadius: 5, fontSize: 12, cursor: "pointer", padding: 0 }}>×</button>
+            </div>
+          ))}
+          <button onClick={() => tbl.set(cs => [...cs, { ...tbl.blank }])} style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11 }}>＋ 行</button>
+        </div>
+      ))}
+      <button onClick={draftNotes} style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, marginBottom: 6 }}>✍ 解説文の下書きを生成</button>
+      <Field label="土地の解説文（landNote・&lt;b&gt;可）"><textarea style={{ ...si, height: 70, resize: "vertical" }} value={f.landNote} onChange={set("landNote")} placeholder="■ 土地は「総額」ではなく「㎡単価」で見ます…" /></Field>
+      <Field label="市場の解説文（marketNote・&lt;b&gt;可）"><textarea style={{ ...si, height: 70, resize: "vertical" }} value={f.marketNote} onChange={set("marketNote")} placeholder="売り出し中は高めだが、実際の成約は…" /></Field>
       <div style={sec}>3つの金額（万円）・手数料</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-        <Field label="実勢価格＝査定の核"><input style={si} value={f.jissei} onChange={set("jissei")} placeholder="350" inputMode="numeric" /></Field>
+        <Field label="実勢価格＝査定の核（下限）"><input style={si} value={f.jissei} onChange={set("jissei")} placeholder="350" inputMode="numeric" /></Field>
+        <Field label="実勢レンジ上限"><input style={si} value={f.jisseiHigh} onChange={set("jisseiHigh")} placeholder="400" inputMode="numeric" /></Field>
         <Field label="買取"><input style={si} value={f.priceBuyout} onChange={set("priceBuyout")} placeholder="200" inputMode="numeric" /></Field>
         <Field label="中間省略（保証）"><input style={si} value={f.priceChukan} onChange={set("priceChukan")} placeholder="350" inputMode="numeric" /></Field>
-        <Field label="一般売買（売り出し上限・見込み）"><input style={si} value={f.priceBaibai} onChange={set("priceBaibai")} placeholder="450" inputMode="numeric" /></Field>
+        <Field label="一般売買 下限"><input style={si} value={f.priceBaibai} onChange={set("priceBaibai")} placeholder="450" inputMode="numeric" /></Field>
+        <Field label="一般売買 上限"><input style={si} value={f.priceBaibaiHigh} onChange={set("priceBaibaiHigh")} placeholder="550" inputMode="numeric" /></Field>
         <Field label="仲介手数料（税込・800万以下は33）"><input style={si} value={f.brokerFee} onChange={set("brokerFee")} placeholder="33" inputMode="numeric" /></Field>
         <Field label="担当"><input style={si} value={f.staff} onChange={set("staff")} /></Field>
       </div>
-      <button onClick={generate} style={{ ...btnStyle(), width: "100%", padding: 13, marginTop: 14 }}>📄 提案書を表示（新しいタブ → 印刷/PDF保存）</button>
+      <div style={sec}>逆算（案件固有・任意。完成品の売り出しから費用を引いて素地価値を出す）</div>
+      <Field label="完成品の説明（revTopDesc）"><input style={si} value={f.revTopDesc} onChange={set("revTopDesc")} placeholder="リフォーム済・駐車2台付き＝850万円（駅徒歩48分）" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <Field label="完成品の額（万・revTop）"><input style={si} value={f.revTop} onChange={set("revTop")} placeholder="850" /></Field>
+        <Field label="リフォーム費（万・revReform）"><input style={si} value={f.revReform} onChange={set("revReform")} placeholder="約300" /></Field>
+        <Field label="諸経費・利益（万・revExpense）"><input style={si} value={f.revExpense} onChange={set("revExpense")} placeholder="約175" /></Field>
+        <Field label="素地の価値（万・revResult）"><input style={si} value={f.revResult} onChange={set("revResult")} placeholder="約375" /></Field>
+      </div>
+      <Field label="完成品カードのラベル（revTopLbl・&lt;br&gt;可）"><input style={si} value={f.revTopLbl} onChange={set("revTopLbl")} placeholder="リフォーム済・駐車2台<br>完成品の売り出し" /></Field>
+      <Field label="逆算の解説文（revNote・&lt;b&gt;可）"><textarea style={{ ...si, height: 60, resize: "vertical" }} value={f.revNote} onChange={set("revNote")} placeholder="最も高い完成品の価格から逆算しても、現状渡しの素の価値は約350〜400万円に収れん…" /></Field>
+      <button onClick={generate} style={{ ...btnStyle(), width: "100%", padding: 13, marginTop: 14 }}>📄 査定書を表示（新しいタブ → 印刷/PDF保存）</button>
       <div style={{ fontSize: 11, color: C.muted, margin: "8px 2px 0", lineHeight: 1.6 }}>⚠ 実勢350＝中間省略の「保証額」、一般売買450＝「売り出し上限・見込み」。450を着地と書かない（成約事例と矛盾するため）。社内数字（出口・利益）は載せない。</div>
     </BottomSheet>
   );
