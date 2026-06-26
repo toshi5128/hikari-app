@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.212-notes-auto-on-generate";
+const APP_VERSION = "2026-06-27-v9.213-points-auto";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23510,16 +23510,44 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
     setF(s => ({ ...s, landNote: s.landNote || d.landNote, marketNote: s.marketNote || d.marketNote }));
     alert("解説文の下書きを生成しました。下のlandNote/marketNote欄で確認・修正してください。");
   };
+  // 🆕 v9.213: 物件情報から「本物件のポイント」と「物件コメント」をルール生成（築年/耐震/構造/面積/駐車/現況）
+  const computeFeatures = () => {
+    const pts = [];
+    const age = num(f.buildingAge);
+    const la = num(f.landArea);
+    const tsubo = la ? Math.round(la / 3.305785 * 10) / 10 : 0;
+    const shin = /新耐震/.test(f.earthquake || "");
+    if (shin) pts.push("新耐震基準で安心");
+    if (/再販|中古戸建|使え|可/.test(f.currentState || "") || /木造|鉄骨|ＲＣ|RC|鉄筋/.test(f.structure || "")) pts.push("中古戸建としてそのまま再販可能");
+    const pk = String(f.parking || "").replace(/駐車場?/g, "").trim();
+    if (pk && !/無|なし|^0/.test(pk)) pts.push("駐車" + pk);
+    if (tsubo) pts.push("約" + tsubo + "坪" + (tsubo >= 45 ? "のゆとりある敷地" : "の敷地"));
+    let comment = "";
+    if (age || shin) {
+      comment = (age ? `築${age}年` : "")
+        + (shin ? (age ? "ながら新耐震基準で、" : "新耐震基準で、") : (age ? "ですが、" : ""))
+        + "中古戸建としてそのまま活用・再販が可能な状態です。取り壊しが不要なため、その分のコストがかからない点も価格を下支えする要素になります。";
+    }
+    return { points: pts, comment };
+  };
+  const draftFeatures = () => {
+    const d = computeFeatures();
+    if (!d.points.length && !d.comment) { alert("先に物件情報（築年・耐震・構造・面積・駐車・現況）を入れてください。そこから自動で作ります。"); return; }
+    setF(s => ({ ...s, propertyComment: s.propertyComment || d.comment }));
+    setPoints(ps => (ps.some(p => p && p.trim()) ? ps : d.points));
+    alert("本物件のポイントとコメントを自動生成しました。確認・修正できます。");
+  };
   const generate = () => {
     const nd = computeNotes(); // 🆕 v9.212: 解説文が空なら自動下書きを使う
+    const ff = computeFeatures(); // 🆕 v9.213: ポイント/コメントが空ならルール生成を使う
     const data = {
       mapArea: f.mapArea || townOf(f.address),
       customerName: f.customerName, personalize: !!(f.customerName && f.customerName.trim()),
       address: f.address, createdDate: f.createdDate, company: f.company, staff: f.staff,
       landArea: num(f.landArea), buildingArea: num(f.buildingArea), builtDate: f.builtDate,
       buildingAge: num(f.buildingAge), structure: f.structure, earthquake: f.earthquake, parking: f.parking, currentState: f.currentState,
-      points: points.filter(x => x && x.trim()),
-      propertyComment: f.propertyComment,
+      points: (points.filter(x => x && x.trim()).length ? points.filter(x => x && x.trim()) : ff.points),
+      propertyComment: f.propertyComment || ff.comment,
       yonka: [
         { type: "① 公示価格", memo: "国土交通省／時価の指標", value: f.y1 || "—" },
         { type: "② 相続税評価額", memo: "国税庁／相続・贈与税の基準（公示の約80%）", value: f.y2 || "—" },
@@ -23572,13 +23600,15 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
         <Field label="地図表示の町丁目（4P地図）"><input style={si} value={f.mapArea} onChange={set("mapArea")} placeholder="東小川5丁目" /></Field>
       </div>
       <div style={sec}>本物件のポイント（4つ程度・空欄は出ません）</div>
+      <button onClick={draftFeatures} style={{ ...btnStyle("primary"), padding: "6px 12px", fontSize: 11, marginBottom: 4 }}>✨ ポイント＆コメントを自動生成</button>
+      <div style={{ fontSize: 10, color: C.success, fontWeight: 700, marginBottom: 6 }}>✅ 空欄のままでもOK。物件情報（築年・耐震・構造・面積・駐車・現況）から、査定書作成時に自動で入ります。上のボタンで今すぐ生成も可。</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
         {points.map((pt, i) => (
-          <input key={i} style={ssi} value={pt} placeholder={`ポイント${i + 1}`} onChange={e => setPoints(ps => ps.map((x, j) => j === i ? e.target.value : x))} />
+          <input key={i} style={ssi} value={pt} placeholder={`ポイント${i + 1}（空欄で自動）`} onChange={e => setPoints(ps => ps.map((x, j) => j === i ? e.target.value : x))} />
         ))}
       </div>
       <button onClick={() => setPoints(ps => [...ps, ""])} style={{ ...btnStyle("ghost"), padding: "4px 10px", fontSize: 11, marginTop: 6 }}>＋ ポイント追加</button>
-      <Field label="物件コメント（概要ページ下の説明文）"><textarea style={{ ...si, height: 56, resize: "vertical" }} value={f.propertyComment} onChange={set("propertyComment")} placeholder="築37年ながら新耐震基準で、中古戸建としてそのまま活用・再販が可能な状態です…" /></Field>
+      <Field label="物件コメント（概要ページ下の説明文・空欄で自動）"><textarea style={{ ...si, height: 56, resize: "vertical" }} value={f.propertyComment} onChange={set("propertyComment")} placeholder="空欄でOK → 自動生成（例：築37年ながら新耐震基準で、中古戸建としてそのまま活用・再販が可能…）" /></Field>
       <div style={sec}>一物四価（①②③は「単価 円/㎡」を入力 → 土地面積を自動でかけて評価額に）</div>
       <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>全国地価マップ等で調べた㎡単価（円/㎡）を入れると、土地面積 <b>{f.landArea || "—"}㎡</b> を自動でかけて「約○○万円」を計算します。総額を直接持っている場合は右の「評価額」欄を上書きしてもOK。</div>
       <div style={{ background: "#fff7e6", border: "1px solid #d9770633", borderRadius: 8, padding: 8, marginBottom: 8 }}>
