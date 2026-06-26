@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.216-kotei-memo-reform";
+const APP_VERSION = "2026-06-27-v9.217-compnote-auto";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23510,13 +23510,20 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
     const marketNote = (bSold.length || bStk.length)
       ? `売り出し中（在庫）は戸建${bStk.length ? Math.min(...bStk) + "〜" + Math.max(...bStk) + "万円" : "—"}と高めですが、実際の<b>成約</b>は${bSold.length ? Math.min(...bSold) + "〜" + Math.max(...bSold) + "万円" : "—"}です。<b>高く売り出しても、その金額では売れていない</b>のが実態。本物件の実勢は<b>${f.jissei || "—"}${f.jisseiHigh ? "〜" + f.jisseiHigh : ""}万円</b>とみています${f.jissei ? `（確実な下限は${f.jissei}万円）` : ""}。`
       : "";
-    return { landNote, marketNote };
+    // 🆕 v9.217: 成約事例の解説（採用=base/本物件=subj の事例から。実勢レンジは手入力の f.jissei〜jisseiHigh を使う）
+    const baseP = comps.filter(c => (c.cls === "base" || !c.cls) && c.price).map(c => parseFloat(String(c.price).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
+    const cLo = baseP.length ? Math.min(...baseP) : 0, cHi = baseP.length ? Math.max(...baseP) : 0;
+    const jisN = num(f.jissei), jishN = num(f.jisseiHigh);
+    const compNote = baseP.length
+      ? `近隣の成約事例は${cLo}〜${cHi}万円です。本物件とサイズ・築年が近い事例を基準にすると、実勢は概ね<b>${jisN || "—"}${jishN ? "〜" + jishN : ""}万円のレンジ</b>とみられます（土地が極端に広い事例や駅遠の安値は参考・除外）。当社は<b>確実な下限の${jisN || "—"}万円</b>を基準にしています。`
+      : "";
+    return { landNote, marketNote, compNote };
   };
   const draftNotes = () => {
     const d = computeNotes();
     if (!d.landNote && !d.marketNote) { alert("先に市場の表（レインズPDF取込）を入れてください。数値から自動で文章を作ります。"); return; }
-    setF(s => ({ ...s, landNote: s.landNote || d.landNote, marketNote: s.marketNote || d.marketNote }));
-    alert("解説文の下書きを生成しました。下のlandNote/marketNote欄で確認・修正してください。");
+    setF(s => ({ ...s, landNote: s.landNote || d.landNote, marketNote: s.marketNote || d.marketNote, compNote: s.compNote || d.compNote }));
+    alert("解説文の下書きを生成しました（成約事例の解説・土地・市場）。各欄で確認・修正してください。");
   };
   // 🆕 v9.213: 物件情報から「本物件のポイント」と「物件コメント」をルール生成（築年/耐震/構造/面積/駐車/現況）
   const computeFeatures = () => {
@@ -23611,7 +23618,7 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
       yonkaHigh: (() => { const t = [f.y1, f.y2, f.y3].map(num).filter(x => x > 0); return t.length ? Math.max(...t) : num(f.yonkaHigh); })(),
       draftSample: false,
       comps: comps.filter(c => c.loc || c.price),
-      compNote: f.compNote,
+      compNote: f.compNote || nd.compNote,
       landStock: landStock.filter(r => r.loc || r.price),
       landSold: landSold.filter(r => r.loc || r.price),
       buildingStock: buildingStock.filter(r => r.loc || r.price).map(r => {
@@ -23743,7 +23750,7 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
         </div>
       ))}
       <button onClick={addComp} style={{ ...btnStyle("ghost"), width: "100%", padding: 9, fontSize: 12 }}>＋ 事例を追加</button>
-      <Field label="成約事例の解説文（採用/除外の理由・採用単価の根拠。&lt;b&gt;で強調可）"><textarea style={{ ...si, height: 80, resize: "vertical" }} value={f.compNote} onChange={set("compNote")} placeholder="面積・築年が近い2事例を基準に採用…採用㎡単価 約21,000円 × …＝約347万円。" /></Field>
+      <Field label="成約事例の解説文（採用/除外の理由・&lt;b&gt;可・空欄で自動）"><textarea style={{ ...si, height: 80, resize: "vertical" }} value={f.compNote} onChange={set("compNote")} placeholder="空欄でOK → 成約事例＋下の『実勢レンジ』から自動生成。手直しも可。" /></Field>
       <div style={sec}>市場の動き（レインズ・取込で自動／手修正可）</div>
       <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>土地在庫・土地成約・戸建在庫の3表です。<b>「戸建の成約」は上の『戸建の成約＝近隣成約事例』</b>に入ります（採否の判定が要るため別枠にしています）。</div>
       {[
