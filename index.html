@@ -30,6 +30,46 @@
   if (window.pdfjsLib) {
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   }
+  // 🆕 レインズ「売買物件概要」PDFパーサー（Y座標で行復元→ラベル抽出。reins_pdf_to_data.py のJS版・実機検証済）
+  window.REINS = (function () {
+    var ERA = { "令和": 2018, "平成": 1988, "昭和": 1925 }, ERA_L = { "令和": "R", "平成": "H", "昭和": "S" };
+    function z2h(s) { return String(s || "").replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); }); }
+    function grab(t, l) { var m = t.match(new RegExp(l + "\\s*([^\\n]*)")); return m ? m[1].trim() : ""; }
+    function toTown(a) { a = z2h(a); var t = a.replace(/^.+?[市区町村]/, ""); t = t.replace(/丁目.*$/, "丁目"); return t || a; }
+    function eraYear(s) { var m = z2h(s).match(/(令和|平成|昭和)\s*(\d+)\s*年(?:\s*(\d+)\s*月)?/); if (!m) return ["", ""]; var e = m[1], y = +m[2], mo = m[3], w = ERA[e] + y, L = ERA_L[e]; return [L + y + "(" + w + ")", mo ? L + y + "." + mo : L + y]; }
+    function eraDate(s) { var m = z2h(s).match(/(令和|平成|昭和)\s*(\d+)\s*年\s*(\d+)\s*月\s*(\d+)\s*日/); if (!m) return null; return new Date(ERA[m[1]] + +m[2], +m[3] - 1, +m[4]); }
+    function num(s) { var m = z2h(s).match(/[\d,]+(?:\.\d+)?/); return m ? m[0] : ""; }
+    function m2u(p, a) { p = parseFloat(String(p).replace(/,/g, "")); a = parseFloat(String(a).replace(/,/g, "")); return (p && a) ? (Math.round(p / a * 10) / 10) + "万円" : ""; }
+    function m2tsubo(p, a) { p = parseFloat(String(p).replace(/,/g, "")); a = parseFloat(String(a).replace(/,/g, "")); return (p && a) ? (Math.round(p * 3.305785 / a * 10) / 10) + "万円" : ""; }
+    function listedStr(d) { if (!d) return ""; var days = Math.round((Date.now() - d.getTime()) / 864e5); return "約" + Math.max(1, Math.round(days / 30.4)) + "ヶ月"; }
+    // pdf.jsのtextContent.items → Y座標で行を復元（pdfplumber相当の行構造）
+    function pageLines(tc) {
+      var buckets = [];
+      tc.items.forEach(function (it) {
+        var y = it.transform[5], b = null;
+        for (var k = 0; k < buckets.length; k++) { if (Math.abs(buckets[k].y - y) <= 2.5) { b = buckets[k]; break; } }
+        if (!b) { b = { y: y, items: [] }; buckets.push(b); }
+        b.items.push(it);
+      });
+      buckets.sort(function (a, b) { return b.y - a.y; });
+      return buckets.map(function (b) {
+        return b.items.sort(function (p, q) { return p.transform[4] - q.transform[4]; }).map(function (it) { return it.str; }).join("").replace(/\s+/g, " ").trim();
+      }).filter(function (s) { return s; }).join("\n");
+    }
+    function parsePage(t) {
+      var th = z2h(t), d = {};
+      d.kind = (t.indexOf("在庫") >= 0 || th.indexOf("売物件") >= 0) ? "在庫" : "成約";
+      d.no = num(grab(t, "物件番号")); d.mokuji = grab(t, "物件種目"); d.addr = grab(t, "所在地"); d.town = toTown(d.addr);
+      d.price = num(grab(t, "成約価格")) || num(grab(t, "価格")); d.land = num(grab(t, "土地面積")); d.bldg = num(grab(t, "建物面積"));
+      d.structure = (grab(t, "建物構造").match(/木造|軽量鉄骨造?|鉄骨造|鉄筋コンクリート|ＲＣ造?|RC造?|ＳＲＣ|SRC|鉄骨鉄筋/) || [""])[0];
+      var um = th.match(/㎡単価\s*([\d.]+\s*万円)/); d.unit = um ? um[1].replace(/\s/g, "") : "";
+      var pm = th.match(/坪単価\s*([\d.]+\s*万円)/); d.tsubo = pm ? pm[1].replace(/\s/g, "") : "";
+      d.built = eraYear(grab(t, "築年月"))[0]; d.time = eraYear(grab(t, "成約年月日"))[1];
+      d.listed = listedStr(eraDate(grab(t, "登録年月日")));
+      return d;
+    }
+    return { pageLines: pageLines, parsePage: parsePage, m2u: m2u, m2tsubo: m2tsubo };
+  })();
 </script>
 <!-- 🆕 v9.46.7: Tesseract.js for スキャンPDFのOCR ( 日本語 ) -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
@@ -191,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-24-v9.201-remove-old-satei-tabs";
+const APP_VERSION = "2026-06-27-v9.202-reins-pdf-import";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -17077,7 +17117,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       yotoChiki: "",
       kenpei: "",
       yoseki: "",
-      reins: null,       // { fileName, rows: [{addr, age, land, building, price, date}] }
+      reins: null,       // { fileNames, count, rows, raw, sLandSale, sLandDeal, sBldgDeal }（レインズ概要PDF解析結果）
       reinsParsing: false,
       // 🆕 v9.123: 売買価格査定書（雛形・PC連携）用フィールド
       sAtena: j.ownerName ? (j.ownerName + "　殿") : "",
@@ -17255,17 +17295,19 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
     };
   };
 
-  // 🆕 v9.129: Step3でアップロードしたレインズ事例を成約事例欄へ取り込む
+  // 🆕 レインズ概要PDFの解析結果（土地在庫/土地成約/建物）を成約事例欄へ反映
   const importReinsToComps = () => {
-    const rows = (assessmentForm && assessmentForm.reins && assessmentForm.reins.rows) || [];
-    if (!rows.length) { alert("先に Step 3 でレインズPDFをアップロードしてください。"); return; }
-    const cl = v => (v && v !== "—") ? String(v).trim() : "";
-    const land = rows.slice(0, 4).map(r => ({ desc: cl(r.addr), price: cl(r.price), unit: "", area: cl(r.land) }));
-    const bldg = rows.slice(0, 3).map(r => ({ desc: cl(r.addr), price: cl(r.price), year: cl(r.age), note: cl(r.building) }));
-    while (land.length < 4) land.push({});
-    while (bldg.length < 3) bldg.push({});
-    setAssessmentForm(f => f ? { ...f, sLandDeal: land, sBldgDeal: bldg } : f);
-    alert("レインズ事例を取り込みました。 下の欄で確認・修正できます。");
+    const r = assessmentForm && assessmentForm.reins;
+    if (!r || !r.count) { alert("先にレインズの「売買物件概要」PDFをアップロードしてください。"); return; }
+    setAssessmentForm(f => {
+      if (!f) return f;
+      const next = { ...f };
+      if (r.sLandSale && r.sLandSale.length) next.sLandSale = r.sLandSale.slice(0, 4);
+      if (r.sLandDeal && r.sLandDeal.length) next.sLandDeal = r.sLandDeal.slice(0, 4);
+      if (r.sBldgDeal && r.sBldgDeal.length) next.sBldgDeal = r.sBldgDeal.slice(0, 3);
+      return next;
+    });
+    alert("レインズ事例を反映しました（土地在庫" + (r.sLandSale ? r.sLandSale.length : 0) + "・土地成約" + (r.sLandDeal ? r.sLandDeal.length : 0) + "・建物" + (r.sBldgDeal ? r.sBldgDeal.length : 0) + "件）。下の欄で確認・修正できます。");
   };
   // 成約事例セルの1項目を更新
   const setDealCell = (key, i, field, val) => {
@@ -17803,49 +17845,46 @@ out body 30;`;
   };
 
   // 🆕 v9.46.4: レインズ成約事例 PDF からテーブル抽出
-  const handleReinsUpload = async (file) => {
-    if (!file || !window.pdfjsLib) {
+  // 🆕 レインズ「売買物件概要」PDF（複数可）→ 概要を解析し、土地在庫/土地成約/建物 に自動振り分け
+  const handleReinsUpload = async (files) => {
+    const list = files && files.length ? Array.from(files) : [];
+    if (!list.length || !window.pdfjsLib || !window.REINS) {
       alert("PDF読み込みに必要なライブラリが未ロードです。 ページを再読込してください。");
       return;
     }
     setAssessmentForm(f => ({ ...f, reinsParsing: true }));
     try {
-      const buf = await file.arrayBuffer();
-      const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
-      let raw = "";
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const tc = await page.getTextContent();
-        raw += tc.items.map(it => it.str).join(" ") + "\n";
+      const sLandSale = [], sLandDeal = [], sBldgDeal = [], rows = [], raw = [], names = [];
+      for (const file of list) {
+        names.push(file.name);
+        const buf = await file.arrayBuffer();
+        const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const text = window.REINS.pageLines(await page.getTextContent());
+          if (text.indexOf("物件番号") < 0) continue; // 概要PDFのページだけ処理
+          const d = window.REINS.parsePage(text);
+          raw.push(d);
+          const isTochi = (String(d.mokuji).indexOf("売地") >= 0) || !d.bldg;
+          const zaiko = d.kind === "在庫";
+          // 旧 reinsSection 互換（成約事例表示用）
+          rows.push({ addr: d.town, age: d.built || "—", land: d.land ? d.land + "㎡" : "—", building: d.bldg ? d.bldg + "㎡" : "—", price: d.price ? d.price + "万円" : "—", date: d.time || d.listed || "—" });
+          if (isTochi) {
+            const row = { desc: d.town, price: d.price ? d.price + "万円" : "", unit: d.tsubo || window.REINS.m2tsubo(d.price, d.land), area: d.land ? d.land + "㎡" : "" };
+            (zaiko ? sLandSale : sLandDeal).push(row);
+          } else {
+            const note = (zaiko ? "在庫" : "成約") + (d.bldg ? " " + d.bldg + "㎡" : "") + (zaiko ? (d.listed ? " 掲載" + d.listed : "") : (d.time ? " " + d.time : ""));
+            sBldgDeal.push({ desc: d.town, price: d.price ? d.price + "万円" : "", year: d.built || "", note });
+          }
+        }
       }
-      // レインズ事例の典型パターンを抽出
-      // 例: 「熊谷市〇〇 築XX年 土地XXm² 建物XXm² XXXX万円 2026/01」 のような順序を想定
-      const rows = [];
-      // 価格パターン: 数字+万円
-      const priceMatches = [...raw.matchAll(/(\d{3,5})\s*万円?/g)];
-      // 築年数パターン: 築XX年
-      const ageMatches = [...raw.matchAll(/築\s*(\d{1,2})\s*年/g)];
-      // 面積パターン: XX.XX m² or ㎡
-      const areaMatches = [...raw.matchAll(/(\d+(?:\.\d+)?)\s*(?:m|㎡)/g)];
-      // 所在地パターン: 〇〇市〇〇
-      const addrMatches = [...raw.matchAll(/([一-龥ぁ-んァ-ヶ]{2,5}市[一-龥ぁ-んァ-ヶー]{1,8})/g)];
-      // 単純化: 各 配列を順番に組み合わせる ( 最大 6 行 )
-      const maxRows = Math.min(6, priceMatches.length, ageMatches.length);
-      for (let i = 0; i < maxRows; i++) {
-        rows.push({
-          addr: (addrMatches[i] && addrMatches[i][1]) || "—",
-          age: ageMatches[i] ? `築${ageMatches[i][1]}年` : "—",
-          land: areaMatches[i * 2] ? `${areaMatches[i * 2][1]}㎡` : "—",
-          building: areaMatches[i * 2 + 1] ? `${areaMatches[i * 2 + 1][1]}㎡` : "—",
-          price: priceMatches[i] ? `${priceMatches[i][1]} 万円` : "—",
-          date: "—",
-        });
-      }
+      const count = sLandSale.length + sLandDeal.length + sBldgDeal.length;
       setAssessmentForm(f => ({
         ...f,
         reinsParsing: false,
-        reins: { fileName: file.name, rows, rawLen: raw.length },
+        reins: { fileNames: names, count, rows, raw, sLandSale, sLandDeal, sBldgDeal },
       }));
+      if (!count) alert("レインズの「売買物件概要」PDF（成約／在庫）を認識できませんでした。一覧ではなく、各物件の概要PDFを選んでください。");
     } catch (e) {
       console.error("[レインズPDF抽出] エラー:", e);
       setAssessmentForm(f => ({ ...f, reinsParsing: false }));
@@ -21528,6 +21567,21 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               </div>
               <div style={{ background: "#7a1f2b11", border: "1px solid #7a1f2b33", borderRadius: 8, padding: 10, marginTop: 4, marginBottom: 8 }}>
                 <div style={{ fontWeight: 700, fontSize: 12, color: C.text, marginBottom: 6 }}>🏘 在庫・成約事例（手入力・必要な分だけ「＋追加」）</div>
+                <div style={{ background: "#fff", border: "1px dashed #7a1f2b66", borderRadius: 8, padding: 8, marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.text, marginBottom: 4 }}>📄 レインズ「売買物件概要」PDFから自動入力</div>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>成約・在庫／土地・戸建の概要PDF（複数選択可）を読み込むと、下の表に自動で振り分けます。※一覧ではなく、各物件の「概要」PDFを選んでください。</div>
+                  <label style={{ display: "inline-block", border: "1px solid #7a1f2b", color: "#7a1f2b", background: "#fff", borderRadius: 6, padding: "5px 12px", fontSize: 11, fontWeight: 700, cursor: assessmentForm.reinsParsing ? "wait" : "pointer" }}>
+                    {assessmentForm.reinsParsing ? "⏳ 解析中…" : "📎 レインズPDFを選択（複数可）"}
+                    <input type="file" accept="application/pdf" multiple style={{ display: "none" }}
+                      onChange={e => { if (e.target.files.length) handleReinsUpload(e.target.files); e.target.value = ""; }} />
+                  </label>
+                  {assessmentForm.reins && assessmentForm.reins.count > 0 && (
+                    <div style={{ marginTop: 8, fontSize: 10, color: C.text }}>
+                      ✅ 抽出 {assessmentForm.reins.count} 件（土地在庫 {assessmentForm.reins.sLandSale.length}・土地成約 {assessmentForm.reins.sLandDeal.length}・建物 {assessmentForm.reins.sBldgDeal.length}）
+                      <button onClick={importReinsToComps} style={{ ...btnStyle("primary"), padding: "4px 10px", fontSize: 11, marginLeft: 8 }}>↓ 下の表へ反映</button>
+                    </div>
+                  )}
+                </div>
                 {[
                   { key: "sLandSale", label: "土地の販売状況（在庫）", cols: [["desc", "物件概要"], ["price", "価格"], ["unit", "坪単価"], ["area", "土地面積"]] },
                   { key: "sLandDeal", label: "土地の成約状況", cols: [["desc", "物件概要"], ["price", "成約価格"], ["unit", "坪単価"], ["area", "地積"]] },
