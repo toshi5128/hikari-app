@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.217-compnote-auto";
+const APP_VERSION = "2026-06-27-v9.218-revnote-auto-consistent";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23505,25 +23505,28 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
         + (longList.length ? `、<b>${longList.map(x => x.p).slice(0, 2).join("・")}の物件は1年以上売れ残っています</b>` : "")
         + `。一方、成約事例から見た本物件付近の実勢は<b>㎡単価約${baseUnit ? (Math.round(baseUnit * 10) / 10) : "—"}万円</b>。本物件${la || "—"}㎡なら、ここから実勢<b>約${jissei || "—"}万円</b>が導けます。`
       : "";
-    const bSold = comps.map(c => parseFloat(String(c.price).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
+    // 🆕 v9.218: 成約レンジは「採用(base)事例のみ」＝除外(out)は入れない。在庫レンジは戸建在庫から。3つの解説文で同じ範囲を使い辻褄を合わせる
     const bStk = buildingStock.map(c => parseFloat(String(c.price).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
-    const marketNote = (bSold.length || bStk.length)
-      ? `売り出し中（在庫）は戸建${bStk.length ? Math.min(...bStk) + "〜" + Math.max(...bStk) + "万円" : "—"}と高めですが、実際の<b>成約</b>は${bSold.length ? Math.min(...bSold) + "〜" + Math.max(...bSold) + "万円" : "—"}です。<b>高く売り出しても、その金額では売れていない</b>のが実態。本物件の実勢は<b>${f.jissei || "—"}${f.jisseiHigh ? "〜" + f.jisseiHigh : ""}万円</b>とみています${f.jissei ? `（確実な下限は${f.jissei}万円）` : ""}。`
-      : "";
-    // 🆕 v9.217: 成約事例の解説（採用=base/本物件=subj の事例から。実勢レンジは手入力の f.jissei〜jisseiHigh を使う）
     const baseP = comps.filter(c => (c.cls === "base" || !c.cls) && c.price).map(c => parseFloat(String(c.price).replace(/[^0-9.]/g, ""))).filter(x => x > 0);
     const cLo = baseP.length ? Math.min(...baseP) : 0, cHi = baseP.length ? Math.max(...baseP) : 0;
     const jisN = num(f.jissei), jishN = num(f.jisseiHigh);
+    const marketNote = (baseP.length || bStk.length)
+      ? `売り出し中（在庫）は戸建${bStk.length ? Math.min(...bStk) + "〜" + Math.max(...bStk) + "万円" : "—"}と高めですが、実際の<b>成約</b>は${baseP.length ? cLo + "〜" + cHi + "万円" : "—"}です。<b>高く売り出しても、その金額では売れていない</b>のが実態。本物件の実勢は<b>${jisN || "—"}${jishN ? "〜" + jishN : ""}万円</b>とみています${jisN ? `（確実な下限は${jisN}万円）` : ""}。`
+      : "";
     const compNote = baseP.length
       ? `近隣の成約事例は${cLo}〜${cHi}万円です。本物件とサイズ・築年が近い事例を基準にすると、実勢は概ね<b>${jisN || "—"}${jishN ? "〜" + jishN : ""}万円のレンジ</b>とみられます（土地が極端に広い事例や駅遠の安値は参考・除外）。当社は<b>確実な下限の${jisN || "—"}万円</b>を基準にしています。`
       : "";
-    return { landNote, marketNote, compNote };
+    // 🆕 v9.218: 逆算ページの解説（実勢レンジ=手入力、成約事例レンジ=データ。タイトル/末尾の箱と数字を揃える）
+    const revNote = (jisN || baseP.length)
+      ? `最も高い完成品の価格から逆算しても、現状渡しの素の価値は<b>約${jisN || "—"}${jishN ? "〜" + jishN : ""}万円</b>に収れんします。これは成約事例（${baseP.length ? cLo + "〜" + cHi + "万円" : "—"}）とも一致します。当社のご提示額は、こうした市場の実態に沿った正直な金額であり、決して安く見積もったものではありません。`
+      : "";
+    return { landNote, marketNote, compNote, revNote };
   };
   const draftNotes = () => {
     const d = computeNotes();
     if (!d.landNote && !d.marketNote) { alert("先に市場の表（レインズPDF取込）を入れてください。数値から自動で文章を作ります。"); return; }
-    setF(s => ({ ...s, landNote: s.landNote || d.landNote, marketNote: s.marketNote || d.marketNote, compNote: s.compNote || d.compNote }));
-    alert("解説文の下書きを生成しました（成約事例の解説・土地・市場）。各欄で確認・修正してください。");
+    setF(s => ({ ...s, landNote: s.landNote || d.landNote, marketNote: s.marketNote || d.marketNote, compNote: s.compNote || d.compNote, revNote: s.revNote || d.revNote }));
+    alert("解説文の下書きを生成しました（成約事例・土地・市場・逆算）。各欄で確認・修正してください。");
   };
   // 🆕 v9.213: 物件情報から「本物件のポイント」と「物件コメント」をルール生成（築年/耐震/構造/面積/駐車/現況）
   const computeFeatures = () => {
@@ -23631,7 +23634,7 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
       jissei: num(f.jissei), jisseiHigh: num(f.jisseiHigh),
       priceBuyout: num(f.priceBuyout), priceChukan: num(f.priceChukan), priceBaibai: num(f.priceBaibai), priceBaibaiHigh: num(f.priceBaibaiHigh),
       brokerFee: num(f.brokerFee),
-      revTopDesc: f.revTopDesc, revTop: f.revTop, revTopLbl: f.revTopLbl, revReform: f.revReform, revExpense: f.revExpense, revResult: f.revResult, revNote: f.revNote,
+      revTopDesc: f.revTopDesc, revTop: f.revTop, revTopLbl: f.revTopLbl, revReform: f.revReform, revExpense: f.revExpense, revResult: f.revResult, revNote: f.revNote || nd.revNote,
     };
     printSateiHinagata(data);
   };
@@ -23798,7 +23801,7 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
         <Field label="素地の価値（万・revResult）"><input style={si} value={f.revResult} onChange={set("revResult")} placeholder="約375" /></Field>
       </div>
       <Field label="完成品カードのラベル（revTopLbl・&lt;br&gt;可）"><input style={si} value={f.revTopLbl} onChange={set("revTopLbl")} placeholder="リフォーム済・駐車2台<br>完成品の売り出し" /></Field>
-      <Field label="逆算の解説文（revNote・&lt;b&gt;可）"><textarea style={{ ...si, height: 60, resize: "vertical" }} value={f.revNote} onChange={set("revNote")} placeholder="最も高い完成品の価格から逆算しても、現状渡しの素の価値は約350〜400万円に収れん…" /></Field>
+      <Field label="逆算の解説文（revNote・&lt;b&gt;可・空欄で自動）"><textarea style={{ ...si, height: 60, resize: "vertical" }} value={f.revNote} onChange={set("revNote")} placeholder="空欄でOK → 実勢レンジ・成約事例レンジから自動生成（タイトル/末尾の箱と数字が揃います）。手直しも可。" /></Field>
       <button onClick={generate} style={{ ...btnStyle(), width: "100%", padding: 13, marginTop: 14 }}>📄 査定書を表示（新しいタブ → 印刷/PDF保存）</button>
       <div style={{ fontSize: 11, color: C.muted, margin: "8px 2px 0", lineHeight: 1.6 }}>⚠ 実勢350＝中間省略の「保証額」、一般売買450＝「売り出し上限・見込み」。450を着地と書かない（成約事例と矛盾するため）。社内数字（出口・利益）は載せない。</div>
     </BottomSheet>
