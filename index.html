@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.222-touki-ocr-zenkaku";
+const APP_VERSION = "2026-06-27-v9.223-touki-landarea-guard";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -17857,7 +17857,8 @@ out body 30;`;
         const res = await fetch(su + "/parse_touki", { method: "POST", body: fd });
         if (res.ok) {
           const d = await res.json(); const out = {};
-          if (d.land_area) out.landArea = String(d.land_area).replace(/[^0-9.]/g, "");
+          // 🆕 v9.223: 土地面積は「土地謄本（land_chimoku=地目あり）」の時だけ採用。建物謄本のland_areaは1階床面積の誤抽出なので無視
+          if (d.land_area && d.land_chimoku && !d.bldg_built && !d.bldg_area) out.landArea = String(d.land_area).replace(/[^0-9.]/g, "");
           if (d.bldg_area) out.buildingArea = String(d.bldg_area).replace(/㎡[\s\S]*$/, "").replace(/[^0-9.]/g, "");
           if (d.bldg_kozo) out.structure = d.bldg_kozo;
           if (d.bldg_built) out.built = d.bldg_built; // 生の築年月日（和暦/西暦）。年の解釈はhandleTouki側で
@@ -23479,7 +23480,10 @@ function SateiProposalSheet({ pin, onClose, parseTouki }) {
           }
           return ns;
         });
-        alert("謄本から取得しました（" + labels.join("・") + "）。下の欄で確認・修正できます。");
+        let hint = "";
+        if (!got.built) hint += "\n※築年月・構造は『建物』の全部事項証明書から取れます。";
+        if (!got.landArea) hint += "\n※土地面積は『土地』の全部事項証明書から取れます。";
+        alert("謄本から取得しました：" + labels.join("・") + "。下の欄で確認・修正できます。" + hint);
       } else {
         alert("謄本から自動取得できませんでした（会社PCサーバー未接続／画像PDF等）。手入力してください。");
       }
