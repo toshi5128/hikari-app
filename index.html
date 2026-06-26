@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.203-satei-13p-app";
+const APP_VERSION = "2026-06-27-v9.204-touki-autofill";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -17846,6 +17846,41 @@ out body 30;`;
     }
   };
 
+  // 🆕 v9.204: 登記簿謄本PDF → {landArea, buildingArea, structure, builtYear} を返す（売却ご提案書フォーム用・既存ヘルパー流用）
+  const parseToukiForProposal = async (file) => {
+    // ① 会社PCサーバー（Google Vision・高精度／全部事項なら土地建物まとめて返る）
+    try {
+      await autoFetchSateiUrl();
+      const su = (localStorage.getItem(SATEI_URL_KEY) || "").trim().replace(/\/+$/, "");
+      if (su) {
+        const fd = new FormData(); fd.append("files", file);
+        const res = await fetch(su + "/parse_touki", { method: "POST", body: fd });
+        if (res.ok) {
+          const d = await res.json(); const out = {};
+          if (d.land_area) out.landArea = String(d.land_area).replace(/[^0-9.]/g, "");
+          if (d.bldg_area) out.buildingArea = String(d.bldg_area).replace(/㎡[\s\S]*$/, "").replace(/[^0-9.]/g, "");
+          if (d.bldg_kozo) out.structure = d.bldg_kozo;
+          if (d.bldg_built) out.builtYear = String(d.bldg_built).replace(/[^0-9]/g, "");
+          if (Object.keys(out).length) return { ...out, source: "server" };
+        }
+      }
+    } catch (e) { console.warn("[謄本→提案書 server]", e); }
+    // ② Gemini Vision（キーがあれば。土地・建物まとめて）
+    if (localStorage.getItem("hikari_gemini_api_key")) {
+      try {
+        const prompt = `この登記簿謄本PDFから以下を抽出し、厳密にJSON形式で返す。無い項目は空文字 ""。
+{"landArea":"地積を平方メートル（数値のみ・例 152.30）","buildingArea":"建物床面積の合計を平方メートル（数値のみ・例 118.00）","structure":"建物構造（例 木造瓦葺2階建）","builtYear":"新築年（西暦4桁・元号は西暦に変換）"}`;
+        const g = await callGeminiVision(file, prompt); const out = {};
+        if (g.landArea) out.landArea = String(g.landArea).replace(/[^0-9.]/g, "");
+        if (g.buildingArea) out.buildingArea = String(g.buildingArea).replace(/[^0-9.]/g, "");
+        if (g.structure) out.structure = g.structure;
+        if (g.builtYear) out.builtYear = String(g.builtYear).replace(/[^0-9]/g, "");
+        if (Object.keys(out).length) return { ...out, source: "gemini" };
+      } catch (e) { console.warn("[謄本→提案書 gemini]", e); }
+    }
+    return {};
+  };
+
   // 🆕 v9.46.4: レインズ成約事例 PDF からテーブル抽出
   // 🆕 レインズ「売買物件概要」PDF（複数可）→ 概要を解析し、土地在庫/土地成約/建物 に自動振り分け
   const handleReinsUpload = async (files) => {
@@ -21147,7 +21182,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
       })()}
 
       {/* 🆕 v9.203: 売却ご提案書(13P・査定込み)モーダル（ピン詳細から開く） */}
-      {proposalPin && <SateiProposalSheet pin={proposalPin} onClose={() => setProposalPin(null)} />}
+      {proposalPin && <SateiProposalSheet pin={proposalPin} onClose={() => setProposalPin(null)} parseTouki={parseToukiForProposal} />}
 
       {/* 🆕 v9.46: 査定書作成モーダル ( v9.46.2: ステップ式 UI ) */}
       {assessmentTarget && assessmentForm && (() => {
@@ -23299,7 +23334,7 @@ async function printSateiHinagata(data) {
   } catch (e) { console.warn("satei hinagata failed", e); alert("査定書の生成に失敗しました：" + e.message); }
 }
 // 🆕 v9.200/v9.203: 売却ご提案書の入力フォーム。物件概要はピンから自動プリフィル、一物四価・成約事例・価格は手入力、市場表はレインズPDF取込。
-function SateiProposalSheet({ pin, onClose }) {
+function SateiProposalSheet({ pin, onClose, parseTouki }) {
   const p = pin || {};
   const n = new Date();
   const todayWareki = `令和${n.getFullYear() - 2018}年${n.getMonth() + 1}月${n.getDate()}日`;
@@ -23328,7 +23363,45 @@ function SateiProposalSheet({ pin, onClose }) {
   const [buildingStock, setBuildingStock] = useState([]);
   const [points, setPoints] = useState(["", "", "", ""]);
   const [reinsInfo, setReinsInfo] = useState(null);
+  const [legalParsing, setLegalParsing] = useState(false);
   const num = v => { const x = parseFloat(String(v).replace(/[^0-9.]/g, "")); return isNaN(x) ? 0 : x; };
+  const seireki2wareki = (y) => {
+    if (y >= 2019) return "令和" + (y === 2019 ? "元" : (y - 2018)) + "年";
+    if (y >= 1989) return "平成" + (y === 1989 ? "元" : (y - 1988)) + "年";
+    if (y >= 1926) return "昭和" + (y === 1926 ? "元" : (y - 1925)) + "年";
+    return String(y) + "年";
+  };
+  // 🆕 v9.204: 登記簿謄本PDF（複数可）→ 地積・床面積・構造・築年を自動取得して空欄に反映
+  const handleTouki = async (files) => {
+    const list = files && files.length ? Array.from(files) : [];
+    if (!list.length || !parseTouki) { alert("謄本取込が利用できません。"); return; }
+    setLegalParsing(true);
+    try {
+      let got = {};
+      for (const file of list) { const r = await parseTouki(file); got = { ...got, ...r }; }
+      const labels = [got.landArea && "地積", got.buildingArea && "床面積", got.structure && "構造", got.builtYear && "築年"].filter(Boolean);
+      if (labels.length) {
+        setF(s => {
+          const ns = { ...s };
+          if (got.landArea && !s.landArea) ns.landArea = got.landArea;
+          if (got.buildingArea && !s.buildingArea) ns.buildingArea = got.buildingArea;
+          if (got.structure && (!s.structure || s.structure === "木造2階建")) ns.structure = got.structure;
+          if (got.builtYear) {
+            const by = parseInt(got.builtYear);
+            if (by > 1900 && by < 2100) {
+              if (!s.buildingAge) ns.buildingAge = String(new Date().getFullYear() - by);
+              if (!s.builtDate) ns.builtDate = seireki2wareki(by);
+            }
+          }
+          return ns;
+        });
+        alert("謄本から取得しました（" + labels.join("・") + "）。下の欄で確認・修正できます。");
+      } else {
+        alert("謄本から自動取得できませんでした（会社PCサーバー未接続／画像PDF等）。手入力してください。");
+      }
+    } catch (e) { console.error("[謄本取込]", e); alert("読み込みに失敗：" + e.message); }
+    finally { setLegalParsing(false); }
+  };
   // 🆕 v9.203: レインズ「売買物件概要」PDF（複数可）→ 市場の表とcompsへ自動振り分け（13ページ版は㎡単価）
   const handleReinsSheet = async (files) => {
     const list = files && files.length ? Array.from(files) : [];
@@ -23425,6 +23498,14 @@ function SateiProposalSheet({ pin, onClose }) {
       <Field label="宛名（お客様名／様は自動）"><input style={si} value={f.customerName} onChange={set("customerName")} /></Field>
       <Field label="物件住所"><input style={si} value={f.address} onChange={set("address")} /></Field>
       <Field label="作成日"><input style={si} value={f.createdDate} onChange={set("createdDate")} /></Field>
+      <div style={{ background: "#fff", border: `1px dashed ${C.accent}66`, borderRadius: 8, padding: 8, margin: "6px 0" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.text, marginBottom: 4 }}>📎 登記簿謄本PDFから自動入力（土地・建物／全部事項OK・複数可）</div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>地積・床面積・構造・築年を自動取得（会社PCサーバー連携）。取得後、下の欄で確認・修正できます。</div>
+        <label style={{ display: "inline-block", border: `1px solid ${C.accent}`, color: C.accent, background: "#fff", borderRadius: 6, padding: "5px 12px", fontSize: 11, fontWeight: 700, cursor: legalParsing ? "wait" : "pointer" }}>
+          {legalParsing ? "⏳ 解析中…" : "📎 謄本PDFを選択"}
+          <input type="file" accept="application/pdf" multiple style={{ display: "none" }} onChange={e => { if (e.target.files.length) handleTouki(e.target.files); e.target.value = ""; }} />
+        </label>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <Field label="土地面積（㎡）"><input style={si} value={f.landArea} onChange={set("landArea")} placeholder="165.08" /></Field>
         <Field label="建物面積（㎡）"><input style={si} value={f.buildingArea} onChange={set("buildingArea")} placeholder="128.1" /></Field>
