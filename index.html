@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.227-print-popup-fix";
+const APP_VERSION = "2026-06-28-v9.228-track-compaction";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3683,9 +3683,36 @@ function MainApp({ onLock, onSwitchUser }) {
       }
       const merged = mergeRemoteSafely(remote);
       if (merged) {
+        // 🆕 v9.228: 古い探索ルートの間引き（保存データ軽量化＝DB I/O・同期負荷の根本対策）。
+        //   ・直近2日は無加工。古い連続区間だけ RDP(4m=描画と同値→ルートの見た目は不変) で間引く。
+        //   ・ピン/手入力フィールドは一切触らない（GPSの点のみ）。冪等。最新版のみ実行（上のバージョンチェック通過済）。
+        //   ・saveToSupabase は tracks を RMW 再マージしない（v8.63 の arrayKeys に tracks 無し）ので、
+        //     軽量化した tracks がそのまま確定し、ローカルも縮む＝端末再読込で元に戻らない。
+        let _trackCompactNeedsSave = false;
+        try {
+          if (merged.tracks && typeof merged.tracks === "object") {
+            const _cmp = _compactTracks(merged.tracks, { epsM: 4, recentDays: 2, nowMs: Date.now() });
+            if (_cmp && _cmp.changed && _cmp.after < _cmp.before) {
+              merged.tracks = _cmp.tracks;
+              _trackCompactNeedsSave = true;
+              console.log(`[v9.228] 探索ルート軽量化: ${_cmp.before} → ${_cmp.after} 点 (古い区間のみ・直近2日は無加工)`);
+            }
+          }
+        } catch (e) { console.warn("[v9.228] track compact skipped:", e); }
+
         setDataRaw(merged);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
         maybeFlashFromMerged(merged, true); // 🆕 v9.81: 初回は既読基準を設定（鳴らさない）
+
+        // 🆕 v9.228: 軽量化できた時だけ、クラウドへ1回だけ確定保存（セッション1回・他の起動saveと被らないよう遅延）。
+        if (_trackCompactNeedsSave && !window.__hikariTrackCompactSaved__) {
+          window.__hikariTrackCompactSaved__ = true;
+          setTimeout(() => {
+            saveToSupabase(merged).then(ok => {
+              if (ok) { lastRemoteUpdatedAtRef.current = null; console.log("[v9.228] 軽量化データをクラウドへ保存しました"); }
+            }).catch(() => {});
+          }, 4000);
+        }
 
         // 🆕 v9.195: 旧バージョンで保存ブロックされた編集（訪問記録など）を、最新版に更新できた今このタイミングで自動再送。
         //   ・merged はローカルキャッシュ∪クラウドの統合結果（その編集を含む）なので、これをそのまま push すれば union で確実にクラウドへ反映される。
@@ -4857,6 +4884,54 @@ const _simplifyRDP = (pts, epsM) => {
     if (maxD > epsM && idx > 0) { keep[idx] = true; stack.push([s, idx], [idx, e]); }
   }
   return pts.filter((_, i) => keep[i]);
+};
+
+// 🆕 v9.228: 保存データ軽量化 — 古い探索ルートのGPS点を間引く（DB I/O・同期負荷・端末メモリの根本対策）。
+//   ・各メンバーの「直近 recentDays 日より前」の点だけ、連続区間ごとに RDP 簡略化（曲がり角は残す＝道なりの形を維持）。
+//   ・epsM=4 は描画(_simplifyRDP)と同値 → 画面のルートは一切変わらない。直近ぶんは無加工（今日の記録を保護）。
+//   ・ピン/手入力など tracks 以外には一切触れない。冪等（間引き済みを再投入しても変わらない）。
+//   ・呼び出し側で nowMs を渡す。返り値 {tracks, changed, before, after}。
+const _compactTracks = (tracksObj, opts) => {
+  const o = opts || {};
+  const recentDays = o.recentDays != null ? o.recentDays : 2;
+  const epsM = o.epsM != null ? o.epsM : 4;
+  const nowMs = o.nowMs != null ? o.nowMs : Date.now();
+  const cutoff = nowMs - recentDays * 86400000;
+  const DISC_MS = 5 * 60 * 1000, DISC_M = 100;
+  const hav = (a, b) => {
+    const R = 6371000, tr = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * tr, dLng = (b.lng - a.lng) * tr;
+    const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * tr) * Math.cos(b.lat * tr) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(x));
+  };
+  if (!tracksObj || typeof tracksObj !== "object") return { tracks: tracksObj, changed: false, before: 0, after: 0 };
+  let before = 0, after = 0;
+  const out = {};
+  Object.keys(tracksObj).forEach(member => {
+    const raw = Array.isArray(tracksObj[member]) ? tracksObj[member] : [];
+    const pts = raw.filter(p => p && typeof p.lat === "number" && typeof p.lng === "number" && typeof p.ts === "number");
+    before += pts.length;
+    if (pts.length < 3) { if (pts.length) out[member] = pts.slice(); after += pts.length; return; }
+    const sorted = pts.slice().sort((a, b) => a.ts - b.ts);
+    const oldPts = [], recentPts = [];
+    sorted.forEach(p => { (p.ts < cutoff ? oldPts : recentPts).push(p); });
+    const compactedOld = [];
+    let seg = [], prev = null;
+    const flush = () => {
+      if (seg.length >= 3) { const s = _simplifyRDP(seg, epsM); for (let i = 0; i < s.length; i++) compactedOld.push(s[i]); }
+      else { for (let i = 0; i < seg.length; i++) compactedOld.push(seg[i]); }
+      seg = [];
+    };
+    oldPts.forEach(p => {
+      if (prev && (Math.abs(p.ts - prev.ts) > DISC_MS || hav(prev, p) > DISC_M)) flush();
+      seg.push(p); prev = p;
+    });
+    flush();
+    const mergedPts = compactedOld.concat(recentPts);
+    out[member] = mergedPts;
+    after += mergedPts.length;
+  });
+  return { tracks: out, changed: after < before, before, after };
 };
 
 // 🗺️ Leafletマップコンポーネント
