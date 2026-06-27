@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-28-v9.228-track-compaction";
+const APP_VERSION = "2026-06-28-v9.229-track-minspacing-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3691,7 +3691,7 @@ function MainApp({ onLock, onSwitchUser }) {
         let _trackCompactNeedsSave = false;
         try {
           if (merged.tracks && typeof merged.tracks === "object") {
-            const _cmp = _compactTracks(merged.tracks, { epsM: 4, recentDays: 2, nowMs: Date.now() });
+            const _cmp = _compactTracks(merged.tracks, { minDistM: 15, recentDays: 2, nowMs: Date.now() });
             if (_cmp && _cmp.changed && _cmp.after < _cmp.before) {
               merged.tracks = _cmp.tracks;
               _trackCompactNeedsSave = true;
@@ -4886,15 +4886,18 @@ const _simplifyRDP = (pts, epsM) => {
   return pts.filter((_, i) => keep[i]);
 };
 
-// 🆕 v9.228: 保存データ軽量化 — 古い探索ルートのGPS点を間引く（DB I/O・同期負荷・端末メモリの根本対策）。
-//   ・各メンバーの「直近 recentDays 日より前」の点だけ、連続区間ごとに RDP 簡略化（曲がり角は残す＝道なりの形を維持）。
-//   ・epsM=4 は描画(_simplifyRDP)と同値 → 画面のルートは一切変わらない。直近ぶんは無加工（今日の記録を保護）。
-//   ・ピン/手入力など tracks 以外には一切触れない。冪等（間引き済みを再投入しても変わらない）。
-//   ・呼び出し側で nowMs を渡す。返り値 {tracks, changed, before, after}。
+// 🆕 v9.229: 保存データ軽量化 — 古い探索ルートのGPS点を「一定間隔(min-spacing)」で間引く。
+//   ・各メンバーの「直近 recentDays 日より前」の点だけ、隣接が minDistM 以上になるよう間引く。
+//   ・★RDPは使わない: RDPは直線上の点を捨てて隣接点が100m超に開き、描画側の途切れ判定(5分/100m)が
+//     これを誤って「区間の切れ目」と判定して線が途切れる事故になる(v9.228の不具合)。
+//   ・min-spacing は隣接点が常に minDistM 前後に収まる(生データの最大間隔=途切れ閾値未満を超えない)ので
+//     描画側が誤って線を切らない＝元の生データと同じ連続表示になる。
+//   ・本物の途切れ(5分超 or 100m超)では区間の端点を必ず残す＝正しい切れ目はそのまま。
+//   ・直近ぶんは無加工。ピン/手入力など tracks 以外には触れない。冪等。返り値 {tracks, changed, before, after}。
 const _compactTracks = (tracksObj, opts) => {
   const o = opts || {};
   const recentDays = o.recentDays != null ? o.recentDays : 2;
-  const epsM = o.epsM != null ? o.epsM : 4;
+  const minDistM = o.minDistM != null ? o.minDistM : 15;
   const nowMs = o.nowMs != null ? o.nowMs : Date.now();
   const cutoff = nowMs - recentDays * 86400000;
   const DISC_MS = 5 * 60 * 1000, DISC_M = 100;
@@ -4914,20 +4917,25 @@ const _compactTracks = (tracksObj, opts) => {
     if (pts.length < 3) { if (pts.length) out[member] = pts.slice(); after += pts.length; return; }
     const sorted = pts.slice().sort((a, b) => a.ts - b.ts);
     const oldPts = [], recentPts = [];
-    sorted.forEach(p => { (p.ts < cutoff ? oldPts : recentPts).push(p); });
-    const compactedOld = [];
-    let seg = [], prev = null;
-    const flush = () => {
-      if (seg.length >= 3) { const s = _simplifyRDP(seg, epsM); for (let i = 0; i < s.length; i++) compactedOld.push(s[i]); }
-      else { for (let i = 0; i < seg.length; i++) compactedOld.push(seg[i]); }
-      seg = [];
-    };
-    oldPts.forEach(p => {
-      if (prev && (Math.abs(p.ts - prev.ts) > DISC_MS || hav(prev, p) > DISC_M)) flush();
-      seg.push(p); prev = p;
-    });
-    flush();
-    const mergedPts = compactedOld.concat(recentPts);
+    for (let i = 0; i < sorted.length; i++) { (sorted[i].ts < cutoff ? oldPts : recentPts).push(sorted[i]); }
+    const kept = [];
+    let last = null, prev = null;
+    for (let i = 0; i < oldPts.length; i++) {
+      const p = oldPts[i];
+      if (prev === null) { kept.push(p); last = p; }
+      else {
+        const disc = (Math.abs(p.ts - prev.ts) > DISC_MS) || (hav(prev, p) > DISC_M);
+        if (disc) {
+          if (kept[kept.length - 1] !== prev) kept.push(prev); // 区間の終端を残す
+          kept.push(p); last = p;                              // 次区間の始端を残す
+        } else if (hav(last, p) >= minDistM) {
+          kept.push(p); last = p;
+        }
+      }
+      prev = p;
+    }
+    if (oldPts.length && kept[kept.length - 1] !== oldPts[oldPts.length - 1]) kept.push(oldPts[oldPts.length - 1]);
+    const mergedPts = kept.concat(recentPts);
     out[member] = mergedPts;
     after += mergedPts.length;
   });
