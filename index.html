@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-27-v9.226-reins-append";
+const APP_VERSION = "2026-06-27-v9.227-print-popup-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -23342,17 +23342,23 @@ async function printSateiProposal(data) {
 }
 // 🆕 v9.203: 13ページ売却ご提案書(査定込み)。satei-hinagata-template.html を取得しDATAを注入→新規タブ表示（テンプレ無改変＝二重管理しない）。
 async function printSateiHinagata(data) {
+  // 🆕 v9.227: 先にタブを開く（awaitの後にwindow.openするとポップアップブロックされるため）
+  const w = window.open("", "_blank");
+  if (!w) { alert("新しいタブ（ポップアップ）がブロックされました。\nブラウザのアドレスバー右のブロック表示から『許可』にするか、設定でこのサイトのポップアップを許可してください。"); return; }
   try {
+    w.document.write("<!doctype html><meta charset='utf-8'><title>査定書を生成中…</title><div style='font-family:sans-serif;padding:40px;font-size:16px;color:#16324F'>査定書を生成中…（数秒）</div>");
     const res = await fetch("satei-hinagata-template.html?" + Date.now());
     if (!res.ok) throw new Error("テンプレ取得失敗 HTTP " + res.status);
     let html = await res.text();
     const inject = "const DATA = " + JSON.stringify(data) + ";";
     html = html.replace(/const DATA = \{[\s\S]*?\n\};/, () => inject);
-    const w = window.open("", "_blank");
-    if (!w) { alert("ポップアップがブロックされました。ブラウザでポップアップを許可してください。"); return; }
     w.document.open(); w.document.write(html); w.document.close();
     // 新規タブに13ページの査定書を表示。Ctrl+P（または共有→印刷）→ A4・横・背景のグラフィックON でPDF保存。
-  } catch (e) { console.warn("satei hinagata failed", e); alert("査定書の生成に失敗しました：" + e.message); }
+  } catch (e) {
+    console.warn("satei hinagata failed", e);
+    try { w.document.body.innerHTML = "<div style='font-family:sans-serif;padding:40px;color:#c0392b'>査定書の生成に失敗しました：" + e.message + "</div>"; } catch (_) {}
+    alert("査定書の生成に失敗しました：" + e.message);
+  }
 }
 // 🆕 v9.200/v9.203: 売却ご提案書の入力フォーム。物件概要はピンから自動プリフィル、一物四価・成約事例・価格は手入力、市場表はレインズPDF取込。
 function SateiProposalSheet({ pin, onClose, parseTouki }) {
