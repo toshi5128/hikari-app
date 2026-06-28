@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-28-v9.234-track-rows-read";
+const APP_VERSION = "2026-06-28-v9.235-track-rows-blob-split";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2267,7 +2267,10 @@ async function saveToSupabase(data, retries = 3) {
           "Content-Type": "application/json",
           "Prefer": "return=minimal",
         },
-        body: JSON.stringify({ id: DATA_ID, data: dataWithVersion, updated_at: new Date().toISOString() }),
+        // 🆕 v9.235: 本体blobには探索ルート(tracks)を載せない（日別行 tracks::member::date が正本）。
+        //   これで本体の書き込みが「履歴に関係なく一定・軽量」になり、積み上がっても重くならない。
+        //   ※キャッシュ(dataWithVersion)にはtracksを残す＝ローカル表示は維持。bodyだけ除外。
+        body: JSON.stringify({ id: DATA_ID, data: (() => { const _b = { ...dataWithVersion }; delete _b.tracks; return _b; })(), updated_at: new Date().toISOString() }),
       });
       if (!res.ok) throw new Error(`Save failed: ${res.status} ${await res.text()}`);
       // 保存成功！カレンダー予定数も含めてログ出力（デバッグ用）
@@ -3850,6 +3853,16 @@ function MainApp({ onLock, onSwitchUser }) {
             out.sort((a, b) => a.ts - b.ts);
             if (out.length) outTr[m] = out;
           });
+          // 🆕 v9.235: 移行保護 — blob/ローカルにあって日別行に無い点を日別行へ自動退避
+          //   （旧バージョン端末の取りこぼし・オフライン未同期分を救済＝混在中もデータを失わない）。
+          try {
+            Object.keys(outTr).forEach(m => {
+              const rset = new Set((Array.isArray(rowTracks[m]) ? rowTracks[m] : []).map(p => p.ts));
+              const orphans = outTr[m].filter(p => !rset.has(p.ts));
+              if (orphans.length) enqueueTrackBatch(m, orphans);
+            });
+            flushTrackQueue();
+          } catch (e) {}
           setDataRaw(prev => {
             const next = { ...prev, tracks: outTr };
             try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) {}
@@ -15082,20 +15095,24 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
       keys.forEach(m => { totalAdded += (batch[m] || []).length; });
       if (totalAdded === 0) return;
       console.log(`[v9.24] gps batch flush: ${totalAdded} points across ${keys.length} member(s)`);
-      setData(d => {
+      // 🆕 v9.235: GPS点の表示更新はsetDataRaw（本体blobへの保存を誘発しない＝記録中のI/Oをほぼゼロに）。
+      //   キャッシュ(localStorage)は手動更新＝オフライン表示は維持。
+      setDataRaw(d => {
         const prev = (d && d.tracks) || {};
         const next = { ...prev };
         keys.forEach(m => {
           const cur = Array.isArray(next[m]) ? next[m] : [];
           next[m] = [...cur, ...(batch[m] || [])];
         });
-        return { ...d, tracks: next };
+        const nd = { ...d, tracks: next };
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(nd)); } catch (e) {}
+        return nd;
       });
-      // 🆕 v9.233: 日別行へもデュアルライト（本体blobと併存）。失敗分はキューに貯めて回復時自動再送。
+      // 🆕 v9.235: GPS点の永続化は「日別行への追記」のみ。失敗分はキューに貯めて電波回復時に自動再送。
       try {
         keys.forEach(m => { if ((batch[m] || []).length) enqueueTrackBatch(m, batch[m]); });
         flushTrackQueue();
-      } catch (e) { console.warn("[v9.233] track row dual-write skipped", e); }
+      } catch (e) { console.warn("[v9.235] track row write skipped", e); }
     };
     const t = setInterval(flushBatch, 30000);
     // visibilitychange / pagehide / beforeunload で強制 flush
@@ -19299,6 +19316,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                 tracks: { ...prevTracks, [currentUser]: [...prevForUser, { ts: nowMs, lat: currentLoc.lat, lng: currentLoc.lng }] },
                               };
                             });
+                            // 🆕 v9.235: 記録開始点も日別行へ（本体blobからtracksを外したため、これを拾わないと保存されない）
+                            try { enqueueTrackBatch(currentUser, [{ ts: nowMs, lat: currentLoc.lat, lng: currentLoc.lng }]); flushTrackQueue(); } catch (e) {}
                             console.log(`[v9.4] initial point added: ${currentUser} (${currentLoc.lat.toFixed(5)}, ${currentLoc.lng.toFixed(5)})`);
                           }
                         }
