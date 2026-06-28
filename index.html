@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-28-v9.233-track-rows-dualwrite";
+const APP_VERSION = "2026-06-28-v9.234-track-rows-read";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3832,6 +3832,31 @@ function MainApp({ onLock, onSwitchUser }) {
             }).catch(() => {});
           }, 4000);
         }
+
+        // 🆕 v9.234: 探索ルートは「日別行(tracks::member::date)」を正本として読み込む（フェーズ2）。
+        //   取得できたら data.tracks を「日別行 ∪ ローカル未送信」で上書き（ローカル優先＝未同期点を絶対に消さない）。
+        //   オフライン(null)なら blob 由来の表示のまま。setDataRaw で保存は誘発しない。
+        loadTrackRows().then(rowTracks => {
+          if (!rowTracks) return;
+          const base = (merged && merged.tracks) || {};
+          const outTr = {};
+          const members = new Set([...Object.keys(rowTracks), ...Object.keys(base)]);
+          members.forEach(m => {
+            const r = Array.isArray(rowTracks[m]) ? rowTracks[m] : [];
+            const l = Array.isArray(base[m]) ? base[m] : [];
+            const seen = new Set();
+            const out = [];
+            [...l, ...r].forEach(p => { if (p && typeof p.ts === "number" && !seen.has(p.ts)) { seen.add(p.ts); out.push(p); } });
+            out.sort((a, b) => a.ts - b.ts);
+            if (out.length) outTr[m] = out;
+          });
+          setDataRaw(prev => {
+            const next = { ...prev, tracks: outTr };
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) {}
+            return next;
+          });
+          try { console.log("[v9.234] 探索ルートを日別行から復元:", Object.keys(outTr).map(m => m + ":" + outTr[m].length).join(" ")); } catch (e) {}
+        }).catch(() => {});
 
         // 🆕 v9.195: 旧バージョンで保存ブロックされた編集（訪問記録など）を、最新版に更新できた今このタイミングで自動再送。
         //   ・merged はローカルキャッシュ∪クラウドの統合結果（その編集を含む）なので、これをそのまま push すれば union で確実にクラウドへ反映される。
