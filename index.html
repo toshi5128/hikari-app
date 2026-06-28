@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-28-v9.235-track-rows-blob-split";
+const APP_VERSION = "2026-06-28-v9.236-track-safety-net";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2068,6 +2068,20 @@ async function appendTrackPoints(member, points) {
   return allOk;
 }
 
+// 🆕 v9.236: 日別行の削除（軌跡削除UIと連動）。mode "today"=今日の行のみ / "all"=そのメンバーの全行。
+async function deleteTrackRows(member, mode) {
+  try {
+    let url;
+    if (mode === "today") {
+      url = `${SUPABASE_URL}/rest/v1/app_data?id=eq.${encodeURIComponent(_trackRowId(member, _trackDateJST(Date.now())))}`;
+    } else {
+      url = `${SUPABASE_URL}/rest/v1/app_data?id=like.${encodeURIComponent("tracks::" + member + "::")}*`;
+    }
+    const res = await fetch(url, { method: "DELETE", headers: { ..._TRACK_HEADERS, "Prefer": "return=minimal" } });
+    return res.ok;
+  } catch (e) { return false; }
+}
+
 // 🆕 v9.233: 探索ルートのオフライン耐性キュー。日別行への追記が失敗した分をlocalStorageに貯め、
 //   電波回復時に自動再送＝取りこぼしゼロ。本体のSTORAGE_KEYとは独立。
 const TRACK_QUEUE_KEY = "__hikariTrackQueue__";
@@ -3260,6 +3274,13 @@ function MainApp({ onLock, onSwitchUser }) {
   const [savedMsg, setSavedMsg] = useState(false);
   const [syncing, setSyncing] = useState(true);
   const [syncError, setSyncError] = useState(false);
+  const [trackPending, setTrackPending] = useState(0); // 🆕 v9.236: 未送信の探索ルート点数（未保存インジケータ用）
+  React.useEffect(() => {
+    const upd = () => { try { setTrackPending(trackQueuePendingCount()); } catch (e) {} };
+    upd();
+    const t = setInterval(upd, 5000);
+    return () => clearInterval(t);
+  }, []);
 
   // 🔔 通知タップ → 該当画面遷移用の state
   const [pendingNav, setPendingNav] = useState(null);
@@ -3856,9 +3877,10 @@ function MainApp({ onLock, onSwitchUser }) {
           // 🆕 v9.235: 移行保護 — blob/ローカルにあって日別行に無い点を日別行へ自動退避
           //   （旧バージョン端末の取りこぼし・オフライン未同期分を救済＝混在中もデータを失わない）。
           try {
+            const _recentCut = Date.now() - 3 * 86400000; // 直近3日だけ救済（古い削除済み履歴を復活させない）
             Object.keys(outTr).forEach(m => {
               const rset = new Set((Array.isArray(rowTracks[m]) ? rowTracks[m] : []).map(p => p.ts));
-              const orphans = outTr[m].filter(p => !rset.has(p.ts));
+              const orphans = outTr[m].filter(p => !rset.has(p.ts) && (p.ts || 0) >= _recentCut);
               if (orphans.length) enqueueTrackBatch(m, orphans);
             });
             flushTrackQueue();
@@ -4480,7 +4502,7 @@ function MainApp({ onLock, onSwitchUser }) {
             ひかり不動産 <span style={{ fontSize: 9, fontWeight: 600, color: C.success, marginLeft: 4, padding: "2px 6px", background: C.success + "22", borderRadius: 4 }}>{(APP_VERSION.match(/v[\d.]+/) || [])[0] || "v?"}</span>
           </div>
           <div style={{ fontSize: 10, marginTop: 1, color: syncing ? C.warn : savedMsg ? C.success : syncError ? C.danger : C.muted }}>
-            {syncing ? "⟳ 同期中..." : savedMsg ? "✓ 保存・同期完了" : syncError ? "⚠ オフライン（ローカル保存）" : "☁ クラウド同期済み"}
+            {syncing ? "⟳ 同期中..." : savedMsg ? "✓ 保存・同期完了" : syncError ? "⚠ オフライン（ローカル保存）" : "☁ クラウド同期済み"}{trackPending > 0 ? ` ・📍未保存 ${trackPending}点（電波回復で自動送信）` : ""}
           </div>
         </div>
         <div style={{ fontSize: 12, color: C.muted }}>{new Date().toLocaleDateString("ja-JP", { month: "short", day: "numeric", weekday: "short" })}</div>
@@ -19435,6 +19457,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           const kept = userArr.filter(p => (p.ts || 0) < todayStart.getTime());
                           return { ...d, tracks: { ...prev, [currentUser]: kept } };
                         });
+                        // 🆕 v9.236: 日別行(今日)も削除＋自分の未送信キューを除去（再読込・再送で復活しないように）
+                        try { _saveTrackQueue(_loadTrackQueue().filter(it => it.member !== currentUser)); } catch (e) {}
+                        deleteTrackRows(currentUser, "today");
                         // ローカル ref もリセット（次の記録の起点を再計算するため）
                         trackLastSavedRef.current = 0;
                         trackLastPosRef.current = null;
@@ -19454,6 +19479,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           delete next[currentUser];
                           return { ...d, tracks: next };
                         });
+                        // 🆕 v9.236: 日別行(全期間)も削除＋自分の未送信キューを除去
+                        try { _saveTrackQueue(_loadTrackQueue().filter(it => it.member !== currentUser)); } catch (e) {}
+                        deleteTrackRows(currentUser, "all");
                         trackLastSavedRef.current = 0;
                         trackLastPosRef.current = null;
                       }} style={{
