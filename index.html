@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-28-v9.236-track-safety-net";
+const APP_VERSION = "2026-06-29-v9.237-track-sparse-buffer";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15093,6 +15093,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
   }, [currentUser]);
   const trackLastSavedRef = React.useRef(0);                    // 最後に記録したタイムスタンプ（ms）
   const trackLastPosRef = React.useRef(null);                   // 最後に記録した位置 {lat, lng}
+  const trackLastPersistedRef = React.useRef({});              // 🆕 v9.237: 日別行に保存した最後の点 {member:{lat,lng}}（表示は密・保存は粗く＝行を小さく保ちDB負荷一定）
   // 🆕 v9.3: watchPosition のクロージャに最新値を渡すため ref で同期
   const trackRecordingRef = React.useRef(false);
   React.useEffect(() => {
@@ -15107,6 +15108,17 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
   const gpsBatchRef = React.useRef({});
   // 30秒ごとに batch を data.tracks に flush
   React.useEffect(() => {
+    // 🆕 v9.237: 前回セッションで強制終了され、flush前にlocalStorageへ退避されたバッファを復元してから開始
+    try {
+      const buf = JSON.parse(localStorage.getItem("__hikariTrackBuffer__") || "null");
+      if (buf && typeof buf === "object") {
+        Object.keys(buf).forEach(m => {
+          if (Array.isArray(buf[m]) && buf[m].length) {
+            gpsBatchRef.current[m] = [...(gpsBatchRef.current[m] || []), ...buf[m]];
+          }
+        });
+      }
+    } catch (e) {}
     const flushBatch = () => {
       try { flushTrackQueue(); } catch (e) {} // 🆕 v9.233: 未送信ルートを毎回再送（記録停止中・電波回復後もドレイン。空なら即return）
       const batch = gpsBatchRef.current;
@@ -15131,9 +15143,26 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
         return nd;
       });
       // 🆕 v9.235: GPS点の永続化は「日別行への追記」のみ。失敗分はキューに貯めて電波回復時に自動再送。
+      // 🆕 v9.237: 保存は表示より粗く間引く（隣接点が8m未満なら保存しない）。
+      //   ・表示(data.tracks)は密のまま＝現場の見た目・ライブ描画は不変。
+      //   ・日別行に入る点数を1/3〜1/4に削減＝行が小さく保たれ、終盤・複数人同時でもDB負荷が一定。
+      //   ・trackLastPersistedRef でflushをまたいで「最後に保存した点」を記憶（連続性を保つ）。
       try {
-        keys.forEach(m => { if ((batch[m] || []).length) enqueueTrackBatch(m, batch[m]); });
+        const SPARSE_M = 8;
+        keys.forEach(m => {
+          const full = batch[m] || [];
+          if (!full.length) return;
+          let prev = trackLastPersistedRef.current[m] || null;
+          const sparse = [];
+          full.forEach(p => {
+            if (!prev || haversineMeters(prev, p) >= SPARSE_M) { sparse.push(p); prev = p; }
+          });
+          if (prev) trackLastPersistedRef.current[m] = prev;
+          if (sparse.length) enqueueTrackBatch(m, sparse);
+        });
         flushTrackQueue();
+        // 退避バッファは役目終了（点はdata.tracks＋送信キューに移動済み）＝クリア
+        try { localStorage.removeItem("__hikariTrackBuffer__"); } catch (e) {}
       } catch (e) { console.warn("[v9.235] track row write skipped", e); }
     };
     const t = setInterval(flushBatch, 30000);
@@ -15780,6 +15809,8 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
             // バッファに追加 ( setData なし )
             if (!gpsBatchRef.current[userNow]) gpsBatchRef.current[userNow] = [];
             gpsBatchRef.current[userNow].push({ ts: nowMs, lat, lng });
+            // 🆕 v9.237: 記録のたびにバッファをlocalStorageへ即退避＝アプリ強制終了でも直近ぶんを失わない（次回起動でflush時に拾う）
+            try { localStorage.setItem("__hikariTrackBuffer__", JSON.stringify(gpsBatchRef.current)); } catch (e) {}
             // 🆕 v9.30: ライブ polyline に直接ポイント追加 ( React state を経由しない、 軽量 )
             try {
               if (window.__hikariLivePolyline__ && window.__hikariLivePolyline__.addPoint) {
@@ -19323,6 +19354,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           if (!window.confirm("探索ルートの記録を開始します。\n位置情報を3秒間隔・2m以上移動で記録（事実上の連続線）。\n業務終了時は必ずOFFにしてください。")) return;
                           trackLastSavedRef.current = 0;
                           trackLastPosRef.current = null;
+                          try { delete trackLastPersistedRef.current[currentUser]; } catch (e) {} // 🆕 v9.237: 保存ポインタも初期化＝記録開始の1点目を確実に保存
                           setTrackRecording(true);
                           console.log("[v9.4] track recording: ON");
                           // 🆕 v9.4: 現在地が既に取れていれば即1点目を記録（待たずに線の起点を確定）
@@ -19463,6 +19495,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         // ローカル ref もリセット（次の記録の起点を再計算するため）
                         trackLastSavedRef.current = 0;
                         trackLastPosRef.current = null;
+                        try { delete trackLastPersistedRef.current[currentUser]; } catch (e) {} // 🆕 v9.237
                       }} style={{
                         flex: 1, padding: "5px 8px", borderRadius: 6, cursor: "pointer", fontSize: 10, fontWeight: 700, fontFamily: "inherit",
                         background: "transparent", color: "#f97316", border: `1.5px solid #f97316aa`,
@@ -19484,6 +19517,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         deleteTrackRows(currentUser, "all");
                         trackLastSavedRef.current = 0;
                         trackLastPosRef.current = null;
+                        try { delete trackLastPersistedRef.current[currentUser]; } catch (e) {} // 🆕 v9.237
                       }} style={{
                         flex: 1, padding: "5px 8px", borderRadius: 6, cursor: "pointer", fontSize: 10, fontWeight: 700, fontFamily: "inherit",
                         background: "transparent", color: "#dc2626", border: `1.5px solid #dc2626aa`,
