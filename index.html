@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-28-v9.232-revert-status-filter-strict";
+const APP_VERSION = "2026-06-28-v9.233-track-rows-dualwrite";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1980,6 +1980,125 @@ async function loadUpdatedAt() {
     if (rows && rows.length > 0) return rows[0].updated_at || "";
   } catch (e) { /* オフライン扱い */ }
   return null;
+}
+
+// 🆕 v9.233: 探索ルートを「日別の別行」に分離保存する仕組み（本体blobから独立）。
+//   狙い: 書き込みを「その日のぶんだけ」に小さくし、履歴がいくら積み上がっても重くならない＆
+//   失敗してもその日の行だけに影響＝「回ったのに丸ごと消える」を構造的に無くす。
+//   行id = `tracks::<member>::<YYYY-MM-DD(JST)>`、data = {v,member,date,points:[{ts,lat,lng}],updatedAt}
+function _trackDateJST(ts) {
+  const d = new Date((ts || Date.now()) + 9 * 3600 * 1000); // JSTへ寄せてUTC部品で日付化
+  return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+}
+function _trackRowId(member, date) { return "tracks::" + member + "::" + date; }
+const _TRACK_HEADERS = { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" };
+
+// 全日別行を取得して {member: [{ts,lat,lng}...]} に復元（表示用）。失敗時 null（オフライン）。
+async function loadTrackRows() {
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 25000);
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.tracks::*&select=id,data`, {
+        headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+        signal: ctrl.signal
+      });
+    } finally { clearTimeout(to); }
+    if (!res.ok) return null;
+    const rows = await res.json();
+    const out = {};
+    (rows || []).forEach(r => {
+      const d = (r && r.data) || {};
+      const m = d.member;
+      const pts = Array.isArray(d.points) ? d.points : [];
+      if (!m) return;
+      if (!out[m]) out[m] = [];
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        if (p && typeof p.ts === "number" && typeof p.lat === "number" && typeof p.lng === "number") out[m].push(p);
+      }
+    });
+    Object.keys(out).forEach(m => out[m].sort((a, b) => (a.ts || 0) - (b.ts || 0)));
+    return out;
+  } catch (e) { return null; }
+}
+
+// 1つの日別行に点を追記（GET→ts重複除外でunion→PATCH/POST）。成功 true / 失敗 false。
+async function _appendOneDayRow(member, date, points) {
+  const id = _trackRowId(member, date);
+  const idF = encodeURIComponent(id);
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 15000);
+    let getRes;
+    try {
+      getRes = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${idF}&select=data`, { headers: _TRACK_HEADERS, signal: ctrl.signal });
+    } finally { clearTimeout(to); }
+    if (!getRes.ok) return false;
+    const rows = await getRes.json();
+    const existing = (rows && rows[0] && rows[0].data && Array.isArray(rows[0].data.points)) ? rows[0].data.points : [];
+    const seen = new Set();
+    const merged = [];
+    [...existing, ...points].forEach(p => {
+      if (!p || typeof p.ts !== "number") return;
+      if (seen.has(p.ts)) return;
+      seen.add(p.ts);
+      merged.push({ ts: p.ts, lat: p.lat, lng: p.lng });
+    });
+    merged.sort((a, b) => a.ts - b.ts);
+    const body = JSON.stringify({ id, data: { v: 1, member, date, points: merged, updatedAt: Date.now() }, updated_at: new Date().toISOString() });
+    const exists = rows && rows.length > 0;
+    const url = exists ? `${SUPABASE_URL}/rest/v1/app_data?id=eq.${idF}` : `${SUPABASE_URL}/rest/v1/app_data`;
+    const saveRes = await fetch(url, { method: exists ? "PATCH" : "POST", headers: { ..._TRACK_HEADERS, "Prefer": "return=minimal" }, body });
+    return saveRes.ok;
+  } catch (e) { return false; }
+}
+
+// 点群を日付ごとに分けて各日別行へ追記（深夜またぎ対応）。
+async function appendTrackPoints(member, points) {
+  if (!member || !Array.isArray(points) || points.length === 0) return true;
+  const byDate = {};
+  points.forEach(p => { if (p && typeof p.ts === "number") { const d = _trackDateJST(p.ts); (byDate[d] = byDate[d] || []).push(p); } });
+  let allOk = true;
+  for (const date of Object.keys(byDate)) {
+    const ok = await _appendOneDayRow(member, date, byDate[date]);
+    if (!ok) allOk = false;
+  }
+  return allOk;
+}
+
+// 🆕 v9.233: 探索ルートのオフライン耐性キュー。日別行への追記が失敗した分をlocalStorageに貯め、
+//   電波回復時に自動再送＝取りこぼしゼロ。本体のSTORAGE_KEYとは独立。
+const TRACK_QUEUE_KEY = "__hikariTrackQueue__";
+function _loadTrackQueue() { try { return JSON.parse(localStorage.getItem(TRACK_QUEUE_KEY) || "[]"); } catch (e) { return []; } }
+function _saveTrackQueue(q) { try { localStorage.setItem(TRACK_QUEUE_KEY, JSON.stringify(q)); } catch (e) {} }
+function enqueueTrackBatch(member, points) {
+  if (!member || !Array.isArray(points) || points.length === 0) return;
+  const q = _loadTrackQueue();
+  q.push({ member, points: points.map(p => ({ ts: p.ts, lat: p.lat, lng: p.lng })) });
+  _saveTrackQueue(q);
+}
+function trackQueuePendingCount() {
+  return _loadTrackQueue().reduce((n, it) => n + ((it && it.points && it.points.length) || 0), 0);
+}
+let _trackQueueFlushing = false;
+async function flushTrackQueue() {
+  if (_trackQueueFlushing) return;
+  _trackQueueFlushing = true;
+  try {
+    let guard = 0;
+    while (guard++ < 500) {
+      const q = _loadTrackQueue();
+      if (q.length === 0) break;
+      const item = q[0];
+      const ok = await appendTrackPoints(item.member, item.points);
+      if (!ok) break; // オフライン等 → 残して後で再送
+      const q2 = _loadTrackQueue();
+      q2.shift();
+      _saveTrackQueue(q2);
+    }
+  } finally { _trackQueueFlushing = false; }
 }
 
 // Supabaseにデータを保存
@@ -14929,6 +15048,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
   // 30秒ごとに batch を data.tracks に flush
   React.useEffect(() => {
     const flushBatch = () => {
+      try { flushTrackQueue(); } catch (e) {} // 🆕 v9.233: 未送信ルートを毎回再送（記録停止中・電波回復後もドレイン。空なら即return）
       const batch = gpsBatchRef.current;
       const keys = Object.keys(batch);
       if (keys.length === 0) return;
@@ -14946,6 +15066,11 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
         });
         return { ...d, tracks: next };
       });
+      // 🆕 v9.233: 日別行へもデュアルライト（本体blobと併存）。失敗分はキューに貯めて回復時自動再送。
+      try {
+        keys.forEach(m => { if ((batch[m] || []).length) enqueueTrackBatch(m, batch[m]); });
+        flushTrackQueue();
+      } catch (e) { console.warn("[v9.233] track row dual-write skipped", e); }
     };
     const t = setInterval(flushBatch, 30000);
     // visibilitychange / pagehide / beforeunload で強制 flush
