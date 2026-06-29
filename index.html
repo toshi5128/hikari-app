@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-29-v9.249-fix-seisan-seller-bank";
+const APP_VERSION = "2026-06-29-v9.250-track-queue-drain-and-periodic-pull";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3949,6 +3949,42 @@ function MainApp({ onLock, onSwitchUser }) {
     const timer = setInterval(() => {
       // 🆕 v9.29.2: 探索中は polling 自体を skip ( fetch しない )
       try { if (window.__hikariTrackRecording__) return; } catch (e) {}
+      // 🆕 v9.250: 探索停止後も送信待ちルートを毎回ドレイン。
+      //   従来 flushTrackQueue は「記録中の30秒タイマー」と「起動時1回」しか動かず、
+      //   弱電波で溜まった点が再記録/リロードまで永遠に上がらなかった（今朝のルート消失の構造的原因）。
+      //   記録中は上の guard で skip 済み（その間は flushBatch の30秒タイマーが担当）＝二重実行しない。
+      //   キューが空なら localStorage 1read で即return＝通信負荷ゼロ。冪等。
+      try { flushTrackQueue(); } catch (e) {}
+      // 🆕 v9.250: 他端末の探索ルートも3分ごとに取り込む（従来は起動時1回だけ→リロードしないと揃わなかった）。
+      //   ローカル∪日別行の union（local 優先＝自分の未送信点を絶対に消さない）。STORAGE_KEY にも書くので
+      //   後続の mergeRemoteSafely（blob は tracks を含まない）でも保持される。saveToSupabase は呼ばない（読むだけ）。
+      //   記録中は skip 済み＝現場端末の負荷は上げない。
+      try {
+        const _nowTP = Date.now();
+        if (!window.__hikariLastTrackPull__ || _nowTP - window.__hikariLastTrackPull__ > 180000) {
+          window.__hikariLastTrackPull__ = _nowTP;
+          loadTrackRows().then(rowTracks => {
+            if (!rowTracks) return;
+            setDataRaw(prev => {
+              const base = (prev && prev.tracks) || {};
+              const outTr = {};
+              const members = new Set([...Object.keys(rowTracks), ...Object.keys(base)]);
+              members.forEach(m => {
+                const r = Array.isArray(rowTracks[m]) ? rowTracks[m] : [];
+                const l = Array.isArray(base[m]) ? base[m] : [];
+                const seen = new Set();
+                const out = [];
+                [...l, ...r].forEach(p => { if (p && typeof p.ts === "number" && !seen.has(p.ts)) { seen.add(p.ts); out.push(p); } });
+                out.sort((a, b) => a.ts - b.ts);
+                if (out.length) outTr[m] = out;
+              });
+              const next = { ...prev, tracks: outTr };
+              try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) {}
+              return next;
+            });
+          }).catch(() => {});
+        }
+      } catch (e) {}
       if (Date.now() - lastLocalSaveRef.current < 30000) return; // 直近の自分の保存はスキップ
       if (isUserEditing()) return; // 入力中はスキップ
       // 🆕 v9.190: 差分同期。まず updated_at(数十バイト)だけ確認し、変化が無ければ全データ(3.7MB)を取りに行かない＝平常時の同期が一瞬で終わる。
@@ -3982,6 +4018,14 @@ function MainApp({ onLock, onSwitchUser }) {
       });
     }, 30000); // 🆕 v9.21: 15s → 30s
     return () => clearInterval(timer);
+  }, []);
+
+  // 🆕 v9.250: ネット接続が復活した瞬間に、送信待ちの探索ルートを即アップロード（次の30秒ポーリングを待たない）。
+  //   現場で電波が戻った時に、溜まったGPS点を取りこぼさず確定保存する最後の安全網。
+  useEffect(() => {
+    const onOnline = () => { try { flushTrackQueue(); } catch (e) {} };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
   }, []);
 
   // 🆕 v9.22: 画面非表示 ( アプリ閉じる / バックグラウンド ) 時に
