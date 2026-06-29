@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-29-v9.246-fix-icon-leaks";
+const APP_VERSION = "2026-06-29-v9.247-track-stop-flush-defer-reload";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -272,6 +272,16 @@ function isRemoteVersionNewer(remoteVer, localVer) {
 //   ・ボタンで即時更新も可能
 //   ・連打防止：すでに表示中なら新しいバナーは作らない
 function showVersionUpdateBanner(remoteVer, seconds = 10) {
+  // 🆕 探索（記録）中は強制リロードを保留する。
+  //   記録中にSW unregister＋全キャッシュ削除のハードリロードが走ると、ライブ線がリセットされ
+  //   未同期のルート末尾やピンを失う事故になる（現場の記録を最優先で守る）。
+  //   保留したバージョンは記録停止時（setTrackRecording(false)）に再度この関数を呼んで更新する。
+  try {
+    if (window.__hikariTrackRecording__) {
+      window.__hikariPendingVersionUpdate__ = remoteVer;
+      return;
+    }
+  } catch (e) {}
   if (window.__hikariUpdateBannerShown__) return;
   window.__hikariUpdateBannerShown__ = true;
   // 🆕 v8.64: SW unregister と Cache API クリアもしてから再読込（PWAキャッシュ突破）
@@ -15144,11 +15154,24 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
   //   ・以前は useState(false) で、 JiageRoot アンマウント時に state が消えていた
   //   ・停止ボタンを押すまで他画面に移動しても探索継続
   const TRACK_RECORDING_KEY = "hikari_track_recording";
+  // 🆕 停止時に未flushのGPSバッファを即反映するため、flushBatch をハンドラから呼べるよう ref で保持
+  const flushBatchRef = React.useRef(null);
   const [trackRecording, setTrackRecordingRaw] = useState(() => {
     try { return localStorage.getItem(TRACK_RECORDING_KEY) === "1"; } catch (e) { return false; }
   });
   const setTrackRecording = (v) => {
     const next = typeof v === "function" ? v(trackRecording) : v;
+    // 🆕 停止時：未flushの直近GPSバッファを即 data.tracks へ反映してから停止する。
+    //   停止でライブ線が消える瞬間に履歴レイヤー（displayTracks）が「今日の全ルート」を描けるようにする
+    //   ＝「探索を停止するとそれまでのルートが消える」不具合の修正。
+    if (!next) {
+      try { if (flushBatchRef.current) flushBatchRef.current(); } catch (e) {}
+      // 🆕 記録中に保留していたバージョン更新があれば、停止後に実行（ルート描画・flushが落ち着いてから）
+      try {
+        const pend = window.__hikariPendingVersionUpdate__;
+        if (pend) { window.__hikariPendingVersionUpdate__ = null; setTimeout(() => { try { showVersionUpdateBanner(pend); } catch (e) {} }, 2500); }
+      } catch (e) {}
+    }
     setTrackRecordingRaw(next);
     try { localStorage.setItem(TRACK_RECORDING_KEY, next ? "1" : "0"); } catch (e) {}
   };
@@ -15237,6 +15260,7 @@ function JiagePage({ data, setData, pendingNav, onConsumeNav, setPage }) {
         try { localStorage.removeItem("__hikariTrackBuffer__"); } catch (e) {}
       } catch (e) { console.warn("[v9.235] track row write skipped", e); }
     };
+    flushBatchRef.current = flushBatch; // 🆕 停止ハンドラから即flushできるよう公開
     const t = setInterval(flushBatch, 30000);
     // visibilitychange / pagehide / beforeunload で強制 flush
     const onHide = () => flushBatch();
