@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-29-v9.241-brand-yellow-logo";
+const APP_VERSION = "2026-06-29-v9.242-keiyaku-tunnel-url";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -24763,6 +24763,37 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
   const notifPermission = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
   const isStandalone = typeof window !== "undefined" && (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true);
 
+  // 🆕 v9.241: 契約書自動作成ツール（会社PCの現在URLを中継所ntfyから自動取得して開く）
+  // 会社PC側 backend/start_tunnel.py の NTFY_TOPIC と必ず一致させること。
+  const KEIYAKU_NTFY_TOPIC = "hikari-keiyaku-url-9f4t2m8q";
+  const KEIYAKU_URL_KEY = "hikari_keiyaku_server_url";
+  const fetchKeiyakuUrl = async () => {
+    try {
+      const res = await fetch("https://ntfy.sh/" + KEIYAKU_NTFY_TOPIC + "/json?poll=1");
+      if (!res.ok) return null;
+      const text = await res.text();
+      const msgs = text.trim().split("\n").map(l => { try { return JSON.parse(l); } catch (e) { return null; } })
+        .filter(m => m && m.event === "message" && m.message);
+      if (msgs.length) {
+        const url = String(msgs[msgs.length - 1].message).trim();
+        if (/^https?:\/\//.test(url)) { localStorage.setItem(KEIYAKU_URL_KEY, url); return url; }
+      }
+    } catch (e) {}
+    return null;
+  };
+  const openKeiyakuTool = async () => {
+    // ポップアップブロック回避のため、クリック直後に空タブを開いてから遷移させる
+    const w = window.open("", "_blank");
+    const fresh = await fetchKeiyakuUrl();
+    const url = fresh || (localStorage.getItem(KEIYAKU_URL_KEY) || "").trim();
+    if (url) {
+      if (w) w.location.href = url; else window.open(url, "_blank");
+    } else {
+      if (w) w.close();
+      alert("契約書ツールのURLが取得できませんでした。\n\n会社PCで「契約書ツール起動.bat」が動いているか確認してください。");
+    }
+  };
+
   // 管理者判定
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
@@ -24964,11 +24995,11 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
         { key: "yakusho", icon: "landmark", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
         { key: "investors", icon: "gem", title: "投資家リスト", desc: "反響で「投資家」を選択した顧客を自動集約", count: (data.stocks || []).reduce((a, s) => a + (s.viewings || []).filter(v => v.purpose === "投資家").length, 0) },
         { key: "shorui", icon: "folder", title: "書類関係", desc: "精算書ひな形・各種テンプレート", count: null },
-        { key: "keiyaku", icon: "clipboard", title: "契約書自動作成ツール", desc: "重要事項説明書＋売買契約書をExcelで自動生成（会社PCで起動中のとき）", count: null, url: "http://localhost:8000" },
+        { key: "keiyaku", icon: "clipboard", title: "契約書自動作成ツール", desc: "重要事項説明書＋売買契約書をExcelで自動生成（会社PCで起動中のとき）", count: null, action: openKeiyakuTool },
         { key: "dm", icon: "mail", title: "DM管理", desc: "送付・返送・反応の管理／窓付き封筒の手紙を一括作成", count: (data.jiage || []).filter(j => dmStateFor(j) === "送付対象").length },
         { key: "settings", icon: "settings", title: "その他・設定", desc: "ユーザー・パスワード・通知／セキュリティ・画面の明るさ・Web Push・操作履歴", count: null },
       ].map(item => (
-        <button key={item.key} onClick={() => item.url ? window.open(item.url, "_blank") : setSubPage(item.key)} style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 20, marginBottom: 12, textAlign: "left", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 16, touchAction: "manipulation" }}>
+        <button key={item.key} onClick={() => item.action ? item.action() : setSubPage(item.key)} style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 20, marginBottom: 12, textAlign: "left", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 16, touchAction: "manipulation" }}>
           <span style={{ display: "flex", color: C.accent }}><NavIcon name={item.icon} size={28} /></span>
           <div style={{ flex: 1 }}>
             <div style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 4 }}>{item.title}</div>
