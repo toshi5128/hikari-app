@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-29-v9.251-gps-accuracy-paging-queue-hol";
+const APP_VERSION = "2026-06-29-v9.252-localstorage-quota-safetynet";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1817,6 +1817,46 @@ async function sendPushNotification(targets, title, body, extra = {}) {
 
 const STORAGE_KEY = "hikari_v4_cache";
 
+// 🆕 v9.252: localStorage 保存の安全網。
+//   端末の保存容量が一杯（QuotaExceeded）で setItem が失敗したとき、従来は握りつぶして
+//   「保存できていないのに気づけない」状態だった（GPS送信待ち・本体キャッシュが保存されず消える芽）。
+//   ここで①再生成可能な一時データ(探索バッファ・日次アラート印)を間引いて再試行 ②それでも入らなければ
+//   window.__hikariStorageFull__ を立て、10分に1回ユーザーへ警告（握りつぶさない）。
+//   ※クラウドへの書き込みは止めない（クラウドは安全な保管先なので、むしろ届けるべき）。
+function safeSetLocal(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    window.__hikariStorageFull__ = false;
+    return true;
+  } catch (e) {
+    // ① 再生成可能・非必須データを掃除して空きを作る
+    try { localStorage.removeItem("__hikariTrackBuffer__"); } catch (e2) {}
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.indexOf("hikari_daily_alert_") === 0) localStorage.removeItem(k);
+      }
+    } catch (e2) {}
+    // ② 再試行
+    try {
+      localStorage.setItem(key, value);
+      window.__hikariStorageFull__ = false;
+      return true;
+    } catch (e3) {
+      window.__hikariStorageFull__ = true;
+      try {
+        const now = Date.now();
+        if (!window.__hikariStorageFullAlertAt__ || now - window.__hikariStorageFullAlertAt__ > 600000) {
+          window.__hikariStorageFullAlertAt__ = now;
+          console.warn("[storage] 容量不足で保存できません:", key, e3 && e3.name);
+          if (typeof alert === "function") alert("⚠️ この端末の保存容量がいっぱいで、データを保存できませんでした。\n\nお手数ですが、アプリを一度再読み込みしてください（クラウドの既存データは無事です）。\n繰り返し出る場合は教えてください。");
+        }
+      } catch (e4) {}
+      return false;
+    }
+  }
+}
+
 const DEFAULT_DATA = {
   // 🆕 v8.66: ハードコードされたデモデータを除去。PWA再インストール時に古い予定が蘇る事故を根絶。
   //   ・新規端末は空からスタート → Supabaseから実データを取得
@@ -2107,7 +2147,7 @@ async function deleteTrackRows(member, mode) {
 //   電波回復時に自動再送＝取りこぼしゼロ。本体のSTORAGE_KEYとは独立。
 const TRACK_QUEUE_KEY = "__hikariTrackQueue__";
 function _loadTrackQueue() { try { return JSON.parse(localStorage.getItem(TRACK_QUEUE_KEY) || "[]"); } catch (e) { return []; } }
-function _saveTrackQueue(q) { try { localStorage.setItem(TRACK_QUEUE_KEY, JSON.stringify(q)); } catch (e) {} }
+function _saveTrackQueue(q) { safeSetLocal(TRACK_QUEUE_KEY, JSON.stringify(q)); }
 function enqueueTrackBatch(member, points) {
   if (!member || !Array.isArray(points) || points.length === 0) return;
   const q = _loadTrackQueue();
@@ -2160,7 +2200,7 @@ async function saveToSupabase(data, retries = 3) {
   // 🆕 バージョン情報を含める（自動更新通知用）
   const dataWithVersion = { ...data, __appVersion: APP_VERSION };
   // ローカルキャッシュは先に保存（Supabase失敗してもローカルには確実に残す）
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataWithVersion)); } catch (e) { console.warn("localStorage save failed:", e); }
+  safeSetLocal(STORAGE_KEY, JSON.stringify(dataWithVersion));
 
   // 🆕 ① 古いバージョンからの上書き保護：保存前に Supabase の最新バージョンを軽くチェックし、
   //    自分より新しいバージョンが書き込んでいたら保存を拒否（古いキャッシュでの上書き事故防止）
@@ -2293,7 +2333,7 @@ async function saveToSupabase(data, retries = 3) {
           annualGoals: safeAnnualGoals,
         });
         // ローカルキャッシュも更新
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataWithVersion)); } catch {}
+        safeSetLocal(STORAGE_KEY, JSON.stringify(dataWithVersion));
         console.log("[Supabase] v8.63 RMW: 保存前のフィールド全体マージ完了");
       }
     }
@@ -4532,7 +4572,7 @@ function MainApp({ onLock, onSwitchUser }) {
       if (_tracksOnlyChange) {
         if ((now - (lastTracksSaveRef.current || 0)) < _trackThrottleMs) {
           // throttle: localStorage には保存、 Supabase save スキップ
-          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+          safeSetLocal(STORAGE_KEY, JSON.stringify(next));
           // 念のため lastLocalSaveRef も更新 (polling skip 維持)
           lastLocalSaveRef.current = now;
           try { localStorage.setItem(LAST_SAVE_KEY, String(now)); } catch {}
@@ -4568,7 +4608,7 @@ function MainApp({ onLock, onSwitchUser }) {
         }
       });
       // ローカルにも即時保存
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+      safeSetLocal(STORAGE_KEY, JSON.stringify(next));
       return next;
     });
   };
@@ -15308,7 +15348,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
           next[m] = [...cur, ...(batch[m] || [])];
         });
         const nd = { ...d, tracks: next };
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(nd)); } catch (e) {}
+        safeSetLocal(STORAGE_KEY, JSON.stringify(nd));
         return nd;
       });
       // 🆕 v9.235: GPS点の永続化は「日別行への追記」のみ。失敗分はキューに貯めて電波回復時に自動再送。
