@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-29-v9.250-track-queue-drain-and-periodic-pull";
+const APP_VERSION = "2026-06-29-v9.251-gps-accuracy-paging-queue-hol";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2005,30 +2005,41 @@ const _TRACK_HEADERS = { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPA
 
 // 全日別行を取得して {member: [{ts,lat,lng}...]} に復元（表示用）。失敗時 null（オフライン）。
 async function loadTrackRows() {
+  // 🆕 v9.251: ページング対応。従来は1リクエスト固定で、日別行が PostgREST のデフォルト上限(約1000行)を
+  //   超えると古い日が静かに欠落した。limit/offset で全ページ取得して取りこぼしを無くす。
+  //   1ページ目が失敗(オフライン等)なら null を返してローカルcacheを温存。途中失敗は取得済み分を返す。
   try {
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 25000);
-    let res;
-    try {
-      res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.tracks::*&select=id,data`, {
-        headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
-        signal: ctrl.signal
-      });
-    } finally { clearTimeout(to); }
-    if (!res.ok) return null;
-    const rows = await res.json();
     const out = {};
-    (rows || []).forEach(r => {
-      const d = (r && r.data) || {};
-      const m = d.member;
-      const pts = Array.isArray(d.points) ? d.points : [];
-      if (!m) return;
-      if (!out[m]) out[m] = [];
-      for (let i = 0; i < pts.length; i++) {
-        const p = pts[i];
-        if (p && typeof p.ts === "number" && typeof p.lat === "number" && typeof p.lng === "number") out[m].push(p);
-      }
-    });
+    const PAGE = 1000;
+    let offset = 0;
+    let pages = 0;
+    for (let guard = 0; guard < 100; guard++) { // 最大10万行ぶんの安全上限
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 25000);
+      let res;
+      try {
+        res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.tracks::*&select=id,data&order=id&limit=${PAGE}&offset=${offset}`, {
+          headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+          signal: ctrl.signal
+        });
+      } finally { clearTimeout(to); }
+      if (!res.ok) { if (pages === 0) return null; break; }
+      const rows = await res.json();
+      (rows || []).forEach(r => {
+        const d = (r && r.data) || {};
+        const m = d.member;
+        const pts = Array.isArray(d.points) ? d.points : [];
+        if (!m) return;
+        if (!out[m]) out[m] = [];
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i];
+          if (p && typeof p.ts === "number" && typeof p.lat === "number" && typeof p.lng === "number") out[m].push(p);
+        }
+      });
+      pages++;
+      if (!rows || rows.length < PAGE) break; // 最終ページ
+      offset += PAGE;
+    }
     Object.keys(out).forEach(m => out[m].sort((a, b) => (a.ts || 0) - (b.ts || 0)));
     return out;
   } catch (e) { return null; }
@@ -2112,15 +2123,34 @@ async function flushTrackQueue() {
   _trackQueueFlushing = true;
   try {
     let guard = 0;
+    let rotatedThisRun = false; // 🆕 v9.251: 詰まり回避の末尾回しは1回/flushだけ（無限ループ防止）
     while (guard++ < 500) {
       const q = _loadTrackQueue();
       if (q.length === 0) break;
       const item = q[0];
       const ok = await appendTrackPoints(item.member, item.points);
-      if (!ok) break; // オフライン等 → 残して後で再送
-      const q2 = _loadTrackQueue();
-      q2.shift();
-      _saveTrackQueue(q2);
+      if (ok) {
+        const q2 = _loadTrackQueue();
+        q2.shift();
+        _saveTrackQueue(q2);
+        continue;
+      }
+      // 失敗。オフラインなら温存して次回（データは絶対に捨てない）。
+      if (typeof navigator !== "undefined" && navigator.onLine === false) break;
+      const qf = _loadTrackQueue();
+      if (qf.length <= 1) break; // 1件のみ → 回す意味なし。次回再送。
+      qf[0]._fail = (qf[0]._fail || 0) + 1;
+      if (qf[0]._fail >= 3 && !rotatedThisRun) {
+        // 🆕 v9.251: オンラインなのに3回失敗＝この行が後続(新しい点)をブロック中(HOL)。
+        //   破棄せず末尾へ回し、新しい点を先に通す。毒バッチでも後続を永久ブロックしない・データも失わない。
+        const head = qf.shift();
+        qf.push(head);
+        _saveTrackQueue(qf);
+        rotatedThisRun = true;
+        continue;
+      }
+      _saveTrackQueue(qf); // _fail 更新を保存
+      break; // まだ → 次回ポーリングで再送
     }
   } finally { _trackQueueFlushing = false; }
 }
@@ -15943,7 +15973,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
           // 🆕 v9.30: 3秒 → 2秒に短縮 ( ユーザー要望: 走ったところにすぐ点 )
           const enoughTime = isFirst || (nowMs - lastTs) >= 2000;
           const dist = lastPos ? haversineMeters(lastPos, { lat, lng }) : Infinity;
-          if (enoughTime && dist >= 2) {
+          // 🆕 v9.251: 精度40m超の点はジグザグの原因なので記録しない（表示・保存とも採用しない）。
+          //   accuracy 不明の端末は従来どおり記録（無回帰）。弾いた点では trackLastPosRef を更新しない＝
+          //   次の良い点との距離は「最後の良い点」から測る＝飛びつきを防ぐ。
+          const accOk = !(typeof accuracy === "number") || accuracy <= 40;
+          if (enoughTime && dist >= 2 && accOk) {
             trackLastSavedRef.current = nowMs;
             trackLastPosRef.current = { lat, lng };
             // バッファに追加 ( setData なし )
