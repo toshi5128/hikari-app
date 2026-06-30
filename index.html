@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.255-cache-slim-tracks-preserve";
+const APP_VERSION = "2026-06-30-v9.256-jiage-read-from-cards";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2384,6 +2384,37 @@ async function flushJiageQueue() {
   } finally { _jiageQueueFlushing = false; }
 }
 
+// 🆕 v9.256【フェーズ3】影武者カードを「現在のjiage」へ合体する。
+//   ・置き換えではなく合体：本体blob由来の現state(prevState.jiage)とカード(cards)を id ごとに mergeItems で
+//     フィールド単位の新しい方を採用。＝旧版端末が本体に入れた編集も絶対に消えない（カードが古くても本体が勝つ）。
+//   ・削除確定(tombstone/local削除印)のidはカードがあっても復活させない（mergeRemoteSafelyと同じ確定化）。
+//   ・ローカルのみの項目（自分が追加してまだ同期前）は保護。カードのみの項目も復活でなければ採用（フェーズ4=blobからjiageが消えても表示を保つ布石）。
+//   ・cardsがnull(オフライン/失敗)なら呼び出し側で何もしない＝本体表示のまま（フォールバック）。
+function _mergeJiageWithCards(prevState, cards) {
+  const prevJiage = (prevState && Array.isArray(prevState.jiage)) ? prevState.jiage : [];
+  const cardArr = Array.isArray(cards) ? cards : [];
+  let localDeleted;
+  try { localDeleted = getDeletedIdSet("jiage"); } catch (e) { localDeleted = new Set(); }
+  const tomb = (prevState && prevState.tombstones && prevState.tombstones.jiage) || {};
+  const isDeleted = (id) => {
+    if (localDeleted && localDeleted.has(id)) return true;
+    const t = Number(tomb[String(id)]) || 0;
+    return t > 0; // 正値=削除確定
+  };
+  const localMap = new Map();
+  prevJiage.forEach(it => { if (it && it.id != null && !isDeleted(it.id)) localMap.set(String(it.id), it); });
+  const cardMap = new Map();
+  cardArr.forEach(it => { if (it && it.id != null && !isDeleted(it.id)) cardMap.set(String(it.id), it); });
+  const allIds = new Set([...localMap.keys(), ...cardMap.keys()]);
+  const out = [];
+  allIds.forEach(id => {
+    const l = localMap.get(id), c = cardMap.get(id);
+    if (l && c) out.push(mergeItems(l, c));
+    else out.push(l || c);
+  });
+  return out;
+}
+
 // Supabaseにデータを保存
 async function saveToSupabase(data, retries = 3) {
   // 🆕 バージョン情報を含める（自動更新通知用）
@@ -4187,6 +4218,19 @@ function MainApp({ onLock, onSwitchUser }) {
           try { console.log("[v9.234] 探索ルートを日別行から復元:", Object.keys(outTr).map(m => m + ":" + outTr[m].length).join(" ")); } catch (e) {}
         }).catch(() => {});
 
+        // 🆕 v9.256【フェーズ3】起動時に地上げピンの影武者カードを取り込み、現stateへ合体（本体が新しければ本体が勝つ・置き換えない）。
+        //   blobがまだjiageを持つ間は実質同データ＝無害。失敗(null)なら本体表示のまま（フォールバック）。
+        loadJiageRows().then(cards => {
+          if (!cards) return;
+          setDataRaw(prev => {
+            const jiage = _mergeJiageWithCards(prev, cards);
+            const next = { ...prev, jiage };
+            saveMainCache(next);
+            return next;
+          });
+          try { console.log("[v9.256] 地上げピンを影武者カードから合体:", (cards || []).length + "件"); } catch (e) {}
+        }).catch(() => {});
+
         // 🆕 v9.195: 旧バージョンで保存ブロックされた編集（訪問記録など）を、最新版に更新できた今このタイミングで自動再送。
         //   ・merged はローカルキャッシュ∪クラウドの統合結果（その編集を含む）なので、これをそのまま push すれば union で確実にクラウドへ反映される。
         //   ・ここに来た＝バージョンチェックを通過＝最新版なので、saveToSupabase は再びブロックされない。
@@ -4265,6 +4309,24 @@ function MainApp({ onLock, onSwitchUser }) {
                 if (out.length) outTr[m] = out;
               });
               const next = { ...prev, tracks: outTr };
+              saveMainCache(next);
+              return next;
+            });
+          }).catch(() => {});
+        }
+      } catch (e) {}
+      // 🆕 v9.256【フェーズ3】地上げピンの影武者カードも3分ごとに取り込み、現stateへ合体（本体が新しければ本体が勝つ）。
+      //   blobがまだjiageを持つ間は実質同データ＝無害。フェーズ4(blobからjiage除去)後はここがピンの補充源になる。
+      //   入力中・記録中でも読むだけ(saveToSupabaseは呼ばない)。失敗(null)なら本体表示のまま。
+      try {
+        const _nowJP = Date.now();
+        if (!window.__hikariLastJiagePull__ || _nowJP - window.__hikariLastJiagePull__ > 180000) {
+          window.__hikariLastJiagePull__ = _nowJP;
+          loadJiageRows().then(cards => {
+            if (!cards) return;
+            setDataRaw(prev => {
+              const jiage = _mergeJiageWithCards(prev, cards);
+              const next = { ...prev, jiage };
               saveMainCache(next);
               return next;
             });
