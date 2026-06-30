@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.253-atlas-color-theme";
+const APP_VERSION = "2026-06-30-v9.254-jiage-rows-shadow";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2195,6 +2195,142 @@ async function flushTrackQueue() {
   } finally { _trackQueueFlushing = false; }
 }
 
+// 🆕 v9.253: 地上げピン(jiage)を「1件=1行」に分離保存する仕組み（本体blobから独立）。
+//   狙い: 1件編集のたびに本体まるごと(約1.9MB)ではなく「そのピンのカード(約1.5KB)」だけ書く。
+//   ピンが何千件に増えても1回の書き込みが一定＝軽量・I/O負荷一定。探索ルートの日別行分離と同型。
+//   行id = `jiage::<id>`、data = { v:1, item:<jiageアイテム丸ごと> }。
+//   ★移行中は本体blobが正本。これらは「影武者」として並走し、読み込み切替は完全照合後に行う。
+function _jiageRowId(id) { return "jiage::" + id; }
+
+// 全jiage行を取得して [item,...] に復元（ページング対応）。失敗時 null（オフライン＝cache温存）。
+async function loadJiageRows() {
+  try {
+    const out = [];
+    const PAGE = 1000;
+    let offset = 0, pages = 0;
+    for (let guard = 0; guard < 100; guard++) { // 最大10万行ぶんの安全上限
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 25000);
+      let res;
+      try {
+        res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.jiage::*&select=id,data&order=id&limit=${PAGE}&offset=${offset}`, {
+          headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+          signal: ctrl.signal
+        });
+      } finally { clearTimeout(to); }
+      if (!res.ok) { if (pages === 0) return null; break; }
+      const rows = await res.json();
+      (rows || []).forEach(r => {
+        const it = (r && r.data && r.data.item) ? r.data.item : null;
+        if (it && it.id != null) out.push(it);
+      });
+      pages++;
+      if (!rows || rows.length < PAGE) break; // 最終ページ
+      offset += PAGE;
+    }
+    return out;
+  } catch (e) { return null; }
+}
+
+// 1件のjiage行を保存（GET→既存があれば mergeItems で項目別マージ→PATCH/POST）。成功 true / 失敗 false。
+//   ・他端末が同じピンを編集していても、本体blobのRMWと同じ mergeItems で「フィールド別に新しい方」を採用＝取りこぼさない。
+async function _saveOneJiageRow(item) {
+  if (!item || item.id == null) return true; // 不正は無視（成功扱い＝キューから外す）
+  const id = _jiageRowId(item.id);
+  const idF = encodeURIComponent(id);
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 15000);
+    let getRes;
+    try {
+      getRes = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${idF}&select=data`, { headers: _TRACK_HEADERS, signal: ctrl.signal });
+    } finally { clearTimeout(to); }
+    if (!getRes.ok) return false;
+    const rows = await getRes.json();
+    const exists = rows && rows.length > 0;
+    const remoteItem = (exists && rows[0].data && rows[0].data.item) ? rows[0].data.item : null;
+    const finalItem = remoteItem ? mergeItems(item, remoteItem) : item;
+    const body = JSON.stringify({ id, data: { v: 1, item: finalItem }, updated_at: new Date().toISOString() });
+    const url = exists ? `${SUPABASE_URL}/rest/v1/app_data?id=eq.${idF}` : `${SUPABASE_URL}/rest/v1/app_data`;
+    const saveRes = await fetch(url, { method: exists ? "PATCH" : "POST", headers: { ..._TRACK_HEADERS, "Prefer": "return=minimal" }, body });
+    return saveRes.ok;
+  } catch (e) { return false; }
+}
+
+// jiage行の削除（ピン削除UIと連動）。成功 true / 失敗 false。
+async function deleteJiageRow(id) {
+  try {
+    const idF = encodeURIComponent(_jiageRowId(id));
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${idF}`, { method: "DELETE", headers: { ..._TRACK_HEADERS, "Prefer": "return=minimal" } });
+    return res.ok;
+  } catch (e) { return false; }
+}
+
+// 初回移行用：既存jiageを行へ一括upsert（バッチPOST + merge-duplicates＝冪等）。既存行は触らず純増。
+async function _bulkSeedJiageRows(items) {
+  const valid = (items || []).filter(it => it && it.id != null);
+  const BATCH = 200;
+  let okAll = true;
+  for (let i = 0; i < valid.length; i += BATCH) {
+    const chunk = valid.slice(i, i + BATCH).map(it => ({ id: _jiageRowId(it.id), data: { v: 1, item: it }, updated_at: new Date().toISOString() }));
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data`, {
+        method: "POST",
+        headers: { ..._TRACK_HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify(chunk)
+      });
+      if (!res.ok) okAll = false;
+    } catch (e) { okAll = false; }
+  }
+  return okAll;
+}
+
+// jiage行のオフライン耐性キュー（本体STORAGE_KEY・探索キューとは独立）。追記式（同ピン複数編集も順に再送）。
+const JIAGE_QUEUE_KEY = "__hikariJiageQueue__";
+function _loadJiageQueue() { try { return JSON.parse(localStorage.getItem(JIAGE_QUEUE_KEY) || "[]"); } catch (e) { return []; } }
+function _saveJiageQueue(q) { safeSetLocal(JIAGE_QUEUE_KEY, JSON.stringify(q)); }
+function enqueueJiageRow(item) {
+  if (!item || item.id == null) return;
+  const q = _loadJiageQueue();
+  q.push({ item: item });
+  _saveJiageQueue(q);
+}
+function jiageQueuePendingCount() { return _loadJiageQueue().length; }
+let _jiageQueueFlushing = false;
+async function flushJiageQueue() {
+  if (_jiageQueueFlushing) return;
+  _jiageQueueFlushing = true;
+  try {
+    let guard = 0;
+    let rotatedThisRun = false;
+    while (guard++ < 2000) {
+      const q = _loadJiageQueue();
+      if (q.length === 0) break;
+      const entry = q[0];
+      const ok = await _saveOneJiageRow(entry && entry.item);
+      if (ok) {
+        const q2 = _loadJiageQueue();
+        q2.shift();
+        _saveJiageQueue(q2);
+        continue;
+      }
+      if (typeof navigator !== "undefined" && navigator.onLine === false) break;
+      const qf = _loadJiageQueue();
+      if (qf.length <= 1) break;
+      qf[0]._fail = (qf[0]._fail || 0) + 1;
+      if (qf[0]._fail >= 3 && !rotatedThisRun) {
+        const head = qf.shift();
+        qf.push(head);
+        _saveJiageQueue(qf);
+        rotatedThisRun = true;
+        continue;
+      }
+      _saveJiageQueue(qf);
+      break;
+    }
+  } finally { _jiageQueueFlushing = false; }
+}
+
 // Supabaseにデータを保存
 async function saveToSupabase(data, retries = 3) {
   // 🆕 バージョン情報を含める（自動更新通知用）
@@ -3032,6 +3168,9 @@ function recordDeletion(target, id) {
     data[arrayKey][String(id)] = Date.now();
     localStorage.setItem(DELETED_IDS_KEY, JSON.stringify(data));
   } catch {}
+  // 🆕 v9.253: jiageピン削除なら、影武者の行(カード)も削除して並走を保つ（fence・fire-and-forget）。
+  //   失敗しても Phase3 の読込時は本体tombstoneでフィルタされるので表示には影響しない。
+  try { if (arrayKey === "jiage") { deleteJiageRow(id); } } catch (e) {}
 }
 
 function getDeletedIdSet(target) {
@@ -3937,6 +4076,28 @@ function MainApp({ onLock, onSwitchUser }) {
           }, 4000);
         }
 
+        // 🆕 v9.253: 【影武者・初回シード】既存jiageを「行(カード)」へ一括コピー（冪等upsert・本体blobは無変更）。
+        //   ・migrationsフラグ＋セッションガードで全体1回に抑制。読み込みはまだ本体＝表示に影響なし。
+        //   ・bulk upsert(merge-duplicates)なので二重実行・競合でも安全。失敗は次回起動で再試行。
+        try {
+          const _seededFlag = merged && merged.migrations && merged.migrations.jiageRowsSeeded_v1;
+          const _jlist = (merged && Array.isArray(merged.jiage)) ? merged.jiage : [];
+          if (!_seededFlag && !window.__hikariJiageSeeding__ && _jlist.length > 0) {
+            window.__hikariJiageSeeding__ = true;
+            setTimeout(() => {
+              _bulkSeedJiageRows(_jlist).then(ok => {
+                if (ok) {
+                  console.log(`[v9.253] jiage影武者シード完了: ${_jlist.length}件をカード化`);
+                  try { setData(d => ({ ...d, migrations: { ...(d.migrations || {}), jiageRowsSeeded_v1: Date.now() } })); } catch (e) {}
+                } else {
+                  window.__hikariJiageSeeding__ = false; // 一部失敗→次回起動で再試行を許可
+                  console.warn("[v9.253] jiage影武者シード一部失敗（次回再試行）");
+                }
+              }).catch(() => { window.__hikariJiageSeeding__ = false; });
+            }, 6000); // 起動直後の他処理(軽量化保存4s・版アナウンス1.5s)と被らないようずらす
+          }
+        } catch (e) {}
+
         // 🆕 v9.234: 探索ルートは「日別行(tracks::member::date)」を正本として読み込む（フェーズ2）。
         //   取得できたら data.tracks を「日別行 ∪ ローカル未送信」で上書き（ローカル優先＝未同期点を絶対に消さない）。
         //   オフライン(null)なら blob 由来の表示のまま。setDataRaw で保存は誘発しない。
@@ -4025,6 +4186,8 @@ function MainApp({ onLock, onSwitchUser }) {
       //   記録中は上の guard で skip 済み（その間は flushBatch の30秒タイマーが担当）＝二重実行しない。
       //   キューが空なら localStorage 1read で即return＝通信負荷ゼロ。冪等。
       try { flushTrackQueue(); } catch (e) {}
+      // 🆕 v9.253: jiage行(影武者)の送信待ちも同様に毎ポーリングでドレイン（空なら即return＝負荷ゼロ・冪等）。
+      try { flushJiageQueue(); } catch (e) {}
       // 🆕 v9.250: 他端末の探索ルートも3分ごとに取り込む（従来は起動時1回だけ→リロードしないと揃わなかった）。
       //   ローカル∪日別行の union（local 優先＝自分の未送信点を絶対に消さない）。STORAGE_KEY にも書くので
       //   後続の mergeRemoteSafely（blob は tracks を含まない）でも保持される。saveToSupabase は呼ばない（読むだけ）。
@@ -4093,7 +4256,7 @@ function MainApp({ onLock, onSwitchUser }) {
   // 🆕 v9.250: ネット接続が復活した瞬間に、送信待ちの探索ルートを即アップロード（次の30秒ポーリングを待たない）。
   //   現場で電波が戻った時に、溜まったGPS点を取りこぼさず確定保存する最後の安全網。
   useEffect(() => {
-    const onOnline = () => { try { flushTrackQueue(); } catch (e) {} };
+    const onOnline = () => { try { flushTrackQueue(); } catch (e) {} try { flushJiageQueue(); } catch (e) {} };
     window.addEventListener("online", onOnline);
     return () => window.removeEventListener("online", onOnline);
   }, []);
@@ -4609,6 +4772,24 @@ function MainApp({ onLock, onSwitchUser }) {
       });
       // ローカルにも即時保存
       safeSetLocal(STORAGE_KEY, JSON.stringify(next));
+      // 🆕 v9.253: 影武者モード — jiageが変わったピンだけ「行(カード)」にも並走保存する。
+      //   ・本体blobが正本のまま（上の saveToSupabase が真実）。読み込みはまだ本体＝表示に影響なし。
+      //   ・fence(try)済み＝ここで何が起きても上の保存・return には一切影響しない。
+      //   ・参照が変わったアイテム＝編集されたピンだけenqueue（CSV一括取込は新参照ぶん全部入るが順次再送）。
+      try {
+        const _pj = (prev && Array.isArray(prev.jiage)) ? prev.jiage : [];
+        const _nj = (next && Array.isArray(next.jiage)) ? next.jiage : [];
+        if (_nj !== _pj) {
+          const _prevById = new Map();
+          _pj.forEach(it => { if (it && it.id != null) _prevById.set(it.id, it); });
+          let _changed = 0;
+          _nj.forEach(it => {
+            if (!it || it.id == null) return;
+            if (_prevById.get(it.id) !== it) { enqueueJiageRow(it); _changed++; }
+          });
+          if (_changed) { try { flushJiageQueue(); } catch (e) {} }
+        }
+      } catch (e) {}
       return next;
     });
   };
