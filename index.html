@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.256-jiage-read-from-cards";
+const APP_VERSION = "2026-06-30-v9.257-jiage-reconcile-heal";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4179,6 +4179,35 @@ function MainApp({ onLock, onSwitchUser }) {
                 }
               }).catch(() => { window.__hikariJiageSeeding__ = false; });
             }, 6000); // 起動直後の他処理(軽量化保存4s・版アナウンス1.5s)と被らないようずらす
+          }
+        } catch (e) {}
+
+        // 🆕 v9.257【フェーズ4準備・再照合heal】影武者カードを本体blob(正本)に完全一致させる。
+        //   移行期に旧版端末が本体だけ更新したピン(例:株式会社つばさ)はカードが古い。フェーズ4でカードが
+        //   唯一の正本になる前に、本体が新しい/欠けているカードを本体から治す。本体blobには一切書かない。
+        //   ・本体blobの__appVersionが上がった今、旧版端末の保存は弾かれる=新規ドリフトは増えない=一度治せば足りる。
+        //   ・enqueue→flush は _saveOneJiageRow(GET+mergeItems+PATCH)経由＝カードが新しい稀ケースも壊さない(新しい方を採用)。
+        //   ・migrationsフラグで全体1回。cards取得失敗(オフライン)なら何もせず次回再試行(全件再送を誤発火させない)。
+        try {
+          if (!(merged && merged.migrations && merged.migrations.jiageReconciled_v1) && !window.__hikariJiageReconciling__) {
+            window.__hikariJiageReconciling__ = true;
+            setTimeout(() => {
+              loadJiageRows().then(cards => {
+                if (!cards) { window.__hikariJiageReconciling__ = false; return; } // オフライン/失敗→次回再試行
+                const cardById = new Map(cards.map(it => [String(it.id), it]));
+                const blobJiage = (merged && Array.isArray(merged.jiage)) ? merged.jiage : [];
+                let n = 0;
+                blobJiage.forEach(item => {
+                  if (!item || item.id == null) return;
+                  const c = cardById.get(String(item.id));
+                  // カードが無い、または本体の方が新しい → 本体をカードへ再送(flushでmergeItems合体)
+                  if (!c || (Number(item.updatedAt) || 0) > (Number(c.updatedAt) || 0)) { enqueueJiageRow(item); n++; }
+                });
+                if (n) { try { flushJiageQueue(); } catch (e) {} }
+                try { console.log(`[v9.257] jiage再照合(heal): ${n}件をカードへ再送`); } catch (e) {}
+                try { setData(d => ({ ...d, migrations: { ...(d.migrations || {}), jiageReconciled_v1: Date.now() } })); } catch (e) {}
+              }).catch(() => { window.__hikariJiageReconciling__ = false; });
+            }, 9000); // シード(6s)より後ろにずらす
           }
         } catch (e) {}
 
