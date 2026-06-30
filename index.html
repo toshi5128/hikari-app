@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.257-jiage-reconcile-heal";
+const APP_VERSION = "2026-06-30-v9.258-jiage-out-of-blob";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2584,7 +2584,10 @@ async function saveToSupabase(data, retries = 3) {
         // 🆕 v9.235: 本体blobには探索ルート(tracks)を載せない（日別行 tracks::member::date が正本）。
         //   これで本体の書き込みが「履歴に関係なく一定・軽量」になり、積み上がっても重くならない。
         //   ※キャッシュ(dataWithVersion)にはtracksを残す＝ローカル表示は維持。bodyだけ除外。
-        body: JSON.stringify({ id: DATA_ID, data: (() => { const _b = { ...dataWithVersion }; delete _b.tracks; return _b; })(), updated_at: new Date().toISOString() }),
+        // 🆕 v9.258【フェーズ4】本体blobには地上げピン(jiage)も載せない（1項目=1行 jiage::<id> が正本）。
+        //   これで本体blobが約-1.4MB(74%)軽量化＝ピンが増えても本体は重くならない。
+        //   ※キャッシュ(dataWithVersion)にはjiageを残す＝ローカル表示は維持。読み込みはカード＋キャッシュから。
+        body: JSON.stringify({ id: DATA_ID, data: (() => { const _b = { ...dataWithVersion }; delete _b.tracks; delete _b.jiage; return _b; })(), updated_at: new Date().toISOString() }),
       });
       if (!res.ok) throw new Error(`Save failed: ${res.status} ${await res.text()}`);
       // 保存成功！カレンダー予定数も含めてログ出力（デバッグ用）
@@ -4393,6 +4396,14 @@ function MainApp({ onLock, onSwitchUser }) {
             //   全期間ルートは3分ごとの loadTrackRows がクラウドから補充する。
             setDataRaw(prev => {
               const _merged2 = { ...merged, tracks: _unionTracksByTs((prev && prev.tracks) || {}, (merged && merged.tracks) || {}) };
+              // 🆕 v9.258【フェーズ4】jiageも「メモリ上の現在ピン」を必ず残す。
+              //   フェーズ4で本体blobからjiageが消えるため、mergedのjiageはキャッシュ頼み。iOSの容量退避で
+              //   キャッシュが消えてもピンを減らさない。ただし新しいtombstone(削除確定)は尊重して復活させない。
+              //   全ピンは3分ごとの loadJiageRows がカードから補充する。
+              _merged2.jiage = _mergeJiageWithCards(
+                { jiage: (prev && prev.jiage) || [], tombstones: (merged && merged.tombstones) || {} },
+                (merged && merged.jiage) || []
+              );
               return _merged2;
             });
             saveMainCache(merged);
