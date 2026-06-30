@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.260-pin-edit-close-popup";
+const APP_VERSION = "2026-06-30-v9.261-owner-resident-corp-exclude";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2773,6 +2773,30 @@ function isCorporateOwner(s) {
   return CORP_OWNER_WORDS.some(w => t.indexOf(w) >= 0);
 }
 
+// 🆕 v9.261: 住所マッチ用の正規化。「埼玉県」等の都道府県・「大字/字」・「番地↔ハイフン」・全角半角・空白の
+//   表記差を吸収して、同じ地点の住所を同一文字列に揃える（謄本の所有者住所 ↔ 物件住所の照合用）。
+function _normAddrForMatch(s) {
+  return String(s || "")
+    .replace(/[！-～]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)) // 全角→半角
+    .replace(/[\s　]/g, "")
+    .replace(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/, "") // 先頭の都道府県を除去
+    .replace(/大字|字/g, "")
+    .replace(/[ー－−‐―—]/g, "-")
+    .replace(/番地|番|号/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/-$/, "")
+    .toLowerCase();
+}
+// 🆕 v9.261: 本人居住の判定＝所有者住所と物件住所が同じ地点（＝空き家にそのまま住んでいる）。
+//   表記差を吸収して比較。どちらかの住所が空なら false。＝DM対象外・所有者住所マップ非表示の根拠。
+function isOwnerResident(j) {
+  if (!j) return false;
+  const oa = _normAddrForMatch(j.ownerAddr || j.ownerAddress || "");
+  const pa = _normAddrForMatch(j.address || "");
+  if (!oa || !pa) return false;
+  return oa === pa;
+}
+
 // 🆕 v9.51: 訪問ルート提案 — 距離計算・最近傍順・2-opt
 function routeDist(a, b) {
   if (!a || !b) return 0;
@@ -4211,6 +4235,40 @@ function MainApp({ onLock, onSwitchUser }) {
                 try { setData(d => ({ ...d, migrations: { ...(d.migrations || {}), jiageReconciled_v1: Date.now() } })); } catch (e) {}
               }).catch(() => { window.__hikariJiageReconciling__ = false; });
             }, 9000); // シード(6s)より後ろにずらす
+          }
+        } catch (e) {}
+
+        // 🆕 v9.261【本人居住の一括対象外】所有者住所＝物件住所（埼玉県/番地/大字/全半角の表記差を吸収）のピンを
+        //   「対象外（本人居住）」にする＝空き家にそのまま住んでいる＝DM不要・地図にも出さない。
+        //   ・migrationsフラグで全体1回。触るのは excluded/excludedReason/ownerSameAsProperty の管理フラグのみ
+        //     （所有者名・ステータス・訪問記録などの中身は一切変更しない）。冪等（既に対象外/同じ場所はスキップ）。
+        try {
+          if (!(merged && merged.migrations && merged.migrations.jiageResidentExcluded_v1) && !window.__hikariResidentExcluding__) {
+            window.__hikariResidentExcluding__ = true;
+            setTimeout(() => {
+              try {
+                let n = 0;
+                setData(d => {
+                  const list = Array.isArray(d.jiage) ? d.jiage : [];
+                  const _now = Date.now();
+                  const nextJiage = list.map(j => {
+                    if (!j || j.excluded === true || j.ownerSameAsProperty === true) return j;
+                    if (!isOwnerResident(j)) return j;
+                    n++;
+                    return {
+                      ...j,
+                      excluded: true,
+                      excludedReason: "本人居住",
+                      ownerSameAsProperty: true,
+                      _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), excluded: _now, excludedReason: _now, ownerSameAsProperty: _now },
+                      updatedAt: _now,
+                    };
+                  });
+                  return { ...d, jiage: nextJiage, migrations: { ...(d.migrations || {}), jiageResidentExcluded_v1: _now } };
+                });
+                try { console.log(`[v9.261] 本人居住の一括対象外: ${n}件`); } catch (e) {}
+              } catch (e) { window.__hikariResidentExcluding__ = false; }
+            }, 11000); // 再照合(9s)より後ろにずらす
           }
         } catch (e) {}
 
@@ -19660,9 +19718,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               if (mapPinTarget === "ownerAddr") {
                 // 🆕 v9.90: 手動で「所有者は物件と同じ場所」にしたものは除外
                 if (i.raw && i.raw.ownerSameAsProperty === true) return false;
-                const _norm = s => String(s || "").replace(/\s|　/g, "").trim();
-                const _oa = _norm(i.ownerAddress), _pa = _norm(i.address);
-                if (_oa && _pa && _oa === _pa) return false;
+                // 🆕 v9.261: 本人居住（所有者住所＝物件住所・埼玉県/番地/大字/全半角の表記差を吸収）は出さない
+                if (isOwnerResident(i)) return false;
+                // 🆕 v9.261: 法人名義はDM対象外＝所有者住所マップにも出さない（手動ボタン不要・自動）
+                if (isCorporateOwner(i.owner || i.ownerName)) return false;
                 // 🆕 v9.89: 距離での自動除外は廃止（「裏の家」など近接する別所有者を誤って消すため）。
                 //   座標が完全一致（同じ地点として登録済み）のものだけ除外する。
                 if (typeof i.lat === "number" && typeof i.lng === "number" && i.ownerLat === i.lat && i.ownerLng === i.lng) return false;
@@ -24736,7 +24795,7 @@ function dmLogSortedFor(j) { return (Array.isArray(j.dmLog) ? [...j.dmLog] : [])
 function dmSentCountFor(j) { const lg = dmLogSortedFor(j).filter(e => e.t === "送付").length; const legacy = j.dm === "①" ? 1 : j.dm === "②" ? 2 : j.dm === "済" ? 1 : 0; return Math.max(lg, legacy); }
 function dmStateFor(j) {
   const on = String(j.owner || j.ownerName || "").trim();
-  if (!on || isCorporateOwner(on) || j.excluded === true) return "対象外"; // DM対象でない
+  if (!on || isCorporateOwner(on) || isOwnerResident(j) || j.excluded === true) return "対象外"; // DM対象でない（🆕 v9.261: 本人居住＝所有者住所＝物件住所 も自動で対象外）
   let st = ""; dmLogSortedFor(j).forEach(e => { if (e.t === "不要") st = "不要"; else if (e.t === "反応") st = "反応"; else if (e.t === "返送") st = "返送"; else if (e.t === "住所修正") { if (st === "返送") st = ""; } else if (e.t === "復活") st = ""; });
   if (!st && !dmLogSortedFor(j).some(e => ["不要", "反応", "返送"].includes(e.t)) && j.dm === "📩返送") st = "返送";
   if (st) return st;
@@ -24766,7 +24825,7 @@ function DMPage({ data, setData, onBack }) {
   const ownerName = j => String(j.owner || j.ownerName || "").trim();
   const mailAddr = j => String(j.ownerAddr || "").trim();
   const propAddr = j => String(j.address || "").trim();
-  const universe = jiage.filter(j => j && ownerName(j) && !isCorporateOwner(ownerName(j)) && j.excluded !== true);
+  const universe = jiage.filter(j => j && ownerName(j) && !isCorporateOwner(ownerName(j)) && !isOwnerResident(j) && j.excluded !== true); // 🆕 v9.261: 本人居住も除外
   const dmlog = j => (Array.isArray(j.dmLog) ? [...j.dmLog] : []).sort((a, b) => (a.ts || 0) - (b.ts || 0));
   const sentCount = j => { const lg = dmlog(j).filter(e => e.t === "送付").length; const legacy = j.dm === "①" ? 1 : j.dm === "②" ? 2 : j.dm === "済" ? 1 : 0; return Math.max(lg, legacy); };
   const everRet = j => dmlog(j).some(e => e.t === "返送") || j.dm === "📩返送";
