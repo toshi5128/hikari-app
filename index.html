@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.254-jiage-rows-shadow";
+const APP_VERSION = "2026-06-30-v9.255-cache-slim-tracks-preserve";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1857,6 +1857,59 @@ function safeSetLocal(key, value) {
   }
 }
 
+// 🆕 v9.255: 端末キャッシュ(localStorage)の肥大対策。
+//   探索ルート(tracks)は全履歴がクラウドの日別行＋メモリ(state)にある。端末キャッシュにまで
+//   全履歴を持つと容量を圧迫し、特に履歴の多い端末(永島くん等)で QuotaExceeded→保存不能→
+//   さらに iOS は容量逼迫で localStorage を丸ごと退避(消去)し、それが「開きっぱなしでルートが消える」原因。
+//   → キャッシュには「直近2日ぶんのルート」だけ残す(現場の当日表示・オフライン復元には十分)。
+//   全期間ルートは起動/3分ごとの loadTrackRows でクラウドから復元されるので情報は失わない。
+const TRACK_CACHE_RETENTION_MS = 2 * 86400000; // 直近2日
+function _slimDataForCache(d) {
+  try {
+    if (!d || typeof d !== "object" || !d.tracks || typeof d.tracks !== "object") return d;
+    const cut = Date.now() - TRACK_CACHE_RETENTION_MS;
+    let trimmed = null;
+    for (const m in d.tracks) {
+      const arr = Array.isArray(d.tracks[m]) ? d.tracks[m] : null;
+      if (!arr) continue;
+      const recent = arr.filter(p => p && typeof p.ts === "number" && p.ts >= cut);
+      if (recent.length !== arr.length) {
+        if (!trimmed) trimmed = { ...d.tracks };
+        trimmed[m] = recent;
+      }
+    }
+    if (!trimmed) return d;
+    return { ...d, tracks: trimmed };
+  } catch (e) { return d; }
+}
+// 本体キャッシュ(STORAGE_KEY)の保存は必ずこれ経由＝直近に絞って容量を抑える＋容量安全網(safeSetLocal)に乗せる。
+function saveMainCache(dataObj) {
+  try {
+    return safeSetLocal(STORAGE_KEY, JSON.stringify(_slimDataForCache(dataObj)));
+  } catch (e) {
+    try { return safeSetLocal(STORAGE_KEY, JSON.stringify(dataObj)); } catch (e2) { return false; }
+  }
+}
+// メモリ優先で tracks を union(ts重複除外)。キャッシュが消えても「今表示中のルート」を絶対に減らさないため。
+function _unionTracksByTs(primaryTr, otherTr) {
+  const a = primaryTr || {}, b = otherTr || {};
+  const out = {};
+  const members = new Set([...Object.keys(a), ...Object.keys(b)]);
+  members.forEach(m => {
+    const pa = Array.isArray(a[m]) ? a[m] : [];
+    const pb = Array.isArray(b[m]) ? b[m] : [];
+    const seen = new Set();
+    const arr = [];
+    [...pa, ...pb].forEach(p => {
+      if (!p || typeof p.ts !== "number" || seen.has(p.ts)) return;
+      seen.add(p.ts); arr.push(p);
+    });
+    arr.sort((x, y) => x.ts - y.ts);
+    if (arr.length) out[m] = arr;
+  });
+  return out;
+}
+
 const DEFAULT_DATA = {
   // 🆕 v8.66: ハードコードされたデモデータを除去。PWA再インストール時に古い予定が蘇る事故を根絶。
   //   ・新規端末は空からスタート → Supabaseから実データを取得
@@ -2336,7 +2389,7 @@ async function saveToSupabase(data, retries = 3) {
   // 🆕 バージョン情報を含める（自動更新通知用）
   const dataWithVersion = { ...data, __appVersion: APP_VERSION };
   // ローカルキャッシュは先に保存（Supabase失敗してもローカルには確実に残す）
-  safeSetLocal(STORAGE_KEY, JSON.stringify(dataWithVersion));
+  saveMainCache(dataWithVersion);
 
   // 🆕 ① 古いバージョンからの上書き保護：保存前に Supabase の最新バージョンを軽くチェックし、
   //    自分より新しいバージョンが書き込んでいたら保存を拒否（古いキャッシュでの上書き事故防止）
@@ -2469,7 +2522,7 @@ async function saveToSupabase(data, retries = 3) {
           annualGoals: safeAnnualGoals,
         });
         // ローカルキャッシュも更新
-        safeSetLocal(STORAGE_KEY, JSON.stringify(dataWithVersion));
+        saveMainCache(dataWithVersion);
         console.log("[Supabase] v8.63 RMW: 保存前のフィールド全体マージ完了");
       }
     }
@@ -4063,7 +4116,7 @@ function MainApp({ onLock, onSwitchUser }) {
         } catch (e) { console.warn("[v9.228] track compact skipped:", e); }
 
         setDataRaw(merged);
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
+        saveMainCache(merged);
         maybeFlashFromMerged(merged, true); // 🆕 v9.81: 初回は既読基準を設定（鳴らさない）
 
         // 🆕 v9.228: 軽量化できた時だけ、クラウドへ1回だけ確定保存（セッション1回・他の起動saveと被らないよう遅延）。
@@ -4128,7 +4181,7 @@ function MainApp({ onLock, onSwitchUser }) {
           } catch (e) {}
           setDataRaw(prev => {
             const next = { ...prev, tracks: outTr };
-            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) {}
+            saveMainCache(next);
             return next;
           });
           try { console.log("[v9.234] 探索ルートを日別行から復元:", Object.keys(outTr).map(m => m + ":" + outTr[m].length).join(" ")); } catch (e) {}
@@ -4212,7 +4265,7 @@ function MainApp({ onLock, onSwitchUser }) {
                 if (out.length) outTr[m] = out;
               });
               const next = { ...prev, tracks: outTr };
-              try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) {}
+              saveMainCache(next);
               return next;
             });
           }).catch(() => {});
@@ -4243,8 +4296,15 @@ function MainApp({ onLock, onSwitchUser }) {
           }
           const merged = mergeRemoteSafely(remote);
           if (merged) {
-            setDataRaw(merged);
-            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch {}
+            // 🆕 v9.255: tracks は「メモリ上の現在ルート」を必ず残す。
+            //   キャッシュは直近2日に絞られ、iOSの容量退避でキャッシュが消える事もある。
+            //   その時 merged.tracks（=キャッシュ∪blob由来）が痩せても、表示中のルートを減らさない。
+            //   全期間ルートは3分ごとの loadTrackRows がクラウドから補充する。
+            setDataRaw(prev => {
+              const _merged2 = { ...merged, tracks: _unionTracksByTs((prev && prev.tracks) || {}, (merged && merged.tracks) || {}) };
+              return _merged2;
+            });
+            saveMainCache(merged);
             maybeFlashFromMerged(merged, false); // 🆕 v9.81: 自分に関係する新着を検知してフラッシュ
           }
         });
@@ -4735,7 +4795,7 @@ function MainApp({ onLock, onSwitchUser }) {
       if (_tracksOnlyChange) {
         if ((now - (lastTracksSaveRef.current || 0)) < _trackThrottleMs) {
           // throttle: localStorage には保存、 Supabase save スキップ
-          safeSetLocal(STORAGE_KEY, JSON.stringify(next));
+          saveMainCache(next);
           // 念のため lastLocalSaveRef も更新 (polling skip 維持)
           lastLocalSaveRef.current = now;
           try { localStorage.setItem(LAST_SAVE_KEY, String(now)); } catch {}
@@ -4771,7 +4831,7 @@ function MainApp({ onLock, onSwitchUser }) {
         }
       });
       // ローカルにも即時保存
-      safeSetLocal(STORAGE_KEY, JSON.stringify(next));
+      saveMainCache(next);
       // 🆕 v9.253: 影武者モード — jiageが変わったピンだけ「行(カード)」にも並走保存する。
       //   ・本体blobが正本のまま（上の saveToSupabase が真実）。読み込みはまだ本体＝表示に影響なし。
       //   ・fence(try)済み＝ここで何が起きても上の保存・return には一切影響しない。
@@ -15529,7 +15589,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
           next[m] = [...cur, ...(batch[m] || [])];
         });
         const nd = { ...d, tracks: next };
-        safeSetLocal(STORAGE_KEY, JSON.stringify(nd));
+        saveMainCache(nd);
         return nd;
       });
       // 🆕 v9.235: GPS点の永続化は「日別行への追記」のみ。失敗分はキューに貯めて電波回復時に自動再送。
