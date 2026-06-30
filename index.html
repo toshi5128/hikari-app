@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.262-auto-exclude-resident-corp";
+const APP_VERSION = "2026-06-30-v9.263-funnel-jusho-chigai";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -12915,10 +12915,24 @@ function JiageFunnelStats({ data }) {
     const g = k => agg[k] || 0;
     const touhon = jiage.filter(j => touhonTaken(j) && inPeriod(touhonDate(j)) && (mem === "__ALL__" || (j.lookupDoneBy || j.assignee) === mem)).length;
     const genmikomi = jiage.filter(j => j.status === "見込" && (mem === "__ALL__" || j.assignee === mem)).length;
+    // 🆕 v9.263: 謄本取得ピンの内訳＝住所違い(DM対象)／本人居住／法人／住所不明
+    //   住所違い＝謄本の結果「所有者住所≠物件住所＝所有者不在＝本来のDM対象」（本人居住・法人を除く）
+    let jushoChigai = 0, honnin = 0, houjin = 0, fumeiAddr = 0;
+    jiage.forEach(j => {
+      if (!(touhonTaken(j) && inPeriod(touhonDate(j)) && (mem === "__ALL__" || (j.lookupDoneBy || j.assignee) === mem))) return;
+      const reason = j.excludedReason || "";
+      const corp = isCorporateOwner(j.owner || j.ownerName) || reason === "法人所有";
+      const resident = isOwnerResident(j) || /本人居住/.test(reason);
+      const oa = String(j.ownerAddr || j.ownerAddress || "").trim();
+      if (corp) houjin++;
+      else if (resident) honnin++;
+      else if (oa) jushoChigai++;
+      else fumeiAddr++;
+    });
     return {
       shinki: g("新規地上"), homon: g("初訪") + g("地上再訪"), fuzai: g("地上不在") + g("居留守"),
       mendan: g("面談"), mikomi: g("見込み"), baikai: g("媒介"), shiire: g("地上仕入"),
-      touhon, genmikomi, days: days.size,
+      touhon, genmikomi, jushoChigai, honnin, houjin, fumeiAddr, days: days.size,
     };
   };
   const d = statFor(member);
@@ -12931,6 +12945,7 @@ function JiageFunnelStats({ data }) {
   const stages = [
     { n: "新規地上げ", v: d.shinki, c: "#6366f1", p: null },
     { n: "謄本取得", v: d.touhon, c: "#0ea5e9", p: d.shinki, pn: "新規" },
+    { n: "住所違い", v: d.jushoChigai, c: "#14b8a6", p: d.touhon, pn: "謄本" },
     { n: "見込み", v: d.mikomi, c: "#22c55e", p: d.touhon, pn: "謄本" },
     { n: "媒介(仲介)", v: d.baikai, c: "#a855f7", p: d.mikomi, pn: "見込" },
     { n: "自社仕入", v: d.shiire, c: "#f59e0b", p: d.mikomi, pn: "見込" },
@@ -12955,7 +12970,7 @@ function JiageFunnelStats({ data }) {
           {Kpi("面談数", d.mendan + "件", "訪問→面談 " + pct(d.mendan, d.homon) + "%", "#22c55e")}
         </div>
         {/* ② ファネル */}
-        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>② 新規→謄本→見込み→成約 ファネル</div>
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>② 新規→謄本→住所違い→見込み→成約 ファネル</div>
         <div style={{ marginBottom: 14 }}>
           {stages.map(s => (
             <div key={s.n} style={{ marginBottom: 8 }}>
@@ -12969,6 +12984,15 @@ function JiageFunnelStats({ data }) {
             </div>
           ))}
         </div>
+        {/* 🆕 v9.263: ②' 謄本の結果内訳（住所違い＝DM対象が何％か） */}
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>②&apos; 謄本の結果内訳（{d.touhon}件の謄本のうち）</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 6 }}>
+          {Kpi("住所違い(DM対象)", d.jushoChigai + "件", "謄本の " + pct(d.jushoChigai, d.touhon) + "%", "#14b8a6")}
+          {Kpi("本人居住(対象外)", d.honnin + "件", "謄本の " + pct(d.honnin, d.touhon) + "%", "#f59e0b")}
+          {Kpi("法人所有(対象外)", d.houjin + "件", "謄本の " + pct(d.houjin, d.touhon) + "%", "#a855f7")}
+          {Kpi("住所不明", d.fumeiAddr + "件", "謄本の " + pct(d.fumeiAddr, d.touhon) + "%", C.muted)}
+        </div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※「住所違い」＝謄本の結果、所有者住所が物件と別＝所有者は別居＝<b style={{ color: "#14b8a6" }}>本来のDM対象</b>。新規地上げから見ると <b style={{ color: "#7dd3fc" }}>{pct(d.jushoChigai, d.shinki)}%</b> がDM対象に到達。本人居住・法人は対象外（DM不要）。</div>
         {/* ③ 謄本コスト */}
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>③ 謄本コスト（1件 140円）と効率</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
