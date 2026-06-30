@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.261-owner-resident-corp-exclude";
+const APP_VERSION = "2026-06-30-v9.262-auto-exclude-resident-corp";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4238,36 +4238,39 @@ function MainApp({ onLock, onSwitchUser }) {
           }
         } catch (e) {}
 
-        // 🆕 v9.261【本人居住の一括対象外】所有者住所＝物件住所（埼玉県/番地/大字/全半角の表記差を吸収）のピンを
-        //   「対象外（本人居住）」にする＝空き家にそのまま住んでいる＝DM不要・地図にも出さない。
-        //   ・migrationsフラグで全体1回。触るのは excluded/excludedReason/ownerSameAsProperty の管理フラグのみ
-        //     （所有者名・ステータス・訪問記録などの中身は一切変更しない）。冪等（既に対象外/同じ場所はスキップ）。
+        // 🆕 v9.262【本人居住＋法人を一括対象外】DM不要・所有者住所マップ非表示にすべきピンに対象外フラグを付ける。
+        //   ・本人居住＝所有者住所＝物件住所(埼玉県/番地/大字/全半角の表記差を吸収) → excludedReason"本人居住"＋ownerSameAsProperty
+        //   ・法人名義(株式会社等) → excludedReason"法人所有"
+        //   migrationsフラグで全体1回。管理フラグ(excluded/excludedReason/ownerSameAsProperty)のみ変更＝
+        //   所有者名・status・訪問記録などの中身は一切変更しない。冪等（既に対象外はスキップ）。
+        //   ※今後の新規分は所有者住所マップ非表示＋DM除外が「自動(ライブ判定)」で効くので、フラグ無しでも実害なし。
         try {
-          if (!(merged && merged.migrations && merged.migrations.jiageResidentExcluded_v1) && !window.__hikariResidentExcluding__) {
-            window.__hikariResidentExcluding__ = true;
+          if (!(merged && merged.migrations && merged.migrations.jiageAutoExclude_v2) && !window.__hikariAutoExcluding__) {
+            window.__hikariAutoExcluding__ = true;
             setTimeout(() => {
               try {
-                let n = 0;
+                let nR = 0, nC = 0;
                 setData(d => {
                   const list = Array.isArray(d.jiage) ? d.jiage : [];
                   const _now = Date.now();
                   const nextJiage = list.map(j => {
-                    if (!j || j.excluded === true || j.ownerSameAsProperty === true) return j;
-                    if (!isOwnerResident(j)) return j;
-                    n++;
-                    return {
-                      ...j,
-                      excluded: true,
-                      excludedReason: "本人居住",
-                      ownerSameAsProperty: true,
-                      _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), excluded: _now, excludedReason: _now, ownerSameAsProperty: _now },
-                      updatedAt: _now,
-                    };
+                    if (!j || j.excluded === true) return j;
+                    if (isOwnerResident(j) && j.ownerSameAsProperty !== true) {
+                      nR++;
+                      return { ...j, excluded: true, excludedReason: "本人居住", ownerSameAsProperty: true,
+                        _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), excluded: _now, excludedReason: _now, ownerSameAsProperty: _now }, updatedAt: _now };
+                    }
+                    if (isCorporateOwner(j.owner || j.ownerName)) {
+                      nC++;
+                      return { ...j, excluded: true, excludedReason: "法人所有",
+                        _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), excluded: _now, excludedReason: _now }, updatedAt: _now };
+                    }
+                    return j;
                   });
-                  return { ...d, jiage: nextJiage, migrations: { ...(d.migrations || {}), jiageResidentExcluded_v1: _now } };
+                  return { ...d, jiage: nextJiage, migrations: { ...(d.migrations || {}), jiageAutoExclude_v2: _now } };
                 });
-                try { console.log(`[v9.261] 本人居住の一括対象外: ${n}件`); } catch (e) {}
-              } catch (e) { window.__hikariResidentExcluding__ = false; }
+                try { console.log(`[v9.262] 一括対象外: 本人居住${nR}件 / 法人${nC}件`); } catch (e) {}
+              } catch (e) { window.__hikariAutoExcluding__ = false; }
             }, 11000); // 再照合(9s)より後ろにずらす
           }
         } catch (e) {}
