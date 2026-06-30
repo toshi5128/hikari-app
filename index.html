@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.263-funnel-jusho-chigai";
+const APP_VERSION = "2026-06-30-v9.264-shitsuchu-status";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -598,7 +598,9 @@ const STATUS_GROUPS = [
   { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
-const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "NG"];
+const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "失注", "NG"];
+// 🆕 v9.264: 失注理由（商談まで行ったが不成立だった理由）。成約率分析・作戦改善用
+const LOST_REASONS = ["他社に決定", "価格が折り合わない", "売る気がない", "連絡が取れない", "相続でもめた", "その他"];
 // 🆕 v8.87: 地上げステータスの色分け（一目で判別できるように）
 const JIAGE_STATUS_COLORS = {
   // 🆕 v8.131: 16色フル差別化（被りなし）
@@ -611,6 +613,8 @@ const JIAGE_STATUS_COLORS = {
   "交渉中": "#c026d3",     // マゼンタ
   "媒介": "#7c3aed",       // バイオレット
   "仕入": "#ca8a04",       // ゴールド
+  // 🆕 v9.264: 失注（商談したが不成立）
+  "失注": "#be123c",       // 臙脂（NGの暗赤茶と区別）
   // 🆕 v9.1: NG（訪問禁止）ステータス追加
   "NG": "#7f1d1d",         // 暗赤茶
 };
@@ -5853,6 +5857,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       if (status === "居住している") return "#cbd5e1";     // ライトグレー
       if (status === "仕入" || status === "仕入れ完了") return "#ca8a04";  // ゴールド
       if (status === "媒介") return "#7c3aed";            // バイオレット
+      if (status === "失注") return "#be123c";            // 臙脂（商談不成立）
       return "#1e40af"; // 未訪問: 紺青
     };
     // 🆕 v8.125: rawヘルパー（allItems経由なら it.raw が元データ、直接渡しなら it 自身）
@@ -5933,6 +5938,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           if (st === "交渉中") return "🤝";
           if (st === "媒介") return "📋";
           if (st === "仕入" || st === "仕入れ完了") return "💰";
+          if (st === "失注") return "💔";
           if (st === "不在") return "🚪";
           if (st === "見込無し") return "❌";
           if (st === "NG" || st === "断られた") return "⛔";
@@ -12929,10 +12935,21 @@ function JiageFunnelStats({ data }) {
       else if (oa) jushoChigai++;
       else fumeiAddr++;
     });
+    // 🆕 v9.264: 商談の成否（現在のステータス基準のスナップショット）。期間はステータス更新日で判定
+    const statusDate = (j) => { const ms = j._fieldUpdatedAt && j._fieldUpdatedAt.status; return (ms ? toDStr(ms) : "") || toDStr(j.updatedAt) || toDStr(j.createdAt); };
+    const DEAL_STATUSES = ["交渉中", "失注", "媒介", "仕入"]; // 一度でも商談に到達した
+    const dealPins = jiage.filter(j => j && DEAL_STATUSES.includes(j.status) && (mem === "__ALL__" || j.assignee === mem) && inPeriod(statusDate(j)));
+    const shodan = dealPins.length;
+    const shodanSeiyaku = dealPins.filter(j => j.status === "媒介" || j.status === "仕入").length;
+    const shitsu = dealPins.filter(j => j.status === "失注").length;
+    const koshochu = dealPins.filter(j => j.status === "交渉中").length;
+    const lostReasons = {};
+    dealPins.filter(j => j.status === "失注").forEach(j => { const r = j.lostReason || "(理由未記入)"; lostReasons[r] = (lostReasons[r] || 0) + 1; });
     return {
       shinki: g("新規地上"), homon: g("初訪") + g("地上再訪"), fuzai: g("地上不在") + g("居留守"),
       mendan: g("面談"), mikomi: g("見込み"), baikai: g("媒介"), shiire: g("地上仕入"),
-      touhon, genmikomi, jushoChigai, honnin, houjin, fumeiAddr, days: days.size,
+      touhon, genmikomi, jushoChigai, honnin, houjin, fumeiAddr,
+      shodan, shodanSeiyaku, shitsu, koshochu, lostReasons, days: days.size,
     };
   };
   const d = statFor(member);
@@ -12993,6 +13010,25 @@ function JiageFunnelStats({ data }) {
           {Kpi("住所不明", d.fumeiAddr + "件", "謄本の " + pct(d.fumeiAddr, d.touhon) + "%", C.muted)}
         </div>
         <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※「住所違い」＝謄本の結果、所有者住所が物件と別＝所有者は別居＝<b style={{ color: "#14b8a6" }}>本来のDM対象</b>。新規地上げから見ると <b style={{ color: "#7dd3fc" }}>{pct(d.jushoChigai, d.shinki)}%</b> がDM対象に到達。本人居住・法人は対象外（DM不要）。</div>
+        {/* 🆕 v9.264: ②'' 商談の成否（成約率・失注率） */}
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>②&apos;&apos; 商談の成否（商談に到達した {d.shodan}件のうち）</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 6 }}>
+          {Kpi("商談到達", d.shodan + "件", "交渉中＋失注＋成約")}
+          {Kpi("成約率", pct(d.shodanSeiyaku, d.shodan) + "%", d.shodanSeiyaku + "件 成約(媒介＋仕入)", "#22c55e")}
+          {Kpi("失注率", pct(d.shitsu, d.shodan) + "%", d.shitsu + "件 失注", "#be123c")}
+          {Kpi("交渉中(進行中)", d.koshochu + "件", "まだ決着していない", "#c026d3")}
+        </div>
+        {Object.keys(d.lostReasons).length > 0 && (
+          <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "8px 10px", marginBottom: 6 }}>
+            <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, marginBottom: 4 }}>💔 失注理由の内訳（{d.shitsu}件）</div>
+            {Object.entries(d.lostReasons).sort((a, b) => b[1] - a[1]).map(([r, c]) => (
+              <div key={r} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.text, padding: "2px 0" }}>
+                <span>{r}</span><span style={{ color: "#be123c", fontWeight: 700 }}>{c}件（{pct(c, d.shitsu)}%）</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※ 現在のステータス基準。<b style={{ color: "#22c55e" }}>成約率</b>＝商談に到達した案件（交渉中・失注・媒介・仕入）のうち実際に成約した割合。失注は商談したが流れた案件。「見込無し/NG」（商談前に脱落）とは別カウント。期間はステータス更新日で判定。</div>
         {/* ③ 謄本コスト */}
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>③ 謄本コスト（1件 140円）と効率</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
@@ -17821,6 +17857,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     }
   };
 
+  // 🆕 v9.264: 失注理由の更新（jiageのみ）。status と同じ最小差分パターン（_fieldUpdatedAtは保存時に自動付与）
+  const updateLostReason = (item, lostReason) => {
+    const updated = { ...item.raw, lostReason };
+    setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
+    setSelected(s => ({ ...s, item: { ...s.item, lostReason, raw: updated } }));
+  };
+
   const updateNextDate = (item, date) => {
     if (item.type === "jiage") {
       const updated = { ...item.raw, nextVisit: date };
@@ -22064,6 +22107,15 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               {ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}
             </select>
           </Field>
+          {/* 🆕 v9.264: 失注のときだけ失注理由を選ばせる（成約率・失注理由分析用） */}
+          {selected.item.type === "jiage" && selected.item.status === "失注" && (
+            <Field label="失注理由">
+              <select style={inp} value={(selected.item.raw && selected.item.raw.lostReason) || selected.item.lostReason || ""} onChange={e => updateLostReason(selected.item, e.target.value)}>
+                <option value="">選択してください</option>
+                {LOST_REASONS.map(r => <option key={r}>{r}</option>)}
+              </select>
+            </Field>
+          )}
           <Field label={selected.item.type === "jiage" ? "次回訪問日時" : "次回フォロー日"}>
             {selected.item.type === "jiage" ? (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -23071,6 +23123,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               <Field label="DM状況"><select style={inp} value={form.dm || "未"} onChange={f("dm")}>{DM_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
               <Field label="住所確認"><select style={inp} value={form.visit || "未"} onChange={f("visit")}>{["未", "済", "異"].map(s => <option key={s}>{s}</option>)}</select></Field>
               <Field label="訪問状況"><select style={inp} value={form.status} onChange={f("status")}>{ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
+              {form.status === "失注" && <Field label="失注理由"><select style={inp} value={form.lostReason || ""} onChange={f("lostReason")}><option value="">選択してください</option>{LOST_REASONS.map(r => <option key={r}>{r}</option>)}</select></Field>}
               <Field label="次回訪問日時"><div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}><input type="date" style={{ ...inp, flex: "1 1 100%" }} value={form.nextVisit || ""} onChange={f("nextVisit")} /><select style={{ ...inp, flex: 1 }} value={form.nextVisitTime || ""} onChange={f("nextVisitTime")} disabled={!form.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "開始" : t}</option>)}</select><span style={{ color: C.muted, flex: "none" }}>〜</span><select style={{ ...inp, flex: 1 }} value={form.nextVisitEndTime || ""} onChange={f("nextVisitEndTime")} disabled={!form.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "終了" : t}</option>)}</select></div></Field>
             </>
           ) : (
