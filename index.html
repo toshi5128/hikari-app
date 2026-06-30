@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-06-30-v9.265-won-reason";
+const APP_VERSION = "2026-07-01-v9.266-funnel-drilldown";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -12891,10 +12891,11 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 }
 
 // ===================== 地上げ統計（v9.62） =====================
-function JiageFunnelStats({ data }) {
+function JiageFunnelStats({ data, onOpenJiage }) {
   const [open, setOpen] = useState(false);
   const [period, setPeriod] = useState("month");
   const [member, setMember] = useState("__ALL__");
+  const [drill, setDrill] = useState(null); // 🆕 v9.266: ②''でクリックした分類の案件一覧を展開
   const now = new Date();
   const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const weekAgo = new Date(now); weekAgo.setDate(now.getDate() - 6);
@@ -12953,7 +12954,7 @@ function JiageFunnelStats({ data }) {
       shinki: g("新規地上"), homon: g("初訪") + g("地上再訪"), fuzai: g("地上不在") + g("居留守"),
       mendan: g("面談"), mikomi: g("見込み"), baikai: g("媒介"), shiire: g("地上仕入"),
       touhon, genmikomi, jushoChigai, honnin, houjin, fumeiAddr,
-      shodan, shodanSeiyaku, shitsu, koshochu, lostReasons, wonReasons, days: days.size,
+      shodan, shodanSeiyaku, shitsu, koshochu, lostReasons, wonReasons, dealPins, days: days.size,
     };
   };
   const d = statFor(member);
@@ -12962,6 +12963,8 @@ function JiageFunnelStats({ data }) {
   const days = Math.max(d.days, 1);
 
   const Kpi = (l, v, s, col) => (<div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}><div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l}</div><div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, color: col || C.text }}>{v}</div><div style={{ fontSize: 10, color: "#7dd3fc" }}>{s}</div></div>);
+  // 🆕 v9.266: 押すと該当案件の一覧（住所・ステータス・所有者・担当者）が開くKPI
+  const KpiClick = (key, l, v, s, col) => (<button onClick={() => setDrill(drill === key ? null : key)} style={{ background: drill === key ? (col || C.accent) + "1f" : C.inset, border: `1px solid ${drill === key ? (col || C.accent) : C.borderDim}`, borderRadius: 10, padding: "10px 6px", textAlign: "center", cursor: "pointer", fontFamily: "inherit" }}><div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l} {drill === key ? "▲" : "▼"}</div><div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, color: col || C.text }}>{v}</div><div style={{ fontSize: 10, color: "#7dd3fc" }}>{s}</div></button>);
   const Seg = (val, set, opts) => (<div style={{ display: "flex", gap: 4, background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 4 }}>{opts.map(o => <button key={o.v} onClick={() => set(o.v)} style={{ background: val === o.v ? C.accent : "transparent", color: val === o.v ? "#fff" : C.muted, border: "none", borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>{o.l}</button>)}</div>);
   const stages = [
     { n: "新規地上げ", v: d.shinki, c: "#6366f1", p: null },
@@ -13017,11 +13020,42 @@ function JiageFunnelStats({ data }) {
         {/* 🆕 v9.264: ②'' 商談の成否（成約率・失注率） */}
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>②&apos;&apos; 商談の成否（商談に到達した {d.shodan}件のうち）</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 6 }}>
-          {Kpi("商談到達", d.shodan + "件", "交渉中＋失注＋成約")}
-          {Kpi("成約率", pct(d.shodanSeiyaku, d.shodan) + "%", d.shodanSeiyaku + "件 成約(媒介＋仕入)", "#22c55e")}
-          {Kpi("失注率", pct(d.shitsu, d.shodan) + "%", d.shitsu + "件 失注", "#be123c")}
-          {Kpi("交渉中(進行中)", d.koshochu + "件", "まだ決着していない", "#c026d3")}
+          {KpiClick("shodan", "商談到達", d.shodan + "件", "交渉中＋失注＋成約", C.text)}
+          {KpiClick("seiyaku", "成約率", pct(d.shodanSeiyaku, d.shodan) + "%", d.shodanSeiyaku + "件 成約(媒介＋仕入)", "#22c55e")}
+          {KpiClick("shitsu", "失注率", pct(d.shitsu, d.shodan) + "%", d.shitsu + "件 失注", "#be123c")}
+          {KpiClick("kosho", "交渉中(進行中)", d.koshochu + "件", "まだ決着していない", "#c026d3")}
         </div>
+        {/* 🆕 v9.266: 押したKPIの該当案件一覧（どんな案件か・誰の案件か） */}
+        {drill && (() => {
+          const lists = {
+            shodan: d.dealPins,
+            seiyaku: d.dealPins.filter(j => j.status === "媒介" || j.status === "仕入"),
+            shitsu: d.dealPins.filter(j => j.status === "失注"),
+            kosho: d.dealPins.filter(j => j.status === "交渉中"),
+          };
+          const labels = { shodan: "商談到達", seiyaku: "成約(媒介・仕入)", shitsu: "失注", kosho: "交渉中" };
+          const cols = { shodan: C.text, seiyaku: "#22c55e", shitsu: "#be123c", kosho: "#c026d3" };
+          const list = lists[drill] || [];
+          const col = cols[drill] || C.accent;
+          return (
+            <div style={{ background: C.bgDark, border: `1px solid ${col}44`, borderRadius: 10, padding: "6px 10px", marginBottom: 6 }}>
+              <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, marginBottom: 4 }}>{labels[drill]} の案件（{list.length}件）</div>
+              {list.length === 0 ? (
+                <div style={{ fontSize: 11, color: C.muted, padding: "6px 0" }}>該当なし</div>
+              ) : list.slice(0, 30).map((j, i) => (
+                <div key={j.id || i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: i < Math.min(list.length, 30) - 1 ? `1px solid ${C.borderDim}` : "none" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, color: C.text, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.address || "(住所未設定)"}</div>
+                    <div style={{ fontSize: 10, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.status}{j.owner ? " · " + j.owner : ""}{j.lostReason ? " · " + j.lostReason : ""}{j.wonReason ? " · " + j.wonReason : ""}</div>
+                  </div>
+                  <MemberTag name={j.assignee} />
+                  {onOpenJiage && <button onClick={() => onOpenJiage(j)} style={{ padding: "4px 9px", background: C.accent + "22", border: `1px solid ${C.accent}`, color: C.accent, borderRadius: 6, cursor: "pointer", fontSize: 10, fontWeight: 700, fontFamily: "inherit", flexShrink: 0, whiteSpace: "nowrap" }}>詳細</button>}
+                </div>
+              ))}
+              {list.length > 30 && <div style={{ padding: "6px", textAlign: "center", color: C.muted, fontSize: 10 }}>他 {list.length - 30}件</div>}
+            </div>
+          );
+        })()}
         {Object.keys(d.wonReasons).length > 0 && (
           <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "8px 10px", marginBottom: 6 }}>
             <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, marginBottom: 4 }}>🏆 成約理由の内訳（勝因・{d.shodanSeiyaku}件）</div>
@@ -13719,7 +13753,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav }) {
       <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 14 }}><NavIcon name="phone" size={20} /> アプローチ管理</div>
 
       {/* 🆕 v9.62: 地上げ統計・ファネル分析 */}
-      <JiageFunnelStats data={data} />
+      <JiageFunnelStats data={data} onOpenJiage={setEditingJiage} />
 
       {/* 🆕 統一の担当者選択（全タブで連動） */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
