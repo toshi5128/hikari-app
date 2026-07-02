@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-02-v9.272-cache-slim-jiage";
+const APP_VERSION = "2026-07-02-v9.273-save-hardening";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2021,8 +2021,12 @@ function appendLog(d, action, target, description, meta = {}) {
 // 🆕 全アクション共通通知ヘルパー：appendLog + 下田・比嘉に Push 通知 + 該当箇所遷移
 function appendLogAndNotify(d, action, target, description, item = null, options = {}) {
   // 🆕 削除アクションなら、削除IDを追跡（他端末のキャッシュからの復活を防ぐ）
-  if (action === "delete" && item?.id != null) {
-    recordDeletion(target, item.id);
+  //   🆕 v9.273: 一覧アイテムの id は "j_<実id>" 等の接頭辞付き。削除印・カード行削除には
+  //   実id(rawId)を渡す。以前は接頭辞付きidを渡していたため deleteJiageRow が別idを叩き、
+  //   影武者カード jiage::<実id> が消えず「削除したピンが約30日後に復活」していた不具合を修正。
+  if (action === "delete") {
+    const _delId = (item && item.rawId != null) ? item.rawId : (item ? item.id : null);
+    if (_delId != null) recordDeletion(target, _delId);
   }
 
   // 🆕 v9.81: 対象アイテムの担当者をログに残す（インパクト通知の「自分に関係する」判定用）
@@ -2233,12 +2237,14 @@ async function deleteTrackRows(member, mode) {
 //   電波回復時に自動再送＝取りこぼしゼロ。本体のSTORAGE_KEYとは独立。
 const TRACK_QUEUE_KEY = "__hikariTrackQueue__";
 function _loadTrackQueue() { try { return JSON.parse(localStorage.getItem(TRACK_QUEUE_KEY) || "[]"); } catch (e) { return []; } }
-function _saveTrackQueue(q) { safeSetLocal(TRACK_QUEUE_KEY, JSON.stringify(q)); }
+function _saveTrackQueue(q) { return safeSetLocal(TRACK_QUEUE_KEY, JSON.stringify(q)); }
 function enqueueTrackBatch(member, points) {
-  if (!member || !Array.isArray(points) || points.length === 0) return;
+  if (!member || !Array.isArray(points) || points.length === 0) return true;
   const q = _loadTrackQueue();
   q.push({ member, points: points.map(p => ({ ts: p.ts, lat: p.lat, lng: p.lng })) });
-  _saveTrackQueue(q);
+  // 🆕 v9.273: localStorageへキュー保存できたか(true/false)を返す。false=容量逼迫/localStorage不可。
+  //   呼び出し側は false のとき appendTrackPoints でネット直送し、ルート点の消失を防ぐ。
+  return _saveTrackQueue(q);
 }
 function trackQueuePendingCount() {
   return _loadTrackQueue().reduce((n, it) => n + ((it && it.points && it.points.length) || 0), 0);
@@ -16059,7 +16065,12 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
             if (!prev || haversineMeters(prev, p) >= SPARSE_M) { sparse.push(p); prev = p; }
           });
           if (prev) trackLastPersistedRef.current[m] = prev;
-          if (sparse.length) enqueueTrackBatch(m, sparse);
+          if (sparse.length) {
+            const persisted = enqueueTrackBatch(m, sparse);
+            // 🆕 v9.273: 送信キューをlocalStorageに保存できなかった(容量逼迫/プライベートブラウズ等)場合は、
+            //   キュー任せにせずその場でネット直送する。＝localStorageが死んでいてもルートがクラウドに残る。
+            if (!persisted) { try { appendTrackPoints(m, sparse); } catch (e) {} }
+          }
         });
         flushTrackQueue();
         // 退避バッファは役目終了（点はdata.tracks＋送信キューに移動済み）＝クリア
@@ -16726,7 +16737,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
             if (!gpsBatchRef.current[userNow]) gpsBatchRef.current[userNow] = [];
             gpsBatchRef.current[userNow].push({ ts: nowMs, lat, lng });
             // 🆕 v9.237: 記録のたびにバッファをlocalStorageへ即退避＝アプリ強制終了でも直近ぶんを失わない（次回起動でflush時に拾う）
-            try { localStorage.setItem("__hikariTrackBuffer__", JSON.stringify(gpsBatchRef.current)); } catch (e) {}
+            // 🆕 v9.273: 退避も容量安全網(safeSetLocal)経由に。容量逼迫時は再生成可能データを片付けて再試行し、
+            //   黙って退避が飛ぶのを防ぐ（従来の生setItem＋空catchだと満杯時に直近点の退避が無音で失敗していた）。
+            try { safeSetLocal("__hikariTrackBuffer__", JSON.stringify(gpsBatchRef.current)); } catch (e) {}
             // 🆕 v9.30: ライブ polyline に直接ポイント追加 ( React state を経由しない、 軽量 )
             try {
               if (window.__hikariLivePolyline__ && window.__hikariLivePolyline__.addPoint) {
