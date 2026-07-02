@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-02-v9.270-visit-memo-taller";
+const APP_VERSION = "2026-07-02-v9.271-visit-weather";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -12962,6 +12962,28 @@ function JiageFunnelStats({ data, onOpenJiage }) {
   const cost = d.touhon * 140;
   const days = Math.max(d.days, 1);
 
+  // 🆕 v9.271: 天候別の面談率（玄関先の訪問だけ対象。電話/メッセージは天候無関係なので除外）
+  const DOOR_RESULTS = new Set(["home", "ignore", "absent", "rejected"]);
+  const weatherStats = (() => {
+    const buckets = {};
+    WEATHER_OPTIONS.forEach(w => { buckets[w.key] = { total: 0, home: 0 }; });
+    let noData = 0, totalDoor = 0;
+    jiage.forEach(j => {
+      (Array.isArray(j.visitLog) ? j.visitLog : []).forEach(v => {
+        if (!v || !DOOR_RESULTS.has(v.result)) return;
+        if (!inPeriod(v.date)) return;
+        const who = v.recordedBy || j.assignee;
+        const withArr = Array.isArray(v.withMembers) ? v.withMembers : [];
+        if (member !== "__ALL__" && who !== member && !withArr.includes(member)) return;
+        totalDoor++;
+        if (!v.weather || !buckets[v.weather]) { noData++; return; }
+        buckets[v.weather].total++;
+        if (v.result === "home") buckets[v.weather].home++;
+      });
+    });
+    return { buckets, noData, totalDoor };
+  })();
+
   const Kpi = (l, v, s, col) => (<div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}><div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l}</div><div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, color: col || C.text }}>{v}</div><div style={{ fontSize: 10, color: "#7dd3fc" }}>{s}</div></div>);
   // 🆕 v9.266: 押すと該当案件の一覧（住所・ステータス・所有者・担当者）が開くKPI
   const KpiClick = (key, l, v, s, col) => (<button onClick={() => setDrill(drill === key ? null : key)} style={{ background: drill === key ? (col || C.accent) + "1f" : C.inset, border: `1px solid ${drill === key ? (col || C.accent) : C.borderDim}`, borderRadius: 10, padding: "10px 6px", textAlign: "center", cursor: "pointer", fontFamily: "inherit" }}><div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l} {drill === key ? "▲" : "▼"}</div><div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, color: col || C.text }}>{v}</div><div style={{ fontSize: 10, color: "#7dd3fc" }}>{s}</div></button>);
@@ -13096,6 +13118,36 @@ function JiageFunnelStats({ data, onOpenJiage }) {
             <tbody>{MEMBERS.filter(m => m !== "比嘉・下田").map(m => { const s = statFor(m); return (<tr key={m}>{[m, s.shinki, s.homon, s.mendan, s.touhon, s.mikomi, s.baikai, s.shiire, yen(s.touhon * 140)].map((c, i) => <td key={i} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: i === 0 ? C.text : C.muted, fontWeight: i === 0 ? 800 : 400, borderBottom: `1px solid ${C.borderDim}` }}>{c}</td>)}</tr>); })}</tbody>
           </table>
         </div>
+        {/* 🆕 v9.271: ⑤ 天候別の面談率（雨の日は会えるか） */}
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6, marginTop: 16 }}>⑤ 天候別の面談率（雨の日は会えるか）</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 8 }}>
+          {WEATHER_OPTIONS.map(w => {
+            const b = weatherStats.buckets[w.key];
+            const rate = b.total ? Math.round(b.home / b.total * 1000) / 10 : null;
+            return (
+              <div key={w.key} style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 4px", textAlign: "center" }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: w.color }}>{w.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.2, color: rate === null ? C.muted : w.color }}>{rate === null ? "—" : rate + "%"}</div>
+                <div style={{ fontSize: 9, color: C.muted }}>面談 {b.home}/{b.total}件</div>
+              </div>
+            );
+          })}
+        </div>
+        {(() => {
+          const s = weatherStats.buckets.sunny, r = weatherStats.buckets.rainy;
+          if (s.total >= 3 && r.total >= 3) {
+            const sr = s.home / s.total * 100, rr = r.home / r.total * 100;
+            const diff = Math.round((sr - rr) * 10) / 10;
+            const msg = diff > 0 ? `🌧 雨の日は面談率が ${diff}pt 低い` : diff < 0 ? `🌧 雨の日の方が ${Math.abs(diff)}pt 高い` : "☀️🌧 差はほぼ無し";
+            return (
+              <div style={{ background: C.warnBg, border: `1px solid ${C.warn}44`, borderRadius: 8, padding: "8px 10px", marginBottom: 8, fontSize: 11, color: C.text }}>
+                <NavIcon name="bulb" size={12} /> ☀️晴れ {sr.toFixed(1)}% vs 🌧雨 {rr.toFixed(1)}% → <b style={{ color: diff > 0 ? "#3b82f6" : diff < 0 ? "#22c55e" : C.muted }}>{msg}</b>
+              </div>
+            );
+          }
+          return <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}><NavIcon name="bulb" size={12} /> 各天候3件以上たまると「晴れ vs 雨」の傾向を自動でここに表示します。</div>;
+        })()}
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※ 面談率＝その天候の訪問（面談/居留守/不在/訪問禁止）のうち「面談」できた割合。電話・メッセージは天候に関係ないので除外。天候未記録の訪問 {weatherStats.noData}件はこの集計に含みません。</div>
       </div>)}
     </div>
   );
@@ -15700,6 +15752,43 @@ const IGNORE_LEVELS = [
   { key: "high", label: "🔴 強", color: "#ef4444" },
 ];
 
+// 🆕 v9.271: 訪問時の天候（雨の日は面談率が下がるか等の分析用）
+const WEATHER_OPTIONS = [
+  { key: "sunny",  label: "☀️ 晴れ", short: "☀️", color: "#f59e0b" },
+  { key: "cloudy", label: "☁️ くもり", short: "☁️", color: "#94a3b8" },
+  { key: "rainy",  label: "🌧 雨",   short: "🌧", color: "#3b82f6" },
+  { key: "snowy",  label: "❄️ 雪",   short: "❄️", color: "#0ea5e9" },
+];
+
+// 🆕 v9.271: WMO天気コード → WEATHER_OPTIONS のキー（Open-Meteo の weather_code 準拠）
+function wmoToWeatherKey(code) {
+  if (code === null || code === undefined) return "";
+  if (code === 0 || code === 1) return "sunny";                                  // 快晴・晴れ
+  if (code === 2 || code === 3 || code === 45 || code === 48) return "cloudy";   // 一部くもり・くもり・霧
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "snowy";  // 雪・雪しぐれ
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code === 95 || code === 96 || code === 99) return "rainy"; // 霧雨・雨・にわか雨・雷雨
+  return "";
+}
+// 🆕 v9.271: 今日の天候を Open-Meteo（APIキー不要・無料）から取得。失敗時は "" を返す（手動選択にフォールバック）
+async function fetchTodayWeatherKey(lat, lng) {
+  const la = (typeof lat === "number" && isFinite(lat)) ? lat : 36.19;   // 既定＝深谷・熊谷付近
+  const ln = (typeof lng === "number" && isFinite(lng)) ? lng : 139.28;
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${la.toFixed(3)}&longitude=${ln.toFixed(3)}&current=weather_code&timezone=Asia%2FTokyo`;
+  const ctrl = new AbortController();
+  const to = setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 6000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) return "";
+    const j = await res.json();
+    const code = j && j.current ? j.current.weather_code : null;
+    return wmoToWeatherKey(code);
+  } catch (e) {
+    return "";
+  } finally {
+    clearTimeout(to);
+  }
+}
+
 // 曜日ラベル
 const DOW_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -17621,6 +17710,16 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       assignee: item.assignee || MEMBERS[0],
       // 🆕 v9.13: 同行者（最大2人）
       withMembers: [],
+      // 🆕 v9.271: 天候（未選択スタート・任意）
+      weather: "",
+    });
+    // 🆕 v9.271: 今日の天気を自動取得してデフォルト入力（手動で選ばれていなければ埋める）
+    const wLat = (item && (item.lat ?? (item.raw && item.raw.lat))) ?? (currentLoc && currentLoc.lat);
+    const wLng = (item && (item.lng ?? (item.raw && item.raw.lng))) ?? (currentLoc && currentLoc.lng);
+    fetchTodayWeatherKey(wLat, wLng).then(key => {
+      if (!key) return;
+      // まだ何も選ばれておらず、新規記録モードのフォームが開いているときだけ自動入力
+      setVisitForm(f => (f && !f.editingId && !f.weather) ? { ...f, weather: key, weatherAuto: true } : f);
     });
   };
 
@@ -17640,6 +17739,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       // 🆕 v9.13: 同行者を編集モードでも復元
       withMembers: Array.isArray(visit.withMembers) ? visit.withMembers : [],
       posted: !!visit.posted,
+      // 🆕 v9.271: 天候を編集モードでも復元
+      weather: visit.weather || "",
       // 編集モードのフラグ：このフィールドが設定されていれば既存エントリの更新になる
       editingId: visit.id,
     });
@@ -17712,6 +17813,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       signs: visitForm.result === "ignore" ? visitForm.signs : [],
       intensityLevel: visitForm.result === "ignore" ? visitForm.intensityLevel : null,
       memo: visitForm.memo,
+      // 🆕 v9.271: 天候（雨天と面談率の相関分析用・任意）
+      weather: visitForm.weather || "",
       // 🆕 v8.41: ポスティング済フラグを保存
       posted: !!visitForm.posted,
       recordedBy: visitForm.assignee || (isEdit ? null : getCurrentUser()) || MEMBERS[0],
@@ -22088,6 +22191,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           <span style={{ color: C.muted }}>{v.date}</span>
                           <span style={{ color: dowLabel === "日" ? "#ef4444" : dowLabel === "土" ? "#0ea5e9" : C.muted, fontWeight: 700 }}>({dowLabel})</span>
                           <span style={{ color: C.text, fontWeight: 700 }}>{v.time}</span>
+                          {/* 🆕 v9.271: 天候バッジ */}
+                          {v.weather && (() => {
+                            const w = WEATHER_OPTIONS.find(o => o.key === v.weather);
+                            return w ? <span title={w.label} style={{ fontSize: 13 }}>{w.short}</span> : null;
+                          })()}
                           <span style={{ flex: 1 }} />
                           <span style={{ background: resDef.color, color: "#fff", padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 11 }}>
                             {resDef.label}
@@ -23376,6 +23484,28 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               </div>
             );
           })()}
+
+          {/* 🆕 v9.271: 天候（雨天と面談率の相関を後で分析するため・任意・今日の天気を自動取得） */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 6 }}>🌤 天候（任意）</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: visitForm.weatherAuto && visitForm.weather ? 4 : 12 }}>
+            {WEATHER_OPTIONS.map(w => {
+              const active = visitForm.weather === w.key;
+              return (
+                <button key={w.key} type="button" onClick={() => setVisitForm({ ...visitForm, weather: active ? "" : w.key, weatherAuto: false })} style={{
+                  padding: "9px 4px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 700,
+                  background: active ? w.color : "transparent",
+                  color: active ? "#fff" : w.color,
+                  border: `2px solid ${active ? w.color : w.color + "55"}`,
+                  fontFamily: "inherit",
+                }}>{w.label}</button>
+              );
+            })}
+          </div>
+          {visitForm.weatherAuto && visitForm.weather && (
+            <div style={{ fontSize: 10, color: C.muted, marginBottom: 12 }}>
+              <NavIcon name="bulb" size={12} /> 今日の天気から自動入力しました（違うときは押して変更できます）
+            </div>
+          )}
 
           {/* 訪問結果（面談・居留守・不在・訪問禁止・電話・メッセージ） */}
           <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 6 }}><NavIcon name="barchart" size={13} /> 訪問結果</div>
