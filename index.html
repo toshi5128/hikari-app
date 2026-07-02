@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-02-v9.273-save-hardening";
+const APP_VERSION = "2026-07-02-v9.274-status-edit-counter";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -776,6 +776,28 @@ const APPROACH_GROUPS = {
 const APPROACH_GROUP_KEYS = ["agent", "jiage"];
 function approachGroupItems(key) {
   return (APPROACH_GROUPS[key] && APPROACH_GROUPS[key].items) || APPROACH_ITEMS;
+}
+
+// 🆕 v9.274: 訪問記録モーダルを通さずにステータスをKPI段階(見込み等)へ変えた時も、行動管理カウンターに+1する共通処理。
+//   従来は訪問記録の保存(computeBumpItems)でしか加算されず、詳細編集/ホーム編集/追加フォームでの
+//   ステータス変更が「見込み」等のカウンターに反映されなかった（下田さん報告の不具合）。
+//   ・prev→new でKPIステータスに「変化した時だけ」担当者・当日に1件加算（同値の再保存では加算しない＝二重計上防止）。
+//   ・訪問記録側の加算とは別経路（別のユーザー操作）なので二重にはならない。
+const JIAGE_STATUS_COUNTER = { "見込み": "見込み", "中長期見込": "中長期見込", "見込無し": "見込無し", "交渉中": "交渉中", "媒介": "媒介", "仕入": "地上仕入" };
+function bumpJiageStatusEdit(d, prevStatus, newStatus, assignee) {
+  const item = (prevStatus !== newStatus) ? JIAGE_STATUS_COUNTER[newStatus] : null;
+  if (!item) return d;
+  const member = assignee || (typeof getCurrentUser === "function" && getCurrentUser()) || MEMBERS[0];
+  if (!member) return d;
+  const todayStr = new Date().toISOString().split("T")[0];
+  const appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
+  const idx = appr.findIndex(a => a.member === member && a.date === todayStr);
+  if (idx >= 0) {
+    appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), [item]: ((appr[idx].values || {})[item] || 0) + 1 } };
+  } else {
+    appr.push({ id: Date.now() + Math.floor(Math.random() * 100000), member, date: todayStr, values: { [item]: 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
+  }
+  return { ...d, approaches: appr };
 }
 
 // 🆕 v8.40: 旧データを新表記に移行する1回限りのマイグレーション
@@ -7278,7 +7300,9 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     if (!quickEditJiage || !quickEditJiageForm) return;
     const updated = { ...quickEditJiage, ...quickEditJiageForm };
     setData(d => {
-      const next = { ...d, jiage: d.jiage.map(j => j.id === quickEditJiage.id ? updated : j) };
+      let next = { ...d, jiage: d.jiage.map(j => j.id === quickEditJiage.id ? updated : j) };
+      // 🆕 v9.274: ステータスをKPI段階へ変えたら行動管理カウンターに+1
+      next = bumpJiageStatusEdit(next, quickEditJiage.status || "", updated.status || "", updated.assignee);
       return appendLogAndNotify(next, "update", "jiage", `${updated.address || "(無住所)"}（${updated.status}）をホームから編集`, updated);
     });
     setQuickEditJiage(null);
@@ -15536,7 +15560,13 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => setEditingJiage(null)}>閉じる</button>
             <button style={{ ...btnStyle(), flex: 2 }} onClick={() => {
-              setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === editingJiage.id ? editingJiage : j) }));
+              setData(d => {
+                const prev = d.jiage.find(j => j.id === editingJiage.id);
+                let next = { ...d, jiage: d.jiage.map(j => j.id === editingJiage.id ? editingJiage : j) };
+                // 🆕 v9.274: ステータスをKPI段階へ変えたら行動管理カウンターに+1
+                next = bumpJiageStatusEdit(next, (prev && prev.status) || "", editingJiage.status || "", editingJiage.assignee);
+                return next;
+              });
               setEditingJiage(null);
             }}><NavIcon name="save" size={15} /> 保存</button>
           </div>
@@ -19746,7 +19776,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
         }
       }
       setData(d => {
-        const next = { ...d, jiage: editItem ? d.jiage.map(j => j.id === item.id ? item : j) : [...d.jiage, item] };
+        const _prevSt = editItem ? ((d.jiage.find(j => j.id === item.id) || {}).status || "") : "";
+        let next = { ...d, jiage: editItem ? d.jiage.map(j => j.id === item.id ? item : j) : [...d.jiage, item] };
+        // 🆕 v9.274: 追加/編集フォームでステータスをKPI段階へ変えた時も行動管理カウンターに+1
+        next = bumpJiageStatusEdit(next, _prevSt, item.status || "", item.assignee);
         return appendLogAndNotify(next, editItem ? "update" : "add", "jiage", `${item.address || "(無住所)"}（${item.status}）`, item);
       });
     } else {
