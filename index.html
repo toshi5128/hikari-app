@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-02-v9.271-visit-weather";
+const APP_VERSION = "2026-07-02-v9.272-cache-slim-jiage";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1822,6 +1822,15 @@ async function sendPushNotification(targets, title, body, extra = {}) {
 }
 
 const STORAGE_KEY = "hikari_v4_cache";
+// 🆕 v9.272: 本体キャッシュから jiage を分離した「オフライン即時表示用スナップショット」キー。
+//   ・ピンはクラウドの1件=1行(jiage::<id>)が正本で、起動/3分ごとの loadJiageRows が補充する。
+//   ・本体キャッシュ(STORAGE_KEY)に全ピンを持たせると「1個足すたびに全ピンを書き直す」消耗で
+//     容量がすぐ満杯になり、保存不能→ピン/ルート消失の芽になっていた（長島くんの事象）。
+//   ・そこで jiage は別キーへ「最短60秒間隔」でだけ退避＝ピン追加ごとの全書き換えを断つ。
+//   ・この別キーは再生成可能(クラウド正本)なので、容量逼迫時は真っ先に捨ててよい。
+const JIAGE_CACHE_KEY = "hikari_jiage_cache_v1";
+let _jiageCacheLastAt = 0;
+const JIAGE_CACHE_MIN_INTERVAL_MS = 60000;
 
 // 🆕 v9.252: localStorage 保存の安全網。
 //   端末の保存容量が一杯（QuotaExceeded）で setItem が失敗したとき、従来は握りつぶして
@@ -1837,6 +1846,9 @@ function safeSetLocal(key, value) {
   } catch (e) {
     // ① 再生成可能・非必須データを掃除して空きを作る
     try { localStorage.removeItem("__hikariTrackBuffer__"); } catch (e2) {}
+    // 🆕 v9.272: ピンのオフライン用スナップショットも再生成可能（クラウド正本）。
+    //   critical な本体キャッシュ・送信キューの保存を通すため、真っ先に明け渡す。
+    if (key !== JIAGE_CACHE_KEY) { try { localStorage.removeItem(JIAGE_CACHE_KEY); } catch (e2) {} }
     try {
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const k = localStorage.key(i);
@@ -1891,7 +1903,22 @@ function _slimDataForCache(d) {
 // 本体キャッシュ(STORAGE_KEY)の保存は必ずこれ経由＝直近に絞って容量を抑える＋容量安全網(safeSetLocal)に乗せる。
 function saveMainCache(dataObj) {
   try {
-    return safeSetLocal(STORAGE_KEY, JSON.stringify(_slimDataForCache(dataObj)));
+    const slim = _slimDataForCache(dataObj);
+    // 🆕 v9.272: 本体キャッシュから jiage を除外＝「ピン1個追加のたびに全ピンを書き直す」消耗を断つ。
+    //   ピンはクラウドの1件=1行が正本で、起動/3分ごとの loadJiageRows が補充するので情報は失わない。
+    const { jiage: _jiageArr, ...rest } = slim || {};
+    const ok = safeSetLocal(STORAGE_KEY, JSON.stringify(rest));
+    // オフライン即時表示用に、jiage は別キーへ「最短60秒間隔」でだけ退避（ベストエフォート・失敗は無視）。
+    //   ・safeSetLocal は使わない＝この補助的な退避が「容量いっぱい」警告を出したり本体保存と競合したりしない。
+    try {
+      const now = Date.now();
+      if (Array.isArray(_jiageArr) && now - _jiageCacheLastAt > JIAGE_CACHE_MIN_INTERVAL_MS) {
+        _jiageCacheLastAt = now;
+        try { localStorage.setItem(JIAGE_CACHE_KEY, JSON.stringify(_jiageArr)); }
+        catch (eJ) { try { localStorage.removeItem(JIAGE_CACHE_KEY); } catch (eJ2) {} }
+      }
+    } catch (e) {}
+    return ok;
   } catch (e) {
     try { return safeSetLocal(STORAGE_KEY, JSON.stringify(dataObj)); } catch (e2) { return false; }
   }
@@ -2618,7 +2645,16 @@ function loadFromCache() {
     if (r) {
       const parsed = JSON.parse(r);
       // 古いキャッシュに新キーが無くてもクラッシュしないよう、DEFAULT_DATAをベースにマージ
-      return { ...DEFAULT_DATA, ...parsed };
+      const base = { ...DEFAULT_DATA, ...parsed };
+      // 🆕 v9.272: 本体キャッシュに jiage が無い(=分離保存に移行済み)場合、別キーのスナップショットから復元。
+      //   オフライン即時表示のため。起動直後の loadJiageRows でクラウドの最新に補充される。
+      if (!Array.isArray(base.jiage) || base.jiage.length === 0) {
+        try {
+          const jr = localStorage.getItem(JIAGE_CACHE_KEY);
+          if (jr) { const jarr = JSON.parse(jr); if (Array.isArray(jarr) && jarr.length) base.jiage = jarr; }
+        } catch (eJ) {}
+      }
+      return base;
     }
   } catch {}
   return null;
@@ -15903,6 +15939,51 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.8: 期間フィルタ拡張 ("today" | "yesterday" | "7days" | "30days" | "all" | "date")
   const [trackPeriod, setTrackPeriod] = useState("today");
   const [trackPickedDate, setTrackPickedDate] = useState("");  // "YYYY-MM-DD"
+  // 🆕 v9.272: 未送信（クラウド未保存）の件数を定期チェック＝保存が詰まったら現場で即気づける安全網。
+  //   ルート点・ピンはそれぞれ独立キューに積まれ、電波回復で自動再送される。ここでは「まだ届いていない数」を見える化。
+  const [pendingSave, setPendingSave] = useState({ track: 0, jiage: 0, full: false });
+  React.useEffect(() => {
+    const tick = () => {
+      try {
+        setPendingSave({
+          track: trackQueuePendingCount(),
+          jiage: jiageQueuePendingCount(),
+          full: !!window.__hikariStorageFull__,
+        });
+      } catch (e) {}
+    };
+    tick();
+    const iv = setInterval(tick, 5000);
+    return () => clearInterval(iv);
+  }, []);
+  // 🆕 v9.272: 記録中は画面を眠らせない（Screen Wake Lock）＝iOSの自動ロック→バックグラウンド休止による
+  //   ルート途切れを抑止。iOSは復帰でwake lockが外れるので、戻ったら取り直す。非対応端末は黙ってスキップ。
+  const wakeLockRef = React.useRef(null);
+  React.useEffect(() => {
+    const acquire = async () => {
+      try {
+        if (trackRecording && typeof navigator !== "undefined" && "wakeLock" in navigator && document.visibilityState === "visible" && !wakeLockRef.current) {
+          wakeLockRef.current = await navigator.wakeLock.request("screen");
+          wakeLockRef.current.addEventListener && wakeLockRef.current.addEventListener("release", () => { wakeLockRef.current = null; });
+        }
+      } catch (e) {}
+    };
+    const release = async () => {
+      try { const w = wakeLockRef.current; wakeLockRef.current = null; if (w) await w.release(); } catch (e) {}
+    };
+    if (trackRecording) {
+      acquire();
+      const onVis = () => { if (document.visibilityState === "visible") acquire(); };
+      document.addEventListener("visibilitychange", onVis);
+      return () => { document.removeEventListener("visibilitychange", onVis); release(); };
+    } else {
+      release();
+    }
+  }, [trackRecording]);
+  // 🆕 v9.272: ルート途切れ検知＝GPSコールバックが長時間途絶したら「アプリが休止していた」合図。
+  //   復帰時に検知して現場に知らせる（記録済みの点は消えない／測れなかった間だけ穴になる旨を明示）。
+  const lastGpsCbRef = React.useRef(0);
+  const [routeGapMin, setRouteGapMin] = useState(0);
   // 🆕 v9.8: メンバー別表示ON/OFF（デフォルトは自分のみ）
   const [trackVisibleMembers, setTrackVisibleMembers] = useState(() => currentUser ? [currentUser] : []);
   React.useEffect(() => {
@@ -16616,6 +16697,16 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
         //   ・これでアプリ落ち事故を完全に防ぐ
         const recordingNow = trackRecordingRef.current;
         const userNow = currentUserRef.current;
+        // 🆕 v9.272: GPSコールバックの途絶を検知（記録中に3分以上コールバックが来なかった＝休止から復帰）。
+        //   watchPosition は記録ON/OFFに関わらず常時動くので、途絶＝アプリ休止のサイン。復帰時に穴を知らせる。
+        try {
+          const _cbNow = Date.now();
+          const _prevCb = lastGpsCbRef.current;
+          lastGpsCbRef.current = _cbNow;
+          if (recordingNow && _prevCb && (_cbNow - _prevCb) > 180000) {
+            setRouteGapMin(Math.round((_cbNow - _prevCb) / 60000));
+          }
+        } catch (e) {}
         if (recordingNow && userNow) {
           const nowMs = Date.now();
           const lastTs = trackLastSavedRef.current || 0;
@@ -20234,6 +20325,35 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         color: "#fff", border: "none",
                       }}>{trackRecording ? "⏹ 停止" : "▶ 記録開始"}</button>
                     </div>
+                    {/* 🆕 v9.272: 未保存（クラウド未送信）の見える化。詰まったら現場で即気づける。 */}
+                    {(() => {
+                      const total = (pendingSave.track || 0) + (pendingSave.jiage || 0);
+                      if (!pendingSave.full && total === 0) return null;
+                      const parts = [];
+                      if (pendingSave.track) parts.push(`ルート${pendingSave.track}`);
+                      if (pendingSave.jiage) parts.push(`ピン${pendingSave.jiage}`);
+                      // 容量いっぱい＝赤（要リロード）／溜まりすぎ(20以上)＝橙（詰まりの疑い）／少数＝青（通常の送信中）
+                      const level = pendingSave.full ? "red" : (total >= 20 ? "amber" : "blue");
+                      const col = level === "red" ? "#ef4444" : level === "amber" ? "#f59e0b" : "#3b82f6";
+                      return (
+                        <div style={{ marginTop: 6, background: col + "18", border: `1.5px solid ${col}`, borderRadius: 8, padding: "7px 10px", fontSize: 11, fontWeight: 700, color: col, lineHeight: 1.5 }}>
+                          {pendingSave.full ? (
+                            <span>⚠️ この端末の保存容量がいっぱいです。<b>アプリを一度再読み込み</b>してください（クラウドの既存データは無事）。{total > 0 ? ` 未保存 ${total}件（${parts.join("・")}）` : ""}</span>
+                          ) : level === "amber" ? (
+                            <span>⚠️ 未保存 <b>{total}件</b>（{parts.join("・")}）が溜まっています。電波の良い所へ移動し、しばらくしても減らなければ再読み込みしてください。</span>
+                          ) : (
+                            <span>⏳ 未保存 {total}件（{parts.join("・")}）を送信中…（電波が戻れば自動で消えます）</span>
+                          )}
+                        </div>
+                      );
+                    })()}
+                    {/* 🆕 v9.272: ルート途切れの検知警告（スマホ休止/電波断でGPSが止まっていた時に知らせる） */}
+                    {routeGapMin > 0 && (
+                      <div style={{ marginTop: 6, background: "#f59e0b18", border: "1.5px solid #f59e0b", borderRadius: 8, padding: "7px 10px", fontSize: 11, fontWeight: 700, color: "#f59e0b", lineHeight: 1.5, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                        <span>⚠️ ルートが約<b>{routeGapMin}分</b>途切れました（スマホの休止・電波断の可能性）。記録済みの点は消えていません。途切れを減らすには画面を点けたままにしてください。</span>
+                        <button onClick={() => setRouteGapMin(0)} style={{ flexShrink: 0, background: "#f59e0b", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>OK</button>
+                      </div>
+                    )}
                     {/* 🆕 v9.8: メンバー別チップ */}
                     <div style={{ marginTop: 6, marginBottom: 4 }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}><NavIcon name="users" size={12} /> 表示メンバー</div>
