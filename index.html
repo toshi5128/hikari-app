@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-07-v9.281-resident-shared";
+const APP_VERSION = "2026-07-07-v9.282-oldmuni-villages";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4331,7 +4331,7 @@ function MainApp({ onLock, onSwitchUser }) {
         //   所有者名・status・訪問記録などの中身は一切変更しない。冪等（既に対象外はスキップ）。
         //   ※今後の新規分は所有者住所マップ非表示＋DM除外が「自動(ライブ判定)」で効くので、フラグ無しでも実害なし。
         try {
-          if (!(merged && merged.migrations && merged.migrations.jiageAutoExclude_v6) && !window.__hikariAutoExcluding__) {
+          if (!(merged && merged.migrations && merged.migrations.jiageAutoExclude_v7) && !window.__hikariAutoExcluding__) {
             window.__hikariAutoExcluding__ = true;
             setTimeout(() => {
               try {
@@ -4353,7 +4353,7 @@ function MainApp({ onLock, onSwitchUser }) {
                     }
                     return j;
                   });
-                  return { ...d, jiage: nextJiage, migrations: { ...(d.migrations || {}), jiageAutoExclude_v6: _now } };
+                  return { ...d, jiage: nextJiage, migrations: { ...(d.migrations || {}), jiageAutoExclude_v7: _now } };
                 });
                 try { console.log(`[v9.278] 一括対象外(v3): 本人居住${nR}件 / 法人${nC}件`); } catch (e) {}
               } catch (e) { window.__hikariAutoExcluding__ = false; }
@@ -15750,6 +15750,10 @@ const OLD_MUNI_MAP = [
   [/入間郡坂戸町/g, "坂戸市"], [/入間郡鶴ヶ島町/g, "鶴ヶ島市"],
   // ときがわ町
   [/比企郡都幾川村/g, "比企郡ときがわ町"], [/比企郡玉川村/g, "比企郡ときがわ町"],
+  // 🆕 v9.282: 村→町/市(謄本の旧表記)。実データに出た鳩山村・大里村＋営業エリアの村変種を吸収
+  [/比企郡鳩山村/g, "比企郡鳩山町"], [/比企郡吉見村/g, "比企郡吉見町"], [/比企郡滑川村/g, "比企郡滑川町"],
+  [/比企郡嵐山村/g, "比企郡嵐山町"], [/大里郡大里村/g, "熊谷市"], [/大里郡江南村/g, "熊谷市"],
+  [/大里郡妻沼村/g, "熊谷市"], [/入間郡毛呂村/g, "入間郡毛呂山町"],
   // 鴻巣市
   [/北足立郡吹上町/g, "鴻巣市"], [/北埼玉郡川里町/g, "鴻巣市"], [/北埼玉郡川里村/g, "鴻巣市"],
   // 行田市
@@ -24545,12 +24549,13 @@ function dmHasGaiji(s) { return /[-]/.test(String(s || "")); }
 function dmAddrKey(s) {
   const KN = { '〇': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
   let t = String(s || "").normalize("NFKC").replace(/[\s　〒]/g, "");
+  // 🆕 v9.280: 謄本の所有者住所は登記当時の旧市町村名（例「入間郡坂戸町」＝現 坂戸市）が多く、
+  //   目印住所(現行地名)と市区町村が食い違って本人居住を取りこぼす。旧→現行に正規化して吸収。
+  //   ※ヶ→ケより「先」に適用（旧地名パターンに「鶴ヶ島町/鳩ヶ谷市」等ヶを含むため。順序を逆にすると空振りする）。
+  for (const [re, rep] of OLD_MUNI_MAP) t = t.replace(re, rep);
   // 🆕 v9.279: 小書き「ヶ/ヵ」→「ケ/カ」統一。謄本PDFは「楓ケ丘」・アプリ目印は「楓ヶ丘」で、
   //   NFKCではヶ(U+30F6)↔ケ(U+30B1)を吸収できず本人居住を取りこぼしていた（鳩山ニュータウン全域が該当）。
   t = t.replace(/ヶ/g, "ケ").replace(/ヵ/g, "カ");
-  // 🆕 v9.280: 謄本の所有者住所は登記当時の旧市町村名（例「入間郡坂戸町」＝現 坂戸市）が多く、
-  //   目印住所(現行地名)と市区町村が食い違って本人居住を取りこぼす。旧→現行に正規化して吸収。
-  for (const [re, rep] of OLD_MUNI_MAP) t = t.replace(re, rep);
   t = t.replace(/^(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)/, "");
   t = t.replace(/[〇一二三四五六七八九十]+/g, m => {
     if (m.indexOf("十") >= 0) { const p = m.split("十"); const tens = p[0] ? (KN[p[0]] != null ? KN[p[0]] : 1) : 1; const ones = p[1] ? (KN[p[1]] || 0) : 0; return String(tens * 10 + ones); }
