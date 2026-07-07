@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-07-v9.282-oldmuni-villages";
+const APP_VERSION = "2026-07-07-v9.283-pin-detail-btn-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6171,22 +6171,32 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
       `, { autoClose: true, closeOnClick: false });
-      marker.on("popupopen", () => {
+      marker.on("popupopen", (e) => {
         // 🆕 v8.133: 開いたポップアップ位置を記憶
         openPopupIdRef.current = it && (it.id != null ? it.id : it.rawId);
-        setTimeout(() => {
-          const btn = document.getElementById("pin-detail-btn");
-          if (btn) btn.onclick = (ev) => {
+        // 🆕 v9.283: 「詳細を開く」が時々効かない不具合の対策。
+        //   従来は popupopen 後に setTimeout(10ms)＋document.getElementById で後付けしていたため、
+        //   (a)描画直後の10msの隙にタップ (b)地図再描画で吹き出しが作り直され onclick が外れる
+        //   (c)開閉切替時に別の吹き出しのボタンを掴む、で無反応になっていた。
+        //   → この吹き出しのDOMに限定して、開いた瞬間に「同期で」＋フォールバックで確実に配線する。
+        const openIt = it;
+        const rootEl = (e && e.popup && (typeof e.popup.getElement === "function" ? e.popup.getElement() : e.popup._contentNode)) || null;
+        const wire = () => {
+          const scope = rootEl && rootEl.querySelector ? rootEl : document;
+          const fire = (ev) => {
             if (ev) { try { ev.stopPropagation(); ev.preventDefault(); } catch (er) {} }
-            setTimeout(() => { onPinClick && onPinClick(it); }, 0);
+            setTimeout(() => { onPinClick && onPinClick(openIt); }, 0);
           };
+          const btn = scope.querySelector ? scope.querySelector("#pin-detail-btn") : document.getElementById("pin-detail-btn");
+          if (btn) btn.onclick = fire;
           // 🆕 v9.18: 📷 写真ボタン → 同じく詳細を開く（写真セクションが見える）
-          const photoBtn = document.getElementById("pin-photo-btn");
-          if (photoBtn) photoBtn.onclick = (ev) => {
-            if (ev) { try { ev.stopPropagation(); ev.preventDefault(); } catch (er) {} }
-            setTimeout(() => { onPinClick && onPinClick(it); }, 0);
-          };
-        }, 10);
+          const photoBtn = scope.querySelector ? scope.querySelector("#pin-photo-btn") : document.getElementById("pin-photo-btn");
+          if (photoBtn) photoBtn.onclick = fire;
+          return !!btn;
+        };
+        wire();                 // 開いた瞬間に同期で配線（10msの隙をなくす）
+        setTimeout(wire, 10);   // フォールバック（DOM未準備・再描画後の再配線）
+        setTimeout(wire, 120);  // さらに保険（再描画が連続した時の取りこぼし防止）
       });
       marker.on("popupclose", () => {
         const curId = it && (it.id != null ? it.id : it.rawId);
