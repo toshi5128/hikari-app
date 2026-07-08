@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-08-v9.284-seisan-seller-addr";
+const APP_VERSION = "2026-07-08-v9.285-seisan-cosellers-a4";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -26809,6 +26809,7 @@ function SeisanFormPage({ onBack }) {
     propertyAddr: "",                    // 物件の表示
     sellerName: "",                      // 売主
     sellerAddr: "",                      // 🆕 v9.284: 売主 住所 ( 領収書の売主欄に使用 )
+    coSellers: [],                       // 🆕 v9.285: 共有者(他の売主) [{ name, addr }] 領収書に人数分表示
     buyerName: "",                       // 買主
     salePrice: "",                       // 売買代金 ( 円 )
     depositAmount: "",                   // 🆕 v9.48.2: 手付金 ( 円 )
@@ -27021,7 +27022,8 @@ function SeisanFormPage({ onBack }) {
     // 以後: 行内容で判別
     const ws = XLSX.utils.aoa_to_sheet(rows);
     // 🆕 v9.48.11: 見切れ防止 ・ A 列を広く ・ 印刷は「用紙幅にフィット」 で自動縮小
-    ws["!cols"] = [{ wch: 42 }, { wch: 30 }, { wch: 36 }];
+    // 🆕 v9.285: 列幅合計をA4縦に収まる幅へ（旧 42+30+36=108 はA4超過で右が切れていた）。全セル折り返し済み。
+    ws["!cols"] = [{ wch: 30 }, { wch: 22 }, { wch: 26 }];
     // 🆕 v9.48.10: 範囲を 3列 ( A〜C ) に制限 → D列以降を出力しない
     ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length - 1, c: 2 } });
     // 🆕 v9.48.13: 行高はタイトル ・ 副題のみ固定 ・ それ以外は Excel に自動計算させる ( wrapText の内容に応じて伸びる )
@@ -27199,6 +27201,21 @@ function SeisanFormPage({ onBack }) {
         {/* 🆕 v9.284: 売主 住所（固都税精算書の領収書「(売主)住所」欄に反映。空なら空欄で出力） */}
         <Field label="売主 住所（固都税精算書の領収書に記載）">
           <input style={inp} value={form.sellerAddr} onChange={e => set("sellerAddr", e.target.value)} placeholder="例: 埼玉県熊谷市○○町1丁目2-3（売主様のご住所）" />
+        </Field>
+        {/* 🆕 v9.285: 共有者（他の売主）。追加すると領収書の売主欄が人数分（住所＋氏名＋㊞）で出力される */}
+        <Field label="共有者（他に売主がいる場合・任意）">
+          {(form.coSellers || []).map((cs, i) => (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr auto", gap: 8, marginBottom: 8, alignItems: "center" }}>
+              <input style={inp} value={cs.name || ""} placeholder={`共有者${i + 2} 氏名`}
+                onChange={e => setForm(f => { const a = [...(f.coSellers || [])]; a[i] = { ...a[i], name: e.target.value }; return { ...f, coSellers: a }; })} />
+              <input style={inp} value={cs.addr || ""} placeholder={`共有者${i + 2} 住所`}
+                onChange={e => setForm(f => { const a = [...(f.coSellers || [])]; a[i] = { ...a[i], addr: e.target.value }; return { ...f, coSellers: a }; })} />
+              <button type="button" onClick={() => setForm(f => ({ ...f, coSellers: (f.coSellers || []).filter((_, j) => j !== i) }))}
+                style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}55`, color: C.danger, borderRadius: 8, padding: "8px 10px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>削除</button>
+            </div>
+          ))}
+          <button type="button" onClick={() => setForm(f => ({ ...f, coSellers: [...(f.coSellers || []), { name: "", addr: "" }] }))}
+            style={{ width: "100%", padding: "9px", background: C.accent + "18", border: `1.5px dashed ${C.accent}`, color: C.accent, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>＋ 共有者を追加</button>
         </Field>
         <Field label="売買代金 (円)">
           <input style={inp} type="text" inputMode="numeric" value={form.salePrice}
@@ -27553,17 +27570,28 @@ function generateTaxStatementXlsx(form, tax, num) {
   merge(R, 1, R, 2); R++;
   // 但し書き ( 中央 )
   cell(R, 0, "但し、別紙不動産売買契約書に基づく固定資産税・都市計画税の精算金として", styles.receiptNote); merge(R, 0, R, 3); R++;
-  cell(R, 0, "年   月   日   上記正に領収いたしました。", styles.receiptNote); merge(R, 0, R, 3); R += 2;
+  // 🆕 v9.285: 年月日は手書きで記入するので、前後に余白を広く取り、行も高くする（狭くて書けない対策）。
+  const _dateRowR = R;
+  cell(R, 0, "　　　　　　年　　　　　　月　　　　　　日　　　　上記正に領収いたしました。", styles.receiptNote); merge(R, 0, R, 3); R += 2;
 
   // 売主住所 ・ 氏名 ( 右寄せ )
   // 🆕 v9.284: 売主欄は入力された売主住所・氏名を使う（従来はひかり不動産の住所を直書きしていた不具合）。
-  cell(R, 0, `（売主）住所：${form.sellerAddr || ""}`, styles.receiptLabel); merge(R, 0, R, 3); R++;
-  cell(R, 0, `氏名：${form.sellerName || ""}　　　　㊞`, styles.receiptLabel); merge(R, 0, R, 3); R++;
+  // 🆕 v9.285: 共有者(coSellers)がいれば、売主①＋共有者を人数分（住所＋氏名＋㊞）で出力する。
+  const _sellerList = [{ name: form.sellerName, addr: form.sellerAddr },
+    ...(Array.isArray(form.coSellers) ? form.coSellers : [])]
+    .filter(s => s && ((s.name && String(s.name).trim()) || (s.addr && String(s.addr).trim())));
+  if (_sellerList.length === 0) _sellerList.push({ name: "", addr: "" });
+  _sellerList.forEach(s => {
+    cell(R, 0, `（売主）住所：${s.addr || ""}`, styles.receiptLabel); merge(R, 0, R, 3); R++;
+    cell(R, 0, `氏名：${s.name || ""}　　　　㊞`, styles.receiptLabel); merge(R, 0, R, 3); R++;
+  });
 
   // 🆕 v9.48.18: PDFサンプル準拠の 4列構成 ( ラベル / 値1 / 値2 / 余白 )
   ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: R - 1, c: 3 } });
   ws["!cols"] = [{ wch: 18 }, { wch: 26 }, { wch: 28 }, { wch: 10 }];
-  ws["!rows"] = [{ hpt: 40 }];  // タイトル行 高め
+  const _rows = [{ hpt: 40 }];  // タイトル行 高め
+  _rows[_dateRowR] = { hpt: 30 };  // 🆕 v9.285: 年月日の記入行を高くして書きやすく
+  ws["!rows"] = _rows;
   ws["!merges"] = merges;
   ws["!pageSetup"] = { paperSize: 9, orientation: "portrait", fitToWidth: 1, fitToHeight: 0, scale: 100 };
   ws["!margins"] = { left: 0.5, right: 0.5, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 };
