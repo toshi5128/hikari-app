@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-08-v9.286-seisan-save";
+const APP_VERSION = "2026-07-08-v9.287-seisan-cell-wrap";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -26942,7 +26942,7 @@ function SeisanFormPage({ data, setData, onBack }) {
     rows.push([]);
     rows.push(["■ 取引概要"]);
     if (!form.sameDayContract && form.contractDate) rows.push(["契約日", contractDateStr]);
-    rows.push(["決済日時", `${settleDateStr}　${settleTimeHint}`]);
+    rows.push(["決済日時", `${settleDateStr}\n${settleTimeHint}`]);  // 🆕 v9.287: 日付と時刻を明示改行（括弧の途中で折り返さない）
     rows.push(["決済場所", form.settlementPlace]);
     rows.push(["物件の種別", form.propertyType || ""]);
     rows.push(["物件の表示", form.propertyAddr]);
@@ -27063,7 +27063,9 @@ function SeisanFormPage({ data, setData, onBack }) {
     const ws = XLSX.utils.aoa_to_sheet(rows);
     // 🆕 v9.48.11: 見切れ防止 ・ A 列を広く ・ 印刷は「用紙幅にフィット」 で自動縮小
     // 🆕 v9.285: 列幅合計をA4縦に収まる幅へ（旧 42+30+36=108 はA4超過で右が切れていた）。全セル折り返し済み。
-    ws["!cols"] = [{ wch: 30 }, { wch: 22 }, { wch: 26 }];
+    // 🆕 v9.287: ラベル列を少し広げ（長い項目名の折り返し対策）、金額列は数字なので狭く。合計は78のまま。
+    //   文字値の2列行は col1:col2 を結合するので、値は 18+28=46幅で折り返す（括弧の途中で切れにくい）。
+    ws["!cols"] = [{ wch: 32 }, { wch: 18 }, { wch: 28 }];
     // 🆕 v9.48.10: 範囲を 3列 ( A〜C ) に制限 → D列以降を出力しない
     ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length - 1, c: 2 } });
     // 🆕 v9.48.13: 行高はタイトル ・ 副題のみ固定 ・ それ以外は Excel に自動計算させる ( wrapText の内容に応じて伸びる )
@@ -27115,6 +27117,14 @@ function SeisanFormPage({ data, setData, onBack }) {
       }
       if (isNote) {
         merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 2 } });
+      }
+      // 🆕 v9.287: 「ラベル＋文字値」の2列行（決済日時・決済場所・物件の表示・売主・買主 等）は、
+      //   値を col1:col2 に結合して幅を確保する。狭い col1 だけだと括弧の途中や1文字だけで
+      //   折り返して見苦しくなるため。金額（数値）の行は結合しない（右寄せの数字のまま）。
+      const isTwoColText = !isSectionHeader && !isSubHeader && !isNote && !isTitle && !isSubtitle
+        && !isTableHeader && !isTotalRow && row.length === 2 && typeof row[1] === "string" && row[1] !== "";
+      if (isTwoColText) {
+        merges.push({ s: { r: R, c: 1 }, e: { r: R, c: 2 } });
       }
 
       for (let C = range.s.c; C <= range.e.c; C++) {
