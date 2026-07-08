@@ -24,6 +24,10 @@
 <!-- Leaflet for in-app map -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- 🆕 v9.295: マーカークラスタリング（近いピンをまとめ、ズームで展開＝地図の軽量化）。未ロード時は従来の個別描画に自動フォールバック -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <!-- 🆕 v9.46.4: pdf.js for 登記簿 ・ レインズ PDF 自動抽出 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
@@ -231,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-08-v9.294-seisan-merge-value-bc";
+const APP_VERSION = "2026-07-08-v9.296-live-route-smooth";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -5818,6 +5822,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
   const markersRef = React.useRef([]);
+  // 🆕 v9.295: マーカークラスタ用レイヤー（プラグイン未ロード時は null ＝従来どおり個別に map へ addTo）
+  const clusterGroupRef = React.useRef(null);
   // 🆕 v8.95: 現在地マーカー＋誤差サークル
   const currentLocMarkerRef = React.useRef(null);
   const currentLocCircleRef = React.useRef(null);
@@ -5839,10 +5845,29 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       attribution: "© OpenStreetMap",
       maxZoom: 19,
     }).addTo(map);
+    // 🆕 v9.295: マーカークラスタ・グループを作成し map に載せる。
+    //   近いピンを1つの丸（件数付き）にまとめ、ズームすると個々のピンが出てくる（Googleマイマップ相当）。
+    //   プラグインが未ロード（CDN不達など）の時は null にして、従来どおり各マーカーを直接 map に載せる方式へ自動フォールバック。
+    if (typeof L.markerClusterGroup === "function") {
+      try {
+        const cg = L.markerClusterGroup({
+          chunkedLoading: true,          // 大量ピンを分割追加してUIの固まりを防ぐ
+          showCoverageOnHover: false,    // ホバー時の範囲ポリゴンは出さない（軽量・シンプル）
+          spiderfyOnMaxZoom: false,      // 最大ズームで放射展開せず、素直に個別ピン表示
+          disableClusteringAtZoom: 17,   // 街区レベル（z17〜）まで寄せたら必ず個別ピンに割れる
+          maxClusterRadius: 60,          // まとめる距離（px）。小さいほど早くバラける
+        });
+        map.addLayer(cg);
+        clusterGroupRef.current = cg;
+      } catch (e) { clusterGroupRef.current = null; }
+    } else {
+      clusterGroupRef.current = null;
+    }
     mapInstanceRef.current = map;
     return () => {
       try { map.remove(); } catch (e) {}
       mapInstanceRef.current = null;
+      clusterGroupRef.current = null;
     };
   }, []);
 
@@ -5890,9 +5915,18 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         addPoint: (lat, lng) => {
           try {
             livePolylinePointsRef.current.push([lat, lng]);
-            // 直近 600 点で上限 ( ≒20 分 @ 2秒間隔 )。 古いのは間引いて memory 制御
-            if (livePolylinePointsRef.current.length > 600) {
-              livePolylinePointsRef.current = livePolylinePointsRef.current.filter((_, i) => i % 2 === 0);
+            // 🆕 v9.296: 長時間探索で「手元の線が角張る(カクカク)」不具合の修正。
+            //   旧: 600点(≒20分)超で線"全体"を一律半分に間引く → 今歩いている手元の線まで
+            //       間隔が2倍→4倍と粗くなり、20分・40分…と経つほど曲がり角が角張っていった。
+            //   新: 上限を大きく上げ(canvasは数千点でも余裕)、超過時も「後方の古い線」だけ間引く。
+            //       直近(手元)は常に無加工=密のまま → 手元の線は角張らない。古い後方だけ徐々に粗く。
+            const MAX_LIVE = 3000;   // ≒100分ぶん(2秒間隔)。通常の外回りでは間引き自体が発生しない
+            const KEEP_TAIL = 1500;  // 直近≒50分は無加工で密を死守(手元の滑らかさを最優先)
+            if (livePolylinePointsRef.current.length > MAX_LIVE) {
+              const _p = livePolylinePointsRef.current;
+              const _cut = _p.length - KEEP_TAIL;
+              // 古い前半だけ半分に間引き、直近の後半(手元)はそのまま連結
+              livePolylinePointsRef.current = _p.slice(0, _cut).filter((_, i) => i % 2 === 0).concat(_p.slice(_cut));
             }
             if (livePolylineRef.current) {
               livePolylineRef.current.setLatLngs(livePolylinePointsRef.current);
@@ -5916,8 +5950,12 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    // 既存マーカー削除
-    markersRef.current.forEach(m => map.removeLayer(m));
+    // 既存マーカー削除（🆕 v9.295: クラスタ有効時はまとめて clearLayers、無効時は従来どおり個別に removeLayer）
+    if (clusterGroupRef.current) {
+      try { clusterGroupRef.current.clearLayers(); } catch (e) {}
+    } else {
+      markersRef.current.forEach(m => map.removeLayer(m));
+    }
     markersRef.current = [];
     // 表示対象（座標あり）
     const validItems = items.filter(it => {
@@ -6094,7 +6132,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         iconSize: [outerSize, outerSize],
         iconAnchor: [anchor, anchor],
       });
-      const marker = L.marker([lat, lng], { icon }).addTo(map);
+      // 🆕 v9.295: ここでは map に addTo しない。ループ後にクラスタへ一括投入（未対応時は個別 addTo にフォールバック）。
+      const marker = L.marker([lat, lng], { icon });
       // 🆕 v8.98→v8.125: ポップアップ表示は地番優先（raw経由 landmark）
       const popupTitle = (it.address && String(it.address).trim()) || (_r.landmark && `📍 ${_r.landmark}（地番待ち）`) || "(地番未入力)";
       // 🆕 v8.125→v9.16: 現地ピン5状態ラベル
@@ -6212,6 +6251,14 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       }
       markersRef.current.push(marker);
     });
+    // 🆕 v9.295: 生成した全マーカーをクラスタへ一括投入（addLayers＝個別addより高速）。
+    //   プラグイン未ロード時は従来どおり1本ずつ map に載せる（見た目・挙動は現状維持）。
+    if (clusterGroupRef.current) {
+      try { clusterGroupRef.current.addLayers(markersRef.current); }
+      catch (e) { markersRef.current.forEach(m => { try { m.addTo(map); } catch (_) {} }); }
+    } else {
+      markersRef.current.forEach(m => { try { m.addTo(map); } catch (_) {} });
+    }
     // 🆕 v8.96: 中心調整は初回のみ自動実行（ユーザーがズーム/パンした後は勝手に戻さない）
     if (markersRef.current.length > 0 && !hasInitializedBoundsRef.current) {
       try {
