@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-08-v9.290-seisan-broker-gaps";
+const APP_VERSION = "2026-07-08-v9.291-seisan-broker-auto";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -26943,8 +26943,11 @@ function SeisanFormPage({ data, setData, onBack }) {
     const sellerDisp = _sellerNames.length ? _sellerNames.map(n => n + " 様").join("　") : "";  // 例: 佐藤恵美子 様　清水和子 様
     let rows = [];
     rows.push([form.docType === "seller" ? "売買精算書（売主様用）" : form.docType === "buyer" ? "売買精算書（買主様用）" : "売買精算書"]);
-    // 🆕 v9.290: 仲介会社は空欄なら出さない（当社買取など仲介の無い取引に対応）。住所は決済場所に記載済のため省略。
-    rows.push([`作成日：${todayDateStr}${form.brokerName && form.brokerName.trim() ? "　　仲介：" + form.brokerName.trim() : ""}`]);
+    // 🆕 v9.291: 買主がひかり不動産＝当社買取なので「仲介」は付けない（自動判定）。
+    //   通常仲介はbrokerName（空欄なら出さない）。住所は決済場所に記載済のため省略。
+    const _isJikaBuy = /ひかり\s*不動産/.test(form.buyerName || "");  // 当社が買主＝買取
+    const _brokerLabel = _isJikaBuy ? "" : (form.brokerName || "").trim();
+    rows.push([`作成日：${todayDateStr}${_brokerLabel ? "　　仲介：" + _brokerLabel : ""}`]);
     rows.push([]);
     rows.push(["■ 取引概要"]);
     if (!form.sameDayContract && form.contractDate) rows.push(["契約日", contractDateStr]);
@@ -27266,9 +27269,10 @@ function SeisanFormPage({ data, setData, onBack }) {
         <Field label="決済場所">
           <input style={inp} value={form.settlementPlace} onChange={e => set("settlementPlace", e.target.value)} />
         </Field>
-        {/* 🆕 v9.290: 仲介会社（買取など仲介の無い取引は空欄にすると副題に「仲介：…」が出ない） */}
-        <Field label="仲介会社（当社買取など仲介が無い取引は空欄に）">
-          <input style={inp} value={form.brokerName} onChange={e => set("brokerName", e.target.value)} placeholder="例: 合同会社ひかり不動産（買取のときは空欄）" />
+        {/* 🆕 v9.290/291: 仲介会社。買主がひかり不動産＝当社買取のときは自動で「仲介：…」を出さない。
+            それ以外で仲介が無い場合は空欄にすれば非表示。 */}
+        <Field label="仲介会社（買主が当社＝買取のときは自動で非表示。他社仲介や仲介無しは適宜変更/空欄に）">
+          <input style={inp} value={form.brokerName} onChange={e => set("brokerName", e.target.value)} placeholder="例: 合同会社ひかり不動産（買取は空欄でなくてもOK＝自動で消えます）" />
         </Field>
         {/* 🆕 v9.48.5: 物件の種別 */}
         <Field label="物件の種別">
