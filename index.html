@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-08-v9.285-seisan-cosellers-a4";
+const APP_VERSION = "2026-07-08-v9.286-seisan-save";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1977,6 +1977,7 @@ const DEFAULT_DATA = {
   owners: [],
   yakusho: [],
   sekisan: [],
+  seisanDocs: [], // 🆕 v9.286: 保存した売買精算書（入力内容のスナップショット。全社共有）
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
   memberGoals: {},
   // 🆕 v8.67: デモ目標値を 0 に。実目標は Supabase の値を使う
@@ -26751,7 +26752,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
 function ShoruiPage({ data, setData, onBack }) {
   const [doc, setDoc] = useState(null);     // null | "seisan"
   const [folder, setFolder] = useState(null); // null | "jiage"
-  if (doc === "seisan") return <SeisanFormPage onBack={() => setDoc(null)} />;
+  if (doc === "seisan") return <SeisanFormPage data={data} setData={setData} onBack={() => setDoc(null)} />;
   const PDF_JIAGE_TEIAN = "jiage-baikyaku-teian.pdf"; // 🆕 v9.199: 静的アセット（dist直下に配置）
   const openPdf = (url) => { try { window.open(url, "_blank"); } catch (e) { window.location.href = url; } };
   const topItems = [
@@ -26796,7 +26797,7 @@ function ShoruiPage({ data, setData, onBack }) {
 }
 
 // 🆕 v9.48: 売買精算書 作成ページ ( 入力フォーム + Excel出力 )
-function SeisanFormPage({ onBack }) {
+function SeisanFormPage({ data, setData, onBack }) {
   const today = new Date();
   const todayStr = today.toISOString().slice(0, 10);
   const [form, setForm] = useState({
@@ -26838,6 +26839,45 @@ function SeisanFormPage({ onBack }) {
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const num = v => parseFloat(String(v).replace(/,/g, "")) || 0;
+
+  // 🆕 v9.286: 作成した精算書をアプリ内(クラウド・全社共有)に保存／読込／削除する
+  const savedDocs = Array.isArray(data && data.seisanDocs) ? data.seisanDocs : [];
+  const [currentDocId, setCurrentDocId] = useState(null); // 読込中の保存精算書ID(=更新保存の対象)
+  const [showSaved, setShowSaved] = useState(false);
+  const docLabel = (f) => {
+    const p = (f.propertyAddr || "").trim() || "物件未入力";
+    const s = (f.sellerName || "").trim() || "売主未入力";
+    return `${p} ／ ${s} 様`;
+  };
+  const saveDoc = () => {
+    if (!setData) return;
+    const now = Date.now();
+    const snapshot = JSON.parse(JSON.stringify(form)); // フォーム全体をスナップショット
+    const id = currentDocId || `seisan_${now}`;
+    setData(d => {
+      const list = Array.isArray(d.seisanDocs) ? d.seisanDocs : [];
+      const exists = list.some(x => x.id === id);
+      const entry = { id, label: docLabel(form), form: snapshot, updatedAt: now,
+                      createdAt: (list.find(x => x.id === id) || {}).createdAt || now,
+                      savedBy: (typeof getCurrentUser === "function" && getCurrentUser()) || "" };
+      const next = exists ? list.map(x => x.id === id ? entry : x) : [entry, ...list];
+      return { ...d, seisanDocs: next };
+    });
+    setCurrentDocId(id);
+    try { window.alert("この精算書を保存しました。次回「保存した精算書」から開けます。"); } catch (e) {}
+  };
+  const loadDoc = (docRec) => {
+    if (!docRec || !docRec.form) return;
+    setForm(f => ({ ...f, ...docRec.form })); // 既定値の上にスナップショットを重ねる(新項目の欠けを補完)
+    setCurrentDocId(docRec.id);
+    setShowSaved(false);
+  };
+  const deleteDoc = (id) => {
+    if (!setData) return;
+    if (!window.confirm("この保存済み精算書を削除しますか？")) return;
+    setData(d => ({ ...d, seisanDocs: (Array.isArray(d.seisanDocs) ? d.seisanDocs : []).filter(x => x.id !== id) }));
+    if (currentDocId === id) setCurrentDocId(null);
+  };
 
   // 🆕 v9.48.1: 固定資産税 + 都市計画税 → 合計 + 日割り計算 ( 1月1日基準 )
   const calcTax = () => {
@@ -27139,6 +27179,31 @@ function SeisanFormPage({ onBack }) {
         <NavIcon name="bulb" size={15} /> 必要な情報を入力 → 「Excel ダウンロード」 で売買精算書 ( .xlsx ) が出力されます。 固定資産税は 1月1日基準で自動 日割り計算。
       </div>
 
+      {/* 🆕 v9.286: 保存した精算書の一覧（開く／削除） */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+        <div onClick={() => setShowSaved(s => !s)} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+          <NavIcon name="folder" size={16} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>保存した精算書（{savedDocs.length}件）</span>
+          {currentDocId && <span style={{ fontSize: 10, fontWeight: 700, color: C.accent, background: C.accent + "18", borderRadius: 6, padding: "2px 6px" }}>編集中</span>}
+          <span style={{ marginLeft: "auto", color: C.muted, fontSize: 12 }}>{showSaved ? "▲" : "▼"}</span>
+        </div>
+        {showSaved && (
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+            {savedDocs.length === 0 && <div style={{ fontSize: 12, color: C.muted }}>まだ保存された精算書はありません。入力して下の「この精算書を保存」を押すとここに追加されます。</div>}
+            {savedDocs.map(docRec => (
+              <div key={docRec.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: C.inset, border: `1px solid ${currentDocId === docRec.id ? C.accent : C.borderDim}`, borderRadius: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{docRec.label || "(無題)"}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>{new Date(docRec.updatedAt || docRec.createdAt || Date.now()).toLocaleString("ja-JP")}{docRec.savedBy ? `・${docRec.savedBy}` : ""}</div>
+                </div>
+                <button type="button" onClick={() => loadDoc(docRec)} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", flex: "none" }}>開く</button>
+                <button type="button" onClick={() => deleteDoc(docRec.id)} style={{ background: "none", border: `1.5px solid ${C.danger}55`, color: C.danger, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", flex: "none" }}>削除</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* 取引概要 */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>■ 取引概要</div>
@@ -27425,6 +27490,22 @@ function SeisanFormPage({ onBack }) {
         <textarea style={{ ...inp, height: 60, resize: "vertical" }} value={form.notes}
           onChange={e => set("notes", e.target.value)}
           placeholder="例: 振込手数料は売主様 ご負担" />
+      </div>
+
+      {/* 🆕 v9.286: アプリ内に保存 / 新規作成 */}
+      <div style={{ display: "grid", gridTemplateColumns: currentDocId ? "1fr 1fr" : "1fr", gap: 8, marginTop: 8 }}>
+        <button onClick={saveDoc} style={{
+          width: "100%", padding: 13, background: C.accent, color: "#fff",
+          border: "none", borderRadius: 10, fontSize: 14, fontWeight: 800,
+          cursor: "pointer", fontFamily: "inherit",
+        }}><NavIcon name="save" size={15} /> {currentDocId ? "上書き保存" : "この精算書を保存"}</button>
+        {currentDocId && (
+          <button onClick={() => { setCurrentDocId(null); window.alert("新規モードに切り替えました。次の保存は新しい精算書として追加されます。"); }} style={{
+            width: "100%", padding: 13, background: C.inset, color: C.text,
+            border: `1.5px solid ${C.borderDim}`, borderRadius: 10, fontSize: 13, fontWeight: 700,
+            cursor: "pointer", fontFamily: "inherit",
+          }}>＋ 別の精算書として保存</button>
+        )}
       </div>
 
       {/* 出力ボタン */}
