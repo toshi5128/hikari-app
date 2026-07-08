@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-08-v9.289-seisan-cosellers-display";
+const APP_VERSION = "2026-07-08-v9.290-seisan-broker-gaps";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -26806,6 +26806,7 @@ function SeisanFormPage({ data, setData, onBack }) {
     sameDayContract: false,              // 🆕 v9.48.7: 契約と決済を同日にする
     contractDate: "",                    // 🆕 v9.48.7: 契約日 ( 同日でない場合 )
     settlementPlace: "合同会社ひかり不動産 ( 埼玉県熊谷市籠原南1丁目225番 )",
+    brokerName: "合同会社ひかり不動産",   // 🆕 v9.290: 仲介会社（買取など仲介が無い取引は空欄→副題に出さない）
     propertyType: "土地",                // 🆕 v9.48.5: 物件の種別 ( 土地 / 中古戸建 )
     propertyAddr: "",                    // 物件の表示
     sellerName: "",                      // 売主
@@ -26940,9 +26941,10 @@ function SeisanFormPage({ data, setData, onBack }) {
     const _sellerNames = [(form.sellerName || "").trim(),
       ...((Array.isArray(form.coSellers) ? form.coSellers : []).map(c => (c && c.name || "").trim()))].filter(Boolean);
     const sellerDisp = _sellerNames.length ? _sellerNames.map(n => n + " 様").join("　") : "";  // 例: 佐藤恵美子 様　清水和子 様
-    const rows = [];
+    let rows = [];
     rows.push([form.docType === "seller" ? "売買精算書（売主様用）" : form.docType === "buyer" ? "売買精算書（買主様用）" : "売買精算書"]);
-    rows.push([`作成日：${todayDateStr}　　仲介：合同会社ひかり不動産`]);  // 🆕 v9.288: 住所は決済場所に記載済のため副題からは省き1行に収める
+    // 🆕 v9.290: 仲介会社は空欄なら出さない（当社買取など仲介の無い取引に対応）。住所は決済場所に記載済のため省略。
+    rows.push([`作成日：${todayDateStr}${form.brokerName && form.brokerName.trim() ? "　　仲介：" + form.brokerName.trim() : ""}`]);
     rows.push([]);
     rows.push(["■ 取引概要"]);
     if (!form.sameDayContract && form.contractDate) rows.push(["契約日", contractDateStr]);
@@ -27061,8 +27063,11 @@ function SeisanFormPage({ data, setData, onBack }) {
     }
     if (form.notes) form.notes.split("\n").forEach(line => { if (line.trim()) rows.push(["・" + line]); });
 
+    // 🆕 v9.290: 空行(スペーサー)は全削除する。紺色の見出し行で区切りは十分で、薄い隙間が
+    //   かえって見苦しい（下田指摘）。行が減って高さも詰まる＝A4に収まりやすくなる。
+    rows = rows.filter(r => Array.isArray(r) && r.length > 0);
     // 🆕 v9.48.6: 各行の「種類」 ラベルでスタイル後付け ( xlsx-js-style 使用 )
-    // row 0: タイトル, row 1: 副題, row 2: 空行
+    // row 0: タイトル, row 1: 副題
     // 以後: 行内容で判別
     const ws = XLSX.utils.aoa_to_sheet(rows);
     // 🆕 v9.48.11: 見切れ防止 ・ A 列を広く ・ 印刷は「用紙幅にフィット」 で自動縮小
@@ -27260,6 +27265,10 @@ function SeisanFormPage({ data, setData, onBack }) {
         )}
         <Field label="決済場所">
           <input style={inp} value={form.settlementPlace} onChange={e => set("settlementPlace", e.target.value)} />
+        </Field>
+        {/* 🆕 v9.290: 仲介会社（買取など仲介の無い取引は空欄にすると副題に「仲介：…」が出ない） */}
+        <Field label="仲介会社（当社買取など仲介が無い取引は空欄に）">
+          <input style={inp} value={form.brokerName} onChange={e => set("brokerName", e.target.value)} placeholder="例: 合同会社ひかり不動産（買取のときは空欄）" />
         </Field>
         {/* 🆕 v9.48.5: 物件の種別 */}
         <Field label="物件の種別">
