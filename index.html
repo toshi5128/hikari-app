@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-08-v9.288-seisan-a4-height";
+const APP_VERSION = "2026-07-08-v9.289-seisan-cosellers-display";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -26936,6 +26936,10 @@ function SeisanFormPage({ data, setData, onBack }) {
     // 🆕 v9.48.7: 契約日 ( 同日 or 別日 )
     const contractDateStr = form.sameDayContract ? settleDateStr : fmtDate(form.contractDate);
     const settleTimeHint = form.sameDayContract ? `${form.settlementTime}　※契約・決済 同日` : form.settlementTime;
+    // 🆕 v9.289: 売主が共有(複数)の場合、売主①＋共有者(coSellers)を連名で表示する。各氏名に「様」を付ける。
+    const _sellerNames = [(form.sellerName || "").trim(),
+      ...((Array.isArray(form.coSellers) ? form.coSellers : []).map(c => (c && c.name || "").trim()))].filter(Boolean);
+    const sellerDisp = _sellerNames.length ? _sellerNames.map(n => n + " 様").join("　") : "";  // 例: 佐藤恵美子 様　清水和子 様
     const rows = [];
     rows.push([form.docType === "seller" ? "売買精算書（売主様用）" : form.docType === "buyer" ? "売買精算書（買主様用）" : "売買精算書"]);
     rows.push([`作成日：${todayDateStr}　　仲介：合同会社ひかり不動産`]);  // 🆕 v9.288: 住所は決済場所に記載済のため副題からは省き1行に収める
@@ -26946,7 +26950,7 @@ function SeisanFormPage({ data, setData, onBack }) {
     rows.push(["決済場所", form.settlementPlace]);
     rows.push(["物件の種別", form.propertyType || ""]);
     rows.push(["物件の表示", form.propertyAddr]);
-    rows.push(["売主", form.sellerName + " 様"]);
+    rows.push(["売主", sellerDisp]);
     rows.push(["買主", form.buyerName + " 様"]);
     rows.push(["売買代金", price]);
     if (deposit > 0) {
@@ -26959,9 +26963,9 @@ function SeisanFormPage({ data, setData, onBack }) {
       rows.push(["■ 買主精算明細（" + form.buyerName + " 様 お支払い）"]);
       rows.push(["項目", "金額", "お支払先"]);
       // 🆕 v9.48.11: お支払先の「様」 を削除 ( 法人名のとき不自然 )
-      rows.push(["売買代金", price, form.sellerName]);
-      if (depositApplied > 0) rows.push(["うち 手付金充当（売買契約時に支払済）", -depositApplied, form.sellerName]);
-      if (buyerTax > 0) rows.push(["固定資産税・都市計画税 精算金（日割り）", buyerTax, form.sellerName]);
+      rows.push(["売買代金", price, sellerDisp]);
+      if (depositApplied > 0) rows.push(["うち 手付金充当（売買契約時に支払済）", -depositApplied, sellerDisp]);
+      if (buyerTax > 0) rows.push(["固定資産税・都市計画税 精算金（日割り）", buyerTax, sellerDisp]);
       if (feeB > 0) rows.push(["仲介手数料", feeB, "合同会社ひかり不動産"]);
       // 🆕 v9.48.12: 収入印紙代 ( 買主分 ) を 買主精算明細にも表示 ・ 支払い済みでも金額を記録
       // 🆕 v9.48.15: 印紙代 ・ 支払い済み時は 1行で マイナス表示
@@ -26980,7 +26984,7 @@ function SeisanFormPage({ data, setData, onBack }) {
     }
 
     if (form.docType === "both" || form.docType === "seller") {
-      rows.push(["■ 売主精算明細（" + form.sellerName + " 様）"]);
+      rows.push(["■ 売主精算明細（" + sellerDisp + "）"]);
       rows.push(["項目", "受取", "支払"]);
       // 🆕 v9.48.10: D列削除 → 補足を項目名に括弧書きで統合
       const note1 = depositApplied > 0 ? `（うち手付金 ${depositApplied.toLocaleString()}円は契約時受領済）` : "（買主より受領）";
@@ -27007,7 +27011,7 @@ function SeisanFormPage({ data, setData, onBack }) {
     if (form.docType === "both") {
       rows.push(["■ 合同会社ひかり不動産 受領明細"]);
       rows.push(["項目", "金額", "受領元"]);
-      if (feeS > 0) rows.push(["仲介手数料", feeS, "売主・" + form.sellerName + " より"]);
+      if (feeS > 0) rows.push(["仲介手数料", feeS, "売主・" + sellerDisp + " より"]);
       if (feeB > 0) rows.push(["仲介手数料", feeB, "買主・" + form.buyerName + " より"]);
       rows.push(["ひかり不動産 受領合計", feeS + feeB]);
       rows.push([]);
@@ -27022,7 +27026,7 @@ function SeisanFormPage({ data, setData, onBack }) {
     if (showSellerBank || showHikariBank) {
       rows.push(["■ 振込先"]);
       if (showSellerBank) {
-        rows.push([`【${form.sellerName} 様】（お手取り金 お受取口座）`]);
+        rows.push([`【${sellerDisp}】（お手取り金 お受取口座）`]);
         if (form.sellerBank) rows.push(["金融機関名", form.sellerBank]);
         if (form.sellerBranch) rows.push(["支店名", form.sellerBranch]);
         if (form.sellerKind) rows.push(["預金種別", form.sellerKind]);
@@ -27065,8 +27069,9 @@ function SeisanFormPage({ data, setData, onBack }) {
     // 🆕 v9.285/287/288: 列幅はA4縦の印刷可能幅（余白0.4"で約7.47"）に収まる範囲で、なるべく広く取り
     //   「折り返し（＝行が縦に伸びる）」を減らす。合計90wch≒6.7"で余裕を持って収まる。
     //   ※xlsx-js-styleは!pageSetup(fitToWidth/scale)を書き出さないので、幅も高さも幾何で収める必要がある。
-    //   文字値の2列行は col1:col2 を結合＝値は 22+30=52wch(≒26全角)で、住所も1行に収まりやすい。
-    ws["!cols"] = [{ wch: 38 }, { wch: 22 }, { wch: 30 }];
+    //   🆕 v9.289: 値の列(col1)を広く(36wch)取り、非結合のwrapTextで自動的に行を伸ばす（結合セルは
+    //   Excelが行高を自動調整しないため使わない）。col1は金額(数値・右寄せ)も兼ねる。合計90wch。
+    ws["!cols"] = [{ wch: 32 }, { wch: 36 }, { wch: 22 }];
     // 🆕 v9.48.10: 範囲を 3列 ( A〜C ) に制限 → D列以降を出力しない
     ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length - 1, c: 2 } });
     // 🆕 v9.288: 行高はタイトル・副題を固定、空行は薄く（5pt）してA4高さに収める。
@@ -27125,14 +27130,9 @@ function SeisanFormPage({ data, setData, onBack }) {
       if (isNote) {
         merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 2 } });
       }
-      // 🆕 v9.287: 「ラベル＋文字値」の2列行（決済日時・決済場所・物件の表示・売主・買主 等）は、
-      //   値を col1:col2 に結合して幅を確保する。狭い col1 だけだと括弧の途中や1文字だけで
-      //   折り返して見苦しくなるため。金額（数値）の行は結合しない（右寄せの数字のまま）。
-      const isTwoColText = !isSectionHeader && !isSubHeader && !isNote && !isTitle && !isSubtitle
-        && !isTableHeader && !isTotalRow && row.length === 2 && typeof row[1] === "string" && row[1] !== "";
-      if (isTwoColText) {
-        merges.push({ s: { r: R, c: 1 }, e: { r: R, c: 2 } });
-      }
+      // 🆕 v9.289: 以前は「ラベル＋文字値」の2列行を col1:col2 に結合していたが、Excelは結合セルの
+      //   行高を自動調整しないため、2行になる値（決済日時の日付＋時刻など）が隠れてしまった。
+      //   結合をやめ、値は非結合の広い col1(36wch) に置く＝wrapTextで自動的に行が伸びて全部見える。
 
       for (let C = range.s.c; C <= range.e.c; C++) {
         const addr = XLSX.utils.encode_cell({ r: R, c: C });
