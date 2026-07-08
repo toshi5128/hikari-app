@@ -231,7 +231,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-08-v9.293-seisan-settle-2rows";
+const APP_VERSION = "2026-07-08-v9.294-seisan-merge-value-bc";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -27122,6 +27122,10 @@ function SeisanFormPage({ data, setData, onBack }) {
     };
 
     // 行ごとに種類を判別 → セルにスタイル適用
+    // 🆕 v9.294: 文字列の表示幅(wch概算)。全角=2・半角=1。結合セルは行高を自動調整しないため、
+    //   この幅から行数を割り出して高さを明示する（見切れ防止）。
+    const estW = (s) => { let w = 0; for (const ch of String(s)) { w += /[^\x00-\xff]/.test(ch) ? 2 : 1; } return w; };
+    let inTable = false;  // 明細表（項目｜金額｜…）の中か。表の中は B:C を結合しない（列が潰れる）
     const range = XLSX.utils.decode_range(ws["!ref"]);
     for (let R = range.s.r; R <= range.e.r; R++) {
       const row = rows[R] || [];
@@ -27134,6 +27138,10 @@ function SeisanFormPage({ data, setData, onBack }) {
       const isTotalRow = ["小計", "差引　売主お手取り額", "買主 決済時お支払合計", "ひかり不動産 受領合計"].includes(firstCell);
       const isNote = firstCell.startsWith("・");
 
+      // 🆕 v9.294: 表の開始/終了を追跡。見出し■で表の外に戻り、項目ヘッダー行で表の中に入る。
+      if (isSectionHeader) inTable = false;
+      if (isTableHeader) inTable = true;
+
       // section header / subtitle / title は A:D を結合
       if (isSectionHeader || isSubHeader) {
         merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 2 } });
@@ -27141,9 +27149,19 @@ function SeisanFormPage({ data, setData, onBack }) {
       if (isNote) {
         merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 2 } });
       }
-      // 🆕 v9.289: 以前は「ラベル＋文字値」の2列行を col1:col2 に結合していたが、Excelは結合セルの
-      //   行高を自動調整しないため、2行になる値（決済日時の日付＋時刻など）が隠れてしまった。
-      //   結合をやめ、値は非結合の広い col1(36wch) に置く＝wrapTextで自動的に行が伸びて全部見える。
+      // 🆕 v9.294: 取引概要・振込先の「ラベル＋値」行は、値のB:Cを結合して横に広く見やすくする。
+      //   ・明細表の中（inTable）は結合しない（お支払先/支払 列が潰れるため）
+      //   ・C列に補足がある行（手付金の「支払い済み」等）も結合しない（補足が隠れる）
+      //   結合セルは行高が自動で伸びないので、値の幅から行数を出して高さを明示（見切れ防止）。
+      const isValueRow = !isTitle && !isSubtitle && !isSectionHeader && !isTableHeader && !isSubHeader && !isNote;
+      const c2 = row[2];
+      const c2empty = (c2 === undefined || c2 === null || c2 === "");
+      if (isValueRow && !inTable && c2empty) {
+        merges.push({ s: { r: R, c: 1 }, e: { r: R, c: 2 } });  // 値のB:Cを結合
+        const valStr = (typeof row[1] === "number") ? row[1].toLocaleString() : String(row[1] == null ? "" : row[1]);
+        const lines = Math.max(1, ...String(valStr).split("\n").map(seg => Math.max(1, Math.ceil(estW(seg) / 54))));
+        _rowsH[R] = { hpt: Math.max(16, lines * 15) };
+      }
 
       for (let C = range.s.c; C <= range.e.c; C++) {
         const addr = XLSX.utils.encode_cell({ r: R, c: C });
