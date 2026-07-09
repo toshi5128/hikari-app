@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.303-ukeoi-print-newtab";
+const APP_VERSION = "2026-07-10-v9.304-ukeoi-save";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1982,6 +1982,7 @@ const DEFAULT_DATA = {
   yakusho: [],
   sekisan: [],
   seisanDocs: [], // 🆕 v9.286: 保存した売買精算書（入力内容のスナップショット。全社共有）
+  ukeoiDocs: [], // 🆕 v9.304: 保存したリフォーム工事請負契約書（入力内容のスナップショット。全社共有）
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
   memberGoals: {},
   // 🆕 v8.67: デモ目標値を 0 に。実目標は Supabase の値を使う
@@ -27459,9 +27460,10 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
 }
 
 // 🆕 v9.48: 書類関係ページ ( メニュー: 精算書など )
-// 🔨 リフォーム工事請負契約書 作成ページ（可変項目を入力 → 隠しiframeでA4×3印刷）
-// 都度入力（＝保存しない）。データ保護対象フィールドやマージロジックには一切触れない。
-function UkeoiKeiyakuPage({ onBack }) {
+// 🔨 リフォーム工事請負契約書 作成ページ（可変項目を入力 → 新規タブでA4×3印刷）
+// 作成データはアプリ内(クラウド・全社共有)に保存/開き直し/再出力できる（精算書 seisanDocs と同方式）。
+// データ保護対象フィールドやマージ/同期ロジックには一切触れない。
+function UkeoiKeiyakuPage({ data, setData, onBack }) {
   const [form, setForm] = useState({
     kouName: "",                                   // 注文者（甲）氏名
     projectName: "",                               // 工事名称
@@ -27481,6 +27483,50 @@ function UkeoiKeiyakuPage({ onBack }) {
     if (!canPrint) { alert("注文者名・工事名称・請負代金（税込）は必須です。"); return; }
     printUkeoiKeiyaku(form);
   };
+
+  // 🆕 v9.304: 作成した契約書をアプリ内(クラウド・全社共有)に保存／読込／削除する（seisanDocsと同じ作り）
+  const savedDocs = Array.isArray(data && data.ukeoiDocs) ? data.ukeoiDocs : [];
+  const [currentDocId, setCurrentDocId] = useState(null); // 読込中の保存契約書ID(=上書き保存の対象)
+  const [showSaved, setShowSaved] = useState(false);
+  const docLabel = (f) => {
+    const p = (f.projectName || "").trim() || "工事名称未入力";
+    const s = (f.kouName || "").trim() || "施主未入力";
+    return `${p} ／ ${s} 様`;
+  };
+  const saveDoc = () => {
+    if (!setData) return;
+    if (!form.kouName.trim() && !form.projectName.trim()) { alert("注文者名か工事名称を入力してから保存してください。"); return; }
+    const now = Date.now();
+    const snapshot = JSON.parse(JSON.stringify(form)); // フォーム全体をスナップショット
+    const id = currentDocId || `ukeoi_${now}`;
+    setData(d => {
+      const list = Array.isArray(d.ukeoiDocs) ? d.ukeoiDocs : [];
+      const exists = list.some(x => x.id === id);
+      const entry = { id, label: docLabel(form), form: snapshot, updatedAt: now,
+                      createdAt: (list.find(x => x.id === id) || {}).createdAt || now,
+                      savedBy: (typeof getCurrentUser === "function" && getCurrentUser()) || "" };
+      const next = exists ? list.map(x => x.id === id ? entry : x) : [entry, ...list];
+      return { ...d, ukeoiDocs: next };
+    });
+    setCurrentDocId(id);
+    try { window.alert("この契約書を保存しました。次回「保存した契約書」から開けます。"); } catch (e) {}
+  };
+  const loadDoc = (docRec) => {
+    if (!docRec || !docRec.form) return;
+    setForm(f => ({ ...f, ...docRec.form })); // 既定値の上にスナップショットを重ねる(新項目の欠けを補完)
+    setCurrentDocId(docRec.id);
+    setShowSaved(false);
+  };
+  const newDoc = () => { // 新規作成（読込中の状態をクリア）
+    setForm({ kouName: "", projectName: "", workPlace: "", totalInclTax: "", contractDate: "", kouAddress: "", kouTel: "" });
+    setCurrentDocId(null);
+  };
+  const deleteDoc = (id) => {
+    if (!setData) return;
+    if (!window.confirm("この保存済み契約書を削除しますか？")) return;
+    setData(d => ({ ...d, ukeoiDocs: (Array.isArray(d.ukeoiDocs) ? d.ukeoiDocs : []).filter(x => x.id !== id) }));
+    if (currentDocId === id) setCurrentDocId(null);
+  };
   return (
     <div style={{ padding: "16px 16px 100px", maxWidth: 720, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
@@ -27489,7 +27535,35 @@ function UkeoiKeiyakuPage({ onBack }) {
       </div>
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 16, lineHeight: 1.7 }}>
         <NavIcon name="bulb" size={15} /> 数項目を入力 → 「作成」で <b>表紙＋本体2ページ（A4×3枚）</b> の契約書が<b>新しいタブ</b>で開きます。タブ上部の「🖨 印刷 / PDF保存」ボタン（スマホは共有→印刷）で <b>PDF保存・印刷</b>できます。<br />
-        条文・デザイン・会社情報（乙＝合同会社ひかり不動産）は固定です。入力内容は保存されません（都度入力）。
+        条文・デザイン・会社情報（乙＝合同会社ひかり不動産）は固定です。入力内容は<b>アプリ内に保存</b>して後から開き直し・再出力できます（全社共有）。
+      </div>
+
+      {/* 🆕 v9.304: 保存した契約書の一覧（開く／削除） */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+        <div onClick={() => setShowSaved(s => !s)} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+          <NavIcon name="folder" size={16} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>保存した契約書（{savedDocs.length}件）</span>
+          {currentDocId && <span style={{ fontSize: 10, fontWeight: 700, color: C.accent, background: C.accent + "18", borderRadius: 6, padding: "2px 6px" }}>編集中</span>}
+          <span style={{ marginLeft: "auto", color: C.muted, fontSize: 12 }}>{showSaved ? "▲" : "▼"}</span>
+        </div>
+        {showSaved && (
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+            {savedDocs.length === 0 && <div style={{ fontSize: 12, color: C.muted }}>まだ保存された契約書はありません。入力して下の「この契約書を保存」を押すとここに追加されます。</div>}
+            {savedDocs.map(docRec => (
+              <div key={docRec.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: C.inset, border: `1px solid ${currentDocId === docRec.id ? C.accent : C.borderDim}`, borderRadius: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{docRec.label || "(無題)"}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>{new Date(docRec.updatedAt || docRec.createdAt || Date.now()).toLocaleString("ja-JP")}{docRec.savedBy ? `・${docRec.savedBy}` : ""}</div>
+                </div>
+                <button type="button" onClick={() => loadDoc(docRec)} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", flex: "none" }}>開く</button>
+                <button type="button" onClick={() => deleteDoc(docRec.id)} style={{ background: "none", border: `1.5px solid ${C.danger}55`, color: C.danger, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", flex: "none" }}>削除</button>
+              </div>
+            ))}
+          </div>
+        )}
+        {currentDocId && (
+          <button type="button" onClick={newDoc} style={{ marginTop: 10, width: "100%", background: "none", border: `1.5px dashed ${C.borderDim}`, color: C.muted, borderRadius: 8, padding: "8px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}>＋ 新規作成（入力をクリア）</button>
+        )}
       </div>
 
       <Field label="注文者（甲）氏名　※必須">
@@ -27528,6 +27602,13 @@ function UkeoiKeiyakuPage({ onBack }) {
         ・請負金額に応じた<b>収入印紙</b>が必要です（建設工事の請負契約＝印紙税法 第2号文書）。税額は金額帯・軽減措置の有無で変わるため、最新の国税庁情報でご確認ください（特約で「甲乙均等負担」と明記済み）。
       </div>
 
+      <button onClick={saveDoc} style={{
+        width: "100%", marginBottom: 10, background: C.cardBg, color: C.text,
+        border: `1.5px solid ${C.borderDim}`, borderRadius: 12, padding: 14, fontSize: 15, fontWeight: 800,
+        cursor: "pointer", fontFamily: "inherit",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+      }}><NavIcon name="save" size={17} /> {currentDocId ? "上書き保存" : "この契約書を保存"}</button>
+
       <button onClick={onPrint} disabled={!canPrint} style={{
         width: "100%", background: canPrint ? C.accent : C.borderDim, color: "#fff",
         border: "none", borderRadius: 12, padding: 16, fontSize: 16, fontWeight: 800,
@@ -27542,7 +27623,7 @@ function ShoruiPage({ data, setData, onBack }) {
   const [doc, setDoc] = useState(null);     // null | "seisan"
   const [folder, setFolder] = useState(null); // null | "jiage"
   if (doc === "seisan") return <SeisanFormPage data={data} setData={setData} onBack={() => setDoc(null)} />;
-  if (doc === "ukeoi") return <UkeoiKeiyakuPage onBack={() => setDoc(null)} />;
+  if (doc === "ukeoi") return <UkeoiKeiyakuPage data={data} setData={setData} onBack={() => setDoc(null)} />;
   const PDF_JIAGE_TEIAN = "jiage-baikyaku-teian.pdf"; // 🆕 v9.199: 静的アセット（dist直下に配置）
   const openPdf = (url) => { try { window.open(url, "_blank"); } catch (e) { window.location.href = url; } };
   const topItems = [
