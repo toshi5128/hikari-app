@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.304-ukeoi-save";
+const APP_VERSION = "2026-07-10-v9.305-ukeoi-kouki-pay";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -24809,10 +24809,20 @@ function buildUkeoiKeiyakuHTML(f) {
   const esc = s => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const fmt = n => Number(n || 0).toLocaleString("ja-JP");
   const kouName = esc((f.kouName || "").trim()) || "　　　　";
+  const kouNameSign = esc((f.kouName || "").trim()); // 署名欄の氏名（空欄なら手書き）
   const projectName = esc((f.projectName || "").trim()) || "　　　　";
   const workPlace = esc((f.workPlace || "").trim()) || "　　　　";
   const kouAddress = esc(f.kouAddress || "");
   const kouTel = esc(f.kouTel || "");
+  // 工期（第2条）：入力があればその文字列、無ければ手書き記入枠のまま
+  const koukiFrame = '令和<span class="fill"></span>年<span class="fill"></span>月<span class="fill"></span>日';
+  const koukiStart = esc((f.startDate || "").trim()) || koukiFrame;
+  const koukiEnd = esc((f.endDate || "").trim()) || koukiFrame;
+  // 支払い（第4条）：金額入力があれば「金 X 円」、無ければ記入枠のまま
+  const payAmt = (v) => { const n = Math.round(Number(String(v == null ? "" : v).replace(/[^0-9.]/g, "")) || 0); return n ? ("金 " + fmt(n) + " 円") : "金　　　　　　　　円"; };
+  const payDeposit = payAmt(f.payDeposit);
+  const payInterim = payAmt(f.payInterim);
+  const payFinal = payAmt(f.payFinal);
   // 金額：税込総額だけ入力 → 本体（税抜）と消費税を自動計算（引き継ぎ資料 5. のロジック）
   const total = Math.round(Number(String(f.totalInclTax == null ? "" : f.totalInclTax).replace(/[^0-9.]/g, "")) || 0);
   const body = total ? Math.round(total / 1.1) : 0;
@@ -25272,8 +25282,8 @@ function buildUkeoiKeiyakuHTML(f) {
         <div class="item">
           <div class="item-head"><span class="item-no">第 2 条</span><span class="item-title">工期</span></div>
           <div class="term-line">
-            着工　令和<span class="fill"></span>年<span class="fill"></span>月<span class="fill"></span>日
-            　～　完成　令和<span class="fill"></span>年<span class="fill"></span>月<span class="fill"></span>日（予定）
+            着工　${koukiStart}
+            　～　完成　${koukiEnd}（予定）
           </div>
         </div>
 
@@ -25294,9 +25304,9 @@ function buildUkeoiKeiyakuHTML(f) {
               <tr><th style="width:22%;">区分</th><th style="width:34%;">支払時期</th><th>金額</th></tr>
             </thead>
             <tbody>
-              <tr><td class="k">着手金</td><td class="when">着工時</td><td class="amt">金　　　　　　　　円</td></tr>
-              <tr><td class="k">中間金</td><td class="when">（必要に応じて）</td><td class="amt">金　　　　　　　　円</td></tr>
-              <tr><td class="k">残代金</td><td class="when">工事完成・引渡し時</td><td class="amt">金　　　　　　　　円</td></tr>
+              <tr><td class="k">着手金</td><td class="when">着工時</td><td class="amt">${payDeposit}</td></tr>
+              <tr><td class="k">中間金</td><td class="when">（必要に応じて）</td><td class="amt">${payInterim}</td></tr>
+              <tr><td class="k">残代金</td><td class="when">工事完成・引渡し時</td><td class="amt">${payFinal}</td></tr>
             </tbody>
           </table>
         </div>
@@ -25373,7 +25383,7 @@ function buildUkeoiKeiyakuHTML(f) {
             <div class="sb-party"><span class="badge">注文者（甲）</span></div>
             <table class="sign">
               <tr><td class="k">住　所</td><td class="v">${kouAddress}</td></tr>
-              <tr><td class="k">氏　名</td><td class="v seal"><span class="seal-hint">印</span></td></tr>
+              <tr><td class="k">氏　名</td><td class="v seal">${kouNameSign}<span class="seal-hint">印</span></td></tr>
               <tr><td class="k">電話番号</td><td class="v">${kouTel}</td></tr>
             </table>
           </div>
@@ -27469,6 +27479,11 @@ function UkeoiKeiyakuPage({ data, setData, onBack }) {
     projectName: "",                               // 工事名称
     workPlace: "",                                 // 工事場所（第1条）
     totalInclTax: "",                              // 請負代金（税込）
+    startDate: "",                                 // 工期・着工（任意・空欄なら記入枠）
+    endDate: "",                                   // 工期・完成（任意・空欄なら記入枠）
+    payDeposit: "",                                // 着手金（任意）
+    payInterim: "",                                // 中間金（任意）
+    payFinal: "",                                  // 残代金（任意）
     contractDate: "",                              // 締結日（任意・空欄なら記入枠）
     kouAddress: "",                                // 甲 住所（任意・署名欄）
     kouTel: "",                                    // 甲 電話番号（任意・署名欄）
@@ -27518,7 +27533,7 @@ function UkeoiKeiyakuPage({ data, setData, onBack }) {
     setShowSaved(false);
   };
   const newDoc = () => { // 新規作成（読込中の状態をクリア）
-    setForm({ kouName: "", projectName: "", workPlace: "", totalInclTax: "", contractDate: "", kouAddress: "", kouTel: "" });
+    setForm({ kouName: "", projectName: "", workPlace: "", totalInclTax: "", startDate: "", endDate: "", payDeposit: "", payInterim: "", payFinal: "", contractDate: "", kouAddress: "", kouTel: "" });
     setCurrentDocId(null);
   };
   const deleteDoc = (id) => {
@@ -27586,6 +27601,29 @@ function UkeoiKeiyakuPage({ data, setData, onBack }) {
       </Field>
 
       <div style={{ marginTop: 8, marginBottom: 10, fontSize: 12, fontWeight: 700, color: C.muted }}>▼ 任意（空欄のままなら手書き記入枠のまま出力されます）</div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="工期・着工（第2条）">
+          <input style={inp} value={form.startDate} onChange={e => set("startDate", e.target.value)} placeholder="例: 令和7年8月1日" />
+        </Field>
+        <Field label="工期・完成（第2条）">
+          <input style={inp} value={form.endDate} onChange={e => set("endDate", e.target.value)} placeholder="例: 令和7年9月30日" />
+        </Field>
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, marginBottom: 8 }}>支払い（第4条・税込金額）</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+        <Field label="着手金（円）">
+          <input style={inp} type="text" inputMode="numeric" value={form.payDeposit} onChange={e => set("payDeposit", e.target.value)} placeholder="着工時" />
+        </Field>
+        <Field label="中間金（円）">
+          <input style={inp} type="text" inputMode="numeric" value={form.payInterim} onChange={e => set("payInterim", e.target.value)} placeholder="必要に応じて" />
+        </Field>
+        <Field label="残代金（円）">
+          <input style={inp} type="text" inputMode="numeric" value={form.payFinal} onChange={e => set("payFinal", e.target.value)} placeholder="完成・引渡し時" />
+        </Field>
+      </div>
+
       <Field label="締結日（任意）">
         <input style={inp} value={form.contractDate} onChange={e => set("contractDate", e.target.value)} placeholder="例: 令和7年8月1日 ／ 空欄なら「令和　年　月　日」の記入枠" />
       </Field>
