@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.310-baikai-autofill";
+const APP_VERSION = "2026-07-10-v9.311-baikai-jiage";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16537,6 +16537,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 手動マップ選択モード（緯度経度をマップタップで指定）
   const [manualPinTarget, setManualPinTarget] = useState(null); // { item, target: "address" | "ownerAddr" }
   const [selected, setSelected] = useState(null);
+  // 🆕 v9.311: 所有者詳細から専任媒介契約書を開くターゲット（所有者名・住所・物件住所を引き継ぐ）
+  const [baikaiTarget, setBaikaiTarget] = useState(null);
   // 🆕 v9.119: カレンダー等から物件詳細を開いた時の「戻り先」。詳細を閉じたら元の画面（カレンダー）へ戻す。
   const [navReturnTo, setNavReturnTo] = useState(null);
   useEffect(() => {
@@ -19905,6 +19907,16 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
     setSelected(null);
   };
 
+  // 🆕 v9.311: 所有者詳細 → 専任媒介契約書（売主用）を、所有者名・所有者住所・物件住所を引き継いで開く
+  const openBaikaiKeiyaku = (item) => {
+    const j = (item && item.raw) || {};
+    const ownerNm = String(j.owner || j.ownerName || "").trim();
+    const ownerAd = String(j.ownerAddr || j.ownerAddress || "").trim();
+    const propAd = String(j.address || "").trim();
+    setBaikaiTarget({ kouName: ownerNm, kouAddr: ownerAd, propAddr: propAd });
+    setSelected(null);
+  };
+
   const emptyJiage = { address: "", owner: "", ownerAddr: "", ownerContact: "", dm: "未", visit: "未", status: "未訪問", assignee: currentUser || MEMBERS[0], memo: "", nextVisit: "", nextVisitTime: "", nextVisitEndTime: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
   const [form, setForm] = useState(emptyJiage);
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
@@ -22716,6 +22728,22 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               </div>
             </div>
 
+            {/* 🆕 v9.311: 専任媒介契約書ボタン（所有者名・住所・物件住所を引き継いで作成） */}
+            <div style={{ position: "relative", marginTop: 14 }}>
+              <span style={{
+                position: "absolute", top: -6, right: -6, background: "#dc2626",
+                color: "#fff", fontSize: 9, fontWeight: 800, padding: "2px 6px",
+                borderRadius: 10, zIndex: 1,
+              }}>NEW</span>
+              <button onClick={() => openBaikaiKeiyaku(selected.item)} style={{
+                width: "100%", padding: "13px", background: "#0ea5e922", border: "1px solid #0ea5e966",
+                color: "#0369a1", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+              }}><NavIcon name="file" size={15} /> 専任媒介契約書を作成する</button>
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                所有者名・所有者住所・物件住所を自動で引き継いで入力画面を開きます（売主用・A4×6ページ）
+              </div>
+            </div>
+
           </div>
 
           {/* 編集・削除（誰でも可） */}
@@ -22729,6 +22757,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
 
       {/* 🆕 v9.203: 売却ご提案書(13P・査定込み)モーダル（ピン詳細から開く） */}
       {proposalPin && <SateiProposalSheet pin={proposalPin} onClose={() => setProposalPin(null)} parseTouki={parseToukiForProposal} />}
+
+      {/* 🆕 v9.311: 所有者詳細 → 専任媒介契約書（売主用）をフルスクリーンで開く（所有者情報を自動引き継ぎ） */}
+      {baikaiTarget && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 3000, background: C.bg, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+          <BaikaiKeiyakuPage data={data} setData={setData} prefill={baikaiTarget} onBack={() => setBaikaiTarget(null)} />
+        </div>
+      )}
 
       {/* 🆕 v9.46: 査定書作成モーダル ( v9.46.2: ステップ式 UI ) */}
       {assessmentTarget && assessmentForm && (() => {
@@ -28438,7 +28473,7 @@ function UkeoiKeiyakuPage({ data, setData, onBack }) {
 }
 
 // 🆕 v9.308: 専任媒介契約書（売主用）入力フォーム → A4×6ページ印刷/PDF。保存機能付き（baikaiDocs・全社共有）
-function BaikaiKeiyakuPage({ data, setData, onBack }) {
+function BaikaiKeiyakuPage({ data, setData, onBack, prefill }) {
   const EMPTY = {
     kouName: "", kouAddr: "", propAddr: "",
     keiyakuDateISO: "", keiyakuDate: "", termMonths: "3", termEnd: "",
@@ -28450,14 +28485,15 @@ function BaikaiKeiyakuPage({ data, setData, onBack }) {
     assen: "無", assenCompany: "", assenAddr: "", assenTel: "",
     reportMethod: "", reportFreq: "", ryutsu: "", regDays: "", gyomu5: "",
   };
-  const [form, setForm] = useState(EMPTY);
+  // 🆕 v9.311: 地上げの所有者詳細から開いた場合、所有者名・所有者住所・物件住所を自動で流し込む
+  const [form, setForm] = useState(prefill ? { ...EMPTY, ...prefill } : EMPTY);
   const [showMans, setShowMans] = useState(false);
   const [showGyomu, setShowGyomu] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const fmt = n => Number(n || 0).toLocaleString("ja-JP");
   const numOf = v => Math.round(Number(String(v || "").replace(/[^0-9.]/g, "")) || 0);
   const baikaiNum = numOf(form.baikai);
-  const canPrint = form.kouName.trim() && form.propAddr.trim() && baikaiNum > 0;
+  const canPrint = form.kouName.trim() && form.kouAddr.trim() && form.propAddr.trim() && baikaiNum > 0 && !!form.keiyakuDateISO;
   // 西暦ISO(YYYY-MM-DD)→和暦「令和N年M月D日」（契約は令和前提。念のため平成も対応）
   const toWareki = (iso) => {
     if (!iso) return "";
@@ -28498,7 +28534,7 @@ function BaikaiKeiyakuPage({ data, setData, onBack }) {
     return p;
   };
   const onPrint = () => {
-    if (!canPrint) { alert("依頼者（甲）氏名・目的物件の所在地・媒介価額は必須です。"); return; }
+    if (!canPrint) { alert("依頼者（甲）氏名・住所・目的物件の所在地・売買価格・契約日は必須です。"); return; }
     printBaikaiKeiyaku(buildPayload());
   };
 
@@ -28588,8 +28624,8 @@ function BaikaiKeiyakuPage({ data, setData, onBack }) {
       <Field label="依頼者（甲）氏名　※必須">
         <input style={inp} value={form.kouName} onChange={e => set("kouName", e.target.value)} placeholder="例: 下田敏徳" />
       </Field>
-      <Field label="依頼者（甲）住所">
-        <input style={inp} value={form.kouAddr} onChange={e => set("kouAddr", e.target.value)} placeholder="署名欄の住所。空欄可（手書き運用）" />
+      <Field label="依頼者（甲）住所　※必須">
+        <input style={inp} value={form.kouAddr} onChange={e => set("kouAddr", e.target.value)} placeholder="例: 埼玉県東松山市五領町1-2-3" />
       </Field>
       <Field label="目的物件の所在地　※必須">
         <input style={inp} value={form.propAddr} onChange={e => set("propAddr", e.target.value)} placeholder="例: 埼玉県東松山市五領町○○番地" />
@@ -28603,7 +28639,7 @@ function BaikaiKeiyakuPage({ data, setData, onBack }) {
           </div>
         )}
       </Field>
-      <Field label="契約日（任意）">
+      <Field label="契約日　※必須">
         <input style={inp} type="date" value={form.keiyakuDateISO} onChange={e => set("keiyakuDateISO", e.target.value)} />
       </Field>
       {form.keiyakuDateISO && (
