@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-08-v9.300-cluster-zoom-earlier4";
+const APP_VERSION = "2026-07-09-v9.301-jiage-visit-title";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8073,7 +8073,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const calEvents = useMemo(() => {
     const list = [];
     (data.jiage || []).forEach(j => {
-      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `訪問予定・${j.status}`, time: j.nextVisitTime || "", endTime: j.nextVisitEndTime || "", assignee: j.assignee, assignees: Array.from(new Set([j.assignee, ...(j.nextVisitWith || [])].filter(Boolean))), rawId: j.id });
+      if (j.nextVisit) list.push({ date: j.nextVisit, type: "jiage", icon: "🗺️", color: C.purple, title: j.address || "(無住所)", sub: `${j.nextVisitTitle ? j.nextVisitTitle + "・" : "訪問予定・"}${j.status}`, time: j.nextVisitTime || "", endTime: j.nextVisitEndTime || "", assignee: j.assignee, assignees: Array.from(new Set([j.assignee, ...(j.nextVisitWith || [])].filter(Boolean))), rawId: j.id });
     });
     (data.owners || []).forEach(o => {
       if (o.nextFollowDate) list.push({ date: o.nextFollowDate, type: "owner", icon: "👤", color: C.accent, title: o.address || "(無住所)", sub: `所有者フォロー・${o.status}`, assignee: o.assignee, rawId: o.id });
@@ -9908,6 +9908,10 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               </div>
             </Field>
           ); })()}
+          {/* 🆕 v9.301: 次回訪問の予定タイトル（任意）。カレンダーに表示される */}
+          <Field label="📋 予定タイトル（任意）">
+            <input style={inp} value={quickEditJiageForm.nextVisitTitle || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, nextVisitTitle: e.target.value }))} placeholder="例：契約書を持参／現地立会い" />
+          </Field>
           <Field label="📝 メモ">
             <textarea style={{ ...inp, height: 80, resize: "vertical" }} value={quickEditJiageForm.memo || ""} onChange={e => setQuickEditJiageForm(p => ({ ...p, memo: e.target.value }))} />
           </Field>
@@ -15627,6 +15631,10 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
               </select>
             </Field>
           </div>
+          {/* 🆕 v9.301: 次回訪問の予定タイトル（任意）。カレンダーに表示される */}
+          <Field label="📋 予定タイトル（任意）">
+            <input style={inp} value={editingJiage.nextVisitTitle || ""} onChange={e => setEditingJiage({ ...editingJiage, nextVisitTitle: e.target.value })} placeholder="例：契約書を持参／現地立会い" />
+          </Field>
           {/* 🆕 v9.176: 次回訪問の同行者（複数可）。カレンダー予定にも担当として反映 */}
           <Field label="🤝 同行者（任意・複数可）">
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -17691,7 +17699,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       address: j.address, ownerName: j.owner, ownerAddress: j.ownerAddr,
       ownerContact: j.ownerContact || "", assignee: j.assignee,
       status: j.status, subStatus: `DM:${j.dm}`,
-      nextDate: j.nextVisit, nextTime: j.nextVisitTime || "", nextEndTime: j.nextVisitEndTime || "", nextWith: j.nextVisitWith || [], memo: j.memo, history: [],
+      nextDate: j.nextVisit, nextTime: j.nextVisitTime || "", nextEndTime: j.nextVisitEndTime || "", nextTitle: j.nextVisitTitle || "", nextWith: j.nextVisitWith || [], memo: j.memo, history: [],
       dm: j.dm, visit: j.visit, area: j.area || "", raw: j,
       lat: j.lat, lng: j.lng, ownerLat: j.ownerLat, ownerLng: j.ownerLng,
     }));
@@ -18326,6 +18334,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const updated = { ...item.raw, nextVisitEndTime: time };
     setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
     setSelected(s => ({ ...s, item: { ...s.item, nextEndTime: time, raw: updated } }));
+  };
+  // 🆕 v9.301: ピン詳細での次回訪問「予定タイトル」設定（地上げのみ）
+  const updateNextTitle = (item, title) => {
+    if (item.type !== "jiage") return;
+    const updated = { ...item.raw, nextVisitTitle: title };
+    setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
+    setSelected(s => ({ ...s, item: { ...s.item, nextTitle: title, raw: updated } }));
   };
   // 🆕 v9.176: ピン詳細での次回訪問「同行者」設定（地上げのみ・複数可）
   const updateNextWith = (item, member) => {
@@ -22612,6 +22627,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               <input type="date" style={inp} value={selected.item.nextDate || ""} onChange={e => updateNextDate(selected.item, e.target.value)} />
             )}
           </Field>
+          {/* 🆕 v9.301: 次回訪問の予定タイトル（地上げのみ）。カレンダーに表示される */}
+          {selected.item.type === "jiage" && (
+            <Field label="📋 予定タイトル（任意）">
+              <input style={inp} value={selected.item.nextTitle || ""} onChange={e => updateNextTitle(selected.item, e.target.value)} placeholder="例：契約書を持参／現地立会い" />
+            </Field>
+          )}
           {/* 🆕 v9.176: 次回訪問の同行者（地上げのみ・複数可） */}
           {selected.item.type === "jiage" && (
             <Field label="🤝 同行者（任意・複数可）">
