@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.302-ukeoi-keiyaku";
+const APP_VERSION = "2026-07-10-v9.303-ukeoi-print-newtab";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -25406,18 +25406,35 @@ function buildUkeoiKeiyakuHTML(f) {
 // 隠しiframeに書き出して印刷（iOS/standalone PWAで安全な既存パターン＝printProposalと同方式）
 function printUkeoiKeiyaku(f) {
   try {
-    const html = buildUkeoiKeiyakuHTML(f);
+    let html = buildUkeoiKeiyakuHTML(f);
+    // 画面上部に印刷ボタンを差し込む（@media printで印刷時は自動的に消える）。完成版HTML本来の設計。
+    const toolbar = '<div class="toolbar"><span class="tb-title">リフォーム工事請負契約書 — プレビュー</span><button onclick="window.print()">🖨 印刷 / PDFで保存</button></div>';
+    html = html.replace("<body>", "<body>" + toolbar);
+    // ① 可視の新規タブで開く。画面に実際に描画されるので「PDFが白紙」を回避（隠しiframe直接印刷は
+    //    端末によっては未描画のまま印刷され白紙になる）。上部ボタン or Ctrl+P（スマホは共有→印刷）で保存。
+    let w = null;
+    try { w = window.open("", "_blank"); } catch (e) {}
+    if (w && w.document) {
+      w.document.open(); w.document.write(html); w.document.close();
+      try { w.focus(); } catch (e) {}
+      return;
+    }
+    // ② フォールバック：ポップアップがブロックされた等 → 画面外“実寸”iframeで印刷（0×0だと白紙になる端末対策）。
+    //    Webフォント（明朝/ゴシック）の読み込みを待ってから印刷。最長2秒で打ち切り＝オフラインでも白紙にしない。
     const ifr = document.createElement("iframe");
     ifr.setAttribute("aria-hidden", "true");
-    ifr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+    ifr.style.cssText = "position:fixed;left:-10000px;top:0;width:820px;height:1200px;border:0;";
     document.body.appendChild(ifr);
     const doc = ifr.contentWindow.document;
     doc.open(); doc.write(html); doc.close();
-    // フォント読み込みを待ってから印刷（明朝/ゴシックのWebフォントが乗る時間を確保）
-    setTimeout(() => {
+    let done = false;
+    const fire = () => {
+      if (done) return; done = true;
       try { ifr.contentWindow.focus(); ifr.contentWindow.print(); } catch (e) {}
-      setTimeout(() => { try { document.body.removeChild(ifr); } catch (e) {} }, 1500);
-    }, 700);
+      setTimeout(() => { try { document.body.removeChild(ifr); } catch (e) {} }, 2000);
+    };
+    try { const fk = ifr.contentWindow.document.fonts; if (fk && fk.ready) fk.ready.then(() => setTimeout(fire, 150)); } catch (e) {}
+    setTimeout(fire, 2000);
   } catch (e) { console.warn("ukeoi print failed", e); alert("契約書の生成に失敗しました：" + e.message); }
 }
 
@@ -27471,7 +27488,7 @@ function UkeoiKeiyakuPage({ onBack }) {
         <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>🔨 リフォーム工事請負契約書</div>
       </div>
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 16, lineHeight: 1.7 }}>
-        <NavIcon name="bulb" size={15} /> 数項目を入力 → 「作成（印刷 / PDF保存）」で <b>表紙＋本体2ページ（A4×3枚）</b> の契約書が印刷ダイアログで開きます。「PDFとして保存」でPDF化できます。<br />
+        <NavIcon name="bulb" size={15} /> 数項目を入力 → 「作成」で <b>表紙＋本体2ページ（A4×3枚）</b> の契約書が<b>新しいタブ</b>で開きます。タブ上部の「🖨 印刷 / PDF保存」ボタン（スマホは共有→印刷）で <b>PDF保存・印刷</b>できます。<br />
         条文・デザイン・会社情報（乙＝合同会社ひかり不動産）は固定です。入力内容は保存されません（都度入力）。
       </div>
 
@@ -27516,7 +27533,7 @@ function UkeoiKeiyakuPage({ onBack }) {
         border: "none", borderRadius: 12, padding: 16, fontSize: 16, fontWeight: 800,
         cursor: canPrint ? "pointer" : "not-allowed", fontFamily: "inherit",
         display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-      }}><NavIcon name="printer" size={18} /> 作成（印刷 / PDF保存）</button>
+      }}><NavIcon name="printer" size={18} /> 契約書を作成（新しいタブで開く）</button>
     </div>
   );
 }
