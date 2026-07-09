@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.309-baikai-beppushi";
+const APP_VERSION = "2026-07-10-v9.310-baikai-autofill";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -28441,7 +28441,7 @@ function UkeoiKeiyakuPage({ data, setData, onBack }) {
 function BaikaiKeiyakuPage({ data, setData, onBack }) {
   const EMPTY = {
     kouName: "", kouAddr: "", propAddr: "",
-    keiyakuDate: "", termMonths: "", termEnd: "",
+    keiyakuDateISO: "", keiyakuDate: "", termMonths: "3", termEnd: "",
     hontai: "", taxAmt: "", baikai: "", biko: "",
     ownerAddr: "", ownerName: "", toukiAddr: "同左", toukiName: "同左",
     landJissoku: "", landKobo: "", landChimoku: "宅地", landChimokuOther: "", landKenri: "所有権",
@@ -28458,9 +28458,48 @@ function BaikaiKeiyakuPage({ data, setData, onBack }) {
   const numOf = v => Math.round(Number(String(v || "").replace(/[^0-9.]/g, "")) || 0);
   const baikaiNum = numOf(form.baikai);
   const canPrint = form.kouName.trim() && form.propAddr.trim() && baikaiNum > 0;
+  // 西暦ISO(YYYY-MM-DD)→和暦「令和N年M月D日」（契約は令和前提。念のため平成も対応）
+  const toWareki = (iso) => {
+    if (!iso) return "";
+    const p = String(iso).split("-"); if (p.length < 3) return "";
+    const y = +p[0], m = +p[1], d = +p[2]; if (!y || !m || !d) return "";
+    let era = "令和", ey = y - 2018;
+    if (y < 2019 || (y === 2019 && m < 5)) { era = "平成"; ey = y - 1988; }
+    return `${era}${ey === 1 ? "元" : ey}年${m}月${d}日`;
+  };
+  // 契約日ISO→有効期間満了日（契約日から3ヶ月後の応当日の前日）を和暦で
+  const calcTermEndWareki = (iso) => {
+    if (!iso) return "";
+    const p = String(iso).split("-"); if (p.length < 3) return "";
+    const dt = new Date(+p[0], +p[1] - 1, +p[2]);
+    if (isNaN(dt.getTime())) return "";
+    dt.setMonth(dt.getMonth() + 3); dt.setDate(dt.getDate() - 1);
+    const yy = dt.getFullYear(), mm = dt.getMonth() + 1, dd = dt.getDate();
+    return toWareki(`${yy}-${mm}-${dd}`);
+  };
+  const termEndPreview = calcTermEndWareki(form.keiyakuDateISO);
+  // 出力用ペイロード：和暦の契約日・自動計算の満了日・既定の有効期間月数を差し込む
+  const buildPayload = () => {
+    const p = { ...form };
+    p.termMonths = (form.termMonths || "3");
+    // 別表の所有者は依頼者（甲）と同一 → 依頼者の氏名・住所から自動で拾う。登記名義人は「同左」
+    p.ownerAddr = form.kouAddr;
+    p.ownerName = form.kouName;
+    p.toukiAddr = "同左";
+    p.toukiName = "同左";
+    // 別表の本体価額＝基本情報の媒介価額（売買価格）。個人売主の非課税前提で総額＝本体価額
+    p.hontai = form.baikai;
+    if (form.keiyakuDateISO) {
+      p.keiyakuDate = toWareki(form.keiyakuDateISO);
+      p.termEnd = calcTermEndWareki(form.keiyakuDateISO);
+    } else {
+      p.keiyakuDate = ""; p.termEnd = "";
+    }
+    return p;
+  };
   const onPrint = () => {
     if (!canPrint) { alert("依頼者（甲）氏名・目的物件の所在地・媒介価額は必須です。"); return; }
-    printBaikaiKeiyaku(form);
+    printBaikaiKeiyaku(buildPayload());
   };
 
   // 保存／読込／削除（ukeoiDocsと同じ作り・data.baikaiDocs / 全社共有）
@@ -28555,70 +28594,32 @@ function BaikaiKeiyakuPage({ data, setData, onBack }) {
       <Field label="目的物件の所在地　※必須">
         <input style={inp} value={form.propAddr} onChange={e => set("propAddr", e.target.value)} placeholder="例: 埼玉県東松山市五領町○○番地" />
       </Field>
-      <Field label="媒介価額（総額・税込・円）　※必須">
+      <Field label="売買価格（媒介価額・税込・円）　※必須">
         <input style={inp} type="text" inputMode="numeric" value={form.baikai} onChange={e => set("baikai", e.target.value)} placeholder="例: 5000000" />
         {baikaiNum > 0 && (
           <div style={{ marginTop: 8, padding: "10px 14px", background: C.accent + "14", border: `1px solid ${C.accent}44`, borderRadius: 10, fontSize: 13, color: C.text, lineHeight: 1.7 }}>
-            媒介価額 <b>¥{fmt(baikaiNum)}</b>（税込）<br />
-            <span style={{ color: C.muted }}>表紙・別表の媒介価額（総額）に反映されます。</span>
+            売買価格 <b>¥{fmt(baikaiNum)}</b>（税込）<br />
+            <span style={{ color: C.muted }}>表紙・別表の本体価額／媒介価額（総額）に反映されます。</span>
           </div>
         )}
       </Field>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label="契約日（任意）">
-          <input style={inp} value={form.keiyakuDate} onChange={e => set("keiyakuDate", e.target.value)} placeholder="例: 令和8年7月10日 ／ 空欄で記入枠" />
-        </Field>
-        <Field label="有効期間 満了日（任意）">
-          <input style={inp} value={form.termEnd} onChange={e => set("termEnd", e.target.value)} placeholder="例: 令和8年10月9日" />
-        </Field>
-      </div>
-      <Field label="有効期間（ヶ月・任意／既定 3ヶ月）">
-        <input style={inp} value={form.termMonths} onChange={e => set("termMonths", e.target.value)} placeholder="例: 3" />
+      <Field label="契約日（任意）">
+        <input style={inp} type="date" value={form.keiyakuDateISO} onChange={e => set("keiyakuDateISO", e.target.value)} />
       </Field>
-
-      {secHead("価額の内訳（任意）")}
-      <Field label="本体価額（円）">
-        <input style={inp} type="text" inputMode="numeric" value={form.hontai} onChange={e => set("hontai", e.target.value)} placeholder="別表の本体価額欄。空欄可" />
-        <div style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>※「消費税額および地方消費税額の合計額」欄は、個人売主の非課税を前提に<b>固定で斜線</b>が入ります（入力不要）。</div>
-      </Field>
-      <Field label="備考（別表）">
-        <textarea style={{ ...inp, minHeight: 64, resize: "vertical" }} value={form.biko} onChange={e => set("biko", e.target.value)} placeholder="空欄なら既定の文言（解体・動産撤去等を手配…）が入ります" />
-      </Field>
-
-      {secHead("別表：所有者・登記名義人（任意）")}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label="所有者 住所">
-          <input style={inp} value={form.ownerAddr} onChange={e => set("ownerAddr", e.target.value)} placeholder="所有者の住所" />
-        </Field>
-        <Field label="所有者 氏名">
-          <input style={inp} value={form.ownerName} onChange={e => set("ownerName", e.target.value)} placeholder="所有者の氏名" />
-        </Field>
-        <Field label="登記名義人 住所（既定 同左）">
-          <input style={inp} value={form.toukiAddr} onChange={e => set("toukiAddr", e.target.value)} placeholder="同左" />
-        </Field>
-        <Field label="登記名義人 氏名（既定 同左）">
-          <input style={inp} value={form.toukiName} onChange={e => set("toukiName", e.target.value)} placeholder="同左" />
-        </Field>
-      </div>
-
-      <div style={{ marginTop: 12, marginBottom: 4, padding: "10px 12px", background: C.inset, border: `1px dashed ${C.borderDim}`, borderRadius: 8, fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
-        ℹ 目的物件（土地・建物・マンション）の詳細は<b>謄本を別紙として添付</b>する運用のため、別表には「詳細は別紙、ご参照ください。」と印字されます（入力不要）。
-      </div>
-
-      {secHead("建物状況調査のあっせん（任意）")}
-      <Field label="あっせんの有無">
-        <select style={inp} value={form.assen} onChange={e => set("assen", e.target.value)}>
-          <option value="無">無</option>
-          <option value="有">有</option>
-        </select>
-      </Field>
-      {form.assen === "有" && (
-        <div>
-          <Field label="あっせん先 会社・事務所名"><input style={inp} value={form.assenCompany} onChange={e => set("assenCompany", e.target.value)} /></Field>
-          <Field label="あっせん先 住所"><input style={inp} value={form.assenAddr} onChange={e => set("assenAddr", e.target.value)} /></Field>
-          <Field label="あっせん先 電話番号"><input style={inp} value={form.assenTel} onChange={e => set("assenTel", e.target.value)} /></Field>
+      {form.keiyakuDateISO && (
+        <div style={{ marginTop: -4, marginBottom: 12, padding: "10px 14px", background: C.accent + "10", border: `1px solid ${C.accent}33`, borderRadius: 10, fontSize: 12.5, color: C.text, lineHeight: 1.8 }}>
+          契約日：<b>{toWareki(form.keiyakuDateISO)}</b><br />
+          有効期間：<b>3ヶ月</b>（<b>{termEndPreview}</b> まで）<span style={{ color: C.muted }}>← 契約日から自動計算</span>
         </div>
       )}
+
+      <div style={{ marginTop: 16, marginBottom: 4, padding: "11px 13px", background: C.inset, border: `1px dashed ${C.borderDim}`, borderRadius: 8, fontSize: 12, color: C.muted, lineHeight: 1.85 }}>
+        ℹ 以下は<b>自動</b>で契約書に反映されます（入力不要）：<br />
+        ・別表の<b>所有者</b>＝依頼者（甲）の氏名・住所／<b>登記名義人</b>＝「同左」<br />
+        ・別表の<b>本体価額・媒介価額</b>＝上の売買価格／<b>消費税額</b>欄＝固定で斜線（非課税）<br />
+        ・目的物件（土地・建物）の詳細＝「詳細は別紙、ご参照ください。」（謄本を別紙添付）<br />
+        ・<b>建物状況調査のあっせん</b>＝「無」／<b>備考</b>＝既定の文言／<b>有効期間</b>＝3ヶ月
+      </div>
 
       {/* 業務の記載（折りたたみ・既定値あり） */}
       <div onClick={() => setShowGyomu(s => !s)} style={{ marginTop: 16, marginBottom: showGyomu ? 10 : 0, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none", fontSize: 13, fontWeight: 800, color: C.muted }}>
