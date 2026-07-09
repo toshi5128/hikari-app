@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.307-ukeoi-cover-balance";
+const APP_VERSION = "2026-07-10-v9.308-baikai-keiyaku";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1983,6 +1983,7 @@ const DEFAULT_DATA = {
   sekisan: [],
   seisanDocs: [], // 🆕 v9.286: 保存した売買精算書（入力内容のスナップショット。全社共有）
   ukeoiDocs: [], // 🆕 v9.304: 保存したリフォーム工事請負契約書（入力内容のスナップショット。全社共有）
+  baikaiDocs: [], // 🆕 v9.308: 保存した専任媒介契約書（入力内容のスナップショット。全社共有）
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
   memberGoals: {},
   // 🆕 v8.67: デモ目標値を 0 に。実目標は Supabase の値を使う
@@ -25463,6 +25464,777 @@ function printUkeoiKeiyaku(f) {
   } catch (e) { console.warn("ukeoi print failed", e); alert("契約書の生成に失敗しました：" + e.message); }
 }
 
+// 🆕 v9.308: 専任媒介契約書（売主用・表紙＋本体2＋別表＋約款2＝A4×6ページ・約款は国交省標準・全文込み）
+// ===== 専任媒介契約約款（第1〜18条・国交省標準・固定） =====
+// 各条 = { n:条番号, t:見出し, p:[ 段落 or {li:[箇条]} ] }
+const YAKKAN = [
+  { n: '第1条', t: '目的', p: ['この約款は、宅地または建物の売買または交換の専任媒介契約について、当事者が契約の締結に際して定めるべき事項および当事者が契約の履行に関して互いに遵守すべき事項を明らかにすることを目的とします。'] },
+  { n: '第2条', t: '当事者の表示と用語の定義', p: ['この約款においては、媒介契約の当事者について、依頼者を「甲」、依頼を受ける宅地建物取引業者を「乙」と表示します。', '２　この約款において、「専任媒介契約」とは、甲が依頼の目的である宅地または建物（以下「目的物件」といいます。）の売買または交換の媒介または代理を乙以外の宅地建物取引業者に重ねて依頼することができないものとする媒介契約をいいます。'] },
+  { n: '第3条', t: '目的物件の表示等', p: ['目的物件を特定するために必要な表示および目的物件を売買すべき価額または交換すべき評価額（以下「媒介価額」といいます。）は、専任媒介契約書の別表に記載します。'] },
+  { n: '第4条', t: '宅地建物取引業者の義務等', p: ['乙は、次の事項を履行する義務を負います。', { li: ['契約の相手方を探索するとともに、契約の相手方との契約条件の調整等を行い、契約の成立に向けて積極的に努力すること', '甲に対して、専任媒介契約書に記載する方法および頻度により業務の処理状況を報告すること', '目的物件の売買または交換の申込みがあったときは、甲に対して、遅滞なく、その旨を報告すること', '広く契約の相手方を探索するため、目的物件につき、所在地、規模、形質、媒介価額その他の事項を、専任媒介契約書に記載する指定流通機構に媒介契約の締結の日の翌日から専任媒介契約書に記載する期間内（乙の休業日を含みません。）に登録すること', '前号の登録をしたときは、遅滞なく、指定流通機構が発行した宅地建物取引業法第50条の6に定める登録を証する書面を甲に対して交付（第34条の2第12項の規定による提供を含みます。）すること'] }, '２　乙は、前項に掲げる義務を履行するとともに、次の業務を行います。', { li: ['媒介価額の決定に際し、甲に、その価額に関する意見を述べるときは、根拠を示して説明を行うこと', '甲が乙に目的物件の購入または取得を依頼した場合にあっては、甲に対して、目的物件の売買または交換の契約が成立するまでの間に、宅地建物取引士をして、宅地建物取引業法第35条に定める重要事項について、宅地建物取引士が記名した書面を交付（同条第8項または第9項の規定による提供を含みます。）して説明させること', '目的物件の売買または交換の契約が成立したときは、甲および甲の相手方に対して、遅滞なく、宅地建物取引業法第37条に定める書面を作成し、宅地建物取引士に当該書面に記名させた上で、これを交付（同条第4項の規定による提供を含みます。）すること', '甲に対して、登記、決済手続等の目的物件の引渡しに係る事務の補助を行うこと', 'その他専任媒介契約書に記載する業務を行うこと'] }] },
+  { n: '第5条', t: '媒介価額の変更の助言等', p: ['媒介価額が地価や物価の変動その他事情の変更によって不適当と認められるに至ったときは、乙は、甲に対して、媒介価額の変更について根拠を示して助言します。', '２　甲は、媒介価額を変更しようとするときは、乙にその旨を通知します。この場合において、価額の変更が引上げであるとき（甲が乙に目的物件の購入または取得を依頼した場合にあっては、引下げであるとき）は、乙の承諾を要します。', '３　乙は、前項の承諾を拒否しようとするときは、その根拠を示さなければなりません。'] },
+  { n: '第6条', t: '建物状況調査を実施する者のあっせん', p: ['乙は、この媒介契約において建物状況調査を実施する者のあっせんを行うこととした場合にあっては甲に対して、建物状況調査を実施する者をあっせんしなければなりません。'] },
+  { n: '第7条', t: '有効期間', p: ['専任媒介契約の有効期間は、3ヶ月を超えない範囲で、甲乙協議の上、定めます。'] },
+  { n: '第8条', t: '報酬の請求', p: ['乙の媒介によって目的物件の売買または交換の契約が成立したときは、乙は、甲に対して、報酬を請求することができます。ただし、売買または交換の契約が停止条件付契約として成立したときは、乙は、その条件が成就した場合にのみ報酬を請求することができます。', '２　前項の報酬の額は、国土交通省告示に定める限度額の範囲内で、甲乙協議の上、定めます。'] },
+  { n: '第9条', t: '報酬の受領の時期', p: ['乙は、宅地建物取引業法第37条に定める書面を作成し、これを成立した契約の当事者に交付（同条第4項または第5項の規定による提供を含みます。）した後でなければ、前条第1項の報酬（以下「約定報酬」といいます。）を受領することができません。', '２　目的物件の売買または交換の契約が、代金または交換差金についての融資の不成立を解除条件として締結された後、融資の不成立が確定した場合、または融資が不成立のときは甲が契約を解除できるものとして締結された後、融資の不成立が確定し、これを理由として甲が契約を解除した場合は、乙は、甲に、受領した約定報酬の全額を遅滞なく返還しなければなりません。ただし、これに対しては、利息は付さないこととします。'] },
+  { n: '第10条', t: '特別依頼に係る費用', p: ['甲が乙に特別に依頼した広告の料金または遠隔地への出張旅費は甲の負担とし、甲は、乙の請求に基づいて、その実費を支払わなければなりません。'] },
+  { n: '第11条', t: '直接取引', p: ['専任媒介契約の有効期間内または有効期間の満了後2年以内に、甲が乙の紹介によって知った相手方と乙を排除して目的物件の売買または交換の契約を締結したときは、乙は、甲に対して、契約の成立に寄与した割合に応じた相当額の報酬を請求することができます。'] },
+  { n: '第12条', t: '違約金の請求', p: ['甲は、専任媒介契約の有効期間内に、乙以外の宅地建物取引業者に目的物件の売買または交換の媒介または代理を依頼することはできません。甲がこれに違反し、売買または交換の契約を成立させたときは、乙は、甲に対して、約定報酬額に相当する金額（この媒介に係る消費税額および地方消費税額の合計額に相当する額を除きます。）の違約金の支払を請求することができます。'] },
+  { n: '第13条', t: '自ら発見した相手方と契約しようとする場合の通知', p: ['甲は、専任媒介契約の有効期間内に、自ら発見した相手方と目的物件の売買または交換の契約を締結しようとするときは、乙に対して、その旨を通知しなければなりません。'] },
+  { n: '第14条', t: '費用償還の請求', p: ['専任媒介契約の有効期間内において、甲が自ら発見した相手方と目的物件の売買もしくは交換の契約を締結したとき、または乙の責めに帰すことができない事由によって専任媒介契約が解除されたときは、乙は、甲に対して、専任媒介契約の履行のために要した費用の償還を請求することができます。', '２　前項の費用の額は、約定報酬額を超えることはできません。'] },
+  { n: '第15条', t: '更新', p: ['専任媒介契約の有効期間は、甲および乙の合意に基づき、更新することができます。', '２　有効期間の更新をしようとするときは、有効期間の満了に際して甲から乙に対し文書等でその旨を申し出るものとします。', '３　前2項の規定による有効期間の更新に当たり、甲乙間で専任媒介契約の内容について別段の合意がなされなかったときは、従前の契約と同一内容の契約が成立したものとみなします。'] },
+  { n: '第16条', t: '契約の解除', p: ['甲または乙が専任媒介契約に定める義務の履行に関してその本旨に従った履行をしない場合には、その相手方は、相当の期間を定めて履行を催告し、その期間内に履行がないときは、専任媒介契約を解除することができます。', '２　次のいずれかに該当する場合においては、甲は、専任媒介契約を解除することができます。', { li: ['乙が専任媒介契約に係る業務について信義を旨とし誠実に遂行する義務に違反したとき', '乙が専任媒介契約に係る重要な事項について故意もしくは重過失により事実を告げず、または不実のことを告げる行為をしたとき', '乙が宅地建物取引業に関して不正または著しく不当な行為をしたとき'] }] },
+  { n: '第17条', t: '反社会的勢力の排除', p: ['甲および乙は、それぞれ相手方に対し、次の事項を確約します。', { li: ['自らが、暴力団、暴力団関係企業、総会屋もしくはこれらに準ずる者またはその構成員（以下これらを総称して「反社会的勢力」といいます。）ではないこと', '自らの役員（業務を執行する社員、取締役、執行役またはこれらに準ずる者をいいます。）が反社会的勢力ではないこと', '反社会的勢力に自己の名義を利用させ、専任媒介契約を締結するものでないこと', '専任媒介契約の有効期間内に、自らまたは第三者を利用して、次の行為をしないこと　（イ）相手方に対する脅迫的な言動または暴力を用いる行為　（ロ）偽計または威力を用いて相手方の業務を妨害し、または信用を毀損する行為'] }, '２　専任媒介契約の有効期間内に、甲または乙が次のいずれかに該当した場合には、その相手方は、何らの催告を要せずして、専任媒介契約を解除することができます。', { li: ['前項第一号または第二号の確約に反する申告をしたことが判明した場合', '前項第三号の確約に反し契約をしたことが判明した場合', '前項第四号の確約に反する行為をした場合'] }, '３　乙が前項の規定により専任媒介契約を解除したときは、甲に対して、約定報酬額に相当する金額（すでに約定報酬の一部を受領している場合は、その額を除いた額とします。なお、この媒介に係る消費税額および地方消費税額の合計額に相当する額を除きます。）を違約金として請求することができます。'] },
+  { n: '第18条', t: '特約', p: ['この約款に定めがない事項については、甲および乙が協議して別に定めることができます。', '２　この約款の各条項の定めに反する特約で甲に不利なものは無効とします。'] },
+];
+
+function buildBaikaiKeiyakuHTML(f) {
+  f = f || {};
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const fmt = n => Number(n || 0).toLocaleString('ja-JP');
+  const yen = v => { const n = Math.round(Number(String(v == null ? '' : v).replace(/[^0-9.]/g, '')) || 0); return n ? fmt(n) : ''; };
+  const cb = on => on ? '■' : '□';           // チェックボックス
+  const or = (v, d) => { const s = esc((v == null ? '' : String(v)).trim()); return s || d; };
+  const blank = (v, w) => { const s = esc((v == null ? '' : String(v)).trim()); return s || `<span class="ul" style="min-width:${w || 4}em"></span>`; };
+
+  // --- 甲（依頼者=売主） ---
+  const kouName = esc((f.kouName || '').trim());
+  const kouAddr = esc((f.kouAddr || '').trim());
+  // --- 契約日 / 有効期間 ---
+  const dateFrame = '令和<span class="ul" style="min-width:2.2em"></span>年<span class="ul" style="min-width:2.2em"></span>月<span class="ul" style="min-width:2.2em"></span>日';
+  const keiyakuDate = esc((f.keiyakuDate || '').trim()) || dateFrame;
+  const termMonths = or(f.termMonths, '３');
+  const termEnd = esc((f.termEnd || '').trim()) || ('令和<span class="ul" style="min-width:1.8em"></span>年<span class="ul" style="min-width:1.6em"></span>月<span class="ul" style="min-width:1.6em"></span>日');
+  // --- 業務の＊値（標準の既定） ---
+  const reportMethod = or(f.reportMethod, '電子メール等');
+  const reportFreq = or(f.reportFreq, '２週間に１回以上');
+  const ryutsu = or(f.ryutsu, '（公財）東日本不動産流通機構');
+  const regDays = or(f.regDays, '７');
+  const gyomu5 = or(f.gyomu5, '公課証明、評価証明、上下水道の配管図等の取得や受益者負担金の確認、区画整理図取得等');
+  // --- あっせん ---
+  const assenYes = (f.assen === '有');
+  const assenCompany = esc(f.assenCompany || '');
+  const assenAddr = esc(f.assenAddr || '');
+  const assenTel = esc(f.assenTel || '');
+  // --- 別表：所有者・登記名義人 ---
+  const ownerAddr = esc((f.ownerAddr || '').trim());
+  const ownerName = esc((f.ownerName || '').trim());
+  const toukiAddr = or(f.toukiAddr, '同左');
+  const toukiName = or(f.toukiName, '同左');
+  const propAddr = esc((f.propAddr || '').trim());
+  // --- 別表：土地 ---
+  const landJissoku = esc(f.landJissoku || '');
+  const landKobo = esc(f.landKobo || '');
+  const chimoku = String(f.landChimoku || '');
+  const chimokuOther = esc(f.landChimokuOther || '');
+  const kenri = String(f.landKenri || '所有権');
+  // --- 別表：建物 ---
+  const bldArea = esc(f.bldArea || '');
+  const bldTotal = esc(f.bldTotal || '');
+  const bldType = esc(f.bldType || '');
+  const bldStruct = esc(f.bldStruct || '');
+  const bldLayout = esc(f.bldLayout || '');
+  // --- 別表：マンション ---
+  const mansName = esc(f.mansName || '');
+  const mansFloors = esc(f.mansFloors || '');
+  const mansRoom = esc(f.mansRoom || '');
+  const mansStoreys = esc(f.mansStoreys || '');
+  const mansStruct = esc(f.mansStruct || '');
+  const mansType = esc(f.mansType || '');
+  const mansTypeUnit = String(f.mansTypeUnit || 'LDK');
+  const mansShareA = esc(f.mansShareA || '');
+  const mansShareB = esc(f.mansShareB || '');
+  const mansArea = esc(f.mansArea || '');
+  // --- 価額 ---
+  const hontai = yen(f.hontai);
+  const taxAmt = yen(f.taxAmt);
+  const baikai = yen(f.baikai);
+  const biko = or(f.biko, '※当社にて必要に応じて、解体工事、動産撤去等を手配し買主へ滞りがない様に執り行わせて頂きます。');
+
+  // 約款HTML生成（条ごと）
+  const clauseHTML = (c) => {
+    const body = c.p.map(seg => {
+      if (typeof seg === 'string') return `<p class="yk-p">${seg}</p>`;
+      return `<ul class="yk-li">${seg.li.map((x, i) => `<li><span class="yk-no">${'一二三四五六七八九十'[i] || (i + 1)}</span><span>${x}</span></li>`).join('')}</ul>`;
+    }).join('');
+    return `<div class="yk-clause"><div class="yk-head"><span class="yk-n">${c.n}</span><span class="yk-t">（${c.t}）</span></div>${body}</div>`;
+  };
+  // A4に収まるよう2ページに分割（第1〜9条 / 第10〜18条）
+  const yakkanA = YAKKAN.slice(0, 9).map(clauseHTML).join('');
+  const yakkanB = YAKKAN.slice(9).map(clauseHTML).join('');
+
+  const dfoot = (label) => `<div class="doc-foot"><div class="df-brand"><svg class="df-dot" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="#F39B08"/></svg><span>合同会社ひかり不動産</span></div><span>${label}</span></div>`;
+
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>専任媒介契約書｜合同会社ひかり不動産</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;600;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+
+  :root{
+    --ink:#211B12;
+    --ink-soft:#4A4136;
+    --brand:#F39B08;
+    --amber-deep:#A65B0C;
+    --gold:#E4B25C;
+    --cream:#FBF6EC;
+    --cream-deep:#F4E9D4;
+    --hair:#E3DBCE;
+    --hair-strong:#CBBFA8;
+    --thead:#FBF1DD;
+    --paper:#FFFFFF;
+    --sun-glow:#FCE3B0;
+    --mincho:"Shippori Mincho","Yu Mincho","YuMincho","Hiragino Mincho ProN","Noto Serif JP",serif;
+    --gothic:"Zen Kaku Gothic New","Yu Gothic","YuGothic","Hiragino Kaku Gothic ProN","Noto Sans JP","Meiryo",sans-serif;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    font-family:var(--gothic);
+    color:var(--ink);
+    background:#6b6b6b;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+
+  /* ---------- screen toolbar ---------- */
+  .toolbar{
+    position:sticky; top:0; z-index:50;
+    display:flex; align-items:center; justify-content:space-between;
+    gap:16px; padding:12px 20px;
+    background:rgba(24,20,14,.92); backdrop-filter:blur(6px);
+    color:#F3ECDD;
+    font-family:var(--gothic); font-size:13px; letter-spacing:.04em;
+  }
+  .toolbar .tb-title{ opacity:.8; }
+  .toolbar button{
+    font-family:var(--gothic); font-weight:700; font-size:13px; letter-spacing:.06em;
+    color:#211B12; background:var(--brand); border:none; border-radius:999px;
+    padding:9px 20px; cursor:pointer; transition:transform .12s ease, box-shadow .12s ease;
+    box-shadow:0 2px 0 rgba(0,0,0,.25);
+  }
+  .toolbar button:hover{ transform:translateY(-1px); box-shadow:0 4px 12px rgba(243,155,8,.4); }
+  .toolbar button:active{ transform:translateY(1px); box-shadow:0 1px 0 rgba(0,0,0,.25); }
+
+  /* ---------- page frame ---------- */
+  .sheet{ padding:28px 0 48px; }
+  .page{
+    position:relative;
+    width:210mm; min-height:297mm;
+    margin:0 auto 26px;
+    background:var(--paper);
+    box-shadow:0 10px 40px rgba(0,0,0,.35);
+    overflow:hidden;
+  }
+
+  /* ================= COVER ================= */
+  .cover{
+    background:
+      radial-gradient(120% 80% at 50% 26%, var(--sun-glow) 0%, rgba(252,227,176,0) 58%),
+      linear-gradient(180deg, #FEFBF4 0%, var(--cream) 46%, var(--cream-deep) 100%);
+    display:flex; flex-direction:column;
+    padding:26mm 24mm 22mm;
+  }
+  .cover-top{ text-align:center; }
+  .brand-eyebrow{
+    font-family:var(--gothic); font-weight:500;
+    font-size:12.5px; letter-spacing:.42em; text-indent:.42em;
+    color:var(--amber-deep);
+  }
+  .brand-rule{
+    width:44px; height:2px; margin:14px auto 0;
+    background:linear-gradient(90deg, transparent, var(--gold), transparent);
+  }
+
+  /* sun signature */
+  .sun-wrap{ display:flex; justify-content:center; margin:26px 0 8px; }
+  .logo-mark{ height:118px; width:auto; display:block; }
+
+  .cover-title{
+    text-align:center; margin-top:12px;
+  }
+  .cover-title .lead{
+    font-family:var(--gothic); font-weight:500;
+    font-size:14px; letter-spacing:.34em; text-indent:.34em;
+    color:var(--ink-soft); margin-bottom:16px;
+  }
+  .cover-title h1{
+    font-family:var(--mincho); font-weight:800;
+    font-size:46px; line-height:1.24; letter-spacing:.10em;
+    margin:0; color:var(--ink);
+  }
+  .cover-title h1 .accent{ color:var(--amber-deep); }
+
+  .horizon{
+    position:relative; margin:30px 0 26px; height:1px;
+    background:linear-gradient(90deg, transparent, var(--hair-strong) 18%, var(--hair-strong) 82%, transparent);
+  }
+  .horizon::after{
+    content:""; position:absolute; left:50%; top:50%;
+    width:7px; height:7px; border-radius:50%;
+    background:var(--brand); transform:translate(-50%,-50%);
+    box-shadow:0 0 0 4px rgba(243,155,8,.16);
+  }
+
+  .cover-project{
+    text-align:center; margin-top:auto; margin-bottom:26px;
+  }
+  .cover-project .pj-label{
+    font-size:11px; letter-spacing:.3em; color:var(--amber-deep); font-weight:700;
+    margin-bottom:7px;
+  }
+  .cover-project .pj-name{
+    font-family:var(--mincho); font-weight:600; font-size:20px;
+    letter-spacing:.06em; color:var(--ink);
+  }
+
+  /* fact card */
+  .fact-card{
+    margin:0 auto; width:100%; max-width:150mm;
+    background:#fff;
+    border:1px solid var(--hair);
+    border-top:3px solid var(--brand);
+    box-shadow:0 6px 22px rgba(120,80,20,.08);
+  }
+  .fact-row{
+    display:grid; grid-template-columns:38mm 1fr;
+    border-bottom:1px solid var(--hair);
+  }
+  .fact-row:last-child{ border-bottom:none; }
+  .fact-k{
+    background:#FCF7EC;
+    font-size:12.5px; font-weight:700; letter-spacing:.18em;
+    color:var(--amber-deep);
+    padding:13px 16px;
+    display:flex; align-items:center;
+    border-right:1px solid var(--hair);
+  }
+  .fact-v{
+    padding:13px 18px; display:flex; align-items:center;
+    font-size:15px; color:var(--ink); letter-spacing:.03em;
+  }
+  .fact-v .yen{
+    font-family:var(--mincho); font-weight:800; font-size:23px;
+    letter-spacing:.02em; color:var(--ink);
+  }
+  .fact-v .yen small{ font-size:13px; font-weight:500; color:var(--ink-soft); margin-left:8px; letter-spacing:.1em; }
+  .fact-v .name-lg{ font-family:var(--mincho); font-size:19px; font-weight:600; letter-spacing:.16em; }
+  .fact-v .sama{ font-size:13px; color:var(--ink-soft); margin-left:10px; letter-spacing:.1em; }
+
+  .cover-foot{
+    margin-top:auto; padding-top:24px; text-align:center;
+    color:var(--ink-soft);
+  }
+  .cover-foot .co{
+    font-family:var(--mincho); font-weight:600; font-size:15px; letter-spacing:.14em; color:var(--ink);
+  }
+  .cover-foot .meta{
+    font-size:11.5px; letter-spacing:.12em; margin-top:6px; color:var(--ink-soft);
+  }
+
+  /* ================= CONTRACT PAGES ================= */
+  .doc{
+    padding:18mm 20mm 16mm;
+    display:flex; flex-direction:column;
+    min-height:297mm;
+  }
+  .doc-head{
+    display:flex; align-items:baseline; justify-content:space-between;
+    border-bottom:1.5px solid var(--ink);
+    padding-bottom:8px; margin-bottom:4px;
+  }
+  .doc-head .dh-title{
+    font-family:var(--mincho); font-weight:700; font-size:15px; letter-spacing:.14em; color:var(--ink);
+  }
+  .doc-head .dh-page{
+    font-size:11px; letter-spacing:.2em; color:var(--amber-deep); font-weight:700;
+  }
+
+  .preamble{
+    text-align:center; font-size:12px; color:var(--ink-soft);
+    letter-spacing:.04em; margin:16px 0 18px;
+  }
+
+  /* parties */
+  .parties{ margin-bottom:18px; }
+  .party-line{
+    display:grid; grid-template-columns:auto 1fr auto;
+    align-items:baseline; gap:0 14px;
+    font-size:13px; margin-bottom:12px;
+  }
+  .party-line .pl-label{ color:var(--ink-soft); letter-spacing:.06em; white-space:nowrap; }
+  .party-line .pl-val{
+    font-family:var(--mincho); font-weight:600; font-size:16px; letter-spacing:.14em;
+    text-align:center; color:var(--ink);
+    border-bottom:1px solid var(--hair-strong);
+    padding:0 8px 3px;
+  }
+  .party-line .pl-suffix{ color:var(--ink-soft); font-size:12px; white-space:nowrap; }
+  .party-project{
+    font-size:13px; color:var(--ink); line-height:1.9;
+  }
+  .party-project b{ font-weight:700; }
+
+  /* item blocks */
+  .item{ margin-bottom:14px; }
+  .item-head{
+    display:flex; align-items:baseline; gap:10px; margin-bottom:2px;
+  }
+  .item-no{
+    font-family:var(--mincho); font-weight:700; font-size:14px;
+    color:var(--amber-deep); letter-spacing:.05em; white-space:nowrap;
+  }
+  .item-title{ font-size:13.5px; font-weight:700; letter-spacing:.04em; }
+  .item-body{ font-size:13px; line-height:1.95; color:var(--ink); padding-left:2px; }
+  .item-inline{ font-size:13.5px; line-height:1.9; }
+  .item-inline .place{ font-weight:500; letter-spacing:.04em; }
+
+  .amount-line{
+    display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+    padding:4px 0 2px;
+  }
+  .amount-line .amt{
+    font-family:var(--mincho); font-weight:800; font-size:26px;
+    letter-spacing:.02em; color:var(--ink);
+  }
+  .amount-line .amt .cur{ font-size:15px; margin-right:4px; color:var(--amber-deep); }
+  .amount-line .tax{ font-size:12px; color:var(--ink-soft); letter-spacing:.08em; }
+  .amount-sub{ font-size:11.5px; color:var(--ink-soft); margin-top:3px; letter-spacing:.03em; }
+
+  .term-line{ font-size:13.5px; letter-spacing:.03em; line-height:2; }
+  .term-line .fill{
+    display:inline-block; min-width:2.4em; border-bottom:1px solid var(--hair-strong);
+    text-align:center; margin:0 2px;
+  }
+
+  /* payment table */
+  .pay-intro{ font-size:13px; color:var(--ink); margin:2px 0 8px; }
+  table.pay{
+    width:100%; border-collapse:collapse; font-size:13px;
+    margin-bottom:2px;
+  }
+  table.pay th, table.pay td{
+    border:1px solid var(--hair-strong); padding:9px 12px; text-align:center;
+  }
+  table.pay thead th{
+    background:var(--thead); color:var(--amber-deep);
+    font-weight:700; letter-spacing:.12em; font-size:12.5px;
+  }
+  table.pay td.k{ font-weight:700; width:22%; letter-spacing:.08em; }
+  table.pay td.when{ width:34%; color:var(--ink-soft); }
+  table.pay td.amt{ text-align:left; color:var(--ink-soft); letter-spacing:.2em; }
+
+  /* clauses */
+  .clauses{ margin-top:4px; }
+  .clause{
+    display:grid; grid-template-columns:54px 1fr; gap:0 8px;
+    margin-bottom:9px; break-inside:avoid;
+  }
+  .clause .cno{
+    font-family:var(--mincho); font-weight:700; font-size:13.5px;
+    color:var(--amber-deep); text-align:left; letter-spacing:.01em;
+    padding-top:1px; white-space:nowrap;
+  }
+  .clause .ctext{ font-size:12.7px; line-height:1.92; color:var(--ink); letter-spacing:.01em; }
+
+  /* special provisions */
+  .special-head{
+    display:inline-flex; align-items:center; gap:10px;
+    margin:2px 0 12px;
+  }
+  .special-head .sh-label{
+    font-family:var(--mincho); font-weight:700; font-size:15px; letter-spacing:.14em; color:var(--ink);
+  }
+  .special-head .sh-bar{ height:2px; flex:0 0 30px; background:var(--brand); }
+  ul.special{ list-style:none; margin:0 0 4px; padding:0; }
+  ul.special li{
+    position:relative; font-size:12.7px; line-height:1.9; color:var(--ink);
+    padding-left:18px; margin-bottom:6px; letter-spacing:.01em;
+  }
+  ul.special li::before{
+    content:""; position:absolute; left:2px; top:.72em;
+    width:6px; height:6px; border-radius:50%;
+    background:var(--brand);
+  }
+
+  .closing{
+    font-size:12.7px; color:var(--ink); margin:10px 0 6px; letter-spacing:.02em;
+  }
+  .sign-date{
+    text-align:center; font-family:var(--mincho); font-size:15px;
+    letter-spacing:.16em; color:var(--ink); margin:12px 0 16px;
+  }
+  .sign-date .fill{ display:inline-block; min-width:2.6em; border-bottom:1px solid var(--hair-strong); margin:0 4px; }
+
+  /* signature blocks */
+  .sign-grid{ display:flex; flex-direction:column; gap:13px; }
+  .sign-block{ break-inside:avoid; }
+  .sign-block .sb-party{
+    display:flex; align-items:center; gap:10px; margin-bottom:8px;
+  }
+  .sign-block .sb-party .badge{
+    font-family:var(--mincho); font-weight:700; font-size:14px; letter-spacing:.1em;
+    color:#fff; background:var(--amber-deep);
+    padding:3px 12px; border-radius:2px;
+  }
+  .sign-block .sb-party .sb-note{ font-size:11px; color:var(--ink-soft); letter-spacing:.06em; }
+  table.sign{
+    width:100%; border-collapse:collapse; font-size:13px;
+  }
+  table.sign td{ border:1px solid var(--hair-strong); }
+  table.sign td.k{
+    background:#FCF7EC; width:34mm; text-align:center; font-weight:700;
+    letter-spacing:.16em; color:var(--amber-deep); padding:11px 8px; font-size:12.5px;
+  }
+  table.sign td.v{ padding:10px 14px; color:var(--ink); letter-spacing:.04em; height:11mm; }
+  table.sign td.v.seal{ position:relative; }
+  table.sign td.v .seal-hint{
+    position:absolute; right:12px; top:50%; transform:translateY(-50%);
+    width:13mm; height:13mm; border:1px dashed var(--hair-strong); border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size:9px; color:var(--hair-strong); letter-spacing:.08em;
+  }
+
+  .doc-foot{
+    margin-top:auto; padding-top:14px;
+    display:flex; align-items:center; justify-content:space-between;
+    border-top:1px solid var(--hair);
+    font-size:10px; color:var(--ink-soft); letter-spacing:.08em;
+  }
+  .doc-foot .df-brand{ display:flex; align-items:center; gap:7px; }
+  .doc-foot .df-dot{ width:9px; height:9px; }
+
+  /* ---------- print ---------- */
+  @page{ size:A4; margin:0; }
+  @media print{
+    body{ background:#fff; }
+    .toolbar{ display:none; }
+    .sheet{ padding:0; zoom:1 !important; }  /* 印刷は必ず原寸A4（画面プレビューの縮小を無効化） */
+    .page{ margin:0; box-shadow:none; page-break-after:always; }
+    .page:last-child{ page-break-after:auto; }
+    *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  }
+
+  /* スマホ等でA4より狭い画面のときは、レイアウトを崩さず“紙の見た目そのまま縮小”表示する。
+     具体的な縮小率は末尾の <script> が画面幅に合わせて .sheet の zoom を設定（印刷時は上の @media print で解除）。 */
+
+  /* ============ 専任媒介 固有 ============ */
+  .note-lead{ text-align:center; font-size:11px; color:var(--amber-deep); letter-spacing:.04em; margin:10px 0 14px; font-weight:700; }
+  .body-p{ font-size:12.7px; line-height:1.9; color:var(--ink); margin:8px 0; letter-spacing:.01em; }
+  .body-p2{ font-size:12.5px; line-height:1.85; color:var(--ink); margin:3px 0; letter-spacing:.01em; }
+  .body-p2.small{ font-size:11px; color:var(--ink-soft); }
+  .ins{ font-weight:700; color:var(--amber-deep); border-bottom:1px solid var(--gold); padding:0 2px; }
+  .ul{ display:inline-block; border-bottom:1px solid var(--hair-strong); text-align:center; margin:0 2px; vertical-align:baseline; }
+
+  /* 依頼の内容 */
+  .req-row{ display:flex; align-items:center; gap:8px; margin:4px 0 12px; font-size:14px; }
+  .req-label{ font-family:var(--mincho); font-weight:700; font-size:14px; color:var(--amber-deep); letter-spacing:.1em; margin-right:10px; }
+  .req-opt{ font-weight:700; letter-spacing:.04em; }
+  .req-sep{ color:var(--hair-strong); }
+
+  /* 契約型式 */
+  .ktype{ border:1px solid var(--hair); border-left:3px solid var(--brand); background:#FCF9F1; padding:10px 14px; margin-bottom:12px; }
+  .ktype-note{ font-size:11.5px; color:var(--ink-soft); margin-bottom:6px; }
+  .ktype-item{ font-size:12.5px; color:var(--ink-soft); margin:3px 0; }
+  .ktype-item .ktype-cb{ margin-right:6px; }
+  .ktype-item.on{ font-size:13.5px; font-weight:800; color:var(--ink); }
+  .ktype-sub{ font-size:11px; color:var(--ink-soft); line-height:1.7; padding-left:20px; letter-spacing:.01em; }
+
+  /* 署名日 */
+  .sign-date2{ text-align:center; font-family:var(--mincho); font-size:14px; letter-spacing:.14em; color:var(--ink); margin:10px 0 14px; }
+
+  /* 番号付きセクション（1〜7項） */
+  .sec{ margin-bottom:12px; break-inside:avoid; }
+  .sec-head{ display:flex; align-items:center; gap:9px; margin-bottom:5px; }
+  .sec-no{ font-family:var(--mincho); font-weight:800; font-size:14px; color:#fff; background:var(--amber-deep); width:20px; height:20px; border-radius:3px; display:flex; align-items:center; justify-content:center; }
+  .sec-title{ font-size:13.5px; font-weight:800; letter-spacing:.04em; color:var(--ink); }
+  .sec-body{ padding-left:2px; }
+  .li{ display:flex; gap:8px; font-size:12px; line-height:1.8; color:var(--ink); margin:3px 0; letter-spacing:.005em; }
+  .li-no{ flex:none; font-family:var(--mincho); font-weight:700; color:var(--amber-deep); }
+  .biko-note{ font-size:9.5px; color:var(--ink-soft); line-height:1.6; margin-top:6px; padding:6px 8px; background:#FAF6EE; border-radius:4px; }
+  .assen-row{ font-size:13px; margin:2px 0 8px; letter-spacing:.06em; }
+
+  /* ミニ表（あっせん先） */
+  table.mini{ width:100%; border-collapse:collapse; font-size:12px; }
+  table.mini td{ border:1px solid var(--hair-strong); padding:7px 10px; }
+  table.mini td.k{ background:#FCF7EC; width:52mm; font-weight:700; color:var(--amber-deep); letter-spacing:.04em; font-size:11.5px; }
+  table.mini td.v{ color:var(--ink); height:8mm; }
+
+  /* 別表 */
+  .bt-sub{ font-family:var(--mincho); font-weight:700; font-size:13px; letter-spacing:.1em; color:var(--amber-deep); margin:14px 0 6px; }
+  table.bt{ width:100%; border-collapse:collapse; font-size:12px; margin-bottom:4px; }
+  table.bt td{ border:1px solid var(--hair-strong); padding:7px 9px; vertical-align:middle; }
+  .bt-k{ background:#FCF7EC; font-weight:700; color:var(--amber-deep); letter-spacing:.08em; text-align:center; font-size:12px; width:20mm; }
+  .bt-k2{ background:#FDFAF3; font-weight:700; color:var(--ink-soft); font-size:11px; text-align:center; width:26mm; letter-spacing:.02em; }
+  .bt-v{ color:var(--ink); font-size:12px; height:9mm; }
+  .bt.price .bt-v.amt{ font-family:var(--mincho); font-weight:700; text-align:right; letter-spacing:.04em; font-size:13px; }
+  .bt-v.total{ font-size:15px; color:var(--ink); }
+  .bt-v.total .taxin{ font-size:10px; color:var(--ink-soft); font-family:var(--gothic); font-weight:500; }
+  .bt-v.biko{ font-size:10.5px; color:var(--ink-soft); line-height:1.7; vertical-align:top; }
+
+  /* 約款 */
+  .yakkan{ column-count:1; }
+  .yk-clause{ break-inside:avoid; margin-bottom:8px; }
+  .yk-head{ display:flex; align-items:baseline; gap:7px; margin-bottom:1px; }
+  .yk-n{ font-family:var(--mincho); font-weight:800; font-size:11.5px; color:var(--amber-deep); white-space:nowrap; }
+  .yk-t{ font-size:11px; font-weight:700; color:var(--ink); letter-spacing:.02em; }
+  .yk-p{ font-size:10.2px; line-height:1.62; color:var(--ink); margin:1px 0; letter-spacing:0; text-align:justify; }
+  ul.yk-li{ list-style:none; margin:1px 0; padding:0; }
+  ul.yk-li li{ display:flex; gap:5px; font-size:10.2px; line-height:1.6; color:var(--ink); margin:1px 0; }
+  ul.yk-li li .yk-no{ flex:none; font-weight:700; color:var(--amber-deep); }
+</style>
+</head>
+<body>
+
+  <div class="sheet">
+
+    <!-- ============ COVER ============ -->
+    <section class="page cover">
+      <div class="cover-top">
+        <div class="brand-eyebrow">合同会社ひかり不動産</div>
+        <div class="brand-rule"></div>
+      </div>
+      <div class="sun-wrap"><img class="logo-mark" src="${UKEOI_LOGO}" alt="合同会社ひかり不動産 ロゴ"></div>
+      <div class="cover-title">
+        <div class="lead">媒 介 契 約 書</div>
+        <h1>専任<span class="accent">媒介</span>契約書</h1>
+      </div>
+      <div class="horizon"></div>
+      <div class="cover-project">
+        <div class="pj-label">目 的 物 件</div>
+        <div class="pj-name">${propAddr || '&#12288;'}</div>
+      </div>
+      <div class="fact-card">
+        <div class="fact-row"><div class="fact-k">依頼者（甲）</div><div class="fact-v"><span class="name-lg">${kouName || '&#12288;&#12288;'}</span><span class="sama">様</span></div></div>
+        <div class="fact-row"><div class="fact-k">宅建業者（乙）</div><div class="fact-v">合同会社ひかり不動産</div></div>
+        <div class="fact-row"><div class="fact-k">媒介価額</div><div class="fact-v"><span class="yen">${baikai ? '¥' + baikai : '&#12288;'}<small>（税込）</small></span></div></div>
+        <div class="fact-row"><div class="fact-k">契約日</div><div class="fact-v">${keiyakuDate}</div></div>
+      </div>
+      <div class="cover-foot">
+        <div class="co">合同会社ひかり不動産</div>
+        <div class="meta">埼玉県熊谷市籠原南1丁目225番地　／　TEL 048-511-0227　／　宅地建物取引業 埼玉県知事（1）第25131号</div>
+      </div>
+    </section>
+
+    <!-- ============ 本体 1 ============ -->
+    <section class="page">
+      <div class="doc">
+        <div class="doc-head"><div class="dh-title">専任媒介契約書</div><div class="dh-page">1 / 3</div></div>
+        <p class="note-lead">この媒介契約は、国土交通省が定めた標準媒介契約約款に基づく契約です。</p>
+
+        <div class="req-row">
+          <span class="req-label">依頼の内容</span>
+          <span class="req-opt">■&nbsp;売却</span><span class="req-sep">・</span>
+          <span class="req-opt">□&nbsp;購入</span><span class="req-sep">・</span>
+          <span class="req-opt">□&nbsp;交換</span>
+        </div>
+
+        <div class="ktype">
+          <div class="ktype-note">この契約は、次の3つの契約型式のうち、専任媒介契約型式です。</div>
+          <div class="ktype-item"><span class="ktype-cb">□</span>専属専任媒介契約型式</div>
+          <div class="ktype-item on"><span class="ktype-cb">☑</span>専任媒介契約型式</div>
+          <div class="ktype-sub">・依頼者は、目的物件の売買または交換の媒介または代理を、当社以外の宅地建物取引業者に重ねて依頼することができません。</div>
+          <div class="ktype-sub">・依頼者は、自ら発見した相手方と売買または交換の契約を締結することができます。</div>
+          <div class="ktype-sub">・当社は、目的物件を国土交通大臣が指定した指定流通機構に登録します。</div>
+          <div class="ktype-item"><span class="ktype-cb">□</span>一般媒介契約型式</div>
+        </div>
+
+        <p class="body-p">　依頼者甲は、この契約書および専任媒介契約約款により、別表に表示する不動産（目的物件）に関する売買（交換）の媒介を宅地建物取引業者乙に依頼し、乙はこれを承諾します。</p>
+
+        <div class="sign-date2">${keiyakuDate}</div>
+
+        <div class="sign-grid">
+          <div class="sign-block">
+            <div class="sb-party"><span class="badge">甲・依頼者</span></div>
+            <table class="sign">
+              <tr><td class="k">住　所</td><td class="v">${kouAddr}</td></tr>
+              <tr><td class="k">氏　名</td><td class="v seal">${kouName}<span class="seal-hint">印</span></td></tr>
+            </table>
+          </div>
+          <div class="sign-block">
+            <div class="sb-party"><span class="badge">乙・宅地建物取引業者</span></div>
+            <table class="sign">
+              <tr><td class="k">商号（名称）</td><td class="v">合同会社ひかり不動産</td></tr>
+              <tr><td class="k">代表者</td><td class="v seal">比嘉　ギジェルモ<span class="seal-hint">印</span></td></tr>
+              <tr><td class="k">主たる事務所<br>の所在地</td><td class="v">埼玉県熊谷市籠原南1丁目225番地</td></tr>
+              <tr><td class="k">免許証番号</td><td class="v">埼玉県知事（1）第25131号</td></tr>
+            </table>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-head"><span class="sec-no">1</span><span class="sec-title">成約に向けての義務</span></div>
+          <div class="sec-body">
+            <p class="li"><span class="li-no">一</span><span>乙は、契約の相手方を探索するとともに、契約の相手方との契約条件の調整等を行い、契約の成立に向けて積極的に努力します。</span></p>
+            <p class="li"><span class="li-no">二</span><span>乙は、甲に対し、＊1&nbsp;<b class="ins">${reportMethod}</b>&nbsp;により、＊2&nbsp;<b class="ins">${reportFreq}</b>&nbsp;の頻度で業務の処理状況を報告します。</span></p>
+            <p class="li"><span class="li-no">三</span><span>乙は、目的物件の売買または交換の申込みがあったときは、甲に対し、遅滞なく、その旨を報告します。</span></p>
+            <p class="li"><span class="li-no">四</span><span>乙は、広く契約の相手方を探索するため、目的物件につき、所在地、規模、形質、媒介価額その他の事項を、＊3&nbsp;<b class="ins">${ryutsu}</b>&nbsp;にこの媒介契約の締結の日の翌日から＊4&nbsp;<b class="ins">${regDays}</b>&nbsp;日以内（乙の休業日を含みません。）に登録します。また、目的物件を登録したときは、遅滞なく、甲に対して宅地建物取引業法第50条の6に定める登録を証する書面を交付（第34条の2第12項の規定による提供を含みます。）します。なお、乙は、目的物件の売買または交換の契約が成立したときは、宅地建物取引業法第34条の2第7項に基づき当該契約に関する情報を指定流通機構に通知し、当該契約に関する情報は、当該指定流通機構から宅地建物取引業者に提供されるなど、宅地建物取引業法第50条の3および第50条の7に定める指定流通機構の業務のために利用されます。</span></p>
+            <div class="biko-note">（備考）＊1 文書または電子メールのうちいずれかの方法を選択して記入。＊2 宅地建物取引業法第34条の2第9項に定める頻度（2週間に1回以上）の範囲内で具体的な頻度を記入。＊3 当該目的物件の所在地を含む地域を対象として登録業務を行っている指定流通機構の名称を記入。＊4 宅地建物取引業法第34条の2第5項等に定める期間（7日以内）の範囲内で具体的な期間を記入。</div>
+          </div>
+        </div>
+
+        ${dfoot('専任媒介契約書')}
+      </div>
+    </section>
+
+    <!-- ============ 本体 2 ============ -->
+    <section class="page">
+      <div class="doc">
+        <div class="doc-head"><div class="dh-title">専任媒介契約書</div><div class="dh-page">2 / 3</div></div>
+
+        <div class="sec">
+          <div class="sec-head"><span class="sec-no">2</span><span class="sec-title">媒介に係る業務</span></div>
+          <div class="sec-body">
+            <p class="body-p2">乙は、1に掲げる義務を履行するとともに、次の業務を行います。</p>
+            <p class="li"><span class="li-no">一</span><span>乙は、甲に対し、目的物件を売買すべき価額または評価額について意見を述べるときは、その根拠を明らかにして説明を行います。</span></p>
+            <p class="li"><span class="li-no">二</span><span>甲が乙に目的物件の購入または取得を依頼した場合にあっては、乙は、甲に対し、目的物件の売買または交換の契約が成立するまでの間に、宅地建物取引士をして、宅地建物取引業法第35条に定める重要事項について、宅地建物取引士が記名した書面を交付（同条第8項または第9項の規定による提供を含みます。）して説明させます。</span></p>
+            <p class="li"><span class="li-no">三</span><span>乙は、目的物件の売買または交換の契約が成立したときは、甲および甲の相手方に対し、遅滞なく、宅地建物取引業法第37条に定める書面を作成し、宅地建物取引士に当該書面に記名させた上で、これを交付（同条第4項の規定による提供を含みます。）します。</span></p>
+            <p class="li"><span class="li-no">四</span><span>乙は、甲に対し、登記、決済手続等の目的物件の引渡しに係る事務の補助を行います。</span></p>
+            <p class="li"><span class="li-no">五</span><span>その他（<b class="ins">${gyomu5}</b>）</span></p>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-head"><span class="sec-no">3</span><span class="sec-title">建物状況調査を実施する者のあっせんの有無</span></div>
+          <div class="sec-body">
+            <div class="assen-row">（&nbsp;${cb(assenYes)}&nbsp;有&nbsp;・&nbsp;${cb(!assenYes)}&nbsp;無&nbsp;）</div>
+            <table class="mini">
+              <tr><td class="k">あっせん先 会社・事務所名</td><td class="v">${assenCompany}</td></tr>
+              <tr><td class="k">あっせん先 住所</td><td class="v">${assenAddr}</td></tr>
+              <tr><td class="k">あっせん先 電話番号</td><td class="v">${assenTel}</td></tr>
+            </table>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-head"><span class="sec-no">4</span><span class="sec-title">違約金等</span></div>
+          <div class="sec-body">
+            <p class="li"><span class="li-no">一</span><span>甲がこの媒介契約の有効期間内に乙以外の宅地建物取引業者に目的物件の売買または交換の媒介または代理を依頼し、これによって売買または交換の契約を成立させたときは、乙は、甲に対して、約定報酬額に相当する金額（この媒介に係る消費税額および地方消費税額の合計額に相当する額を除きます。）を違約金として請求することができます。</span></p>
+            <p class="li"><span class="li-no">二</span><span>この媒介契約の有効期間内において、甲が自ら発見した相手方と目的物件の売買もしくは交換の契約を締結したとき、または乙の責めに帰すことができない事由によってこの媒介契約が解除されたときは、乙は、甲に対して、この媒介契約の履行のために要した費用の償還を請求することができます。</span></p>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-head"><span class="sec-no">5</span><span class="sec-title">有効期間</span></div>
+          <div class="sec-body"><p class="body-p2">この媒介契約締結後&nbsp;<b class="ins">${termMonths}</b>&nbsp;ヶ月（${termEnd}まで）とします。</p></div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-head"><span class="sec-no">6</span><span class="sec-title">約定報酬額</span></div>
+          <div class="sec-body">
+            <p class="body-p2">売買価格（消費税および地方消費税抜き報酬額）の３％＋６万円に消費税額および地方消費税額の合計額を合算した額とする。</p>
+            <p class="body-p2 small">【例…売買価格2,000万円×3％＋６万円＝66万円（税抜報酬）＋消費税＝72.6万円（消費税込）】　なお、売買価格（消費税および地方消費税抜き報酬額）が800万円以下の場合の報酬額は30万円に消費税および地方消費税額の合計額を合算した額とする。</p>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-head"><span class="sec-no">7</span><span class="sec-title">約定報酬の受領の時期</span></div>
+          <div class="sec-body"><p class="body-p2">決済と同時とします。</p></div>
+        </div>
+
+        ${dfoot('専任媒介契約書')}
+      </div>
+    </section>
+
+    <!-- ============ 別表 ============ -->
+    <section class="page">
+      <div class="doc">
+        <div class="doc-head"><div class="dh-title">別表（目的物件の表示・媒介価額）</div><div class="dh-page">3 / 3</div></div>
+
+        <table class="bt">
+          <tr><td class="bt-k" rowspan="2">所有者</td><td class="bt-k2">住所</td><td class="bt-v">${ownerAddr}</td><td class="bt-k2">登記名義人 住所</td><td class="bt-v">${toukiAddr}</td></tr>
+          <tr><td class="bt-k2">氏名</td><td class="bt-v">${ownerName}</td><td class="bt-k2">登記名義人 氏名</td><td class="bt-v">${toukiName}</td></tr>
+          <tr><td class="bt-k">所在地</td><td class="bt-v" colspan="4">${propAddr}</td></tr>
+        </table>
+
+        <div class="bt-sub">目的物件の表示</div>
+        <table class="bt">
+          <tr><td class="bt-k" rowspan="2">土地</td><td class="bt-k2">実測</td><td class="bt-v">${blank(landJissoku, 5)}&nbsp;㎡</td><td class="bt-k2">地目</td><td class="bt-v">${cb(chimoku === '宅地')}宅地・${cb(chimoku === '田')}田・${cb(chimoku === '畑')}畑・${cb(chimoku === '山林')}山林・${cb(chimoku === '雑種地')}雑種地・${cb(chimoku === 'その他')}その他（${chimokuOther}）</td></tr>
+          <tr><td class="bt-k2">公簿</td><td class="bt-v">${blank(landKobo, 5)}&nbsp;㎡</td><td class="bt-k2">権利内容</td><td class="bt-v">${cb(kenri === '所有権')}所有権・${cb(kenri === '借地権')}借地権</td></tr>
+          <tr><td class="bt-k" rowspan="2">建物</td><td class="bt-k2">建築面積</td><td class="bt-v">${blank(bldArea, 5)}&nbsp;㎡</td><td class="bt-k2">種類</td><td class="bt-v">${bldType}</td></tr>
+          <tr><td class="bt-k2">延面積</td><td class="bt-v">${blank(bldTotal, 5)}&nbsp;㎡</td><td class="bt-k2">構造 / 間取り</td><td class="bt-v">${bldStruct}${bldStruct && bldLayout ? '　/　' : ''}${bldLayout}</td></tr>
+          <tr><td class="bt-k" rowspan="2">マンション</td><td class="bt-k2">名称</td><td class="bt-v">${mansName}</td><td class="bt-k2">構造</td><td class="bt-v">${blank(mansStruct, 4)}造</td></tr>
+          <tr><td class="bt-k2">部屋</td><td class="bt-v">${blank(mansFloors, 2)}階&nbsp;${blank(mansRoom, 3)}号室&nbsp;（${blank(mansStoreys, 2)}階建）</td><td class="bt-k2">タイプ / 専有面積</td><td class="bt-v">${blank(mansType, 2)}${mansTypeUnit}&nbsp;/&nbsp;${blank(mansArea, 4)}㎡</td></tr>
+          <tr><td class="bt-k">共有持分</td><td class="bt-v" colspan="4">${blank(mansShareA, 3)}&nbsp;分の&nbsp;${blank(mansShareB, 3)}</td></tr>
+        </table>
+
+        <table class="bt price">
+          <tr><td class="bt-k">本体価額</td><td class="bt-v amt">${hontai ? hontai : ''}&nbsp;円</td><td class="bt-k" rowspan="3" style="width:22mm">備考</td><td class="bt-v biko" rowspan="3">${biko}</td></tr>
+          <tr><td class="bt-k">消費税額および<br>地方消費税額の合計額</td><td class="bt-v amt">${taxAmt ? taxAmt : ''}&nbsp;円</td></tr>
+          <tr><td class="bt-k">媒介価額（総額）</td><td class="bt-v amt total">${baikai ? baikai : ''}&nbsp;円&nbsp;<span class="taxin">（税込）</span></td></tr>
+        </table>
+
+        ${dfoot('別表')}
+      </div>
+    </section>
+
+    <!-- ============ 約款 1 ============ -->
+    <section class="page">
+      <div class="doc">
+        <div class="doc-head"><div class="dh-title">専任媒介契約約款</div><div class="dh-page">約款 1 / 2</div></div>
+        <div class="yakkan">${yakkanA}</div>
+        ${dfoot('専任媒介契約約款')}
+      </div>
+    </section>
+
+    <!-- ============ 約款 2 ============ -->
+    <section class="page">
+      <div class="doc">
+        <div class="doc-head"><div class="dh-title">専任媒介契約約款</div><div class="dh-page">約款 2 / 2</div></div>
+        <div class="yakkan">${yakkanB}</div>
+        ${dfoot('専任媒介契約約款')}
+      </div>
+    </section>
+
+  </div>
+<script>
+(function(){
+  var PAGE_PX = 210 * 96 / 25.4;
+  function fit(){ var s=document.querySelector('.sheet'); if(!s) return; var vw=document.documentElement.clientWidth||window.innerWidth||PAGE_PX; s.style.zoom=(vw<PAGE_PX)?String((vw-12)/PAGE_PX):''; }
+  window.addEventListener('resize', fit); window.addEventListener('orientationchange', fit);
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', fit); else fit();
+})();
+${"<" + "/script>"}
+</body>
+</html>`;
+}
+
+function printBaikaiKeiyaku(f) {
+  try {
+    let html = buildBaikaiKeiyakuHTML(f);
+    const toolbar = '<div class="toolbar"><span class="tb-title">専任媒介契約書 — プレビュー</span><button onclick="window.print()">🖨 印刷 / PDFで保存</button></div>';
+    html = html.replace("<body>", "<body>" + toolbar);
+    let w = null;
+    try { w = window.open("", "_blank"); } catch (e) {}
+    if (w && w.document) {
+      w.document.open(); w.document.write(html); w.document.close();
+      try { w.focus(); } catch (e) {}
+      return;
+    }
+    const ifr = document.createElement("iframe");
+    ifr.setAttribute("aria-hidden", "true");
+    ifr.style.cssText = "position:fixed;left:-10000px;top:0;width:820px;height:1200px;border:0;";
+    document.body.appendChild(ifr);
+    const doc = ifr.contentWindow.document;
+    doc.open(); doc.write(html); doc.close();
+    let done = false;
+    const fire = () => {
+      if (done) return; done = true;
+      try { ifr.contentWindow.focus(); ifr.contentWindow.print(); } catch (e) {}
+      setTimeout(() => { try { document.body.removeChild(ifr); } catch (e) {} }, 2000);
+    };
+    try { const fk = ifr.contentWindow.document.fonts; if (fk && fk.ready) fk.ready.then(() => setTimeout(fire, 150)); } catch (e) {}
+    setTimeout(fire, 2000);
+  } catch (e) { console.warn("baikai print failed", e); alert("契約書の生成に失敗しました：" + e.message); }
+}
+
+
 // 🆕 v9.196: 空き家投函チラシ（所有者不明段階で投函するDM・窓付封筒対応・所有者名/住所なし・会社署名）
 function buildChirashiHTML(showAddressee) {
   if (showAddressee === undefined) showAddressee = true;
@@ -27671,16 +28443,319 @@ function UkeoiKeiyakuPage({ data, setData, onBack }) {
   );
 }
 
+// 🆕 v9.308: 専任媒介契約書（売主用）入力フォーム → A4×6ページ印刷/PDF。保存機能付き（baikaiDocs・全社共有）
+function BaikaiKeiyakuPage({ data, setData, onBack }) {
+  const EMPTY = {
+    kouName: "", kouAddr: "", propAddr: "",
+    keiyakuDate: "", termMonths: "", termEnd: "",
+    hontai: "", taxAmt: "", baikai: "", biko: "",
+    ownerAddr: "", ownerName: "", toukiAddr: "", toukiName: "",
+    landJissoku: "", landKobo: "", landChimoku: "宅地", landChimokuOther: "", landKenri: "所有権",
+    bldArea: "", bldTotal: "", bldType: "", bldStruct: "", bldLayout: "",
+    mansName: "", mansFloors: "", mansRoom: "", mansStoreys: "", mansStruct: "", mansType: "", mansTypeUnit: "LDK", mansShareA: "", mansShareB: "", mansArea: "",
+    assen: "無", assenCompany: "", assenAddr: "", assenTel: "",
+    reportMethod: "", reportFreq: "", ryutsu: "", regDays: "", gyomu5: "",
+  };
+  const [form, setForm] = useState(EMPTY);
+  const [showMans, setShowMans] = useState(false);
+  const [showGyomu, setShowGyomu] = useState(false);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const fmt = n => Number(n || 0).toLocaleString("ja-JP");
+  const numOf = v => Math.round(Number(String(v || "").replace(/[^0-9.]/g, "")) || 0);
+  const baikaiNum = numOf(form.baikai);
+  const canPrint = form.kouName.trim() && form.propAddr.trim() && baikaiNum > 0;
+  const onPrint = () => {
+    if (!canPrint) { alert("依頼者（甲）氏名・目的物件の所在地・媒介価額は必須です。"); return; }
+    printBaikaiKeiyaku(form);
+  };
+
+  // 保存／読込／削除（ukeoiDocsと同じ作り・data.baikaiDocs / 全社共有）
+  const savedDocs = Array.isArray(data && data.baikaiDocs) ? data.baikaiDocs : [];
+  const [currentDocId, setCurrentDocId] = useState(null);
+  const [showSaved, setShowSaved] = useState(false);
+  const docLabel = (f) => {
+    const p = (f.propAddr || "").trim() || "物件未入力";
+    const s = (f.kouName || "").trim() || "依頼者未入力";
+    return `${p} ／ ${s} 様`;
+  };
+  const saveDoc = () => {
+    if (!setData) return;
+    if (!form.kouName.trim() && !form.propAddr.trim()) { alert("依頼者名か物件所在地を入力してから保存してください。"); return; }
+    const now = Date.now();
+    const snapshot = JSON.parse(JSON.stringify(form));
+    const id = currentDocId || `baikai_${now}`;
+    setData(d => {
+      const list = Array.isArray(d.baikaiDocs) ? d.baikaiDocs : [];
+      const exists = list.some(x => x.id === id);
+      const entry = { id, label: docLabel(form), form: snapshot, updatedAt: now,
+                      createdAt: (list.find(x => x.id === id) || {}).createdAt || now,
+                      savedBy: (typeof getCurrentUser === "function" && getCurrentUser()) || "" };
+      const next = exists ? list.map(x => x.id === id ? entry : x) : [entry, ...list];
+      return { ...d, baikaiDocs: next };
+    });
+    setCurrentDocId(id);
+    try { window.alert("この契約書を保存しました。次回「保存した契約書」から開けます。"); } catch (e) {}
+  };
+  const loadDoc = (docRec) => {
+    if (!docRec || !docRec.form) return;
+    setForm(f => ({ ...EMPTY, ...docRec.form }));
+    setCurrentDocId(docRec.id);
+    setShowSaved(false);
+  };
+  const newDoc = () => { setForm(EMPTY); setCurrentDocId(null); };
+  const deleteDoc = (id) => {
+    if (!setData) return;
+    if (!window.confirm("この保存済み契約書を削除しますか？")) return;
+    setData(d => ({ ...d, baikaiDocs: (Array.isArray(d.baikaiDocs) ? d.baikaiDocs : []).filter(x => x.id !== id) }));
+    if (currentDocId === id) setCurrentDocId(null);
+  };
+
+  const secHead = (t) => (<div style={{ marginTop: 18, marginBottom: 10, fontSize: 13, fontWeight: 800, color: C.accent, borderBottom: `2px solid ${C.accent}33`, paddingBottom: 5 }}>{t}</div>);
+
+  return (
+    <div style={{ padding: "16px 16px 100px", maxWidth: 720, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>📝 専任媒介契約書（売主用）</div>
+      </div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 16, lineHeight: 1.7 }}>
+        <NavIcon name="bulb" size={15} /> 依頼者・物件・媒介価額など数項目を入力 → 「作成」で <b>表紙＋本体＋別表＋約款（A4×6枚）</b> の契約書が<b>新しいタブ</b>で開きます。タブ上部の「🖨 印刷 / PDF保存」ボタン（スマホは共有→印刷）で <b>PDF保存・印刷</b>できます。<br />
+        約款（国土交通省標準・第1〜18条）・宅建業者（乙＝合同会社ひかり不動産）情報は固定です。入力内容は<b>アプリ内に保存</b>して後から開き直し・再出力できます（全社共有）。
+      </div>
+
+      {/* 保存した契約書の一覧 */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+        <div onClick={() => setShowSaved(s => !s)} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+          <NavIcon name="folder" size={16} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>保存した契約書（{savedDocs.length}件）</span>
+          {currentDocId && <span style={{ fontSize: 10, fontWeight: 700, color: C.accent, background: C.accent + "18", borderRadius: 6, padding: "2px 6px" }}>編集中</span>}
+          <span style={{ marginLeft: "auto", color: C.muted, fontSize: 12 }}>{showSaved ? "▲" : "▼"}</span>
+        </div>
+        {showSaved && (
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+            {savedDocs.length === 0 && <div style={{ fontSize: 12, color: C.muted }}>まだ保存された契約書はありません。入力して下の「この契約書を保存」を押すとここに追加されます。</div>}
+            {savedDocs.map(docRec => (
+              <div key={docRec.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: C.inset, border: `1px solid ${currentDocId === docRec.id ? C.accent : C.borderDim}`, borderRadius: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{docRec.label || "(無題)"}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>{new Date(docRec.updatedAt || docRec.createdAt || Date.now()).toLocaleString("ja-JP")}{docRec.savedBy ? `・${docRec.savedBy}` : ""}</div>
+                </div>
+                <button type="button" onClick={() => loadDoc(docRec)} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", flex: "none" }}>開く</button>
+                <button type="button" onClick={() => deleteDoc(docRec.id)} style={{ background: "none", border: `1.5px solid ${C.danger}55`, color: C.danger, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", flex: "none" }}>削除</button>
+              </div>
+            ))}
+          </div>
+        )}
+        {currentDocId && (
+          <button type="button" onClick={newDoc} style={{ marginTop: 10, width: "100%", background: "none", border: `1.5px dashed ${C.borderDim}`, color: C.muted, borderRadius: 8, padding: "8px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}>＋ 新規作成（入力をクリア）</button>
+        )}
+      </div>
+
+      {secHead("基本情報")}
+      <Field label="依頼者（甲）氏名　※必須">
+        <input style={inp} value={form.kouName} onChange={e => set("kouName", e.target.value)} placeholder="例: 下田敏徳" />
+      </Field>
+      <Field label="依頼者（甲）住所">
+        <input style={inp} value={form.kouAddr} onChange={e => set("kouAddr", e.target.value)} placeholder="署名欄の住所。空欄可（手書き運用）" />
+      </Field>
+      <Field label="目的物件の所在地　※必須">
+        <input style={inp} value={form.propAddr} onChange={e => set("propAddr", e.target.value)} placeholder="例: 埼玉県東松山市五領町○○番地" />
+      </Field>
+      <Field label="媒介価額（総額・税込・円）　※必須">
+        <input style={inp} type="text" inputMode="numeric" value={form.baikai} onChange={e => set("baikai", e.target.value)} placeholder="例: 5000000" />
+        {baikaiNum > 0 && (
+          <div style={{ marginTop: 8, padding: "10px 14px", background: C.accent + "14", border: `1px solid ${C.accent}44`, borderRadius: 10, fontSize: 13, color: C.text, lineHeight: 1.7 }}>
+            媒介価額 <b>¥{fmt(baikaiNum)}</b>（税込）<br />
+            <span style={{ color: C.muted }}>表紙・別表の媒介価額（総額）に反映されます。</span>
+          </div>
+        )}
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="契約日（任意）">
+          <input style={inp} value={form.keiyakuDate} onChange={e => set("keiyakuDate", e.target.value)} placeholder="例: 令和8年7月10日 ／ 空欄で記入枠" />
+        </Field>
+        <Field label="有効期間 満了日（任意）">
+          <input style={inp} value={form.termEnd} onChange={e => set("termEnd", e.target.value)} placeholder="例: 令和8年10月9日" />
+        </Field>
+      </div>
+      <Field label="有効期間（ヶ月・任意／既定 3ヶ月）">
+        <input style={inp} value={form.termMonths} onChange={e => set("termMonths", e.target.value)} placeholder="例: 3" />
+      </Field>
+
+      {secHead("価額の内訳（任意）")}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="本体価額（円）">
+          <input style={inp} type="text" inputMode="numeric" value={form.hontai} onChange={e => set("hontai", e.target.value)} placeholder="別表の本体価額欄" />
+        </Field>
+        <Field label="消費税額および地方消費税額（円）">
+          <input style={inp} type="text" inputMode="numeric" value={form.taxAmt} onChange={e => set("taxAmt", e.target.value)} placeholder="非課税なら空欄" />
+        </Field>
+      </div>
+      <Field label="備考（別表）">
+        <textarea style={{ ...inp, minHeight: 64, resize: "vertical" }} value={form.biko} onChange={e => set("biko", e.target.value)} placeholder="空欄なら既定の文言（解体・動産撤去等を手配…）が入ります" />
+      </Field>
+
+      {secHead("別表：所有者・登記名義人（任意）")}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="所有者 住所">
+          <input style={inp} value={form.ownerAddr} onChange={e => set("ownerAddr", e.target.value)} placeholder="所有者の住所" />
+        </Field>
+        <Field label="所有者 氏名">
+          <input style={inp} value={form.ownerName} onChange={e => set("ownerName", e.target.value)} placeholder="所有者の氏名" />
+        </Field>
+        <Field label="登記名義人 住所（既定 同左）">
+          <input style={inp} value={form.toukiAddr} onChange={e => set("toukiAddr", e.target.value)} placeholder="同左" />
+        </Field>
+        <Field label="登記名義人 氏名（既定 同左）">
+          <input style={inp} value={form.toukiName} onChange={e => set("toukiName", e.target.value)} placeholder="同左" />
+        </Field>
+      </div>
+
+      {secHead("別表：土地（任意）")}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="実測（㎡）">
+          <input style={inp} value={form.landJissoku} onChange={e => set("landJissoku", e.target.value)} placeholder="例: 120.50" />
+        </Field>
+        <Field label="公簿（㎡）">
+          <input style={inp} value={form.landKobo} onChange={e => set("landKobo", e.target.value)} placeholder="例: 118.00" />
+        </Field>
+        <Field label="地目">
+          <select style={inp} value={form.landChimoku} onChange={e => set("landChimoku", e.target.value)}>
+            <option value="宅地">宅地</option>
+            <option value="田">田</option>
+            <option value="畑">畑</option>
+            <option value="山林">山林</option>
+            <option value="雑種地">雑種地</option>
+            <option value="その他">その他</option>
+          </select>
+        </Field>
+        <Field label="権利内容">
+          <select style={inp} value={form.landKenri} onChange={e => set("landKenri", e.target.value)}>
+            <option value="所有権">所有権</option>
+            <option value="借地権">借地権</option>
+          </select>
+        </Field>
+      </div>
+      {form.landChimoku === "その他" && (
+        <Field label="地目（その他の内容）">
+          <input style={inp} value={form.landChimokuOther} onChange={e => set("landChimokuOther", e.target.value)} placeholder="地目その他の記載" />
+        </Field>
+      )}
+
+      {secHead("別表：建物（任意）")}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="建築面積（㎡）">
+          <input style={inp} value={form.bldArea} onChange={e => set("bldArea", e.target.value)} placeholder="例: 65.00" />
+        </Field>
+        <Field label="延面積（㎡）">
+          <input style={inp} value={form.bldTotal} onChange={e => set("bldTotal", e.target.value)} placeholder="例: 98.50" />
+        </Field>
+        <Field label="種類">
+          <input style={inp} value={form.bldType} onChange={e => set("bldType", e.target.value)} placeholder="例: 居宅" />
+        </Field>
+        <Field label="構造">
+          <input style={inp} value={form.bldStruct} onChange={e => set("bldStruct", e.target.value)} placeholder="例: 木造2階建" />
+        </Field>
+      </div>
+      <Field label="間取り">
+        <input style={inp} value={form.bldLayout} onChange={e => set("bldLayout", e.target.value)} placeholder="例: 4LDK" />
+      </Field>
+
+      {/* マンション（折りたたみ・任意） */}
+      <div onClick={() => setShowMans(s => !s)} style={{ marginTop: 16, marginBottom: showMans ? 10 : 0, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none", fontSize: 13, fontWeight: 800, color: C.muted }}>
+        <span>別表：マンションの場合（任意）</span>
+        <span style={{ marginLeft: "auto", fontSize: 12 }}>{showMans ? "▲" : "▼"}</span>
+      </div>
+      {showMans && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="名称"><input style={inp} value={form.mansName} onChange={e => set("mansName", e.target.value)} placeholder="マンション名称" /></Field>
+            <Field label="構造"><input style={inp} value={form.mansStruct} onChange={e => set("mansStruct", e.target.value)} placeholder="例: 鉄筋コンクリート" /></Field>
+            <Field label="階（所在階）"><input style={inp} value={form.mansFloors} onChange={e => set("mansFloors", e.target.value)} placeholder="例: 3" /></Field>
+            <Field label="号室"><input style={inp} value={form.mansRoom} onChange={e => set("mansRoom", e.target.value)} placeholder="例: 305" /></Field>
+            <Field label="階建"><input style={inp} value={form.mansStoreys} onChange={e => set("mansStoreys", e.target.value)} placeholder="例: 10" /></Field>
+            <Field label="専有面積（㎡）"><input style={inp} value={form.mansArea} onChange={e => set("mansArea", e.target.value)} placeholder="例: 65.20" /></Field>
+            <Field label="タイプ"><input style={inp} value={form.mansType} onChange={e => set("mansType", e.target.value)} placeholder="例: 3" /></Field>
+            <Field label="タイプ単位">
+              <select style={inp} value={form.mansTypeUnit} onChange={e => set("mansTypeUnit", e.target.value)}>
+                <option value="LDK">LDK</option>
+                <option value="DK">DK</option>
+                <option value="K">K</option>
+              </select>
+            </Field>
+            <Field label="共有持分（分母）"><input style={inp} value={form.mansShareA} onChange={e => set("mansShareA", e.target.value)} placeholder="例: 100000" /></Field>
+            <Field label="共有持分（分子）"><input style={inp} value={form.mansShareB} onChange={e => set("mansShareB", e.target.value)} placeholder="例: 6520" /></Field>
+          </div>
+        </div>
+      )}
+
+      {secHead("建物状況調査のあっせん（任意）")}
+      <Field label="あっせんの有無">
+        <select style={inp} value={form.assen} onChange={e => set("assen", e.target.value)}>
+          <option value="無">無</option>
+          <option value="有">有</option>
+        </select>
+      </Field>
+      {form.assen === "有" && (
+        <div>
+          <Field label="あっせん先 会社・事務所名"><input style={inp} value={form.assenCompany} onChange={e => set("assenCompany", e.target.value)} /></Field>
+          <Field label="あっせん先 住所"><input style={inp} value={form.assenAddr} onChange={e => set("assenAddr", e.target.value)} /></Field>
+          <Field label="あっせん先 電話番号"><input style={inp} value={form.assenTel} onChange={e => set("assenTel", e.target.value)} /></Field>
+        </div>
+      )}
+
+      {/* 業務の記載（折りたたみ・既定値あり） */}
+      <div onClick={() => setShowGyomu(s => !s)} style={{ marginTop: 16, marginBottom: showGyomu ? 10 : 0, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none", fontSize: 13, fontWeight: 800, color: C.muted }}>
+        <span>業務の記載（任意・空欄なら標準の既定値）</span>
+        <span style={{ marginLeft: "auto", fontSize: 12 }}>{showGyomu ? "▲" : "▼"}</span>
+      </div>
+      {showGyomu && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="報告方法（＊1）"><input style={inp} value={form.reportMethod} onChange={e => set("reportMethod", e.target.value)} placeholder="既定: 電子メール等" /></Field>
+            <Field label="報告頻度（＊2）"><input style={inp} value={form.reportFreq} onChange={e => set("reportFreq", e.target.value)} placeholder="既定: ２週間に１回以上" /></Field>
+            <Field label="登録日数（＊4・日）"><input style={inp} value={form.regDays} onChange={e => set("regDays", e.target.value)} placeholder="既定: 7" /></Field>
+            <Field label="指定流通機構（＊3）"><input style={inp} value={form.ryutsu} onChange={e => set("ryutsu", e.target.value)} placeholder="既定: （公財）東日本不動産流通機構" /></Field>
+          </div>
+          <Field label="その他の業務（2の五）"><input style={inp} value={form.gyomu5} onChange={e => set("gyomu5", e.target.value)} placeholder="既定: 公課証明、評価証明、上下水道の配管図等の取得…" /></Field>
+        </div>
+      )}
+
+      <div style={{ marginTop: 18, marginBottom: 16, padding: "12px 14px", background: C.warn + "14", border: `1px solid ${C.warn}55`, borderRadius: 10, fontSize: 11.5, color: C.text, lineHeight: 1.7 }}>
+        <b>ℹ ご確認ください</b><br />
+        ・約款は国土交通省の標準専任媒介契約約款（第1〜18条）を全文収録しています。宅建業者（乙）は<b>合同会社ひかり不動産</b>で固定です。<br />
+        ・別表・任意項目は空欄のまま出力すると手書き記入枠になります。実測・公簿等は登記簿・測量図で確認のうえ記入してください。
+      </div>
+
+      <button onClick={saveDoc} style={{
+        width: "100%", marginBottom: 10, background: C.cardBg, color: C.text,
+        border: `1.5px solid ${C.borderDim}`, borderRadius: 12, padding: 14, fontSize: 15, fontWeight: 800,
+        cursor: "pointer", fontFamily: "inherit",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+      }}><NavIcon name="save" size={17} /> {currentDocId ? "上書き保存" : "この契約書を保存"}</button>
+
+      <button onClick={onPrint} disabled={!canPrint} style={{
+        width: "100%", background: canPrint ? C.accent : C.borderDim, color: "#fff",
+        border: "none", borderRadius: 12, padding: 16, fontSize: 16, fontWeight: 800,
+        cursor: canPrint ? "pointer" : "not-allowed", fontFamily: "inherit",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+      }}><NavIcon name="printer" size={18} /> 契約書を作成（新しいタブで開く）</button>
+    </div>
+  );
+}
+
 function ShoruiPage({ data, setData, onBack }) {
   const [doc, setDoc] = useState(null);     // null | "seisan"
   const [folder, setFolder] = useState(null); // null | "jiage"
   if (doc === "seisan") return <SeisanFormPage data={data} setData={setData} onBack={() => setDoc(null)} />;
   if (doc === "ukeoi") return <UkeoiKeiyakuPage data={data} setData={setData} onBack={() => setDoc(null)} />;
+  if (doc === "baikai") return <BaikaiKeiyakuPage data={data} setData={setData} onBack={() => setDoc(null)} />;
   const PDF_JIAGE_TEIAN = "jiage-baikyaku-teian.pdf"; // 🆕 v9.199: 静的アセット（dist直下に配置）
   const openPdf = (url) => { try { window.open(url, "_blank"); } catch (e) { window.location.href = url; } };
   const topItems = [
     { key: "seisan", icon: "💴", title: "売買精算書", desc: "売主 ・ 買主の精算明細を作成 → Excel出力", onClick: () => setDoc("seisan") },
     { key: "ukeoi", icon: "🔨", title: "リフォーム工事請負契約書", desc: "施主名 ・ 工事名称 ・ 金額など数項目を入力 → A4×3ページ（表紙＋本体）で印刷/PDF保存", onClick: () => setDoc("ukeoi") },
+    { key: "baikai", icon: "📝", title: "専任媒介契約書（売主用）", desc: "依頼者 ・ 物件 ・ 媒介価額など数項目を入力 → A4×6ページ（表紙＋本体＋別表＋約款）で印刷/PDF保存", onClick: () => setDoc("baikai") },
     { key: "jiage", icon: "📁", title: "地上げフォルダ", desc: "空き家投函チラシ ・ 不動産売却方法のご提案", onClick: () => setFolder("jiage") },
     // 今後追加: 重要事項説明書 など
   ];
