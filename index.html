@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.314-gps-fastfix";
+const APP_VERSION = "2026-07-10-v9.315-owner-addr-modernize";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7385,7 +7385,9 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const saveJiageEdit = () => {
     if (!quickEditJiage || !quickEditJiageForm) return;
-    const updated = { ...quickEditJiage, ...quickEditJiageForm };
+    const _form = { ...quickEditJiageForm };
+    if (_form.ownerAddr) _form.ownerAddr = toNewAddr(_form.ownerAddr); // 🆕 v9.315: 手入力の謄本住所も旧→現に自動変換
+    const updated = { ...quickEditJiage, ..._form };
     setData(d => {
       let next = { ...d, jiage: d.jiage.map(j => j.id === quickEditJiage.id ? updated : j) };
       // 🆕 v9.274: ステータスをKPI段階へ変えたら行動管理カウンターに+1
@@ -16053,11 +16055,44 @@ function analyzeVisitLog(visitLog) {
 }
 
 // 🆕 v9.156: 旧市町村名→現市名（平成大合併で消滅した町村のみ。伊奈町/千代田町/寄居町等の現存町は変換しない）
+// 🆕 v9.315: 旧市町村名→現行地名を「表示・DM用に正しい」網羅版へ拡張。
+//   ・従来は13件だけで坂戸町/鳩山村/都幾川村/大里村/浦和市等が抜け、取込で旧住所が素通りしていた。
+//   ・謄本(登記)は当時の旧地名で書かれるため、取込・手入力の入口でここを通して現住所へ直す。
+//   ・「区」は座標が無いと確定できないので原則“市”まで(岩槻のみ一意に岩槻区)。鳩ヶ谷は表記揺れが不安定で除外。
+//   ・ジオコーディング用の OLD_MUNI_MAP とは別物(あちらは位置決め専用で児玉町等の町名を落とす)。ここは表示正確性優先。
 const KYUJU_MAP = {
-  "北足立郡吹上町": "鴻巣市", "北埼玉郡川里町": "鴻巣市",
+  // 熊谷市へ編入
+  "大里郡妻沼町": "熊谷市", "大里郡妻沼村": "熊谷市", "大里郡大里町": "熊谷市", "大里郡大里村": "熊谷市",
+  "大里郡江南町": "熊谷市", "大里郡江南村": "熊谷市",
+  // 深谷市へ編入
   "大里郡岡部町": "深谷市", "大里郡川本町": "深谷市", "大里郡花園町": "深谷市", "大里郡花園村": "深谷市",
-  "大里郡江南町": "熊谷市", "大里郡妻沼町": "熊谷市", "大里郡大里町": "熊谷市",
-  "入間郡鶴ヶ島町": "鶴ヶ島市", "児玉郡児玉町": "本庄市児玉町", "北埼玉郡南河原村": "行田市",
+  // 市制(町名が消えて市名に)
+  "入間郡坂戸町": "坂戸市", "入間郡鶴ヶ島町": "鶴ヶ島市", "北足立郡上尾町": "上尾市",
+  // 村→町(同一郡内)
+  "比企郡鳩山村": "比企郡鳩山町", "比企郡吉見村": "比企郡吉見町", "比企郡滑川村": "比企郡滑川町",
+  "比企郡嵐山村": "比企郡嵐山町", "入間郡毛呂村": "入間郡毛呂山町",
+  // 合併・改称で新町へ
+  "比企郡都幾川村": "比企郡ときがわ町", "比企郡玉川村": "比企郡ときがわ町", "児玉郡神泉村": "児玉郡神川町",
+  // 鴻巣市へ編入
+  "北足立郡吹上町": "鴻巣市", "北埼玉郡川里町": "鴻巣市", "北埼玉郡川里村": "鴻巣市",
+  // 行田市へ編入
+  "北埼玉郡南河原村": "行田市",
+  // 加須市へ編入
+  "北埼玉郡騎西町": "加須市", "北埼玉郡北川辺町": "加須市", "北埼玉郡大利根町": "加須市",
+  // 久喜市へ編入
+  "南埼玉郡菖蒲町": "久喜市", "北葛飾郡栗橋町": "久喜市", "北葛飾郡鷲宮町": "久喜市",
+  // 春日部市へ編入
+  "北葛飾郡庄和町": "春日部市",
+  // 秩父市へ編入
+  "秩父郡吉田町": "秩父市", "秩父郡荒川村": "秩父市", "秩父郡大滝村": "秩父市",
+  // 飯能市へ編入
+  "入間郡名栗村": "飯能市",
+  // ふじみ野市へ
+  "入間郡大井町": "ふじみ野市", "入間郡福岡町": "ふじみ野市", "上福岡市": "ふじみ野市",
+  // 本庄市(児玉町は町名を保持)
+  "児玉郡児玉町": "本庄市児玉町",
+  // さいたま市(浦和/大宮/与野は複数区にまたがるため市まで。岩槻は一意に岩槻区)
+  "浦和市": "さいたま市", "大宮市": "さいたま市", "与野市": "さいたま市", "岩槻市": "さいたま市岩槻区",
 };
 function toNewAddr(s) {
   s = String(s || "");
@@ -27076,7 +27111,7 @@ function DMPage({ data, setData, onBack }) {
     const target = jiage.find(j => String(j.id) === String(editAddr.id));
     if (!target) { setEditAddr(null); return; }
     const oldKey = okey(target);
-    const newAddr = String(editAddr.addr || "").trim(), newZip = String(editAddr.zip || "").trim();
+    const newAddr = toNewAddr(String(editAddr.addr || "").trim()), newZip = String(editAddr.zip || "").trim(); // 🆕 v9.315: 手入力住所も旧→現に自動変換
     setData(prev => {
       const arr = Array.isArray(prev.jiage) ? prev.jiage : [];
       const next = arr.map(j => {
