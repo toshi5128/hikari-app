@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.313-ukeoi-jiage";
+const APP_VERSION = "2026-07-10-v9.314-gps-fastfix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16863,6 +16863,23 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       return;
     }
     if (watchIdRef.current !== null) return;
+    // 🆕 v9.314: 地図を開いた瞬間に「粗い現在地」を即取得してボタンを即使えるようにする。
+    //   watchPosition(enableHighAccuracy:true) は初回fixに10〜30秒かかる事があり、その間 currentLoc=null で
+    //   「現在地がまだ取れていません」が出ていた（永島端末で多発／5G屋外でも発生）。
+    //   低精度(WiFi/基地局)・キャッシュ許容で先に1発撃つと 1秒前後で概位置が入り、
+    //   直後に watchPosition の高精度fixが来たら自動で置き換わる（下の throttle が last.ts=0 なので初回は必ず反映）。
+    try {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          // 既に高精度fix(watchPosition)が入っていたら粗い位置で上書きしない
+          if (lastCurrentLocRef.current && lastCurrentLocRef.current.ts) return;
+          setCurrentLoc({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, heading: null });
+          setGpsError(null);
+        },
+        () => {},  // 失敗しても watchPosition 側に任せる（無視）
+        { enableHighAccuracy: false, maximumAge: 60000, timeout: 10000 }
+      );
+    } catch (e) {}
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
         const lat = pos.coords.latitude;
