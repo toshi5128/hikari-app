@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.318-owner-nav-coords";
+const APP_VERSION = "2026-07-10-v9.320-jiage-reform-status";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -602,7 +602,7 @@ const STATUS_GROUPS = [
   { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
-const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "失注", "NG"];
+const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "リフォーム請負", "失注", "NG"];
 // 🆕 v9.264: 失注理由（商談まで行ったが不成立だった理由）。成約率分析・作戦改善用
 const LOST_REASONS = ["他社に決定", "価格が折り合わない", "売る気がない", "連絡が取れない", "相続でもめた", "その他"];
 // 🆕 v9.265: 成約理由（媒介・仕入で決まった勝因）。勝ちパターン分析用
@@ -619,6 +619,8 @@ const JIAGE_STATUS_COLORS = {
   "交渉中": "#c026d3",     // マゼンタ
   "媒介": "#7c3aed",       // バイオレット
   "仕入": "#ca8a04",       // ゴールド
+  // 🆕 v9.319: リフォーム請負（自社でリフォーム工事を受注＝成約の一種）
+  "リフォーム請負": "#16a34a", // グリーン
   // 🆕 v9.264: 失注（商談したが不成立）
   "失注": "#be123c",       // 臙脂（NGの暗赤茶と区別）
   // 🆕 v9.1: NG（訪問禁止）ステータス追加
@@ -5981,6 +5983,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       if (status === "居住している") return "#cbd5e1";     // ライトグレー
       if (status === "仕入" || status === "仕入れ完了") return "#ca8a04";  // ゴールド
       if (status === "媒介") return "#7c3aed";            // バイオレット
+      if (status === "リフォーム請負") return "#16a34a";  // グリーン（自社リフォーム受注）
       if (status === "失注") return "#be123c";            // 臙脂（商談不成立）
       return "#1e40af"; // 未訪問: 紺青
     };
@@ -13099,25 +13102,35 @@ function JiageFunnelStats({ data, onOpenJiage }) {
     });
     // 🆕 v9.264: 商談の成否（現在のステータス基準のスナップショット）。期間はステータス更新日で判定
     const statusDate = (j) => { const ms = j._fieldUpdatedAt && j._fieldUpdatedAt.status; return (ms ? toDStr(ms) : "") || toDStr(j.updatedAt) || toDStr(j.createdAt); };
-    const DEAL_STATUSES = ["交渉中", "失注", "媒介", "仕入"]; // 一度でも商談に到達した
+    // 🆕 v9.319: リフォーム請負も商談到達＝成約の一種として扱う
+    const WON_STATUSES = ["媒介", "仕入", "リフォーム請負"];
+    const DEAL_STATUSES = ["交渉中", "失注", "媒介", "仕入", "リフォーム請負"]; // 一度でも商談に到達した
     const dealPins = jiage.filter(j => j && DEAL_STATUSES.includes(j.status) && (mem === "__ALL__" || j.assignee === mem) && inPeriod(statusDate(j)));
     const shodan = dealPins.length;
-    const shodanSeiyaku = dealPins.filter(j => j.status === "媒介" || j.status === "仕入").length;
+    const shodanSeiyaku = dealPins.filter(j => WON_STATUSES.includes(j.status)).length;
     const shitsu = dealPins.filter(j => j.status === "失注").length;
     const koshochu = dealPins.filter(j => j.status === "交渉中").length;
     const lostReasons = {};
     dealPins.filter(j => j.status === "失注").forEach(j => { const r = j.lostReason || "(理由未記入)"; lostReasons[r] = (lostReasons[r] || 0) + 1; });
     const wonReasons = {};
-    dealPins.filter(j => j.status === "媒介" || j.status === "仕入").forEach(j => { const r = j.wonReason || "(理由未記入)"; wonReasons[r] = (wonReasons[r] || 0) + 1; });
+    dealPins.filter(j => WON_STATUSES.includes(j.status)).forEach(j => { const r = j.wonReason || "(理由未記入)"; wonReasons[r] = (wonReasons[r] || 0) + 1; });
+    // 🆕 v9.319: ファネルの見込み/媒介/自社仕入は「実際のピンのステータス」で数える。
+    //   旧実装は approaches の活動カウンター(g("見込み")/g("媒介")/g("地上仕入"))を見ていたため、
+    //   ピンのstatusが「仕入」でもカウンターが増えていないと 0件 と表示される不具合があった。
+    //   謄本・住所違いステージと同じくピン基準に統一（成約率セクションの dealPins と同基準）。
+    const mikomiCnt = jiage.filter(j => j && j.status === "見込み" && (mem === "__ALL__" || j.assignee === mem) && inPeriod(statusDate(j))).length;
+    const baikaiCnt = dealPins.filter(j => j.status === "媒介").length;
+    const shiireCnt = dealPins.filter(j => j.status === "仕入").length;
+    const reformCnt = dealPins.filter(j => j.status === "リフォーム請負").length;
     return {
       shinki: g("新規地上"), homon: g("初訪") + g("地上再訪"), fuzai: g("地上不在") + g("居留守"),
-      mendan: g("面談"), mikomi: g("見込み"), baikai: g("媒介"), shiire: g("地上仕入"),
+      mendan: g("面談"), mikomi: mikomiCnt, baikai: baikaiCnt, shiire: shiireCnt, reform: reformCnt,
       touhon, genmikomi, jushoChigai, honnin, houjin, fumeiAddr,
       shodan, shodanSeiyaku, shitsu, koshochu, lostReasons, wonReasons, dealPins, days: days.size,
     };
   };
   const d = statFor(member);
-  const seikyaku = d.baikai + d.shiire;
+  const seikyaku = d.baikai + d.shiire + d.reform;
   const cost = d.touhon * 140;
   const days = Math.max(d.days, 1);
 
@@ -13154,6 +13167,7 @@ function JiageFunnelStats({ data, onOpenJiage }) {
     { n: "見込み", v: d.mikomi, c: "#22c55e", p: d.touhon, pn: "謄本" },
     { n: "媒介(仲介)", v: d.baikai, c: "#a855f7", p: d.mikomi, pn: "見込" },
     { n: "自社仕入", v: d.shiire, c: "#f59e0b", p: d.mikomi, pn: "見込" },
+    { n: "リフォーム請負", v: d.reform, c: "#16a34a", p: d.mikomi, pn: "見込" },
   ];
   const mx = Math.max(d.shinki, d.touhon, d.homon, 1);
 
@@ -13202,7 +13216,7 @@ function JiageFunnelStats({ data, onOpenJiage }) {
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>②&apos;&apos; 商談の成否（商談に到達した {d.shodan}件のうち）</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 6 }}>
           {KpiClick("shodan", "商談到達", d.shodan + "件", "交渉中＋失注＋成約", C.text)}
-          {KpiClick("seiyaku", "成約率", pct(d.shodanSeiyaku, d.shodan) + "%", d.shodanSeiyaku + "件 成約(媒介＋仕入)", "#22c55e")}
+          {KpiClick("seiyaku", "成約率", pct(d.shodanSeiyaku, d.shodan) + "%", d.shodanSeiyaku + "件 成約(媒介＋仕入＋リフォーム請負)", "#22c55e")}
           {KpiClick("shitsu", "失注率", pct(d.shitsu, d.shodan) + "%", d.shitsu + "件 失注", "#be123c")}
           {KpiClick("kosho", "交渉中(進行中)", d.koshochu + "件", "まだ決着していない", "#c026d3")}
         </div>
@@ -13210,11 +13224,11 @@ function JiageFunnelStats({ data, onOpenJiage }) {
         {drill && (() => {
           const lists = {
             shodan: d.dealPins,
-            seiyaku: d.dealPins.filter(j => j.status === "媒介" || j.status === "仕入"),
+            seiyaku: d.dealPins.filter(j => j.status === "媒介" || j.status === "仕入" || j.status === "リフォーム請負"),
             shitsu: d.dealPins.filter(j => j.status === "失注"),
             kosho: d.dealPins.filter(j => j.status === "交渉中"),
           };
-          const labels = { shodan: "商談到達", seiyaku: "成約(媒介・仕入)", shitsu: "失注", kosho: "交渉中" };
+          const labels = { shodan: "商談到達", seiyaku: "成約(媒介・仕入・リフォーム請負)", shitsu: "失注", kosho: "交渉中" };
           const cols = { shodan: C.text, seiyaku: "#22c55e", shitsu: "#be123c", kosho: "#c026d3" };
           const list = lists[drill] || [];
           const col = cols[drill] || C.accent;
@@ -13257,13 +13271,13 @@ function JiageFunnelStats({ data, onOpenJiage }) {
             ))}
           </div>
         )}
-        <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※ 現在のステータス基準。<b style={{ color: "#22c55e" }}>成約率</b>＝商談に到達した案件（交渉中・失注・媒介・仕入）のうち実際に成約した割合。失注は商談したが流れた案件。「見込無し/NG」（商談前に脱落）とは別カウント。期間はステータス更新日で判定。</div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※ 現在のステータス基準。<b style={{ color: "#22c55e" }}>成約率</b>＝商談に到達した案件（交渉中・失注・媒介・仕入・リフォーム請負）のうち実際に成約（媒介・仕入・リフォーム請負）した割合。失注は商談したが流れた案件。「見込無し/NG」（商談前に脱落）とは別カウント。期間はステータス更新日で判定。</div>
         {/* ③ 謄本コスト */}
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>③ 謄本コスト（1件 140円）と効率</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
           {Kpi("謄本 取得件数", d.touhon + "件", "")}
           {Kpi("謄本 課金総額", yen(cost), "", "#fbbf24")}
-          {Kpi("成約数(媒介＋仕入)", seikyaku + "件", "", "#22c55e")}
+          {Kpi("成約数(媒介＋仕入＋リフォーム請負)", seikyaku + "件", "", "#22c55e")}
           {Kpi("1成約あたり謄本コスト", seikyaku ? yen(Math.round(cost / seikyaku)) : "—", "")}
           {Kpi("謄本→成約率", pct(seikyaku, d.touhon) + "%", "")}
           {Kpi("現在の見込み", d.genmikomi + "件", "（ストック）")}
@@ -13273,8 +13287,8 @@ function JiageFunnelStats({ data, onOpenJiage }) {
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>④ 担当者別</div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead><tr>{["担当", "新規", "訪問", "面談", "謄本", "見込", "媒介", "仕入", "謄本課金"].map((h, i) => <th key={h} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.borderDim}` }}>{h}</th>)}</tr></thead>
-            <tbody>{MEMBERS.filter(m => m !== "比嘉・下田").map(m => { const s = statFor(m); return (<tr key={m}>{[m, s.shinki, s.homon, s.mendan, s.touhon, s.mikomi, s.baikai, s.shiire, yen(s.touhon * 140)].map((c, i) => <td key={i} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: i === 0 ? C.text : C.muted, fontWeight: i === 0 ? 800 : 400, borderBottom: `1px solid ${C.borderDim}` }}>{c}</td>)}</tr>); })}</tbody>
+            <thead><tr>{["担当", "新規", "訪問", "面談", "謄本", "見込", "媒介", "仕入", "リフォーム", "謄本課金"].map((h, i) => <th key={h} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.borderDim}` }}>{h}</th>)}</tr></thead>
+            <tbody>{MEMBERS.filter(m => m !== "比嘉・下田").map(m => { const s = statFor(m); return (<tr key={m}>{[m, s.shinki, s.homon, s.mendan, s.touhon, s.mikomi, s.baikai, s.shiire, s.reform, yen(s.touhon * 140)].map((c, i) => <td key={i} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: i === 0 ? C.text : C.muted, fontWeight: i === 0 ? 800 : 400, borderBottom: `1px solid ${C.borderDim}` }}>{c}</td>)}</tr>); })}</tbody>
           </table>
         </div>
         {/* 🆕 v9.271: ⑤ 天候別の面談率（雨の日は会えるか） */}
@@ -22704,8 +22718,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               </select>
             </Field>
           )}
-          {/* 🆕 v9.265: 成約（媒介・仕入）のとき成約理由を選ばせる（勝ちパターン分析用） */}
-          {selected.item.type === "jiage" && (selected.item.status === "媒介" || selected.item.status === "仕入") && (
+          {/* 🆕 v9.265: 成約（媒介・仕入・リフォーム請負）のとき成約理由を選ばせる（勝ちパターン分析用） */}
+          {selected.item.type === "jiage" && (selected.item.status === "媒介" || selected.item.status === "仕入" || selected.item.status === "リフォーム請負") && (
             <Field label="成約理由（勝因）">
               <select style={inp} value={(selected.item.raw && selected.item.raw.wonReason) || selected.item.wonReason || ""} onChange={e => updateWonReason(selected.item, e.target.value)}>
                 <option value="">選択してください</option>
