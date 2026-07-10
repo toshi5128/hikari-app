@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.316-muni-map-unify";
+const APP_VERSION = "2026-07-10-v9.317-saitama-ward-fill";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -15909,6 +15909,35 @@ async function reverseGeocode(lat, lng) {
   }
 }
 
+// 🆕 v9.317: さいたま市(区なし)の所有者住所を、取得座標から区を逆引きして補完する。
+//   浦和市/大宮市→さいたま市 は複数区にまたがりテキストだけでは区が決まらない(与野→中央区/岩槻→岩槻区は
+//   KYUJU_MAP で確定済)。ここは残る浦和/大宮系を「位置から区を確定」して住所を完成させる。
+const SAITAMA_WARD_BY_MUNICD = {
+  "11101": "西区", "11102": "北区", "11103": "大宮区", "11104": "見沼区", "11105": "中央区",
+  "11106": "桜区", "11107": "浦和区", "11108": "南区", "11109": "緑区", "11110": "岩槻区",
+};
+const SAITAMA_WARDS = ["西区", "北区", "大宮区", "見沼区", "中央区", "桜区", "浦和区", "南区", "緑区", "岩槻区"];
+async function saitamaWardFromCoords(lat, lng) {
+  try {
+    const res = await fetch(`https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress?lat=${lat}&lon=${lng}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const cd = data && data.results && data.results.muniCd;
+    return SAITAMA_WARD_BY_MUNICD[cd] || null;
+  } catch (e) { console.warn("[saitamaWard]", e); return null; }
+}
+// さいたま市(区なし)の住所なら座標から区を挿入して返す。区が既にある/さいたま市でない/座標無しは元のまま。
+async function fillSaitamaWard(ownerAddr, lat, lng) {
+  const s = String(ownerAddr || "");
+  if (!s.includes("さいたま市")) return s;
+  const after = s.split("さいたま市")[1] || "";
+  if (SAITAMA_WARDS.some(w => after.startsWith(w))) return s; // 既に区あり → 触らない
+  if (typeof lat !== "number" || typeof lng !== "number") return s;
+  const ward = await saitamaWardFromCoords(lat, lng);
+  if (!ward) return s;
+  return s.replace("さいたま市", "さいたま市" + ward);
+}
+
 // レート制限用 sleep
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -18419,14 +18448,17 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       const result = await geocodeAddress(addr);
       if (result) {
         success++;
+        // 🆕 v9.317: 所有者住所が「さいたま市(区なし)」なら座標から区を補完
+        const ownerAddrWard = isOwner ? await fillSaitamaWard(j.ownerAddr, result.lat, result.lng) : null;
         // 個別に保存（中断しても結果残る）
         setData(d => ({
           ...d,
           jiage: (d.jiage || []).map(item => {
             if (item.id !== j.id) return item;
-            return isOwner 
-              ? { ...item, ownerLat: result.lat, ownerLng: result.lng }
-              : { ...item, lat: result.lat, lng: result.lng };
+            if (!isOwner) return { ...item, lat: result.lat, lng: result.lng };
+            const patch = { ...item, ownerLat: result.lat, ownerLng: result.lng };
+            if (ownerAddrWard && ownerAddrWard !== item.ownerAddr) patch.ownerAddr = ownerAddrWard;
+            return patch;
           })
         }));
       } else {
@@ -23809,13 +23841,16 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         const result = await geocodeAddress(addr);
                         if (result) {
                           const isOwner = mapPinTarget === "ownerAddr";
+                          // 🆕 v9.317: さいたま市(区なし)の所有者住所は座標から区を補完
+                          const ownerAddrWard = isOwner ? await fillSaitamaWard(item.ownerAddress, result.lat, result.lng) : null;
                           setData(d => ({
                             ...d,
                             jiage: (d.jiage || []).map(j => {
                               if (j.id !== item.rawId) return j;
-                              return isOwner
-                                ? { ...j, ownerLat: result.lat, ownerLng: result.lng }
-                                : { ...j, lat: result.lat, lng: result.lng };
+                              if (!isOwner) return { ...j, lat: result.lat, lng: result.lng };
+                              const patch = { ...j, ownerLat: result.lat, ownerLng: result.lng };
+                              if (ownerAddrWard && ownerAddrWard !== j.ownerAddr) patch.ownerAddr = ownerAddrWard;
+                              return patch;
                             })
                           }));
                           alert(`✅ 取得成功！\n${result.matchedAddress || ""}`);
