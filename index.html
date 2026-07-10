@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.320-jiage-reform-status";
+const APP_VERSION = "2026-07-11-v9.321-satei-draft-save";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -18618,13 +18618,42 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     return m2 ? m2[1] : "";
   };
 
+  // 🆕 v9.321: 査定書の途中保存（下書き）。所有者ピンごとに端末ローカル(localStorage)へ保存し、次回開いたとき続きから再開できる
+  const _sateiDraftKey = (item) => {
+    const id = (item && item.raw && item.raw.id != null) ? item.raw.id : (item && item.id);
+    return "hikari_satei_draft_" + id;
+  };
+  // 一時的な進行フラグ・重い生テキスト(raw)は保存しない（解析済みfields・ファイル名は残す＝再開時に「取込済」表示が保てる）
+  const _stripSateiDraft = (f) => {
+    if (!f) return f;
+    const c = { ...f };
+    ["poisLoading", "legalDocLandParsing", "legalDocBuildingParsing", "ocrProgress", "reinsParsing", "sChikaLoading", "geminiError"].forEach(k => { delete c[k]; });
+    const lite = (d) => d ? { ...d, raw: undefined } : d;
+    c.legalDocLand = lite(c.legalDocLand);
+    c.legalDocBuilding = lite(c.legalDocBuilding);
+    if (c.reins) c.reins = { ...c.reins, raw: undefined };
+    return c;
+  };
+  const readSateiDraft = (item) => { try { const s = localStorage.getItem(_sateiDraftKey(item)); return s ? JSON.parse(s) : null; } catch (e) { return null; } };
+  const deleteSateiDraft = (item) => { try { localStorage.removeItem(_sateiDraftKey(item)); } catch (e) {} };
+  const saveSateiDraft = (closeAfter) => {
+    if (!assessmentForm || !assessmentTarget) return;
+    try {
+      localStorage.setItem(_sateiDraftKey(assessmentTarget.item), JSON.stringify({ savedAt: Date.now(), form: _stripSateiDraft(assessmentForm) }));
+      if (closeAfter) { setAssessmentTarget(null); setAssessmentForm(null); }
+      else alert("下書きを保存しました。あとでこの所有者の査定書を開くと、続きから再開できます。");
+    } catch (e) {
+      alert("下書きの保存に失敗しました（端末の保存容量が不足している可能性があります）:\n" + (e && e.message ? e.message : e));
+    }
+  };
+
   const openAssessment = (item) => {
     if (!item) return;
     const j = item.raw || {};
     const _town = extractTown(j.address || "");
     // ピンに記録済みの情報からデフォルト値を作る ( ユーザー入力データは触らない )
     setAssessmentTarget({ item });
-    setAssessmentForm({
+    const _defaults = {
       address: j.address || "",
       landArea: "",      // ㎡
       buildingArea: "",  // ㎡
@@ -18684,9 +18713,23 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       sLandSale: [{ desc: _town }],
       sLandDeal: [{ desc: _town }],
       sBldgDeal: [{ desc: _town }],
-    });
-    // 🆕 v9.47.2: ピン座標があれば周辺施設を非同期で自動取得 ( OpenStreetMap Overpass API )
-    if (j.lat && j.lng) {
+    };
+    // 🆕 v9.321: 下書きがあれば「続きから再開」するか確認。破棄なら新規で最初から
+    const _draft = readSateiDraft(item);
+    let _resumed = false;
+    if (_draft && _draft.form) {
+      if (window.confirm("この所有者の査定書の下書き（保存: " + new Date(_draft.savedAt).toLocaleString("ja-JP") + "）があります。\n\n「OK」＝続きから再開します\n「キャンセル」＝新規で最初から作成します（下書きは破棄）")) {
+        setAssessmentForm({ ..._defaults, ..._draft.form });
+        _resumed = true;
+      } else {
+        deleteSateiDraft(item);
+        setAssessmentForm(_defaults);
+      }
+    } else {
+      setAssessmentForm(_defaults);
+    }
+    // 🆕 v9.47.2: ピン座標があれば周辺施設を非同期で自動取得 ( OpenStreetMap Overpass API )。※下書きに周辺施設が入っていれば上書きしない
+    if (j.lat && j.lng && !(_resumed && _draft.form.pois && _draft.form.pois.length)) {
       setAssessmentForm(f => f ? { ...f, poisLoading: true } : f);
       fetchPois(j.lat, j.lng).then(pois => {
         setAssessmentForm(f => f ? { ...f, pois, poisLoading: false } : f);
@@ -23354,9 +23397,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+          <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+            {/* 🆕 v9.321: 途中保存（下書き）。別の作業をしたくなったらここで保存して閉じ、後で続きから再開できる */}
+            <button style={{ ...btnStyle(), flex: "1 1 100%", order: -1, background: "#0e7490", borderColor: "#0e7490" }}
+              onClick={() => saveSateiDraft(true)}><NavIcon name="save" size={15} /> 下書き保存して閉じる（あとで続きから再開）</button>
             <button style={{ ...btnStyle("ghost"), flex: 1 }}
-              onClick={() => { setAssessmentTarget(null); setAssessmentForm(null); }}>キャンセル</button>
+              onClick={() => { setAssessmentTarget(null); setAssessmentForm(null); }}>閉じる（保存しない）</button>
             <button style={{ ...btnStyle(), flex: "0 0 auto", background: "#7a1f2b", borderColor: "#7a1f2b", padding: "0 14px" }}
               onClick={() => sendToSateiServer(buildSateiData(assessmentForm), "pdf")}><NavIcon name="file" size={15} /> PDF</button>
             <button style={{ ...btnStyle(), flex: "0 0 auto", background: "#1a5c2b", borderColor: "#1a5c2b", padding: "0 14px" }}
