@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-10-v9.312-jiage-status-counter";
+const APP_VERSION = "2026-07-10-v9.313-ukeoi-jiage";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16539,6 +16539,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [selected, setSelected] = useState(null);
   // 🆕 v9.311: 所有者詳細から専任媒介契約書を開くターゲット（所有者名・住所・物件住所を引き継ぐ）
   const [baikaiTarget, setBaikaiTarget] = useState(null);
+  // 🆕 v9.313: 所有者詳細からリフォーム工事請負契約書を開くターゲット（注文者名・住所・工事場所を引き継ぐ）
+  const [ukeoiTarget, setUkeoiTarget] = useState(null);
   // 🆕 v9.119: カレンダー等から物件詳細を開いた時の「戻り先」。詳細を閉じたら元の画面（カレンダー）へ戻す。
   const [navReturnTo, setNavReturnTo] = useState(null);
   useEffect(() => {
@@ -19919,6 +19921,15 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
     setBaikaiTarget({ kouName: ownerNm, kouAddr: ownerAd, propAddr: propAd });
     setSelected(null);
   };
+  // 🆕 v9.313: 所有者詳細 → リフォーム工事請負契約書を、所有者名→注文者名、所有者住所→注文者住所、物件住所→工事場所で開く
+  const openUkeoiKeiyaku = (item) => {
+    const j = (item && item.raw) || {};
+    const ownerNm = String(j.owner || j.ownerName || "").trim();
+    const ownerAd = String(j.ownerAddr || j.ownerAddress || "").trim();
+    const propAd = String(j.address || "").trim();
+    setUkeoiTarget({ kouName: ownerNm, kouAddress: ownerAd, workPlace: propAd });
+    setSelected(null);
+  };
 
   const emptyJiage = { address: "", owner: "", ownerAddr: "", ownerContact: "", dm: "未", visit: "未", status: "未訪問", assignee: currentUser || MEMBERS[0], memo: "", nextVisit: "", nextVisitTime: "", nextVisitEndTime: "", date: today, area: areaFilter !== "すべて" ? areaFilter : "" };
   const [form, setForm] = useState(emptyJiage);
@@ -22747,6 +22758,22 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               </div>
             </div>
 
+            {/* 🆕 v9.313: リフォーム工事請負契約書ボタン（注文者名・住所・工事場所を引き継いで作成） */}
+            <div style={{ position: "relative", marginTop: 14 }}>
+              <span style={{
+                position: "absolute", top: -6, right: -6, background: "#dc2626",
+                color: "#fff", fontSize: 9, fontWeight: 800, padding: "2px 6px",
+                borderRadius: 10, zIndex: 1,
+              }}>NEW</span>
+              <button onClick={() => openUkeoiKeiyaku(selected.item)} style={{
+                width: "100%", padding: "13px", background: "#f9731622", border: "1px solid #f9731666",
+                color: "#c2410c", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+              }}><NavIcon name="file" size={15} /> リフォーム工事請負契約書を作成する</button>
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                注文者名（所有者）・注文者住所・工事場所（物件住所）を自動で引き継いで入力画面を開きます（A4×3ページ）
+              </div>
+            </div>
+
           </div>
 
           {/* 編集・削除（誰でも可） */}
@@ -22765,6 +22792,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
       {baikaiTarget && (
         <div style={{ position: "fixed", inset: 0, zIndex: 3000, background: C.bg, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
           <BaikaiKeiyakuPage data={data} setData={setData} prefill={baikaiTarget} onBack={() => setBaikaiTarget(null)} />
+        </div>
+      )}
+
+      {/* 🆕 v9.313: 所有者詳細 → リフォーム工事請負契約書をフルスクリーンで開く（注文者・工事場所を自動引き継ぎ） */}
+      {ukeoiTarget && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 3000, background: C.bg, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+          <UkeoiKeiyakuPage data={data} setData={setData} prefill={ukeoiTarget} onBack={() => setUkeoiTarget(null)} />
         </div>
       )}
 
@@ -28291,21 +28325,23 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
 // 🔨 リフォーム工事請負契約書 作成ページ（可変項目を入力 → 新規タブでA4×3印刷）
 // 作成データはアプリ内(クラウド・全社共有)に保存/開き直し/再出力できる（精算書 seisanDocs と同方式）。
 // データ保護対象フィールドやマージ/同期ロジックには一切触れない。
-function UkeoiKeiyakuPage({ data, setData, onBack }) {
-  const [form, setForm] = useState({
-    kouName: "",                                   // 注文者（甲）氏名
-    projectName: "",                               // 工事名称
-    workPlace: "",                                 // 工事場所（第1条）
-    totalInclTax: "",                              // 請負代金（税込）
-    startDate: "",                                 // 工期・着工（任意・空欄なら記入枠）
-    endDate: "",                                   // 工期・完成（任意・空欄なら記入枠）
-    payDeposit: "",                                // 着手金（任意）
-    payInterim: "",                                // 中間金（任意）
-    payFinal: "",                                  // 残代金（任意）
-    contractDate: "",                              // 締結日（任意・空欄なら記入枠）
-    kouAddress: "",                                // 甲 住所（任意・署名欄）
-    kouTel: "",                                    // 甲 電話番号（任意・署名欄）
-  });
+function UkeoiKeiyakuPage({ data, setData, onBack, prefill }) {
+  const EMPTY = {
+    kouName: "",       // 注文者（甲）氏名
+    projectName: "",   // 工事名称
+    workPlace: "",     // 工事場所（第1条）＝物件住所（地上げから自動 / フォーム非表示）
+    totalInclTax: "",  // 請負代金（税込）
+    startDate: "",     // 工期・着工（任意・空欄なら記入枠）
+    endDate: "",       // 工期・完成（任意・空欄なら記入枠）
+    payDeposit: "",    // 着手金（任意）
+    payInterim: "",    // 中間金（任意）
+    payFinal: "",      // 残代金（任意）
+    contractDate: "",  // 締結日（任意・空欄なら記入枠）
+    kouAddress: "",    // 甲 住所（署名欄）＝所有者住所（地上げから自動 / フォーム非表示）
+    kouTel: "",        // 甲 電話番号（任意・署名欄）
+  };
+  // 🆕 v9.313: 地上げの所有者詳細から開いた場合、注文者名・注文者住所・工事場所を自動で流し込む
+  const [form, setForm] = useState(prefill ? { ...EMPTY, ...prefill } : EMPTY);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const fmt = n => Number(n || 0).toLocaleString("ja-JP");
   const total = Math.round(Number(String(form.totalInclTax || "").replace(/[^0-9.]/g, "")) || 0);
@@ -28351,7 +28387,7 @@ function UkeoiKeiyakuPage({ data, setData, onBack }) {
     setShowSaved(false);
   };
   const newDoc = () => { // 新規作成（読込中の状態をクリア）
-    setForm({ kouName: "", projectName: "", workPlace: "", totalInclTax: "", startDate: "", endDate: "", payDeposit: "", payInterim: "", payFinal: "", contractDate: "", kouAddress: "", kouTel: "" });
+    setForm(EMPTY);
     setCurrentDocId(null);
   };
   const deleteDoc = (id) => {
@@ -28405,9 +28441,6 @@ function UkeoiKeiyakuPage({ data, setData, onBack }) {
       <Field label="工事名称　※必須">
         <input style={inp} value={form.projectName} onChange={e => set("projectName", e.target.value)} placeholder="例: 東松山市野田 戸建てリフォーム工事" />
       </Field>
-      <Field label="工事場所（第1条）">
-        <input style={inp} value={form.workPlace} onChange={e => set("workPlace", e.target.value)} placeholder="例: 埼玉県東松山市野田1277-35" />
-      </Field>
       <Field label="請負代金（税込・円）　※必須">
         <input style={inp} type="text" inputMode="numeric" value={form.totalInclTax} onChange={e => set("totalInclTax", e.target.value)} placeholder="例: 3980000" />
         {total > 0 && (
@@ -28445,12 +28478,12 @@ function UkeoiKeiyakuPage({ data, setData, onBack }) {
       <Field label="締結日（任意）">
         <input style={inp} value={form.contractDate} onChange={e => set("contractDate", e.target.value)} placeholder="例: 令和7年8月1日 ／ 空欄なら「令和　年　月　日」の記入枠" />
       </Field>
-      <Field label="甲 住所（任意・署名欄）">
-        <input style={inp} value={form.kouAddress} onChange={e => set("kouAddress", e.target.value)} placeholder="署名欄の住所。空欄可（手書き運用）" />
-      </Field>
       <Field label="甲 電話番号（任意・署名欄）">
         <input style={inp} value={form.kouTel} onChange={e => set("kouTel", e.target.value)} placeholder="署名欄の電話番号。空欄可" />
       </Field>
+      <div style={{ marginTop: 4, marginBottom: 6, padding: "10px 12px", background: C.inset, border: `1px dashed ${C.borderDim}`, borderRadius: 8, fontSize: 11.5, color: C.muted, lineHeight: 1.7 }}>
+        ℹ <b>工事場所</b>（第1条）と<b>注文者（甲）住所</b>（署名欄）は、地上げの所有者詳細から開くと<b>物件住所・所有者住所を自動</b>で使用します（入力不要）。{form.workPlace || form.kouAddress ? <><br />現在：{form.workPlace ? `工事場所=${form.workPlace}` : ""}{form.workPlace && form.kouAddress ? " / " : ""}{form.kouAddress ? `注文者住所=${form.kouAddress}` : ""}</> : null}
+      </div>
 
       <div style={{ marginTop: 6, marginBottom: 16, padding: "12px 14px", background: C.warn + "14", border: `1px solid ${C.warn}55`, borderRadius: 10, fontSize: 11.5, color: C.text, lineHeight: 1.7 }}>
         <b>⚠ ご確認ください（法務メモ）</b><br />
