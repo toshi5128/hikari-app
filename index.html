@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-13-v9.327-team-edit+viewing-dup-guard";
+const APP_VERSION = "2026-07-13-v9.328-viewing-dup-banner";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -10262,6 +10262,26 @@ function findMatchingStock(parsed, stocks) {
 }
 
 // ===================== STOCK PAGE =====================
+// 🆕 v9.327: 反響取込の重複を目立つバナーで警告（在庫タブ・仲介/仕入の両方で共用）
+//   ・画面最上部に赤いバナーを固定表示。z-index はモーダルより上。
+//   ・info = { name, customer } を渡すと表示。onClose で消える（呼び出し側で自動消灯も併用）
+function DupWarnBanner({ info, onClose }) {
+  if (!info) return null;
+  return (
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 100000, display: "flex", justifyContent: "center", padding: "10px 12px", paddingTop: "max(10px, env(safe-area-inset-top))", pointerEvents: "none" }}>
+      <div style={{ pointerEvents: "auto", width: "min(96vw, 520px)", background: "linear-gradient(135deg,#dc2626,#ea580c)", color: "#fff", borderRadius: 14, boxShadow: "0 12px 34px rgba(220,38,38,0.55)", padding: "14px 16px", display: "flex", alignItems: "flex-start", gap: 12, animation: "hikariFlashCardIn 0.35s cubic-bezier(.2,1.3,.4,1)" }}>
+        <div style={{ fontSize: 28, lineHeight: 1 }}>⚠️</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 17, fontWeight: 900, marginBottom: 3, letterSpacing: "0.02em" }}>すでに登録されています</div>
+          <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.5, opacity: 0.96, wordBreak: "break-word" }}>
+            「{info.name}」の反響{info.customer ? `「${info.customer}」` : ""}は登録済みです。重複のため取り込みませんでした。
+          </div>
+        </div>
+        <button onClick={onClose} style={{ background: "rgba(255,255,255,0.25)", border: "none", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>✕</button>
+      </div>
+    </div>
+  );
+}
 // ===================== 仲介案件ビュー（在庫タブ内・仕入案件と切替）=====================
 function MediationView({ data, setData, dealType, setDealType }) {
   const currentUser = getCurrentUser();
@@ -10295,6 +10315,12 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const [importText, setImportText] = useState("");
   const [importParsed, setImportParsed] = useState(null);
   const [importTargetMedId, setImportTargetMedId] = useState(null);
+  const [dupBanner, setDupBanner] = useState(null); // 🆕 v9.327: 反響重複の警告バナー
+  useEffect(() => {
+    if (!dupBanner) return;
+    const t = setTimeout(() => setDupBanner(null), 8000);
+    return () => clearTimeout(t);
+  }, [dupBanner]);
 
   const mediations = data.mediations || [];
   // 🆕 v9.72: 決済完了の件数（アーカイブ）
@@ -10582,11 +10608,11 @@ function MediationView({ data, setData, dealType, setDealType }) {
         (_newSig && viewingDedupSig(v) === _newSig)
       ));
       if (_dup) {
-        alert(`⚠️ すでに登録されています\n\n「${targetName}」にこの反響（${newViewing.customer || "(名前不明)"}）は既に登録済みです。\n重複のため取り込みませんでした。`);
         setShowImport(false);
         setImportText("");
         setImportParsed(null);
         setImportTargetMedId(null);
+        setDupBanner({ name: targetName, customer: newViewing.customer || "" });
         return;
       }
     }
@@ -10659,6 +10685,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
 
   return (
     <div>
+      <DupWarnBanner info={dupBanner} onClose={() => setDupBanner(null)} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 8, flexWrap: "wrap" }}>
         <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}><NavIcon name="home" size={20} /> 在庫・案件管理</div>
         <div style={{ display: "flex", gap: 6 }}>
@@ -11435,6 +11462,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [importText, setImportText] = useState("");
   const [importParsed, setImportParsed] = useState(null);
   const [importTargetStockId, setImportTargetStockId] = useState(null);
+  const [dupBanner, setDupBanner] = useState(null); // 🆕 v9.327: 反響重複の警告バナー
+  useEffect(() => {
+    if (!dupBanner) return;
+    const t = setTimeout(() => setDupBanner(null), 8000);
+    return () => clearTimeout(t);
+  }, [dupBanner]);
 
   // 🆕 pendingNav 受け取り：該当物件にスクロール + ハイライト
   useEffect(() => {
@@ -11877,11 +11910,11 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         (_newSig && viewingDedupSig(v) === _newSig)
       ));
       if (_dup) {
-        alert(`⚠️ すでに登録されています\n\n「${targetName}」にこの反響（${newViewing.customer || "(名前不明)"}）は既に登録済みです。\n重複のため取り込みませんでした。`);
         setShowImport(false);
         setImportText("");
         setImportParsed(null);
         setImportTargetStockId(null);
+        setDupBanner({ name: targetName, customer: newViewing.customer || "" });
         return;
       }
     }
@@ -12017,6 +12050,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
   return (
     <div>
+      <DupWarnBanner info={dupBanner} onClose={() => setDupBanner(null)} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 8, flexWrap: "wrap" }}>
         <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}><NavIcon name="home" size={20} /> 在庫・案件管理</div>
         <div style={{ display: "flex", gap: 6 }}>
