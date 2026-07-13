@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-12-v9.326-satei-bldg-stock-format";
+const APP_VERSION = "2026-07-13-v9.327-viewing-import-dup-guard";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -477,6 +477,22 @@ function isAssignedTo(assignees, member) {
   return expanded.includes(member);
 }
 
+// 🆕 v9.327: 編集チーム（ペア）。同じチームのメンバー同士は、互いの案件を編集できる。
+//   例：脇本と松村は2人1組で動いているので、お互いの担当案件を触れるようにする。
+//   （管理者ではないので他人の案件は本来「閲覧のみ」だが、同チームだけ例外的に編集可）
+const EDIT_TEAMS = [
+  ["脇本", "松村"],
+];
+// あるメンバーと同じチームに属するメンバーの集合（本人も含む）を返す
+function editTeammatesOf(member) {
+  const set = new Set();
+  if (!member) return set;
+  for (const team of EDIT_TEAMS) {
+    if (team.includes(member)) team.forEach(m => set.add(m));
+  }
+  return set;
+}
+
 // 編集権限チェック：管理者は全件編集可、一般メンバーは自分が担当者の場合のみ
 function canEditItem(item, currentUser, adminMembers) {
   // adminMembers は配列 ["下田", "比嘉"] or 文字列 "下田"（後方互換）
@@ -494,7 +510,11 @@ function canEditItem(item, currentUser, adminMembers) {
   const arr = item.assignees || [];
   const createdBy = item.createdBy || "";
   const all = [single, ...arr, createdBy].filter(Boolean);
-  return isAssignedTo(all, currentUser);
+  if (isAssignedTo(all, currentUser)) return true;
+  // 🆕 v9.327: 同じ編集チーム（脇本↔松村）のメンバーの案件なら編集可
+  const mates = editTeammatesOf(currentUser);
+  if (mates.size > 0 && expandAssignees(all).some(a => mates.has(a))) return true;
+  return false;
 }
 
 // 日付文字列から曜日ラベル（色付き）を返す
@@ -10550,6 +10570,26 @@ function MediationView({ data, setData, dealType, setDealType }) {
     };
     const targetMed = mediations.find(m => m.id === importTargetMedId);
     const targetName = targetMed?.name || "物件";
+    // 🆕 v9.327: 重複ガード — 既に登録済みの反響なら追加せずに知らせる
+    //   ・同じSUUMO/アットホームメールを複数人（例：下田・比嘉）が取り込んでも二重登録しない
+    //   ・現存する反響と id（内容一致）または dedupSig（同顧客・同日）が一致したら重複とみなす
+    //   ・tombstone（過去に削除済）は下の復活フローに任せるので、ここでは生きている反響のみ対象
+    {
+      const _existingViewings = (targetMed && targetMed.viewings) || [];
+      const _newSig = viewingDedupSig(newViewing);
+      const _dup = _existingViewings.find(v => v && (
+        String(v.id) === String(newViewing.id) ||
+        (_newSig && viewingDedupSig(v) === _newSig)
+      ));
+      if (_dup) {
+        alert(`⚠️ すでに登録されています\n\n「${targetName}」にこの反響（${newViewing.customer || "(名前不明)"}）は既に登録済みです。\n重複のため取り込みませんでした。`);
+        setShowImport(false);
+        setImportText("");
+        setImportParsed(null);
+        setImportTargetMedId(null);
+        return;
+      }
+    }
     // 🆕 v8.73→v8.77: tombstone 確認 — 過去に削除された反響を勝手に復活させない
     //   ・既存 tombstone は viewingStableId 系統で記録されてる場合と
     //     viewingDedupSig 系統で記録されてる場合がある（dedup 後 id 正規化のため）
@@ -11825,6 +11865,26 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     };
     const targetStock = (data.stocks || []).find(s => s.id === importTargetStockId);
     const targetName = targetStock?.name || "物件";
+    // 🆕 v9.327: 重複ガード — 既に登録済みの反響なら追加せずに知らせる
+    //   ・同じSUUMO/アットホームメールを複数人（例：下田・比嘉）が取り込んでも二重登録しない
+    //   ・現存する反響と id（内容一致）または dedupSig（同顧客・同日）が一致したら重複とみなす
+    //   ・tombstone（過去に削除済）は下の復活フローに任せるので、ここでは生きている反響のみ対象
+    {
+      const _existingViewings = (targetStock && targetStock.viewings) || [];
+      const _newSig = viewingDedupSig(newViewing);
+      const _dup = _existingViewings.find(v => v && (
+        String(v.id) === String(newViewing.id) ||
+        (_newSig && viewingDedupSig(v) === _newSig)
+      ));
+      if (_dup) {
+        alert(`⚠️ すでに登録されています\n\n「${targetName}」にこの反響（${newViewing.customer || "(名前不明)"}）は既に登録済みです。\n重複のため取り込みませんでした。`);
+        setShowImport(false);
+        setImportText("");
+        setImportParsed(null);
+        setImportTargetStockId(null);
+        return;
+      }
+    }
     // 🆕 v8.73→v8.77: tombstone 確認（両方の id 系統チェック）
     const _existingTomb = (targetStock && targetStock.viewingTombstones) || {};
     const _candidateIds = new Set();
