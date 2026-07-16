@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-13-v9.328-viewing-dup-banner";
+const APP_VERSION = "2026-07-16-v9.329-owner-geocode-auto";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -17862,6 +17862,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       const partialMergeCount = updates.length - fullMergeCount;
       return appendLogAndNotify(next, "import", "jiage", `Excel(${sheetNames})から 新規${newItemsClean.length}件・現地ピンマージ${fullMergeCount}件・DM/住確のみ${partialMergeCount}件`, null);
     });
+    // 🆕 v9.329: 取込で入った所有者住所を、この直後に自動で地図化する（手動マップ指定を不要に）。
+    //   setData 反映後の再描画で useEffect が発火 → runGeocoding("ownerAddr", {auto:true})。
+    pendingOwnerGeocodeRef.current = true;
     const fullMergeCount = updates.filter(u => u.mergeFull).length;
     const partialMergeCount = updates.length - fullMergeCount;
     let importMsg = `✅ インポート完了（${targetSheets.length}シート分）`;
@@ -17869,6 +17872,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     if (fullMergeCount > 0) importMsg += `\n・現地ピン/appIdマージ: ${fullMergeCount}件（所有者情報を追加）`;
     if (partialMergeCount > 0) importMsg += `\n・既存(address+owner)を更新: ${partialMergeCount}件（DM・住確のみ）`;
     if (dupInBatch > 0) importMsg += `\n・取込内の重複スキップ: ${dupInBatch}件`;
+    importMsg += `\n\nこの後、所有者住所を自動で地図化します（進捗バーが出ます）。手動のマップ指定は不要です。`;
     alert(importMsg);
     setImportPreview(null);
   };
@@ -18539,21 +18543,26 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 地上げ → 積算表を作成（誰でも実行可）
   // 🗺️ ジオコーディング一括実行
   const cancelGeocodeRef = React.useRef(false);
-  const runGeocoding = async (target) => {
+  const pendingOwnerGeocodeRef = React.useRef(false); // 🆕 v9.329: 取込直後の所有者住所 自動ジオコを予約
+  const runGeocoding = async (target, opts = {}) => {
     // target: "address" | "ownerAddr"
+    // opts.auto: 取込直後などの自動実行。確認ダイアログ・完了アラートを出さず、進捗バーだけ見せる
+    const auto = !!opts.auto;
     const isOwner = target === "ownerAddr";
     const targetJiage = (data.jiage || []).filter(j => {
-      // 🆕 v8.95: 現地入力(coordsManual)は絶対に上書きしない（実測座標を保護）
-      if (j.coordsManual) return false;
+      // 🆕 v8.95→v9.329: 現地入力(coordsManual)の「実測した"物件"座標」は絶対に上書きしない。
+      //   ただし所有者住所(ownerLat/ownerLng)は物件座標とは別物なので、所有者住所モードでは除外しない。
+      //   （v9.329 修正: これまで現地ピンの所有者住所を一括ジオコできず、1件ずつ手動マップ指定させていた）
+      if (!isOwner && j.coordsManual) return false;
       const addr = isOwner ? j.ownerAddr : j.address;
       const lat = isOwner ? j.ownerLat : j.lat;
       return addr && (typeof lat !== "number");
     });
     if (targetJiage.length === 0) {
-      alert(`✅ ${isOwner ? "所有者住所" : "物件住所"}の緯度経度はすべて取得済みです`);
+      if (!auto) alert(`✅ ${isOwner ? "所有者住所" : "物件住所"}の緯度経度はすべて取得済みです`);
       return;
     }
-    if (!confirm(`${targetJiage.length}件の${isOwner ? "所有者住所" : "物件住所"}を緯度経度に変換します。\n\n約${Math.ceil(targetJiage.length * 0.3 / 60)}分かかります。\n\n国土地理院の無料APIを使用します。\n\n実行しますか？`)) return;
+    if (!auto && !confirm(`${targetJiage.length}件の${isOwner ? "所有者住所" : "物件住所"}を緯度経度に変換します。\n\n約${Math.ceil(targetJiage.length * 0.3 / 60)}分かかります。\n\n国土地理院の無料APIを使用します。\n\n実行しますか？`)) return;
     
     cancelGeocodeRef.current = false;
     setGeocodeProgress({ current: 0, total: targetJiage.length });
@@ -18588,11 +18597,24 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     }
     setGeocodeProgress(null);
     if (cancelGeocodeRef.current) {
-      alert(`⏸️ 中断しました\n成功: ${success}件 / 失敗: ${failed}件\n（処理した分は保存されています）`);
+      if (!auto) alert(`⏸️ 中断しました\n成功: ${success}件 / 失敗: ${failed}件\n（処理した分は保存されています）`);
+    } else if (auto) {
+      // 自動実行(取込直後): 全部うまくいったら黙って終了。取れなかった分だけ知らせる。
+      if (failed > 0) alert(`📍 所有者住所を自動で地図化しました（成功 ${success}件）。\n\nうち ${failed}件だけ住所から座標を取れませんでした。\n一覧の「⚠️ 未取得」から、住所を直すかマップで指定してください。`);
+      else if (success > 0) console.log(`[自動ジオコ] 所有者住所 ${success}件を地図化`);
     } else {
       alert(`✅ 完了！\n成功: ${success}件 / 失敗: ${failed}件`);
     }
   };
+
+  // 🆕 v9.329: 取込直後、現地ピンに入った所有者住所を自動で地図化する。
+  //   これまでは一括ジオコが現地ピンを飛ばしていたため、所有者住所を1件ずつ手動でマップ指定していた。
+  //   pendingOwnerGeocodeRef が立っている時だけ発火（ジオコ自身の setData 連発では再発火しない）。
+  React.useEffect(() => {
+    if (!pendingOwnerGeocodeRef.current) return;
+    pendingOwnerGeocodeRef.current = false;
+    runGeocoding("ownerAddr", { auto: true });
+  }, [data.jiage]);
 
   // 🆕 v9.47: 初回面談 調査書 モーダルを開く ( 既存データがあればロード )
   const openHearing = (item) => {
