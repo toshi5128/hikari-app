@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-16-v9.330-remove-teian-print";
+const APP_VERSION = "2026-07-16-v9.331-chiban-tail-resident";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2892,6 +2892,20 @@ function _normAddrForMatch(s) {
 //   地上げピンの物件住所は地番(例 鳩山町1486-751)なので、住居表示の所有者住所(松ヶ丘一丁目3番17号)とは
 //   絶対に一致しない＝全部「住所違い」に出てしまう。目印住所(松ヶ丘1丁目3-17)＝所有者住所なら本人居住。
 //   比較は dmAddrKey(漢数字丁目/全半角/大字/番地・号を吸収)で行う。表示アイテム経由(raw)にも対応。
+// 🆕 v9.331: 住居表示が実施された地区では「登記の地番＝旧大字」「現地の町名＝新町名」で町名が食い違う。
+//   例) 坂戸市萱方628-21(登記) ＝ 坂戸市鶴舞2丁目628-21(現地) / 鳩山町大字石坂867-232 ＝ 鳩山町鳩ヶ丘3丁目。
+//   KYUJU_MAP は市区町村単位なので大字レベルのこのズレは吸収できず、本人居住を「住所違い」に取りこぼす。
+//   → 市区町村が同じ かつ 地番の数字(枝番付き)が一致 なら同じ筆とみなす。
+//   枝番なし(単独数字)は偶然一致しやすいので対象外。全1465ピンで検証し誤検出0・取りこぼし9件を検出。
+function _chibanCity(key) { const m = /^(.+?[市区町村])/.exec(key || ""); return m ? m[1] : ""; }
+function _chibanTail(key) { const m = /([0-9]+(?:-[0-9]+)+)$/.exec(key || ""); return m ? m[1] : ""; }
+function _sameChiban(ownerKey, propKey) {
+  const oc = _chibanCity(ownerKey), pc = _chibanCity(propKey);
+  if (!oc || oc !== pc) return false;
+  const ot = _chibanTail(ownerKey), pt = _chibanTail(propKey);
+  if (!ot || !pt) return false;
+  return pt === ot || pt.endsWith("-" + ot);
+}
 function isOwnerResident(j) {
   if (!j) return false;
   const rawOwner = j.ownerAddr || j.ownerAddress || "";
@@ -2908,6 +2922,9 @@ function isOwnerResident(j) {
     if (!k) continue;
     if (pa && k === pa) return true;
     if (lm && k === lm) return true;
+    // 🆕 v9.331: 町名は違うが地番が同じ＝住居表示前後の同一筆（比較対象は地番のみ。
+    //   目印住所は「街区-号」で数字が衝突しやすいので使わない）。
+    if (pa && _sameChiban(k, pa)) return true;
   }
   return false;
 }
