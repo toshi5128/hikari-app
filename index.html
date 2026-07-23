@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-22-v9.332-mediation-investors";
+const APP_VERSION = "2026-07-23-v9.333-dm-batch-city-filter";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -24984,10 +24984,20 @@ function dmPrefByZip(zip) {
 }
 function dmPrefOf(addr, zip) {
   const a = String(addr || "").trim().normalize("NFKC");
+  if (FOREIGN_ADDR.test(a)) return "海外"; // 🆕 v9.333: 海外住所を「埼玉県」に数えていたのを修正
   for (const p of JP_PREFS) { if (a.startsWith(p)) return p; }
   const byZip = dmPrefByZip(zip);
   if (byZip) return byZip;
   return a ? "埼玉県" : ""; // 都道府県表記も〒も無い住所は県内とみなす
+}
+// 🆕 v9.333: 郵送先の市区町村を判定（都道府県の下の段で「◯◯市 何人」を出すため）。
+//   政令市の区(さいたま市浦和区) → 郡＋町村(比企郡嵐山町) → ふつうの市区町村 の順に拾う。
+function dmCityOf(addr) {
+  let a = String(addr || "").trim().normalize("NFKC");
+  if (!a || FOREIGN_ADDR.test(a)) return "";
+  for (const p of JP_PREFS) { if (a.startsWith(p)) { a = a.slice(p.length); break; } }
+  const m = a.match(/^([^0-9]{2,8}市[^0-9]{1,8}区)/) || a.match(/^([^0-9]{2,8}郡[^0-9]{1,8}[町村])/) || a.match(/^([^0-9]{1,8}?[市区町村])/);
+  return m ? m[1] : "";
 }
 function dmLetterBody(name, prop, agent) {
   const a = agent || dmAgentFor(""); // 既定＝比嘉
@@ -27087,6 +27097,8 @@ function DMPage({ data, setData, onBack }) {
   const [fArea, setFArea] = useState("すべて");
   const [fAsg, setFAsg] = useState("すべて");
   const [fPref, setFPref] = useState("すべて"); // 🆕 v9.167: 郵送先 都道府県で絞り込み
+  const [fCity, setFCity] = useState("すべて");  // 🆕 v9.333: 郵送先 市区町村で絞り込み
+  const [fBatch, setFBatch] = useState("すべて"); // 🆕 v9.333: 謄本の取り込み日で絞り込み（今回増えた分だけ見る）
   const [sel, setSel] = useState([]);
   const [screen, setScreen] = useState("board");
   const [pIdx, setPIdx] = useState(0);
@@ -27118,7 +27130,10 @@ function DMPage({ data, setData, onBack }) {
   const otherCnt = j => universe.filter(p => p.id !== j.id && okey(p) === okey(j)).length;
   const areaA = j => fArea === "すべて" || (j.area || "") === fArea;
   const asgA = j => fAsg === "すべて" || (j.assignee || "") === fAsg;
-  const prefA = j => { if (fPref === "すべて") return true; const p = dmPrefOf(mailAddr(j), j.ownerZip); return fPref === "県外" ? (!!p && p !== "埼玉県") : p === fPref; }; // 🆕 v9.167/168: 県外はひとまとめ
+  const prefA = j => { if (fPref === "すべて") return true; const p = dmPrefOf(mailAddr(j), j.ownerZip); return fPref === "県外" ? (!!p && p !== "埼玉県" && p !== "海外") : p === fPref; }; // 🆕 v9.167/168: 県外はひとまとめ
+  // 🆕 v9.333: 取り込み日(tohonBatch)・市区町村での絞り込み
+  const batchA = j => fBatch === "すべて" || String(j.tohonBatch || "") === fBatch;
+  const cityA = j => fCity === "すべて" || dmCityOf(mailAddr(j)) === fCity;
 
   const areas = ["すべて", ...Array.from(new Set(universe.map(j => j.area || "").filter(Boolean)))];
   const asgs = ["すべて", ...Array.from(new Set(universe.map(j => j.assignee || "").filter(Boolean)))];
@@ -27158,14 +27173,23 @@ function DMPage({ data, setData, onBack }) {
   }, [data.jiage]);
 
   const nState = s => personRows.filter(r => r._state === s).length;
-  const countSend = n => personRows.filter(r => r._state === "送付対象" && (n === 3 ? sentCount(r) >= 3 : sentCount(r) === n) && areaA(r) && asgA(r) && prefA(r)).length;
+  const countSend = n => personRows.filter(r => r._state === "送付対象" && (n === 3 ? sentCount(r) >= 3 : sentCount(r) === n) && areaA(r) && asgA(r) && prefA(r) && cityA(r) && batchA(r)).length;
+  // 🆕 v9.333: 取り込み日の一覧（新しい順）。件数＝その日に反映された「住所地以外」の人数。
+  const batchCounts = {};
+  personRows.forEach(r => { const b = String(r.tohonBatch || ""); if (b) batchCounts[b] = (batchCounts[b] || 0) + 1; });
+  const batches = ["すべて", ...Object.keys(batchCounts).sort().reverse()];
   // 🆕 v9.167: 郵送先 都道府県の一覧（埼玉県を先頭、県外は件数順）。件数は personRows ベース。
+  //   🆕 v9.333: 取り込み日を選んでいる時は、その日の分だけで数える（＝今回増えた分の県内訳が出る）。
   const prefCounts = {};
-  personRows.forEach(r => { const p = dmPrefOf(mailAddr(r), r.ownerZip); if (p) prefCounts[p] = (prefCounts[p] || 0) + 1; });
-  const kengaiList = Object.keys(prefCounts).filter(p => p !== "埼玉県").sort((a, b) => prefCounts[b] - prefCounts[a]);
+  personRows.forEach(r => { if (!batchA(r)) return; const p = dmPrefOf(mailAddr(r), r.ownerZip); if (p) prefCounts[p] = (prefCounts[p] || 0) + 1; });
+  const kengaiList = Object.keys(prefCounts).filter(p => p !== "埼玉県" && p !== "海外").sort((a, b) => prefCounts[b] - prefCounts[a]);
   const kengaiCount = kengaiList.reduce((s, p) => s + prefCounts[p], 0);
-  // すべて → 埼玉県 → 県外(まとめ) → 各県(ドリルダウン)
-  const prefs = ["すべて", ...(prefCounts["埼玉県"] ? ["埼玉県"] : []), ...(kengaiCount ? ["県外"] : []), ...kengaiList];
+  // すべて → 埼玉県 → 県外(まとめ) → 各県(ドリルダウン) → 海外
+  const prefs = ["すべて", ...(prefCounts["埼玉県"] ? ["埼玉県"] : []), ...(kengaiCount ? ["県外"] : []), ...kengaiList, ...(prefCounts["海外"] ? ["海外"] : [])];
+  // 🆕 v9.333: 市区町村の一覧（選んでいる取り込み日・都道府県の中だけで数える）
+  const cityCounts = {};
+  personRows.forEach(r => { if (!batchA(r) || !prefA(r)) return; const c = dmCityOf(mailAddr(r)); if (c) cityCounts[c] = (cityCounts[c] || 0) + 1; });
+  const cities = ["すべて", ...Object.keys(cityCounts).sort((a, b) => cityCounts[b] - cityCounts[a])];
   // 🆕 v9.146: 名前・住所・ワードで横断検索（全角半角・空白・大小文字を吸収。部分一致）
   const qnorm = s => String(s || "").normalize("NFKC").replace(/[\s　]/g, "").toLowerCase();
   const matchQ = j => {
@@ -27174,15 +27198,15 @@ function DMPage({ data, setData, onBack }) {
       .some(f => qnorm(f).indexOf(needle) >= 0);
   };
   const riskOf = r => dmDeliveryRisk(mailAddr(r), r.ownerZip); // 🆕 v9.149
-  const riskCount = personRows.filter(r => r._state === "要修正" && areaA(r) && asgA(r) && prefA(r)).length; // 🆕 v9.166: 要修正(配達微妙)件数
+  const riskCount = personRows.filter(r => r._state === "要修正" && areaA(r) && asgA(r) && prefA(r) && cityA(r) && batchA(r)).length; // 🆕 v9.166: 要修正(配達微妙)件数
   const visible = () => {
-    let base = personRows.filter(r => r._state === view && areaA(r) && asgA(r) && prefA(r));
+    let base = personRows.filter(r => r._state === view && areaA(r) && asgA(r) && prefA(r) && cityA(r) && batchA(r));
     if (view === "送付対象") base = base.filter(r => fCount === "all" || (fCount === 3 ? sentCount(r) >= 3 : sentCount(r) === fCount));
     return base.filter(matchQ);
   };
   // 成果集計（エリア・担当で絞り込み）
   const stats = (() => {
-    const base = universe.filter(j => areaA(j) && asgA(j) && prefA(j));
+    const base = universe.filter(j => areaA(j) && asgA(j) && prefA(j) && cityA(j) && batchA(j));
     const sp = base.filter(j => sentCount(j) > 0);
     const sou = sp.length, tsu = sp.reduce((a, j) => a + sentCount(j), 0);
     const ret = sp.filter(everRet).length, rea = sp.filter(everRea).length, no = sp.filter(everNo).length;
@@ -27441,9 +27465,15 @@ function DMPage({ data, setData, onBack }) {
 
       {/* 成果集計 */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}><NavIcon name="barchart" size={12} /> 成果集計・絞り込み（郵送先 都道府県・エリア・担当）</div>
-        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, marginBottom: 4 }}><NavIcon name="mail" size={12} /> 郵送先（埼玉県 / 県外はひとまとめ ※各県へ絞込も可）</div>
-        <select value={fPref} onChange={e => { setFPref(e.target.value); setSel([]); }} style={{ ...inp, width: "100%", fontSize: 12, padding: 8, marginBottom: 8 }}>{prefs.map(p => <option key={p} value={p}>{p === "すべて" ? "すべて（全件）" : p === "県外" ? `県外＝埼玉県以外をまとめて（${kengaiCount}）` : p === "埼玉県" ? `埼玉県（${prefCounts["埼玉県"] || 0}）` : `　└ ${p}（${prefCounts[p] || 0}）`}</option>)}</select>
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}><NavIcon name="barchart" size={12} /> 成果集計・絞り込み（取り込み日・郵送先 都道府県/市区町村・エリア・担当）</div>
+        {/* 🆕 v9.333: 謄本の取り込み日で絞る＝「今回増えた分」だけを見る */}
+        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, marginBottom: 4 }}><NavIcon name="download" size={12} /> 謄本の取り込み日（その日に増えた「住所地以外」の人数）</div>
+        <select value={fBatch} onChange={e => { setFBatch(e.target.value); setFCity("すべて"); setSel([]); }} style={{ ...inp, width: "100%", fontSize: 12, padding: 8, marginBottom: 8 }}>{batches.map(b => <option key={b} value={b}>{b === "すべて" ? "すべて（全期間）" : `${b} に取り込んだ分（${batchCounts[b] || 0}人）`}</option>)}</select>
+        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, marginBottom: 4 }}><NavIcon name="mail" size={12} /> 郵送先 都道府県（埼玉県 / 県外はひとまとめ ※各県へ絞込も可）</div>
+        <select value={fPref} onChange={e => { setFPref(e.target.value); setFCity("すべて"); setSel([]); }} style={{ ...inp, width: "100%", fontSize: 12, padding: 8, marginBottom: 8 }}>{prefs.map(p => <option key={p} value={p}>{p === "すべて" ? "すべて（全件）" : p === "県外" ? `県外＝埼玉県以外をまとめて（${kengaiCount}）` : p === "埼玉県" ? `埼玉県（${prefCounts["埼玉県"] || 0}）` : `　└ ${p}（${prefCounts[p] || 0}）`}</option>)}</select>
+        {/* 🆕 v9.333: 市区町村（上で選んだ取り込み日・都道府県の中での「◯◯市 何人」） */}
+        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, marginBottom: 4 }}><NavIcon name="landmark" size={12} /> 郵送先 市区町村（所有者が住んでいる市区町村ごとの人数）</div>
+        <select value={fCity} onChange={e => { setFCity(e.target.value); setSel([]); }} style={{ ...inp, width: "100%", fontSize: 12, padding: 8, marginBottom: 8 }}>{cities.map(c => <option key={c} value={c}>{c === "すべて" ? `すべて（${Object.values(cityCounts).reduce((a, b) => a + b, 0)}人）` : `　└ ${c}（${cityCounts[c] || 0}人）`}</option>)}</select>
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <select value={fArea} onChange={e => { setFArea(e.target.value); setSel([]); }} style={{ ...inp, flex: 1, fontSize: 12, padding: 8 }}>{areas.map(a => <option key={a}>{a}</option>)}</select>
           <select value={fAsg} onChange={e => { setFAsg(e.target.value); setSel([]); }} style={{ ...inp, flex: 1, fontSize: 12, padding: 8 }}>{asgs.map(a => <option key={a}>{a}</option>)}</select>
@@ -27454,7 +27484,7 @@ function DMPage({ data, setData, onBack }) {
           {Kpi("🔥反応", sc.rea + "件", `反応率 ${sc.reaP}%`, "#a855f7")}
           {Kpi("🚫不要", sc.no + "件", `${sc.noP}%`, C.muted)}
         </div>
-        <div style={{ fontSize: 10, color: C.muted, marginTop: 8 }}>※ 率は「送付先数」に対する割合（{fPref === "すべて" ? "全都道府県" : fPref}・{fArea === "すべて" ? "全エリア" : fArea}・{fAsg === "すべて" ? "全担当" : fAsg}）</div>
+        <div style={{ fontSize: 10, color: C.muted, marginTop: 8 }}>※ 率は「送付先数」に対する割合（{fBatch === "すべて" ? "全期間" : fBatch + "取込分"}・{fPref === "すべて" ? "全都道府県" : fPref}・{fCity === "すべて" ? "全市区町村" : fCity}・{fArea === "すべて" ? "全エリア" : fArea}・{fAsg === "すべて" ? "全担当" : fAsg}）</div>
       </div>
 
       {/* タブ */}
