@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-23-v9.333-dm-batch-city-filter";
+const APP_VERSION = "2026-07-23-v9.334-jiage-tohon-batch-stats";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13161,6 +13161,91 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   );
 }
 
+// 🆕 v9.334: 謄本の取り込み実績（地上げタブ）
+//   「その日の取り込みで、住所地以外（＝DMを出せる所有者）が何人増えて、どこの市区町村に住んでいるか」を出す。
+//   数える元は tohonBatch（取り込み日）を持つピン。共有名義は氏名と住所の数が合う時だけ人単位に割る
+//   （建物名に「・」が入る住所や外国名を余計に数えないため。DM管理の personRows と同じ考え方）。
+function TohonBatchStats({ data }) {
+  const [open, setOpen] = useState(false);
+  const [sel, setSel] = useState("");   // 開いている取り込み日
+  const jiage = Array.isArray(data.jiage) ? data.jiage : [];
+
+  const batches = React.useMemo(() => {
+    const map = {};
+    jiage.forEach(j => {
+      const b = String((j && j.tohonBatch) || "");
+      if (!b) return;
+      if (!map[b]) map[b] = { date: b, pins: 0, people: [], excluded: 0, failed: 0 };
+      const g = map[b];
+      g.pins++;
+      if (j.lookupFailed === true) { g.failed++; return; }
+      if (j.excluded === true) { g.excluded++; return; }
+      const nm = dmOwnerNames(String(j.owner || j.ownerName || ""));
+      const ad = dmNameParts(String(j.ownerAddr || ""));
+      if (nm.length > 1 && nm.length === ad.length) ad.forEach(a => g.people.push(a));
+      else if (String(j.ownerAddr || "").trim()) g.people.push(String(j.ownerAddr));
+    });
+    return Object.values(map).sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [jiage]);
+
+  if (!batches.length) return null;
+  const cur = batches.find(b => b.date === sel) || null;
+  const breakdown = (g) => {
+    const pref = {}, city = {};
+    g.people.forEach(a => {
+      const p = dmPrefOf(a, "") || "(不明)";
+      pref[p] = (pref[p] || 0) + 1;
+      const c = dmCityOf(a);
+      const key = (p === "海外" ? "海外" : (p + (c || "")));
+      city[key] = (city[key] || 0) + 1;
+    });
+    const inKen = pref["埼玉県"] || 0, kaigai = pref["海外"] || 0;
+    return { pref, city, inKen, kaigai, kengai: g.people.length - inKen - kaigai };
+  };
+
+  return (
+    <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+      <button onClick={() => setOpen(o => !o)} style={{ width: "100%", background: "transparent", border: "none", color: C.text, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", display: "flex", justifyContent: "space-between", alignItems: "center", padding: 0 }}>
+        <span><NavIcon name="download" size={14} /> 謄本の取り込み実績（住所地以外が何人・どこの市区町村か）</span>
+        <span style={{ color: C.muted }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (<div style={{ marginTop: 10 }}>
+        {batches.map(g => {
+          const b = breakdown(g);
+          const isOpen = sel === g.date;
+          return (
+            <div key={g.date} style={{ border: `1px solid ${isOpen ? C.accent : C.borderDim}`, borderRadius: 10, marginBottom: 8, overflow: "hidden" }}>
+              <button onClick={() => setSel(isOpen ? "" : g.date)} style={{ width: "100%", background: isOpen ? C.accent + "1f" : C.inset, border: "none", padding: "10px 12px", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{g.date.replace(/-/g, "/")}</span>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: "#14b8a6" }}>住所地以外 {g.people.length}人</span>
+                  <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11 }}>{isOpen ? "▲" : "▼"}</span>
+                </div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>
+                  埼玉県内 {b.inKen}人 ／ 県外 {b.kengai}人{b.kaigai ? ` ／ 海外 ${b.kaigai}人` : ""}
+                  　（謄本 {g.pins}件＝🚫対象外 {g.excluded}・🔧要修正 {g.failed} を含む）
+                </div>
+              </button>
+              {isOpen && (
+                <div style={{ padding: "10px 12px", background: C.cardBg }}>
+                  <div style={{ fontSize: 10, color: C.muted, fontWeight: 800, marginBottom: 6 }}>所有者が住んでいる市区町村</div>
+                  {Object.entries(b.city).sort((x, y) => y[1] - x[1]).map(([k, v]) => (
+                    <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", borderBottom: `1px dashed ${C.borderDim}` }}>
+                      <span style={{ fontSize: 12, color: C.text, flex: 1 }}>{k}</span>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: k.startsWith("埼玉県") ? "#14b8a6" : k === "海外" ? C.muted : "#a855f7" }}>{v}人</span>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 8 }}>※ 埼玉県内＝緑／県外＝紫。共有名義で「氏名の数と住所の数」が合わない物件は1人として数えます（DM管理の「🔍要確認」に入ります）。</div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>)}
+    </div>
+  );
+}
+
 // ===================== 地上げ統計（v9.62） =====================
 function JiageFunnelStats({ data, onOpenJiage }) {
   const [open, setOpen] = useState(false);
@@ -22058,6 +22143,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
       {/* リストビュー */}
       {viewMode === "list" && (
         <div style={{ padding: "12px 14px" }}>
+          {/* 🆕 v9.334: 謄本の取り込み実績（住所地以外が何人・どこの市区町村か） */}
+          <TohonBatchStats data={data} />
           {/* ⚠️ 座標未取得物件の案内（リストビュー） */}
           {(() => {
             const noCoordCount = filtered.filter(i => 
