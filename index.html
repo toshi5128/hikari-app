@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-28-v9.337-funnel-today";
+const APP_VERSION = "2026-07-28-v9.338-jiage-batch-filter";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6089,6 +6089,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         ? colorForOnsite(_r, it.status)
         : colorByStatus(it.status);
       const showPost = _postedRecently(it);
+      // 🆕 v9.338: 直近7日以内に謄本を取り込んだピンは NEW バッジで新着表示（下田さん指示 2026-07-28）
+      const isNewTohon = (() => {
+        const b = String((_r && (_r.tohonBatch || _r.lookupDoneAt)) || "").slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(b)) return false;
+        const d = Math.floor((_todayMs - new Date(b + "T00:00:00").getTime()) / 86400000);
+        return d >= 0 && d <= 7;
+      })();
       // 🆕 v8.134→v9.12: 状態別の絵文字マップ
       //   現地ピンでも、 所有者判明（hasOwner）後は訪問活動の status を反映するよう改修
       const emojiForPin = (() => {
@@ -6168,6 +6175,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           <span style="filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white);">${emojiForPin}</span>
         </div>
         ${showPost && !pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#f97316;color:#fff;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">📬</div>` : ""}
+        ${isNewTohon ? `<div style="position:absolute;top:-7px;left:-9px;background:#0ea5e9;color:#fff;font-size:8px;padding:0 3px;height:13px;border-radius:7px;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;font-weight:800;letter-spacing:0.2px;">NEW</div>` : ""}
       </div>`;
       const icon = L.divIcon({
         className: "hikari-pin",
@@ -16758,6 +16766,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.105: 訪問結果フィルタ（不在/居留守/訪問禁止）を複数選択可に（quickFilterから分離）
   const [resultFilters, setResultFilters] = useState([]); // ["result_absent","result_ignore","result_rejected"] のうち選択中
   const [filterMember, setFilterMember] = useState("__ALL__"); // 在庫・営業tabと統一（単一選択ドロップダウン）
+  // 🆕 v9.338: 取込日（謄本を一括取り込みした日 = tohonBatch）で絞り込み。"" = すべて
+  const [batchFilter, setBatchFilter] = useState("");
   const [statusExpanded, setStatusExpanded] = useState(false); // 「状況で絞り込み」折りたたみ状態
   // 🆕 v9.41: 地図画面の絞り込み FAB の展開状態
   const [mapFilterOpen, setMapFilterOpen] = useState(false);
@@ -17996,6 +18006,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       const _raw = item.raw || {};
       if (_raw.excluded === true && quickFilter !== "excluded") return false;
     }
+    // 🆕 v9.338: 取込日フィルタ（「7/28に取り込んだ分だけ地図に出す」）。印が無い古いピンは対象外
+    if (batchFilter) {
+      const _b = String((item.raw && (item.raw.tohonBatch || item.raw.lookupDoneAt)) || "").slice(0, 10);
+      if (_b !== batchFilter) return false;
+    }
     if (areaFilter !== "すべて") {
       if (areaFilter === "未設定") {
         if (JIAGE_AREAS.includes(item.area)) return false;
@@ -18141,7 +18156,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       if (sameBucketFail) return false;
     }
     return true;
-  }), [allItems, typeFilter, areaFilter, filterStatuses, resultFilters, filterMember, search, searchTarget, quickFilter, today]);
+  }), [allItems, typeFilter, areaFilter, filterStatuses, resultFilters, filterMember, search, searchTarget, quickFilter, batchFilter, today]);
 
   // 🆕 最新訪問日（visitLog の中で最新のもの）を取り出す
   const getLatestVisit = (item) => {
@@ -21702,7 +21717,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         : C.muted);
                       const pinStateKeys = ["pending_lot","lookup_pending","excluded","lookup_failed","dm_ready"];
                       const activePinFilter = quickFilter && pinStateKeys.includes(quickFilter) ? 1 : 0;
-                      const totalSelected = filterStatuses.length + activePinFilter + resultFilters.length; // 🆕 v9.105: 訪問結果（複数）も件数に含める
+                      const totalSelected = filterStatuses.length + activePinFilter + resultFilters.length + (batchFilter ? 1 : 0); // 🆕 v9.105: 訪問結果（複数）も件数に含める / 🆕 v9.338: 取込日
                       return (
                         <>
                           {/* FAB - ズーム +/- の上に配置 ( 地図左下、 ズームコントロールは bottomleft ) */}
@@ -21809,6 +21824,45 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   );
                                 })}
                               </div>
+                              {/* 🆕 v9.338: 取込日（謄本の一括取り込み日）で絞る。直近5回分だけ出す（下田さん指示 2026-07-28） */}
+                              {(() => {
+                                const counts = {};
+                                (data.jiage || []).forEach(j => {
+                                  const b = String(j.tohonBatch || j.lookupDoneAt || "").slice(0, 10);
+                                  if (/^\d{4}-\d{2}-\d{2}$/.test(b)) counts[b] = (counts[b] || 0) + 1;
+                                });
+                                const batches = Object.keys(counts).sort().reverse().slice(0, 5);
+                                if (batches.length === 0) return null;
+                                const md = (b) => `${Number(b.slice(5, 7))}/${Number(b.slice(8, 10))}`;
+                                return (
+                                  <>
+                                    <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}><NavIcon name="file" size={12} /> 取込日（謄本の新着）</div>
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
+                                      <button onClick={() => setBatchFilter("")} style={{
+                                        padding: "4px 9px", borderRadius: 14, cursor: "pointer", fontSize: 11,
+                                        background: batchFilter === "" ? "#0ea5e9" : C.inset,
+                                        color: batchFilter === "" ? "#fff" : C.muted,
+                                        border: `1.5px solid ${batchFilter === "" ? "#0ea5e9" : C.borderDim}`,
+                                        fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: batchFilter === "" ? 800 : 600,
+                                      }}>すべて</button>
+                                      {batches.map(b => {
+                                        const isActive = batchFilter === b;
+                                        return (
+                                          <button key={b} onClick={() => setBatchFilter(prev => prev === b ? "" : b)} style={{
+                                            padding: "4px 9px", borderRadius: 14, cursor: "pointer", fontSize: 11,
+                                            background: isActive ? "#0ea5e9" : C.inset,
+                                            color: isActive ? "#fff" : "#0ea5e9",
+                                            border: `1.5px solid ${isActive ? "#0ea5e9" : "#0ea5e955"}`,
+                                            fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: isActive ? 800 : 600,
+                                          }}>
+                                            {isActive ? "✓ " : ""}{md(b)} 取込 <span style={{ opacity: 0.8, fontSize: 9, marginLeft: 3 }}>{counts[b]}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </>
+                                );
+                              })()}
                               <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}><NavIcon name="clipboard" size={12} /> 営業ステータス</div>
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                                 {ATTACK_STATUSES.map(st => {
@@ -21831,7 +21885,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                 })}
                               </div>
                               {totalSelected > 0 && (
-                                <button onClick={() => { setFilterStatuses([]); setQuickFilter(null); setResultFilters([]); }} style={{
+                                <button onClick={() => { setFilterStatuses([]); setQuickFilter(null); setResultFilters([]); setBatchFilter(""); }} style={{
                                   marginTop: 10, width: "100%", padding: "7px 10px",
                                   background: "transparent", border: `1px solid ${C.borderDim}`,
                                   color: C.muted, borderRadius: 8,
