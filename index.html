@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-30-v9.341-seisan-buyer-paid-fix";
+const APP_VERSION = "2026-07-30-v9.342-seisan-abc-sameday";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -29114,6 +29114,16 @@ function SeisanFormPage({ data, setData, onBack }) {
     shihoName: "",                       // 司法書士 ・ 事務所名 ( 空欄なら「司法書士」と表示 )
     shihoFeeSeller: "",                  // 売主負担分 ( 円 )
     shihoFeeBuyer: "",                   // 買主負担分 ( 円 )
+    // 🆕 v9.342: 同日決済 ( 中間省略 )。AB間 = 仕入 ( 売主A → 当社B ) / BC間 = 売却 ( 当社B → 買主C )
+    //   固都税は同日なので AB間 ・ BC間 で同額 ( 買主負担分がそのまま横に流れる )
+    abcMode: false,
+    abcDocType: "internal",              // "internal"=社内用(AB+BC+差引) / "a"=売主A様用(AB間だけ) / "c"=買主C様用(BC間だけ)
+    midName: "合同会社ひかり不動産",     // 中間B ( 当社 )
+    abPrice: "",                         // AB間 売買代金
+    abDeposit: "",                       // AB間 手付金
+    abDepositPaid: false,                // AB間 手付金 支払い済み
+    abShihoFee: "",                      // AB間 司法書士費用
+    bcShihoFee: "",                      // BC間 司法書士費用
     // 振込先 ( ひかり )
     hikariBank: "埼玉信用組合", hikariBranch: "深谷支店", hikariKind: "普通",
     hikariAccountNo: "0436895", hikariAccountName: "ド)ヒカリフドウサン",
@@ -29226,6 +29236,22 @@ function SeisanFormPage({ data, setData, onBack }) {
     const depositApplied = form.depositPaid && deposit > 0 ? deposit : 0;
     const balancePayment = price - depositApplied; // 決済時残金
 
+    // 🆕 v9.342: 同日決済 ( 中間省略 )。AB間 = 当社B → 売主A / BC間 = 買主C → 当社B
+    const abc = !!form.abcMode;
+    const abcView = form.abcDocType || "internal";                    // internal | a | c
+    const showAB = abc && (abcView === "internal" || abcView === "a");
+    const showBC = abc && (abcView === "internal" || abcView === "c");
+    const midDisp = (form.midName || "").trim() || "合同会社ひかり不動産";
+    const priceAB = num(form.abPrice);
+    const depositAB = num(form.abDeposit);
+    const depositABApplied = form.abDepositPaid && depositAB > 0 ? depositAB : 0;
+    const balanceAB = priceAB - depositABApplied;                      // AB間 決済時残金
+    const shihoAB = num(form.abShihoFee);
+    const shihoBC = num(form.bcShihoFee);
+    const buyerDisp = (form.buyerName || "").trim() ? (form.buyerName || "").trim() + " 様" : "";
+    const totalAB = balanceAB + buyerTax + shihoAB;                    // 当社B が 売主A へ支払う額
+    const totalBC = balancePayment + buyerTax + shihoBC;               // 買主C が 当社B へ支払う額
+
     // 🆕 v9.48.7: 契約日 ( 同日 or 別日 )
     const contractDateStr = form.sameDayContract ? settleDateStr : fmtDate(form.contractDate);
     const settleTimeHint = form.sameDayContract ? `${form.settlementTime}　※契約・決済 同日` : form.settlementTime;
@@ -29234,7 +29260,11 @@ function SeisanFormPage({ data, setData, onBack }) {
       ...((Array.isArray(form.coSellers) ? form.coSellers : []).map(c => (c && c.name || "").trim()))].filter(Boolean);
     const sellerDisp = _sellerNames.length ? _sellerNames.map(n => n + " 様").join("　") : "";  // 例: 佐藤恵美子 様　清水和子 様
     let rows = [];
-    rows.push([form.docType === "seller" ? "売買精算書（売主様用）" : form.docType === "buyer" ? "売買精算書（買主様用）" : "売買精算書"]);
+    // 🆕 v9.342: 同日決済は 社内用 / 売主A様用 / 買主C様用 でタイトルを出し分ける
+    //   （相手用は「AB間」等の社内語を出さず、普通の2者間の精算書として見えるようにする）
+    rows.push([abc
+      ? (abcView === "a" ? "売買精算書（売主様用）" : abcView === "c" ? "売買精算書（買主様用）" : "売買精算書（同日決済 ・ 社内用）")
+      : (form.docType === "seller" ? "売買精算書（売主様用）" : form.docType === "buyer" ? "売買精算書（買主様用）" : "売買精算書")]);
     // 🆕 v9.291: 買主がひかり不動産＝当社買取なので「仲介」は付けない（自動判定）。
     //   通常仲介はbrokerName（空欄なら出さない）。住所は決済場所に記載済のため省略。
     const _isJikaBuy = /ひかり\s*不動産/.test(form.buyerName || "");  // 当社が買主＝買取
@@ -29250,16 +29280,85 @@ function SeisanFormPage({ data, setData, onBack }) {
     rows.push(["決済場所", form.settlementPlace]);
     rows.push(["物件の種別", form.propertyType || ""]);
     rows.push(["物件の表示", form.propertyAddr]);
-    rows.push(["売主", sellerDisp]);
-    rows.push(["買主", form.buyerName + " 様"]);
-    rows.push(["売買代金", price]);
-    if (deposit > 0) {
-      rows.push(["手付金", deposit, form.depositPaid ? "✅ 支払い済み" : "未払い"]);
-      if (depositApplied > 0) rows.push(["決済時 残金", balancePayment, "( 売買代金 − 手付金 )"]);
+    // 🆕 v9.342: 同日決済は 当事者と売買代金・手付金を AB間 / BC間 で分けて書く
+    if (abc && abcView === "internal") {
+      rows.push(["売主A（仕入元）", sellerDisp]);
+      rows.push(["中間B（当社）", midDisp]);
+      rows.push(["買主C（売却先）", buyerDisp]);
+      rows.push(["売買代金（AB間 ・ 仕入）", priceAB]);
+      if (depositAB > 0) {
+        rows.push(["手付金（AB間）", depositAB, form.abDepositPaid ? "✅ 支払い済み" : "未払い"]);
+        if (depositABApplied > 0) rows.push(["決済時 残金（AB間）", balanceAB, "( 売買代金 − 手付金 )"]);
+      }
+      rows.push(["売買代金（BC間 ・ 売却）", price]);
+      if (deposit > 0) {
+        rows.push(["手付金（BC間）", deposit, form.depositPaid ? "✅ 支払い済み" : "未払い"]);
+        if (depositApplied > 0) rows.push(["決済時 残金（BC間）", balancePayment, "( 売買代金 − 手付金 )"]);
+      }
+    } else if (abc && abcView === "a") {
+      // 売主A様用: A から見た相手は当社B。BC間の値段・買主Cは一切出さない
+      rows.push(["売主", sellerDisp]);
+      rows.push(["買主", midDisp]);
+      rows.push(["売買代金", priceAB]);
+      if (depositAB > 0) {
+        rows.push(["手付金", depositAB, form.abDepositPaid ? "✅ 支払い済み" : "未払い"]);
+        if (depositABApplied > 0) rows.push(["決済時 残金", balanceAB, "( 売買代金 − 手付金 )"]);
+      }
+    } else if (abc) {
+      // 買主C様用: C から見た売主は当社B。AB間の値段・売主Aは一切出さない
+      rows.push(["売主", midDisp]);
+      rows.push(["買主", buyerDisp]);
+      rows.push(["売買代金", price]);
+      if (deposit > 0) {
+        rows.push(["手付金", deposit, form.depositPaid ? "✅ 支払い済み" : "未払い"]);
+        if (depositApplied > 0) rows.push(["決済時 残金", balancePayment, "( 売買代金 − 手付金 )"]);
+      }
+    } else {
+      rows.push(["売主", sellerDisp]);
+      rows.push(["買主", form.buyerName + " 様"]);
+      rows.push(["売買代金", price]);
+      if (deposit > 0) {
+        rows.push(["手付金", deposit, form.depositPaid ? "✅ 支払い済み" : "未払い"]);
+        if (depositApplied > 0) rows.push(["決済時 残金", balancePayment, "( 売買代金 − 手付金 )"]);
+      }
     }
     rows.push([]);
 
-    if (form.docType === "both" || form.docType === "buyer") {
+    // 🆕 v9.342: 同日決済モードは AB間 / BC間 の2本立て（＋社内用は当社の差引）で明細を組む
+    if (abc) {
+      if (showAB) {
+        rows.push([abcView === "internal"
+          ? `■ AB間（仕入）精算明細　${midDisp} → ${sellerDisp}`
+          : `■ 精算明細（${midDisp} お支払い）`]);
+        rows.push(["項目", "金額", "お支払先"]);
+        rows.push([depositABApplied > 0 ? "売買代金（決済時残金）" : "売買代金", balanceAB, sellerDisp]);
+        if (buyerTax > 0) rows.push(["固定資産税・都市計画税\n精算金（日割り）", buyerTax, sellerDisp]);
+        if (shihoAB > 0) rows.push([`司法書士費用\n（${abcView === "internal" ? "AB間 " : ""}所有権移転登記等）`, shihoAB, shihoPayee]);
+        rows.push([abcView === "internal" ? "AB間 決済時お支払合計" : "決済時お支払合計", totalAB]);
+        rows.push([]);
+      }
+      if (showBC) {
+        rows.push([abcView === "internal"
+          ? `■ BC間（売却）精算明細　${buyerDisp} → ${midDisp}`
+          : `■ 精算明細（${buyerDisp} お支払い）`]);
+        rows.push(["項目", "金額", "お支払先"]);
+        rows.push([depositApplied > 0 ? "売買代金（決済時残金）" : "売買代金", balancePayment, midDisp]);
+        // 同日決済なので固都税の買主負担額は AB間と同額（社内用のときだけその旨を明記）
+        if (buyerTax > 0) rows.push([`固定資産税・都市計画税\n精算金（日割り${abcView === "internal" ? " ・ AB間と同額" : ""}）`, buyerTax, midDisp]);
+        if (shihoBC > 0) rows.push([`司法書士費用\n（${abcView === "internal" ? "BC間 " : ""}所有権移転登記等）`, shihoBC, shihoPayee]);
+        rows.push([abcView === "internal" ? "BC間 決済時お支払合計" : "決済時お支払合計", totalBC]);
+        rows.push([]);
+      }
+      if (abcView === "internal") {
+        rows.push([`■ ${midDisp} 差引`]);
+        rows.push(["項目", "金額", "内容"]);
+        rows.push(["受取（BC間）", totalBC, `買主・${buyerDisp} より`]);
+        rows.push(["支払（AB間）", totalAB, `売主・${sellerDisp} へ`]);
+        rows.push(["差引", totalBC - totalAB]);
+        rows.push([]);
+      }
+    }
+    if (!abc && (form.docType === "both" || form.docType === "buyer")) {
       rows.push(["■ 買主精算明細（" + form.buyerName + " 様 お支払い）"]);
       rows.push(["項目", "金額", "お支払先"]);
       // 🆕 v9.48.11: お支払先の「様」 を削除 ( 法人名のとき不自然 )
@@ -29281,7 +29380,7 @@ function SeisanFormPage({ data, setData, onBack }) {
       rows.push([]);
     }
 
-    if (form.docType === "both" || form.docType === "seller") {
+    if (!abc && (form.docType === "both" || form.docType === "seller")) {
       rows.push(["■ 売主精算明細（" + sellerDisp + "）"]);
       rows.push(["項目", "受取", "支払"]);
       // 🆕 v9.48.10: D列削除 → 補足を項目名に括弧書きで統合
@@ -29308,7 +29407,7 @@ function SeisanFormPage({ data, setData, onBack }) {
       rows.push([]);
     }
 
-    if (form.docType === "both") {
+    if (!abc && form.docType === "both") {
       rows.push(["■ 合同会社ひかり不動産 受領明細"]);
       rows.push(["項目", "金額", "受領元"]);
       if (feeS > 0) rows.push(["仲介手数料", feeS, "売主・" + sellerDisp + " より"]);
@@ -29320,13 +29419,17 @@ function SeisanFormPage({ data, setData, onBack }) {
     // 🆕 v9.48.9: 振込先表示 - includeチェック で選択
     // 🆕 v9.249: 「Excelに含める」チェックを最優先に。書類タイプに関係なく出力する
     //   （以前は買主様用だと売主振込先が隠れていた＝チェックしても出ない不具合。ひかり振込先と挙動を統一）
-    const showSellerBank = form.includeSellerBank;
-    const showHikariBank = form.includeHikariBank;
+    // 🆕 v9.342: 同日決済は「AB間=売主Aの口座（当社が振込む先）」「BC間=当社の口座（買主Cが振込む先）」に分ける。
+    //   相手用（A様用/C様用）は自分に関係する側だけを出す（相手方の口座を見せない）。
+    const showSellerBank = form.includeSellerBank && (!abc || showAB);
+    const showHikariBank = form.includeHikariBank && (!abc || showBC);
 
     if (showSellerBank || showHikariBank) {
       rows.push(["■ 振込先"]);
       if (showSellerBank) {
-        rows.push([`【${sellerDisp}】（お手取り金 お受取口座）`]);
+        rows.push([!abc ? `【${sellerDisp}】（お手取り金 お受取口座）`
+          : abcView === "internal" ? `【AB間】${sellerDisp}（${midDisp} よりお振込）`
+          : `【${sellerDisp}】（${midDisp} よりお振込）`]);
         if (form.sellerBank) rows.push(["金融機関名", form.sellerBank]);
         if (form.sellerBranch) rows.push(["支店名", form.sellerBranch]);
         if (form.sellerKind) rows.push(["預金種別", form.sellerKind]);
@@ -29335,7 +29438,9 @@ function SeisanFormPage({ data, setData, onBack }) {
         rows.push([]);
       }
       if (showHikariBank) {
-        rows.push(["【合同会社ひかり不動産】"]);
+        rows.push([!abc ? "【合同会社ひかり不動産】"
+          : abcView === "internal" ? `【BC間】${midDisp}（${buyerDisp} よりお振込）`
+          : `【${midDisp}】（お振込先）`]);
         if (form.hikariBank) rows.push(["金融機関名", form.hikariBank]);
         if (form.hikariBranch) rows.push(["支店名", form.hikariBranch]);
         if (form.hikariKind) rows.push(["預金種別", form.hikariKind]);
@@ -29352,19 +29457,41 @@ function SeisanFormPage({ data, setData, onBack }) {
     } else if (form.contractDate) {
       rows.push([`・本取引の売買契約は ${contractDateStr}、 決済は ${settleDateStr} に行います。`]);
     }
-    if (depositApplied > 0) rows.push([`・手付金 ${depositApplied.toLocaleString()}円は売買契約時に売主様が受領済みのため、決済時の買主様お支払額は売買代金から手付金を控除した ${balancePayment.toLocaleString()}円となります。`]);
+    // 🆕 v9.342: 同日決済は AB間 / BC間 それぞれの手付金について書く（社内用だけ AB/BC を明示）
+    if (abc) {
+      if (abcView === "internal") rows.push(["・本取引は AB間（仕入）・BC間（売却）の決済を同日に行います。"]);
+      const _pre = abcView === "internal" ? "AB間の" : "";
+      if (showAB && depositABApplied > 0) rows.push([`・${_pre}手付金 ${depositABApplied.toLocaleString()}円は売買契約時に売主様が受領済みのため、決済時のお支払額は売買代金から手付金を控除した ${balanceAB.toLocaleString()}円となります。`]);
+      else if (showAB && depositAB > 0) rows.push([`・${_pre}手付金 ${depositAB.toLocaleString()}円は本決済日に売買代金と合わせてお支払いいただきます。`]);
+      const _pre2 = abcView === "internal" ? "BC間の" : "";
+      if (showBC && depositApplied > 0) rows.push([`・${_pre2}手付金 ${depositApplied.toLocaleString()}円は売買契約時に受領済みのため、決済時のお支払額は売買代金から手付金を控除した ${balancePayment.toLocaleString()}円となります。`]);
+      else if (showBC && deposit > 0) rows.push([`・${_pre2}手付金 ${deposit.toLocaleString()}円は本決済日に売買代金と合わせてお支払いいただきます。`]);
+    } else if (depositApplied > 0) rows.push([`・手付金 ${depositApplied.toLocaleString()}円は売買契約時に売主様が受領済みのため、決済時の買主様お支払額は売買代金から手付金を控除した ${balancePayment.toLocaleString()}円となります。`]);
     else if (deposit > 0 && !form.depositPaid) rows.push([`・手付金 ${deposit.toLocaleString()}円は本決済日に売買代金と合わせてお支払いいただきます。`]);
-    if (tax) rows.push([`・固定資産税・都市計画税は売主様が当年度分を全額納付済みのため、決済日を基準とした日割り精算とし、買主様のご負担額 ${tax.buyerAmount.toLocaleString()}円を売主様へお支払いいただきます。（年税額合計 ${tax.yearTax.toLocaleString()}円［固定資産税 ${tax.kotei.toLocaleString()}円 + 都市計画税 ${tax.toshi.toLocaleString()}円］ × ${tax.buyerDays}日 ÷ ${tax.yearDays}日）`]);
-    if (stampS > 0 || num(form.stampForBuyer) > 0) {
+    // 同日決済（社内用）は AB間・BC間 で同額になる旨を添える
+    if (tax) rows.push([`・固定資産税・都市計画税は売主様が当年度分を全額納付済みのため、決済日を基準とした日割り精算とし、買主様のご負担額 ${tax.buyerAmount.toLocaleString()}円を売主様へお支払いいただきます。${abc && abcView === "internal" ? "本取引は同日決済のため、AB間・BC間ともに同額で精算します。" : ""}（年税額合計 ${tax.yearTax.toLocaleString()}円［固定資産税 ${tax.kotei.toLocaleString()}円 + 都市計画税 ${tax.toshi.toLocaleString()}円］ × ${tax.buyerDays}日 ÷ ${tax.yearDays}日）`]);
+    // 🆕 v9.342: 同日決済モードは印紙代を明細に載せない（各契約書に添付する実費のため）
+    if (abc && (stampS > 0 || num(form.stampForBuyer) > 0)) {
+      rows.push([`・収入印紙代は各売買契約書に添付するため、本精算の対象外です。`]);
+    }
+    if (!abc && (stampS > 0 || num(form.stampForBuyer) > 0)) {
       // 🆕 v9.48.9: 句点以降の説明文を削除 ・ シンプルに 1文だけ
       rows.push([`・売買契約書は2通作成し、各通に収入印紙を添付します。`]);
     }
     // 🆕 v9.341: 支払済の印紙代は明細から外したので、その旨を備考で明記する
-    if (form.stampPaidBuyer && num(form.stampForBuyer) > 0) {
+    if (!abc && form.stampPaidBuyer && num(form.stampForBuyer) > 0) {
       rows.push([`・収入印紙代 ${num(form.stampForBuyer).toLocaleString()}円は買主様が契約時にお支払い済みのため、決済時お支払合計には含まれません。`]);
     }
     // 🆕 v9.339: 司法書士費用は実費精算のため、確定額は決済時に司法書士より提示される旨を明記
-    if (shihoS > 0 || shihoB > 0) {
+    // 🆕 v9.342: 同日決済は AB間 / BC間 の金額で書く（相手用は自分の側だけ）
+    if (abc && ((showAB && shihoAB > 0) || (showBC && shihoBC > 0))) {
+      const _who = [
+        showAB && shihoAB > 0 ? `${abcView === "internal" ? "AB間 " : ""}${shihoAB.toLocaleString()}円` : "",
+        showBC && shihoBC > 0 ? `${abcView === "internal" ? "BC間 " : ""}${shihoBC.toLocaleString()}円` : "",
+      ].filter(Boolean).join("　");
+      rows.push([`・司法書士費用（登記費用）は${_who}（概算）です。実費精算のため、確定額は決済時に${shihoPayee}よりご提示いたします。`]);
+    }
+    if (!abc && (shihoS > 0 || shihoB > 0)) {
       const _who = [shihoB > 0 ? `買主様 ${shihoB.toLocaleString()}円` : "", shihoS > 0 ? `売主様 ${shihoS.toLocaleString()}円` : ""].filter(Boolean).join("　");
       rows.push([`・司法書士費用（登記費用）は${_who}（概算）です。実費精算のため、確定額は決済時に${shihoPayee}よりご提示いたします。`]);
     }
@@ -29435,8 +29562,11 @@ function SeisanFormPage({ data, setData, onBack }) {
       const isSubtitle = R === 1;
       const isSectionHeader = firstCell.startsWith("■ ");
       const isTableHeader = ["項目"].includes(firstCell) && (row[1] === "金額" || row[1] === "受取");
-      const isSubHeader = (firstCell.startsWith("【") && firstCell.endsWith("】")) || firstCell.startsWith("【") && firstCell.includes("様】");
-      const isTotalRow = ["小計", "差引　売主お手取り額", "買主 決済時お支払合計", "ひかり不動産 受領合計"].includes(firstCell);
+      // 🆕 v9.342: 振込先の小見出しは全部「【…」で始まる1セル行なので、それで判定する
+      //   （旧: 】終わり or 様】限定だったため【AB間】…（○○よりお振込）が拾えなかった）
+      const isSubHeader = firstCell.startsWith("【") && (row.length <= 1 || row[1] === undefined || row[1] === "");
+      const isTotalRow = ["小計", "差引　売主お手取り額", "買主 決済時お支払合計", "ひかり不動産 受領合計",
+        "AB間 決済時お支払合計", "BC間 決済時お支払合計", "決済時お支払合計", "差引"].includes(firstCell);
       const isNote = firstCell.startsWith("・");
 
       // 🆕 v9.294: 表の開始/終了を追跡。見出し■で表の外に戻り、項目ヘッダー行で表の中に入る。
@@ -29508,9 +29638,13 @@ function SeisanFormPage({ data, setData, onBack }) {
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "売買精算書");
-    const safeSeller = (form.sellerName || "売主").replace(/[\\/:*?"<>|]/g, "_").slice(0, 20);
+    // 🆕 v9.342: 買主C様用はファイル名に売主Aの名前を出さない（相手に渡すファイルなので名前が漏れる）
+    const _fnameParty = (abc && abcView === "c") ? (form.buyerName || "買主") : (form.sellerName || "売主");
+    const safeSeller = _fnameParty.replace(/[\\/:*?"<>|]/g, "_").slice(0, 20);
     const datePart = todayStr.replace(/-/g, "");
-    const suffix = form.docType === "seller" ? "_売主用" : form.docType === "buyer" ? "_買主用" : "";
+    const suffix = abc
+      ? (abcView === "a" ? "_同日決済_売主用" : abcView === "c" ? "_同日決済_買主用" : "_同日決済_社内用")
+      : (form.docType === "seller" ? "_売主用" : form.docType === "buyer" ? "_買主用" : "");
     const fname = `売買精算書${suffix}_${safeSeller}_${datePart}.xlsx`;
     XLSX.writeFile(wb, fname);
   };
@@ -29561,12 +29695,21 @@ function SeisanFormPage({ data, setData, onBack }) {
           <Field label="決済時刻">
             <input style={inp} type="time" value={form.settlementTime} onChange={e => set("settlementTime", e.target.value)} />
           </Field>
-          <Field label="出力対象">
-            <select style={inp} value={form.docType} onChange={e => set("docType", e.target.value)}>
-              <option value="both">両者用 ( フル )</option>
-              <option value="seller">売主用</option>
-              <option value="buyer">買主用</option>
-            </select>
+          {/* 🆕 v9.342: 同日決済モードでは「誰に渡す紙か」を選ぶ */}
+          <Field label={form.abcMode ? "出力タイプ ( 同日決済 )" : "出力対象"}>
+            {form.abcMode ? (
+              <select style={inp} value={form.abcDocType} onChange={e => set("abcDocType", e.target.value)}>
+                <option value="internal">社内用 ( AB間 ＋ BC間 ＋ 差引 )</option>
+                <option value="a">売主A様用 ( AB間だけ )</option>
+                <option value="c">買主C様用 ( BC間だけ )</option>
+              </select>
+            ) : (
+              <select style={inp} value={form.docType} onChange={e => set("docType", e.target.value)}>
+                <option value="both">両者用 ( フル )</option>
+                <option value="seller">売主用</option>
+                <option value="buyer">買主用</option>
+              </select>
+            )}
           </Field>
         </div>
         {/* 🆕 v9.48.7: 同日決済チェック + 契約日 ( 別日の場合 ) */}
@@ -29588,6 +29731,20 @@ function SeisanFormPage({ data, setData, onBack }) {
             <input style={inp} type="date" value={form.contractDate} onChange={e => set("contractDate", e.target.value)} />
           </Field>
         )}
+        {/* 🆕 v9.342: 同日決済（中間省略）モード。AB間=仕入 / BC間=売却 を1つの入力から出し分ける */}
+        <label style={{
+          display: "flex", alignItems: "center", gap: 8, padding: 8, marginBottom: 10,
+          background: form.abcMode ? C.accent + "22" : C.inset,
+          border: `1px solid ${form.abcMode ? C.accent : C.borderDim}`,
+          borderRadius: 6, cursor: "pointer", fontSize: 12,
+        }}>
+          <input type="checkbox" checked={form.abcMode}
+            onChange={e => set("abcMode", e.target.checked)}
+            style={{ width: 18, height: 18, cursor: "pointer" }} />
+          <span style={{ color: form.abcMode ? C.accent : C.text, fontWeight: form.abcMode ? 700 : 400 }}>
+            {form.abcMode ? "✅ 同日決済 ( AB間 = 仕入 ・ BC間 = 売却 ) で作る" : "☐ 同日決済 ( 中間省略 ・ AB間とBC間を同じ日に決済 )"}
+          </span>
+        </label>
         <Field label="決済場所">
           <input style={inp} value={form.settlementPlace} onChange={e => set("settlementPlace", e.target.value)} />
         </Field>
@@ -29608,10 +29765,10 @@ function SeisanFormPage({ data, setData, onBack }) {
             placeholder="例: 児玉郡上里町大字七本木字三軒 2008番13" />
         </Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <Field label="売主 氏名">
+          <Field label={form.abcMode ? "売主A 氏名 ( 仕入元 )" : "売主 氏名"}>
             <input style={inp} value={form.sellerName} onChange={e => set("sellerName", e.target.value)} placeholder="例: 針谷 祐司" />
           </Field>
-          <Field label="買主 氏名 ・ 法人名">
+          <Field label={form.abcMode ? "買主C 氏名 ・ 法人名 ( 売却先 )" : "買主 氏名 ・ 法人名"}>
             <input style={inp} value={form.buyerName} onChange={e => set("buyerName", e.target.value)} placeholder="例: 株式会社ウーリー" />
           </Field>
         </div>
@@ -29634,13 +29791,13 @@ function SeisanFormPage({ data, setData, onBack }) {
           <button type="button" onClick={() => setForm(f => ({ ...f, coSellers: [...(f.coSellers || []), { name: "", addr: "" }] }))}
             style={{ width: "100%", padding: "9px", background: C.accent + "18", border: `1.5px dashed ${C.accent}`, color: C.accent, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>＋ 共有者を追加</button>
         </Field>
-        <Field label="売買代金 (円)">
+        <Field label={form.abcMode ? "売買代金 ( BC間 ・ 売却 / 円 )" : "売買代金 (円)"}>
           <input style={inp} type="text" inputMode="numeric" value={form.salePrice}
             onChange={e => set("salePrice", e.target.value)} placeholder="例: 600000" />
         </Field>
 
         {/* 🆕 v9.48.2: 手付金 + 支払い済みチェック */}
-        <Field label="手付金 (円 / 任意)">
+        <Field label={form.abcMode ? "手付金 ( BC間 / 円 ・ 任意 )" : "手付金 (円 / 任意)"}>
           <input style={inp} type="text" inputMode="numeric" value={form.depositAmount}
             onChange={e => set("depositAmount", e.target.value)} placeholder="例: 100000 ( 売買契約時に受領した手付金 )" />
           <label style={{
@@ -29663,6 +29820,45 @@ function SeisanFormPage({ data, setData, onBack }) {
           )}
         </Field>
       </div>
+
+      {/* 🆕 v9.342: 同日決済 AB間（仕入）の入力。チェックが入っている時だけ出す */}
+      {form.abcMode && (
+        <div style={{ background: C.cardBg, border: `1px solid ${C.accent}66`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 10 }}>■ AB間 ( 仕入 ・ 売主A → 当社B )</div>
+          <Field label="中間B ( 当社 ) の名称">
+            <input style={inp} value={form.midName} onChange={e => set("midName", e.target.value)} placeholder="例: 合同会社ひかり不動産" />
+          </Field>
+          <Field label="売買代金 ( AB間 ・ 仕入 / 円 )">
+            <input style={inp} type="text" inputMode="numeric" value={form.abPrice}
+              onChange={e => set("abPrice", e.target.value)} placeholder="例: 3000000" />
+          </Field>
+          <Field label="手付金 ( AB間 / 円 ・ 任意 )">
+            <input style={inp} type="text" inputMode="numeric" value={form.abDeposit}
+              onChange={e => set("abDeposit", e.target.value)} placeholder="例: 100000 ( 仕入契約時に支払った手付金 )" />
+            <label style={{
+              display: "flex", alignItems: "center", gap: 8, marginTop: 8,
+              padding: 8, background: form.abDepositPaid ? C.success + "22" : C.inset,
+              border: `1px solid ${form.abDepositPaid ? C.success : C.borderDim}`,
+              borderRadius: 6, cursor: "pointer", fontSize: 12,
+            }}>
+              <input type="checkbox" checked={form.abDepositPaid}
+                onChange={e => set("abDepositPaid", e.target.checked)}
+                style={{ width: 18, height: 18, cursor: "pointer" }} />
+              <span style={{ color: form.abDepositPaid ? C.success : C.text, fontWeight: form.abDepositPaid ? 700 : 400 }}>
+                {form.abDepositPaid ? "✅ 手付金 支払い済み ( 決済時の支払額から控除 )" : "☐ 手付金 支払い済み"}
+              </span>
+            </label>
+            {num(form.abDeposit) > 0 && form.abDepositPaid && (
+              <div style={{ marginTop: 6, padding: 6, background: C.accent + "11", borderRadius: 4, fontSize: 10, color: C.accent }}>
+                <NavIcon name="bulb" size={15} /> AB間 決済時支払 = {num(form.abPrice).toLocaleString()}円 − {num(form.abDeposit).toLocaleString()}円 = <b>{(num(form.abPrice) - num(form.abDeposit)).toLocaleString()}円</b>
+              </div>
+            )}
+          </Field>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 4, lineHeight: 1.7 }}>
+            <NavIcon name="bulb" size={15} /> 固定資産税・都市計画税は同日決済なので AB間・BC間 で同額になります。入力は下の「固定資産税 ・ 都市計画税」の1か所だけでOKです（両方の明細に同じ額が出ます）。
+          </div>
+        </div>
+      )}
 
       {/* 固定資産税 日割り */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
@@ -29702,6 +29898,12 @@ function SeisanFormPage({ data, setData, onBack }) {
           <div style={{ fontSize: 13, fontWeight: 700, color: C.warn }}>■ 仲介手数料 ・ 印紙代</div>
           <button onClick={autoBrokerFee} style={{ ...btnStyle("ghost"), padding: "5px 10px", fontSize: 11 }}>自動計算</button>
         </div>
+        {/* 🆕 v9.342: 同日決済（中間省略）は仲介が入らない前提。入れても明細には出さない旨を明示する */}
+        {form.abcMode && (
+          <div style={{ background: C.warn + "18", border: `1px solid ${C.warn}55`, borderRadius: 8, padding: 10, marginBottom: 10, fontSize: 11, color: C.text, lineHeight: 1.7 }}>
+            <NavIcon name="bulb" size={15} /> 同日決済 ( 中間省略 ) では、この2つは<b>精算明細に出ません</b>。印紙代は「各売買契約書に添付するため本精算の対象外」として備考に1行入ります。仲介手数料を精算書に載せる必要がある取引なら、同日決済のチェックを外して通常モードで作ってください。
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <Field label="仲介手数料 ( 売主から / 円 )">
             <input style={inp} type="text" inputMode="numeric" value={form.brokerFeeFromSeller}
@@ -29763,25 +29965,42 @@ function SeisanFormPage({ data, setData, onBack }) {
           <input style={inp} type="text" value={form.shihoName}
             onChange={e => set("shihoName", e.target.value)} placeholder="例: 〇〇司法書士事務所" />
         </Field>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 8 }}>
-          <Field label="買主負担 ( 所有権移転登記等 / 円 )">
-            <input style={inp} type="text" inputMode="numeric" value={form.shihoFeeBuyer}
-              onChange={e => set("shihoFeeBuyer", e.target.value)} placeholder="例: 350000" />
-          </Field>
-          <Field label="売主負担 ( 抵当権抹消 ・ 住所変更 / 円 )">
-            <input style={inp} type="text" inputMode="numeric" value={form.shihoFeeSeller}
-              onChange={e => set("shihoFeeSeller", e.target.value)} placeholder="例: 30000" />
-          </Field>
-        </div>
+        {/* 🆕 v9.342: 同日決済モードは AB間 / BC間 で分けて入力する */}
+        {form.abcMode ? (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 8 }}>
+            <Field label="AB間 ( 仕入 ) の司法書士費用 / 円">
+              <input style={inp} type="text" inputMode="numeric" value={form.abShihoFee}
+                onChange={e => set("abShihoFee", e.target.value)} placeholder="例: 50000" />
+            </Field>
+            <Field label="BC間 ( 売却 ) の司法書士費用 / 円">
+              <input style={inp} type="text" inputMode="numeric" value={form.bcShihoFee}
+                onChange={e => set("bcShihoFee", e.target.value)} placeholder="例: 125300" />
+            </Field>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 8 }}>
+            <Field label="買主負担 ( 所有権移転登記等 / 円 )">
+              <input style={inp} type="text" inputMode="numeric" value={form.shihoFeeBuyer}
+                onChange={e => set("shihoFeeBuyer", e.target.value)} placeholder="例: 350000" />
+            </Field>
+            <Field label="売主負担 ( 抵当権抹消 ・ 住所変更 / 円 )">
+              <input style={inp} type="text" inputMode="numeric" value={form.shihoFeeSeller}
+                onChange={e => set("shihoFeeSeller", e.target.value)} placeholder="例: 30000" />
+            </Field>
+          </div>
+        )}
         <div style={{ fontSize: 11, color: C.muted, marginTop: 8, lineHeight: 1.7 }}>
-          <NavIcon name="bulb" size={15} /> 空欄 ( または 0 ) の側は精算書に出ません。入れた金額は買主お支払合計 ・ 売主お手取り額の計算に自動で反映され、備考に「実費精算のため確定額は決済時に提示」の一文が入ります。
+          <NavIcon name="bulb" size={15} /> {form.abcMode
+            ? "空欄 ( または 0 ) の側は精算書に出ません。AB間はAB間の合計に、BC間はBC間の合計に自動で加算されます。"
+            : "空欄 ( または 0 ) の側は精算書に出ません。入れた金額は買主お支払合計 ・ 売主お手取り額の計算に自動で反映され、備考に「実費精算のため確定額は決済時に提示」の一文が入ります。"}
         </div>
       </div>
 
       {/* 振込先 */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: C.warn }}>■ 振込先 ( 売主様 - お手取り金 受取口座 )</div>
+          {/* 🆕 v9.342: 同日決済では「AB間＝売主Aの口座（当社が振込む先）」になる */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.warn }}>{form.abcMode ? "■ 振込先 【AB間】売主A様の口座 ( 当社が振込む先 )" : "■ 振込先 ( 売主様 - お手取り金 受取口座 )"}</div>
           {/* 🆕 v9.48.9: Excel に含めるチェック */}
           <label style={{
             display: "flex", alignItems: "center", gap: 6, padding: "4px 10px",
@@ -29820,7 +30039,8 @@ function SeisanFormPage({ data, setData, onBack }) {
         </Field>
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: C.warn }}>■ 振込先 ( ひかり不動産 )</div>
+          {/* 🆕 v9.342: 同日決済では「BC間＝当社の口座（買主Cが振込む先）」になる */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.warn }}>{form.abcMode ? "■ 振込先 【BC間】当社の口座 ( 買主C様が振込む先 )" : "■ 振込先 ( ひかり不動産 )"}</div>
           {/* 🆕 v9.48.9: Excel に含めるチェック */}
           <label style={{
             display: "flex", alignItems: "center", gap: 6, padding: "4px 10px",
