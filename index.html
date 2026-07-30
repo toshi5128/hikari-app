@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-30-v9.346-seisan-abc-subtitle";
+const APP_VERSION = "2026-07-30-v9.347-kotoze-receipt-abc";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -29119,6 +29119,8 @@ function SeisanFormPage({ data, setData, onBack }) {
     abcMode: false,
     abcDocType: "internal",              // "internal"=社内用(AB+BC+差引) / "a"=売主A様用(AB間だけ) / "c"=買主C様用(BC間だけ)
     midName: "合同会社ひかり不動産",     // 中間B ( 当社 )
+    // 🆕 v9.347: BC間の領収書は当社が発行側になるので当社住所が必要
+    midAddr: "埼玉県熊谷市籠原南1丁目225番",
     abPrice: "",                         // AB間 売買代金
     abDeposit: "",                       // AB間 手付金
     abDepositPaid: false,                // AB間 手付金 支払い済み
@@ -29849,6 +29851,10 @@ function SeisanFormPage({ data, setData, onBack }) {
           <Field label="中間B ( 当社 ) の名称">
             <input style={inp} value={form.midName} onChange={e => set("midName", e.target.value)} placeholder="例: 合同会社ひかり不動産" />
           </Field>
+          {/* 🆕 v9.347: BC間の固都税領収書は当社が発行側になるので当社住所を載せる */}
+          <Field label="中間B ( 当社 ) の住所（BC間の固都税領収書に記載）">
+            <input style={inp} value={form.midAddr} onChange={e => set("midAddr", e.target.value)} placeholder="例: 埼玉県熊谷市籠原南1丁目225番" />
+          </Field>
           <Field label="売買代金 ( AB間 ・ 仕入 / 円 )">
             <input style={inp} type="text" inputMode="numeric" value={form.abPrice}
               onChange={e => set("abPrice", e.target.value)} placeholder="例: 3000000" />
@@ -30169,22 +30175,52 @@ function SeisanFormPage({ data, setData, onBack }) {
       )}
 
       {/* 🆕 v9.48.16: 固都税精算書 + 領収書 のダウンロード */}
-      <button onClick={() => generateTaxStatementXlsx(form, tax, num)} style={{
-        width: "100%", padding: 14, background: "#0ea5e9", color: "#fff",
-        border: "none", borderRadius: 10, fontSize: 14, fontWeight: 800,
-        cursor: "pointer", fontFamily: "inherit", marginTop: 8,
-      }}><NavIcon name="download" size={15} /> 固定資産税・都市計画税 精算書 + 領収書 を Excel ダウンロード</button>
-      <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
-        <NavIcon name="bulb" size={15} /> メインの売買精算書と同じデータ ( 物件 ・ 売主 ・ 買主 ・ 引渡日 ・ 固定資産税 ・ 都市計画税 ) から自動生成 → 領収書付き
-      </div>
+      {/* 🆕 v9.347: 同日決済は領収書の当事者が変わるので AB間用 / BC間用 の2本に分ける */}
+      {form.abcMode ? (
+        <div style={{ marginTop: 8 }}>
+          <button onClick={() => generateTaxStatementXlsx(form, tax, num, "ab")} style={{
+            width: "100%", padding: 14, background: "#0ea5e9", color: "#fff",
+            border: "none", borderRadius: 10, fontSize: 13, fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit",
+          }}><NavIcon name="download" size={15} /> 固都税 精算書 + 領収書【AB間】売主様が発行 → 当社宛</button>
+          <button onClick={() => generateTaxStatementXlsx(form, tax, num, "bc")} style={{
+            width: "100%", padding: 14, background: "#0ea5e9", color: "#fff",
+            border: "none", borderRadius: 10, fontSize: 13, fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit", marginTop: 8,
+          }}><NavIcon name="download" size={15} /> 固都税 精算書 + 領収書【BC間】当社が発行 → 買主様宛</button>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.7 }}>
+            <NavIcon name="bulb" size={15} /> 領収書は「お金を受け取った側が書いて、払った側に渡す紙」です。【AB間】は当社が売主様へ支払うので<b>売主様が発行（宛名＝当社）</b>、【BC間】は買主様が当社へ支払うので<b>当社が発行（宛名＝買主様）</b>になります。金額はどちらも買主負担分（同額）です。
+          </div>
+        </div>
+      ) : (
+        <>
+          <button onClick={() => generateTaxStatementXlsx(form, tax, num)} style={{
+            width: "100%", padding: 14, background: "#0ea5e9", color: "#fff",
+            border: "none", borderRadius: 10, fontSize: 14, fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit", marginTop: 8,
+          }}><NavIcon name="download" size={15} /> 固定資産税・都市計画税 精算書 + 領収書 を Excel ダウンロード</button>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+            <NavIcon name="bulb" size={15} /> メインの売買精算書と同じデータ ( 物件 ・ 売主 ・ 買主 ・ 引渡日 ・ 固定資産税 ・ 都市計画税 ) から自動生成 → 領収書付き
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 // 🆕 v9.48.16: 固定資産税・都市計画税精算書 + 領収書 を生成
-function generateTaxStatementXlsx(form, tax, num) {
+// 🆕 v9.347: variant で領収書の当事者を切り替える
+//   ・null : 通常の売買（受領＝売主 / 宛名＝買主）
+//   ・"ab" : AB間（仕入）… 当社が売主Aへ支払う → 受領＝売主A / 宛名＝当社
+//   ・"bc" : BC間（売却）… 買主Cが当社へ支払う → 受領＝当社 / 宛名＝買主C
+function generateTaxStatementXlsx(form, tax, num, variant) {
   if (typeof XLSX === "undefined") { alert("Excelライブラリが読み込めていません"); return; }
   if (!tax || tax.yearTax === 0) { alert("固定資産税・都市計画税が入力されていません"); return; }
+  const _v = (variant === "ab" || variant === "bc") ? variant : null;
+  const _midName = (form.midName || "").trim() || "合同会社ひかり不動産";
+  const _midAddr = (form.midAddr || "").trim();
+  // 宛名 = お金を払う側（AB間は当社が買主、BC間は買主C）
+  const _payerName = _v === "ab" ? _midName : (form.buyerName || "");
 
   const fmtDate = (s) => {
     if (!s) return "";
@@ -30292,7 +30328,7 @@ function generateTaxStatementXlsx(form, tax, num) {
 
   // (買主) 名前 様 - 名前部分のみに下線
   cell(R, 0, "（買主）　", styles.receiptNameLabel);
-  cell(R, 1, ` ${form.buyerName} `, styles.receiptName);
+  cell(R, 1, ` ${_payerName} `, styles.receiptName);
   cell(R, 2, " 様", styles.receiptNameSama);
   R += 2;
 
@@ -30311,9 +30347,12 @@ function generateTaxStatementXlsx(form, tax, num) {
   // 売主住所 ・ 氏名 ( 右寄せ )
   // 🆕 v9.284: 売主欄は入力された売主住所・氏名を使う（従来はひかり不動産の住所を直書きしていた不具合）。
   // 🆕 v9.285: 共有者(coSellers)がいれば、売主①＋共有者を人数分（住所＋氏名＋㊞）で出力する。
-  const _sellerList = [{ name: form.sellerName, addr: form.sellerAddr },
-    ...(Array.isArray(form.coSellers) ? form.coSellers : [])]
-    .filter(s => s && ((s.name && String(s.name).trim()) || (s.addr && String(s.addr).trim())));
+  // 🆕 v9.347: BC間は当社が受領する側なので、発行者（売主欄）は当社1者。共有者は出さない。
+  const _sellerList = _v === "bc"
+    ? [{ name: _midName, addr: _midAddr }]
+    : [{ name: form.sellerName, addr: form.sellerAddr },
+       ...(Array.isArray(form.coSellers) ? form.coSellers : [])]
+      .filter(s => s && ((s.name && String(s.name).trim()) || (s.addr && String(s.addr).trim())));
   if (_sellerList.length === 0) _sellerList.push({ name: "", addr: "" });
   _sellerList.forEach(s => {
     cell(R, 0, `（売主）住所：${s.addr || ""}`, styles.receiptLabel); merge(R, 0, R, 3); R++;
@@ -30334,8 +30373,14 @@ function generateTaxStatementXlsx(form, tax, num) {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "固都税精算書");
   const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const safeBuyer = (form.buyerName || "買主").replace(/[\\/:*?"<>|]/g, "_").slice(0, 20);
-  XLSX.writeFile(wb, `固定資産税都市計画税精算書_${safeBuyer}_${todayStr}.xlsx`);
+  // 🆕 v9.347: 相手方の名前がファイル名から漏れないよう、AB間は売主名・BC間は買主名だけ使う
+  const _safe = (s, d) => (s || d).replace(/[\\/:*?"<>|]/g, "_").slice(0, 20);
+  const _fname = _v === "ab"
+    ? `固定資産税都市計画税精算書_AB間(売主→当社)_${_safe(form.sellerName, "売主")}_${todayStr}.xlsx`
+    : _v === "bc"
+      ? `固定資産税都市計画税精算書_BC間(当社→買主)_${_safe(form.buyerName, "買主")}_${todayStr}.xlsx`
+      : `固定資産税都市計画税精算書_${_safe(form.buyerName, "買主")}_${todayStr}.xlsx`;
+  XLSX.writeFile(wb, _fname);
 }
 
 function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
