@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-28-v9.338-jiage-batch-filter";
+const APP_VERSION = "2026-07-30-v9.339-seisan-shihoshoshi";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -29068,6 +29068,10 @@ function SeisanFormPage({ data, setData, onBack }) {
     stampForBuyer: "500",
     stampPaidSeller: false,              // 🆕 v9.48.4: 売主分 印紙代 支払い済み
     stampPaidBuyer: false,               // 🆕 v9.48.4: 買主分 印紙代 支払い済み
+    // 🆕 v9.339: 司法書士費用 ( 登記費用 )。売主負担=抵当権抹消・住所変更 / 買主負担=所有権移転
+    shihoName: "",                       // 司法書士 ・ 事務所名 ( 空欄なら「司法書士」と表示 )
+    shihoFeeSeller: "",                  // 売主負担分 ( 円 )
+    shihoFeeBuyer: "",                   // 買主負担分 ( 円 )
     // 振込先 ( ひかり )
     hikariBank: "埼玉信用組合", hikariBranch: "深谷支店", hikariKind: "普通",
     hikariAccountNo: "0436895", hikariAccountName: "ド)ヒカリフドウサン",
@@ -29170,6 +29174,10 @@ function SeisanFormPage({ data, setData, onBack }) {
     const feeS = num(form.brokerFeeFromSeller);
     const feeB = num(form.brokerFeeFromBuyer);
     const stampS = num(form.stampForSeller);
+    // 🆕 v9.339: 司法書士費用 ( 登記費用 )。0 なら明細に出さない
+    const shihoS = num(form.shihoFeeSeller);
+    const shihoB = num(form.shihoFeeBuyer);
+    const shihoPayee = (form.shihoName || "").trim() || "司法書士";
     const buyerTax = tax ? tax.buyerAmount : 0;
     // 🆕 v9.48.2: 手付金 ( 支払い済みなら 決済時に控除 )
     const deposit = num(form.depositAmount);
@@ -29217,6 +29225,8 @@ function SeisanFormPage({ data, setData, onBack }) {
       if (depositApplied > 0) rows.push(["うち 手付金充当（売買契約時に支払済）", -depositApplied, sellerDisp]);
       if (buyerTax > 0) rows.push(["固定資産税・都市計画税\n精算金（日割り）", buyerTax, sellerDisp]);  // 🆕 v9.292: 「（日割り）」が割れないよう明示改行
       if (feeB > 0) rows.push(["仲介手数料", feeB, "合同会社ひかり不動産"]);
+      // 🆕 v9.339: 司法書士費用 ( 所有権移転登記等 ・ 買主ご負担 )
+      if (shihoB > 0) rows.push(["司法書士費用\n（所有権移転登記等）", shihoB, shihoPayee]);
       // 🆕 v9.48.12: 収入印紙代 ( 買主分 ) を 買主精算明細にも表示 ・ 支払い済みでも金額を記録
       // 🆕 v9.48.15: 印紙代 ・ 支払い済み時は 1行で マイナス表示
       const stampB = num(form.stampForBuyer);
@@ -29228,7 +29238,7 @@ function SeisanFormPage({ data, setData, onBack }) {
         }
       }
       // 合計 ( 支払い済みなら -stampB で控除 )
-      const buyerTotal = price - depositApplied + buyerTax + feeB + (form.stampPaidBuyer ? -stampB : stampB);
+      const buyerTotal = price - depositApplied + buyerTax + feeB + shihoB + (form.stampPaidBuyer ? -stampB : stampB);
       rows.push(["買主 決済時お支払合計", buyerTotal]);
       rows.push([]);
     }
@@ -29242,6 +29252,8 @@ function SeisanFormPage({ data, setData, onBack }) {
       if (depositApplied > 0) rows.push([`うち 手付金（契約時受領済 ・ 売買代金の内訳）`, depositApplied, ""]);
       if (buyerTax > 0) rows.push([`固定資産税・都市計画税\n精算金（日割り・買主より受領）`, buyerTax, ""]);  // 🆕 v9.292: 明示改行で「（日割り）」が割れないよう
       if (feeS > 0) rows.push([`仲介手数料（ひかり不動産へお支払い）`, "", feeS]);
+      // 🆕 v9.339: 司法書士費用 ( 抵当権抹消 ・ 住所変更登記等 ・ 売主ご負担 )
+      if (shihoS > 0) rows.push([`司法書士費用（抵当権抹消・住所変更登記等\n${shihoPayee}へお支払い）`, "", shihoS]);
       // 🆕 v9.48.12: 支払い済みでも金額を記録 ( 支払列に表示、 ただし小計には含めない )
       if (stampS > 0) {
         if (form.stampPaidSeller) {
@@ -29251,7 +29263,7 @@ function SeisanFormPage({ data, setData, onBack }) {
         }
       }
       const recv = price + buyerTax;
-      const pay = feeS + (form.stampPaidSeller ? 0 : stampS);
+      const pay = feeS + shihoS + (form.stampPaidSeller ? 0 : stampS);
       rows.push(["小計", recv, pay]);
       rows.push([`差引　売主お手取り額（受取－支払）`, recv - pay, ""]);
       if (depositApplied > 0) rows.push([`うち 決済時受領額（手付金 ${depositApplied.toLocaleString()}円は契約時既受領）`, recv - pay - depositApplied, ""]);
@@ -29308,6 +29320,11 @@ function SeisanFormPage({ data, setData, onBack }) {
     if (stampS > 0 || num(form.stampForBuyer) > 0) {
       // 🆕 v9.48.9: 句点以降の説明文を削除 ・ シンプルに 1文だけ
       rows.push([`・売買契約書は2通作成し、各通に収入印紙を添付します。`]);
+    }
+    // 🆕 v9.339: 司法書士費用は実費精算のため、確定額は決済時に司法書士より提示される旨を明記
+    if (shihoS > 0 || shihoB > 0) {
+      const _who = [shihoB > 0 ? `買主様 ${shihoB.toLocaleString()}円` : "", shihoS > 0 ? `売主様 ${shihoS.toLocaleString()}円` : ""].filter(Boolean).join("　");
+      rows.push([`・司法書士費用（登記費用）は${_who}（概算）です。実費精算のため、確定額は決済時に${shihoPayee}よりご提示いたします。`]);
     }
     if (form.notes) form.notes.split("\n").forEach(line => { if (line.trim()) rows.push(["・" + line]); });
 
@@ -29694,6 +29711,28 @@ function SeisanFormPage({ data, setData, onBack }) {
               </span>
             </label>
           </div>
+        </div>
+      </div>
+
+      {/* 🆕 v9.339: 司法書士費用 ( 登記費用 ) */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>■ 司法書士費用 ( 登記費用 )</div>
+        <Field label="司法書士 ・ 事務所名 ( 精算書のお支払先に表示 )">
+          <input style={inp} type="text" value={form.shihoName}
+            onChange={e => set("shihoName", e.target.value)} placeholder="例: 〇〇司法書士事務所" />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 8 }}>
+          <Field label="買主負担 ( 所有権移転登記等 / 円 )">
+            <input style={inp} type="text" inputMode="numeric" value={form.shihoFeeBuyer}
+              onChange={e => set("shihoFeeBuyer", e.target.value)} placeholder="例: 350000" />
+          </Field>
+          <Field label="売主負担 ( 抵当権抹消 ・ 住所変更 / 円 )">
+            <input style={inp} type="text" inputMode="numeric" value={form.shihoFeeSeller}
+              onChange={e => set("shihoFeeSeller", e.target.value)} placeholder="例: 30000" />
+          </Field>
+        </div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 8, lineHeight: 1.7 }}>
+          <NavIcon name="bulb" size={15} /> 空欄 ( または 0 ) の側は精算書に出ません。入れた金額は買主お支払合計 ・ 売主お手取り額の計算に自動で反映され、備考に「実費精算のため確定額は決済時に提示」の一文が入ります。
         </div>
       </div>
 
