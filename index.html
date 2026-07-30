@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-30-v9.342-seisan-abc-sameday";
+const APP_VERSION = "2026-07-30-v9.344-seisan-contract-fee";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -29124,6 +29124,8 @@ function SeisanFormPage({ data, setData, onBack }) {
     abDepositPaid: false,                // AB間 手付金 支払い済み
     abShihoFee: "",                      // AB間 司法書士費用
     bcShihoFee: "",                      // BC間 司法書士費用
+    // 🆕 v9.344: 契約事務手数料 ( 買主様より当社が受領する報酬 )。買取再販 ・ 中間省略で仲介手数料の代わりに入る
+    contractFeeFromBuyer: "",
     // 振込先 ( ひかり )
     hikariBank: "埼玉信用組合", hikariBranch: "深谷支店", hikariKind: "普通",
     hikariAccountNo: "0436895", hikariAccountName: "ド)ヒカリフドウサン",
@@ -29210,7 +29212,10 @@ function SeisanFormPage({ data, setData, onBack }) {
   };
 
   // Excel出力
-  const generateXlsx = () => {
+  // 🆕 v9.343: 同日決済は「売主用 / 買主用 / 社内確認用」をボタンから直接指定して出せるようにする
+  //   （引数なしで呼ばれた場合＝onClick に直接渡された場合は event が来るので、文字列以外は無視する）
+  const generateXlsx = (viewOverride) => {
+    const _viewOverride = typeof viewOverride === "string" ? viewOverride : null;
     if (typeof XLSX === "undefined") { alert("Excelライブラリが読み込めていません"); return; }
     const fmtDate = (s) => {
       if (!s) return "";
@@ -29238,7 +29243,7 @@ function SeisanFormPage({ data, setData, onBack }) {
 
     // 🆕 v9.342: 同日決済 ( 中間省略 )。AB間 = 当社B → 売主A / BC間 = 買主C → 当社B
     const abc = !!form.abcMode;
-    const abcView = form.abcDocType || "internal";                    // internal | a | c
+    const abcView = _viewOverride || form.abcDocType || "internal";   // internal | a | c
     const showAB = abc && (abcView === "internal" || abcView === "a");
     const showBC = abc && (abcView === "internal" || abcView === "c");
     const midDisp = (form.midName || "").trim() || "合同会社ひかり不動産";
@@ -29248,9 +29253,11 @@ function SeisanFormPage({ data, setData, onBack }) {
     const balanceAB = priceAB - depositABApplied;                      // AB間 決済時残金
     const shihoAB = num(form.abShihoFee);
     const shihoBC = num(form.bcShihoFee);
+    // 🆕 v9.344: 契約事務手数料は買主様から当社が受け取るので、買主側（通常モード）/ BC間（同日決済）に入る
+    const contractFee = num(form.contractFeeFromBuyer);
     const buyerDisp = (form.buyerName || "").trim() ? (form.buyerName || "").trim() + " 様" : "";
     const totalAB = balanceAB + buyerTax + shihoAB;                    // 当社B が 売主A へ支払う額
-    const totalBC = balancePayment + buyerTax + shihoBC;               // 買主C が 当社B へ支払う額
+    const totalBC = balancePayment + buyerTax + contractFee + shihoBC; // 買主C が 当社B へ支払う額
 
     // 🆕 v9.48.7: 契約日 ( 同日 or 別日 )
     const contractDateStr = form.sameDayContract ? settleDateStr : fmtDate(form.contractDate);
@@ -29345,6 +29352,8 @@ function SeisanFormPage({ data, setData, onBack }) {
         rows.push([depositApplied > 0 ? "売買代金（決済時残金）" : "売買代金", balancePayment, midDisp]);
         // 同日決済なので固都税の買主負担額は AB間と同額（社内用のときだけその旨を明記）
         if (buyerTax > 0) rows.push([`固定資産税・都市計画税\n精算金（日割り${abcView === "internal" ? " ・ AB間と同額" : ""}）`, buyerTax, midDisp]);
+        // 🆕 v9.344: 契約事務手数料（買主様より当社が受領）
+        if (contractFee > 0) rows.push(["契約事務手数料", contractFee, midDisp]);
         if (shihoBC > 0) rows.push([`司法書士費用\n（${abcView === "internal" ? "BC間 " : ""}所有権移転登記等）`, shihoBC, shihoPayee]);
         rows.push([abcView === "internal" ? "BC間 決済時お支払合計" : "決済時お支払合計", totalBC]);
         rows.push([]);
@@ -29368,6 +29377,8 @@ function SeisanFormPage({ data, setData, onBack }) {
       else rows.push(["売買代金", price, sellerDisp]);
       if (buyerTax > 0) rows.push(["固定資産税・都市計画税\n精算金（日割り）", buyerTax, sellerDisp]);  // 🆕 v9.292: 「（日割り）」が割れないよう明示改行
       if (feeB > 0) rows.push(["仲介手数料", feeB, "合同会社ひかり不動産"]);
+      // 🆕 v9.344: 契約事務手数料（買主様より当社が受領）
+      if (contractFee > 0) rows.push(["契約事務手数料", contractFee, "合同会社ひかり不動産"]);
       // 🆕 v9.339: 司法書士費用 ( 所有権移転登記等 ・ 買主ご負担 )
       if (shihoB > 0) rows.push(["司法書士費用\n（所有権移転登記等）", shihoB, shihoPayee]);
       // 🆕 v9.341: 印紙代は「これから払う」時だけ明細に出す。支払済は明細から外して備考に回す
@@ -29375,7 +29386,7 @@ function SeisanFormPage({ data, setData, onBack }) {
       const stampB = num(form.stampForBuyer);
       if (stampB > 0 && !form.stampPaidBuyer) rows.push(["収入印紙代", stampB, "買主様 ご負担"]);
       // 合計 = 決済時に実際にお持ちいただく金額（支払済のものは含めない）
-      const buyerTotal = balancePayment + buyerTax + feeB + shihoB + (form.stampPaidBuyer ? 0 : stampB);
+      const buyerTotal = balancePayment + buyerTax + feeB + contractFee + shihoB + (form.stampPaidBuyer ? 0 : stampB);
       rows.push(["買主 決済時お支払合計", buyerTotal]);
       rows.push([]);
     }
@@ -29412,7 +29423,9 @@ function SeisanFormPage({ data, setData, onBack }) {
       rows.push(["項目", "金額", "受領元"]);
       if (feeS > 0) rows.push(["仲介手数料", feeS, "売主・" + sellerDisp + " より"]);
       if (feeB > 0) rows.push(["仲介手数料", feeB, "買主・" + form.buyerName + " より"]);
-      rows.push(["ひかり不動産 受領合計", feeS + feeB]);
+      // 🆕 v9.344: 契約事務手数料も当社の受領なので受領明細に入れる
+      if (contractFee > 0) rows.push(["契約事務手数料", contractFee, "買主・" + form.buyerName + " より"]);
+      rows.push(["ひかり不動産 受領合計", feeS + feeB + contractFee]);
       rows.push([]);
     }
 
@@ -29695,22 +29708,22 @@ function SeisanFormPage({ data, setData, onBack }) {
           <Field label="決済時刻">
             <input style={inp} type="time" value={form.settlementTime} onChange={e => set("settlementTime", e.target.value)} />
           </Field>
-          {/* 🆕 v9.342: 同日決済モードでは「誰に渡す紙か」を選ぶ */}
-          <Field label={form.abcMode ? "出力タイプ ( 同日決済 )" : "出力対象"}>
-            {form.abcMode ? (
-              <select style={inp} value={form.abcDocType} onChange={e => set("abcDocType", e.target.value)}>
-                <option value="internal">社内用 ( AB間 ＋ BC間 ＋ 差引 )</option>
-                <option value="a">売主A様用 ( AB間だけ )</option>
-                <option value="c">買主C様用 ( BC間だけ )</option>
-              </select>
-            ) : (
+          {/* 🆕 v9.343: 同日決済は誰に渡す紙かを一番下の3つのボタンで選ぶので、ここのプルダウンは出さない */}
+          {form.abcMode ? (
+            <Field label="出力タイプ">
+              <div style={{ ...inp, display: "flex", alignItems: "center", color: C.muted, fontSize: 11, lineHeight: 1.5, height: "auto", minHeight: 38 }}>
+                一番下の3つのボタンで選びます
+              </div>
+            </Field>
+          ) : (
+            <Field label="出力対象">
               <select style={inp} value={form.docType} onChange={e => set("docType", e.target.value)}>
                 <option value="both">両者用 ( フル )</option>
                 <option value="seller">売主用</option>
                 <option value="buyer">買主用</option>
               </select>
-            )}
-          </Field>
+            </Field>
+          )}
         </div>
         {/* 🆕 v9.48.7: 同日決済チェック + 契約日 ( 別日の場合 ) */}
         <label style={{
@@ -29958,6 +29971,20 @@ function SeisanFormPage({ data, setData, onBack }) {
         </div>
       </div>
 
+      {/* 🆕 v9.344: 契約事務手数料（買主様より当社が受領する報酬）。同日決済でも BC間 の明細に出る */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>■ 契約事務手数料 ( 買主様より当社が受領 )</div>
+        <Field label={form.abcMode ? "契約事務手数料 ( 買主C様より / 円 )" : "契約事務手数料 ( 買主様より / 円 )"}>
+          <input style={inp} type="text" inputMode="numeric" value={form.contractFeeFromBuyer}
+            onChange={e => set("contractFeeFromBuyer", e.target.value)} placeholder="例: 330000" />
+        </Field>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 8, lineHeight: 1.7 }}>
+          <NavIcon name="bulb" size={15} /> {form.abcMode
+            ? "空欄 ( または 0 ) なら精算書に出ません。入れた金額は BC間（買主用）の明細に「契約事務手数料」として載り、買主お支払合計と社内用の差引に自動で反映されます。"
+            : "空欄 ( または 0 ) なら精算書に出ません。入れた金額は買主精算明細とひかり不動産 受領明細に載り、買主お支払合計に自動で加算されます。"}
+        </div>
+      </div>
+
       {/* 🆕 v9.339: 司法書士費用 ( 登記費用 ) */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.warn, marginBottom: 10 }}>■ 司法書士費用 ( 登記費用 )</div>
@@ -30103,11 +30130,35 @@ function SeisanFormPage({ data, setData, onBack }) {
       </div>
 
       {/* 出力ボタン */}
-      <button onClick={generateXlsx} style={{
-        width: "100%", padding: 14, background: C.success, color: "#fff",
-        border: "none", borderRadius: 10, fontSize: 15, fontWeight: 800,
-        cursor: "pointer", fontFamily: "inherit", marginTop: 8,
-      }}><NavIcon name="download" size={15} /> 売買精算書 を Excel ダウンロード</button>
+      {/* 🆕 v9.343: 同日決済は 売主用 / 買主用 / 社内確認用 の3本のボタンで出す（プルダウン切替をやめた） */}
+      {form.abcMode ? (
+        <div style={{ marginTop: 8 }}>
+          <button onClick={() => generateXlsx("a")} style={{
+            width: "100%", padding: 14, background: C.success, color: "#fff",
+            border: "none", borderRadius: 10, fontSize: 14, fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit",
+          }}><NavIcon name="download" size={15} /> ① 売主用 ( AB間 ) を Excel ダウンロード</button>
+          <button onClick={() => generateXlsx("c")} style={{
+            width: "100%", padding: 14, background: C.success, color: "#fff",
+            border: "none", borderRadius: 10, fontSize: 14, fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit", marginTop: 8,
+          }}><NavIcon name="download" size={15} /> ② 買主用 ( BC間 ) を Excel ダウンロード</button>
+          <button onClick={() => generateXlsx("internal")} style={{
+            width: "100%", padding: 14, background: C.accent, color: "#fff",
+            border: "none", borderRadius: 10, fontSize: 14, fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit", marginTop: 8,
+          }}><NavIcon name="download" size={15} /> ③ ひかり不動産 確認用 ( AB間 ＋ BC間 ) を Excel ダウンロード</button>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.7 }}>
+            <NavIcon name="bulb" size={15} /> ① は売主A様に渡す用（BC間の価格・買主名は出ません）／② は買主C様に渡す用（AB間の価格・売主名は出ません）／③ は社内確認用（両方＋差引）。3つとも同じ入力から作られます。
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => generateXlsx()} style={{
+          width: "100%", padding: 14, background: C.success, color: "#fff",
+          border: "none", borderRadius: 10, fontSize: 15, fontWeight: 800,
+          cursor: "pointer", fontFamily: "inherit", marginTop: 8,
+        }}><NavIcon name="download" size={15} /> 売買精算書 を Excel ダウンロード</button>
+      )}
 
       {/* 🆕 v9.48.16: 固都税精算書 + 領収書 のダウンロード */}
       <button onClick={() => generateTaxStatementXlsx(form, tax, num)} style={{
