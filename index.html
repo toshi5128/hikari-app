@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-07-30-v9.339-seisan-shihoshoshi";
+const APP_VERSION = "2026-07-30-v9.340-update-loop-breaker";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -271,6 +271,14 @@ function isRemoteVersionNewer(remoteVer, localVer) {
   return false;
 }
 
+// 🆕 v9.340: 更新が届いたら（＝自分がその版以上になったら）リロード試行カウンタを掃除する。
+//   下の UPDATE_ATTEMPT_KEY と対。残しておくと次の更新で「もう2回試した」と誤判定するため。
+const UPDATE_ATTEMPT_KEY = "__hikariUpdateAttempt__";
+try {
+  const _ua = JSON.parse(localStorage.getItem(UPDATE_ATTEMPT_KEY) || "null");
+  if (_ua && (!_ua.ver || !isRemoteVersionNewer(_ua.ver, APP_VERSION))) localStorage.removeItem(UPDATE_ATTEMPT_KEY);
+} catch (e) {}
+
 // 🆕 新しいバージョンを検出したらカウントダウン付きバナーを表示し、最後に自動リロード
 //   ・キャンセルできない（古い版でデータを書き換えるリスクを防ぐ）
 //   ・ボタンで即時更新も可能
@@ -286,10 +294,26 @@ function showVersionUpdateBanner(remoteVer, seconds = 10) {
       return;
     }
   } catch (e) {}
+  // 🆕 v9.340: 打ち切り後に手動で閉じたら、しばらくは出し直さない（ポーリングで何度も再表示しない）
+  if (window.__hikariUpdateBannerSuppressUntil__ && Date.now() < window.__hikariUpdateBannerSuppressUntil__) return;
   if (window.__hikariUpdateBannerShown__) return;
   window.__hikariUpdateBannerShown__ = true;
+  // 🆕 v9.340: 「更新ループ」対策（2026-07-30 に発生した事故の再発防止）
+  //   クラウドの __appVersion は「最初に新版を開いた端末」が書き込むため、配信(GitHub Pages)や
+  //   CDN・端末HTTPキャッシュがまだ旧版を返している数分間は、他の端末が
+  //   「新版あり → ハードリロード → 返ってくるのは旧版 → 10秒後にまた新版あり」を永久に繰り返す。
+  //   同じ remoteVer への自動リロードは 2回までに制限し、それ以降は手動ボタンだけのバナーに切替える。
+  //   （入力は localStorage に残り、更新が届いた後に自動再送されるのでデータは失われない）
+  let attempts = 0;
+  try {
+    const _ua = JSON.parse(localStorage.getItem(UPDATE_ATTEMPT_KEY) || "null");
+    if (_ua && _ua.ver === remoteVer) attempts = _ua.n || 0;
+  } catch (e) {}
+  const autoReload = attempts < 2;
   // 🆕 v8.64: SW unregister と Cache API クリアもしてから再読込（PWAキャッシュ突破）
   const reload = async () => {
+    // 🆕 v9.340: リロードの直前に試行回数を記録（リロードを跨いで残るので localStorage）
+    try { localStorage.setItem(UPDATE_ATTEMPT_KEY, JSON.stringify({ ver: remoteVer, n: attempts + 1 })); } catch (e) {}
     try {
       if ("serviceWorker" in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
@@ -312,20 +336,38 @@ function showVersionUpdateBanner(remoteVer, seconds = 10) {
   countSpan.textContent = String(seconds);
   const text = document.createElement("div");
   text.style.cssText = "flex:1;min-width:0;line-height:1.5";
-  text.innerHTML = `⚠️ 新バージョン（${remoteVer}）が公開されました<br /><span style="font-size:11px;font-weight:500;opacity:0.95">あと </span>`;
-  // 🆕 v8.64: 直接更新でも反映されないケース向けの注意書き
-  text.appendChild(countSpan);
-  const tail = document.createElement("span");
-  tail.style.cssText = "font-size:11px;font-weight:500;opacity:0.95";
-  tail.textContent = " 秒で自動更新します";
-  text.appendChild(tail);
   const btn = document.createElement("button");
   btn.textContent = "🔁 いますぐ更新";
   btn.style.cssText = "background:#fff;color:#dc2626;border:none;border-radius:8px;padding:8px 16px;font-weight:800;cursor:pointer;font-family:inherit;font-size:13px;flex-shrink:0";
   btn.onclick = reload;
+  if (autoReload) {
+    text.innerHTML = `⚠️ 新バージョン（${remoteVer}）が公開されました<br /><span style="font-size:11px;font-weight:500;opacity:0.95">あと </span>`;
+    // 🆕 v8.64: 直接更新でも反映されないケース向けの注意書き
+    text.appendChild(countSpan);
+    const tail = document.createElement("span");
+    tail.style.cssText = "font-size:11px;font-weight:500;opacity:0.95";
+    tail.textContent = " 秒で自動更新します";
+    text.appendChild(tail);
+  } else {
+    // 🆕 v9.340: 自動リロードを2回試しても新版が届かなかった → ループを打ち切って手動案内にする
+    text.innerHTML = `⚠️ 新バージョン（${remoteVer}）がまだこの端末に届きません<br /><span style="font-size:11px;font-weight:500;opacity:0.95">自動更新はいったん止めました。入力内容はこの端末に保存されており、更新が届いた後に自動でクラウドへ送られます。数分おいて「いますぐ更新」を押してください。</span>`;
+  }
   banner.appendChild(text);
   banner.appendChild(btn);
+  if (!autoReload) {
+    // 🆕 v9.340: 打ち切り後は画面を塞ぎ続けないよう閉じられる（保存側のバージョン保護は別途効いている）
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕";
+    closeBtn.style.cssText = "background:rgba(255,255,255,0.2);color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:800;cursor:pointer;font-family:inherit;font-size:13px;flex-shrink:0";
+    closeBtn.onclick = () => {
+      try { banner.remove(); } catch (e) {}
+      window.__hikariUpdateBannerShown__ = false;
+      window.__hikariUpdateBannerSuppressUntil__ = Date.now() + 5 * 60 * 1000;  // 5分は再表示しない
+    };
+    banner.appendChild(closeBtn);
+  }
   document.body.appendChild(banner);
+  if (!autoReload) return;
   // カウントダウン
   let remaining = seconds;
   const tick = setInterval(() => {
