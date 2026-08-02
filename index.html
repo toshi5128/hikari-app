@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-02-v9.349-addr-check-refresh";
+const APP_VERSION = "2026-08-02-v9.350-addr-check-map-mark";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6233,6 +6233,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           ? `<div style="position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);background:#3b82f6;color:#fff;font-size:8px;padding:1px 5px;border-radius:5px;font-weight:800;border:1.5px solid white;white-space:nowrap;line-height:1.1;box-shadow:0 1px 3px rgba(0,0,0,0.4);">訪問</div>`
           : "");
       const innerBorder = createdToday ? "2.5px solid #fbbf24" : (visitedToday ? "2.5px solid #3b82f6" : "2.5px solid white");
+      // 🆕 v9.350: 所有者住所マップでは「所有者宅の場所を地図で確認したか」を右下の小さな印で表す。
+      //   ✓(緑)＝確認済み ／ ?(紫)＝場所が特定できない ／ 印なし＝まだ誰も確認していない
+      //   ※物件マップ側のピンは所有者宅ではないので印を出さない（混乱防止）。
+      const _addrChkSt = pinTarget === "ownerAddr" ? addrCheckOf(_r) : "";
+      const addrChkBadgeHtml = _addrChkSt
+        ? `<div style="position:absolute;bottom:-4px;right:-5px;background:${_addrChkSt === "ok" ? "#16a34a" : "#a855f7"};color:#fff;font-size:10px;font-weight:900;width:15px;height:15px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">${_addrChkSt === "ok" ? "✓" : "?"}</div>`
+        : "";
       // 🆕 v8.134: 色付き丸の中央に絵文字を描画
       const innerPinHtml = `<div style="position:absolute;top:${innerOffset}px;left:${innerOffset}px;width:26px;height:26px;">
         <div style="background:${color};width:26px;height:26px;border-radius:50%;border:${innerBorder};box-shadow:0 1px 4px rgba(0,0,0,0.5);box-sizing:border-box;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;">
@@ -6240,6 +6247,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         </div>
         ${showPost && !pendingLot ? `<div style="position:absolute;top:-6px;right:-6px;background:#f97316;color:#fff;font-size:9px;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">📬</div>` : ""}
         ${isNewTohon ? `<div style="position:absolute;top:-7px;left:-9px;background:#0ea5e9;color:#fff;font-size:8px;padding:0 3px;height:13px;border-radius:7px;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;font-weight:800;letter-spacing:0.2px;">NEW</div>` : ""}
+        ${addrChkBadgeHtml}
       </div>`;
       const icon = L.divIcon({
         className: "hikari-pin",
@@ -6310,6 +6318,18 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const _lookupFailedBadgeHtml = _isLookupFailedPin
         ? `<span style="background:#ef4444;color:#fff;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;margin-left:4px;">🔧 要修正</span>`
         : "";
+      // 🆕 v9.350: 「あれ、この家の場所は確認したっけ？」に吹き出しで答える（所有者住所マップのみ）
+      const _addrChkPopupHtml = (() => {
+        if (pinTarget !== "ownerAddr") return "";
+        const chip = (bg, txt) => `<span style="background:${bg};color:#fff;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;margin-left:4px;">${txt}</span>`;
+        if (_addrChkSt === "ok") {
+          const who = (_r && _r.addrCheckBy) || "";
+          const when = (_r && _r.addrCheckAt) || "";
+          return chip("#16a34a", `✅ 場所確認済${who || when ? `（${[who, when].filter(Boolean).join(" ")}）` : ""}`);
+        }
+        if (_addrChkSt === "ng") return chip("#a855f7", `🏠 住所要確認${(_r && _r.addrCheckNote) ? `（${_r.addrCheckNote}）` : ""}`);
+        return chip("#94a3b8", "❓ 場所未確認");
+      })();
       // 🆕 v8.128: ポップアップが地図他所タップで消えないように closeOnClick:false
       // 🆕 v9.259: autoClose:true に変更＝別のピンを開いたら前のピンの吹き出しは自動で閉じる。
       //   これで画面に吹き出しが2つ重ならず、全ピン共通のボタンid(pin-detail-btn)が常に「今開いている1つ」を
@@ -6321,7 +6341,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           ${_whoWhenHtml}
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">${(it.ownerKana || (it.raw && it.raw.ownerKana)) ? `<div style="font-size:9px;color:#0ea5e9;line-height:1;margin-bottom:1px;">${it.ownerKana || it.raw.ownerKana}</div>` : ""}👤 ${it.ownerName}</div>` : ""}
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
-          <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_excludedBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
+          <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_addrChkPopupHtml}${_excludedBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
           <button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を見る</button>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
@@ -6391,7 +6411,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       //   → status が変わらない訪問結果（不在/居留守/訪問禁止 を初訪のまま記録）でもピンを再描画する
       const _vlog = (r.visitLog || i.visitLog || []);
       const _lastRes = (_vlog.length ? (_vlog[_vlog.length - 1] || {}).result : "") || "";
-      return `${i.id || i.rawId || ""}|${i.lat ?? ""}|${i.lng ?? ""}|${i.ownerLat ?? ""}|${i.ownerLng ?? ""}|${i.status || ""}|${r.coordsManual ? 1 : 0}|${r.address || ""}|${r.owner || r.ownerName || ""}|${r.excluded === true ? 1 : 0}|${r.lookupFailed === true ? 1 : 0}|${_vlog.length}|${_lastRes}`;
+      // 🆕 v9.350: 場所確認(✓/?)の印もハッシュに含める → 押した直後に地図の印が変わる
+      return `${i.id || i.rawId || ""}|${i.lat ?? ""}|${i.lng ?? ""}|${i.ownerLat ?? ""}|${i.ownerLng ?? ""}|${i.status || ""}|${r.coordsManual ? 1 : 0}|${r.address || ""}|${r.owner || r.ownerName || ""}|${r.excluded === true ? 1 : 0}|${r.lookupFailed === true ? 1 : 0}|${_vlog.length}|${_lastRes}|${addrCheckOf(r) || ""}`;
     }).join("¦"),
     pinTarget,
   ]);
@@ -18217,6 +18238,10 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     if (quickFilter === "addr_ng") {
       if (addrCheckOf(item.raw || item) !== "ng") return false;
     }
+    // 🆕 v9.350: ✅ 場所確認済（誰かが地図で所有者宅を確認できたもの）
+    if (quickFilter === "addr_ok") {
+      if (addrCheckOf(item.raw || item) !== "ok") return false;
+    }
     // 🆕 v8.114: 対象外（地番済み・所有者なし・excluded）
     if (quickFilter === "excluded") {
       const raw = item.raw || {};
@@ -21176,7 +21201,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
                               );
                             })}
-                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite" || quickFilter === "lookup_pending" || quickFilter === "dm_ready" || quickFilter === "excluded" || quickFilter === "lookup_failed" || quickFilter === "addr_ng") && (
+                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite" || quickFilter === "lookup_pending" || quickFilter === "dm_ready" || quickFilter === "excluded" || quickFilter === "lookup_failed" || quickFilter === "addr_ng" || quickFilter === "addr_ok") && (
                             <button onClick={() => { setFilterMember("__ALL__"); setQuickFilter(null); }}
                               style={{
                                 background: "transparent", color: C.muted,
@@ -21316,9 +21341,27 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           </div>
                         )}
                         {/* 🆕 v9.348: 🏠 住所要確認（所有者宅の場所が地図で特定できない）担当者別 */}
-                        {pendingPinSummary.addrNgTotal > 0 && (
+                        {(pendingPinSummary.addrNgTotal > 0 || pendingPinSummary.addrOkTotal > 0) && (
                           <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
-                            {(() => {
+                            {/* 🆕 v9.350: 場所を確認できた件数（進み具合が分かる） */}
+                            {pendingPinSummary.addrOkTotal > 0 && (() => {
+                              const isOk = quickFilter === "addr_ok" && filterMember === "__ALL__";
+                              return (
+                                <button onClick={() => {
+                                  if (isOk) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                                  else { setQuickFilter("addr_ok"); setFilterMember("__ALL__"); }
+                                }}
+                                  title={isOk ? "解除" : "所有者宅の場所を地図で確認できたピンだけ表示"}
+                                  style={{
+                                    background: isOk ? "#16a34a" : "#16a34a22",
+                                    color: isOk ? "#fff" : "#16a34a",
+                                    border: `1.5px solid #16a34a`,
+                                    borderRadius: 12, padding: "3px 10px",
+                                    fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                  }}>{isOk ? "✓ " : ""}✅ 場所確認済: {pendingPinSummary.addrOkTotal}件</button>
+                              );
+                            })()}
+                            {pendingPinSummary.addrNgTotal > 0 && (() => {
                               const isAll = quickFilter === "addr_ng" && filterMember === "__ALL__";
                               return (
                                 <button onClick={() => {
@@ -21964,6 +22007,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   { key: "lookup_failed",  label: "🔧 要修正",   color: "#dc2626", count: pendingPinSummary.lookupFailedTotal },
                                   { key: "dm_ready",       label: "🚪 訪問OK",   color: "#16a34a", count: pendingPinSummary.dmReadyTotal },
                                   { key: "addr_ng",        label: "🏠 住所要確認", color: "#a855f7", count: pendingPinSummary.addrNgTotal },
+                                  { key: "addr_ok",        label: "✅ 場所確認済", color: "#16a34a", count: pendingPinSummary.addrOkTotal },
                                   { key: "result_absent",  label: "🚪 不在",     color: "#92400e", count: _resultCount("absent") },
                                   { key: "result_ignore",  label: "🙈 居留守",   color: "#b45309", count: _resultCount("ignore") },
                                   { key: "result_rejected",label: "🚷 訪問禁止", color: "#7f1d1d", count: _resultCount("rejected") },
@@ -22128,6 +22172,26 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           </div>
                         );
                       })()}
+                      {/* 🆕 v9.350: 所有者住所マップの時だけ「右下の印」の意味を書く */}
+                      {mapPinTarget === "ownerAddr" && (
+                        <div style={{ marginTop: 9, paddingTop: 8, borderTop: `1px dashed ${C.borderDim}` }}>
+                          <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 5 }}>[所有者宅の場所を地図で確認したか — ピン右下の小さな印]</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", fontSize: 11, color: C.text }}>
+                            <span style={{ display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
+                              <span style={{ width: 14, height: 14, borderRadius: "50%", background: "#16a34a", border: "1.5px solid white", color: "#fff", fontSize: 9, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>✓</span>
+                              確認済み（行ける）
+                            </span>
+                            <span style={{ display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
+                              <span style={{ width: 14, height: 14, borderRadius: "50%", background: "#a855f7", border: "1.5px solid white", color: "#fff", fontSize: 9, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>?</span>
+                              住所要確認（🏠で絞り込んだ時だけ表示）
+                            </span>
+                            <span style={{ display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", color: C.muted }}>
+                              <span style={{ width: 14, height: 14, borderRadius: "50%", background: "transparent", border: `1.5px dashed ${C.borderDim}`, flexShrink: 0 }} />
+                              印なし＝まだ誰も確認していない
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </>
                 ) : (
