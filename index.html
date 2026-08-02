@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-02-v9.348-owner-addr-check";
+const APP_VERSION = "2026-08-02-v9.349-addr-check-refresh";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -17604,28 +17604,37 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   //   state: "ok"（確認済み・行ける）/ "ng"（場所が特定できない）/ ""（未確認に戻す）
   //   確認した時点の住所を addrCheckAddr に控える＝住所が直されたら自動で未確認に戻る（addrCheckOf 参照）。
   const setAddrCheck = (id, state, note) => {
+    const _now = Date.now();
+    const t = new Date();
+    const ds = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+    // 該当行に確認結果を差し込む（最小差分・delete しない）
+    const _patch = (j) => ({
+      ...j,
+      addrCheck: state || "",                       // delete しない（同期で復活するため）
+      addrCheckNote: state === "ng" ? (note || "") : "",
+      addrCheckAt: state ? ds : "",
+      addrCheckBy: state ? (getCurrentUser() || j.assignee || "") : "",
+      addrCheckAddr: state ? String(j.ownerAddr || j.ownerAddress || "") : "",
+      _fieldUpdatedAt: {
+        ...(j._fieldUpdatedAt || {}),
+        addrCheck: _now, addrCheckNote: _now, addrCheckAt: _now, addrCheckBy: _now, addrCheckAddr: _now,
+      },
+      updatedAt: _now,
+    });
     setData(d => ({
       ...d,
-      jiage: (d.jiage || []).map(j => {
-        if (String(j.id) !== String(id)) return j;
-        const _now = Date.now();
-        const t = new Date();
-        const ds = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
-        return {
-          ...j,
-          addrCheck: state || "",                       // delete しない（同期で復活するため）
-          addrCheckNote: state === "ng" ? (note || "") : "",
-          addrCheckAt: state ? ds : "",
-          addrCheckBy: state ? (getCurrentUser() || j.assignee || "") : "",
-          addrCheckAddr: state ? String(j.ownerAddr || "") : "",
-          _fieldUpdatedAt: {
-            ...(j._fieldUpdatedAt || {}),
-            addrCheck: _now, addrCheckNote: _now, addrCheckAt: _now, addrCheckBy: _now, addrCheckAddr: _now,
-          },
-          updatedAt: _now,
-        };
-      }),
+      jiage: (d.jiage || []).map(j => String(j.id) !== String(id) ? j : _patch(j)),
+      // 👤所有者アタック側の行から開いた時も同じボタンが出るので、こちらも更新する
+      owners: (d.owners || []).map(o => String(o.id) !== String(id) ? o : _patch(o)),
     }));
+    // 🆕 詳細シートは開いた時点の raw（コピー）を見ているため、ここも一緒に塗り替える。
+    //   これが無いとボタンを押しても画面が何も変わらず「反応しない」ように見える。
+    setSelected(s => {
+      if (!s || !s.item) return s;
+      const _sid = s.item.rawId != null ? s.item.rawId : s.item.id;
+      if (String(_sid) !== String(id)) return s;
+      return { ...s, item: { ...s.item, raw: _patch(s.item.raw || {}) } };
+    });
   };
 
   // Excelファイル直接インポート用state
