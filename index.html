@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-08-v9.355-offer-template";
+const APP_VERSION = "2026-08-08-v9.356-offer-queue";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -30830,13 +30830,20 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   const [tplKey, setTplKey] = useState("std");
   const [picked, setPicked] = useState([]);
   const [sending, setSending] = useState(false);
-  const [showSetting, setShowSetting] = useState(false);
-  const [apiUrl, setApiUrl] = useState((data.mailApi || {}).url || "");
-  const [apiToken, setApiToken] = useState((data.mailApi || {}).token || "hikari-sakidashi-2026");
+  const [queue, setQueue] = useState([]);
 
   const hanro = data.hanro || [];
-  const api = data.mailApi || {};
-  const canSend = !!(api.url && /^https:\/\//.test(String(api.url)));
+
+  // 送信キュー（Supabase）の最近の状況
+  const loadQueue = async () => {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_queue?order=id.desc&limit=5`, {
+        headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+      });
+      if (res.ok) setQueue(await res.json());
+    } catch (e) { /* 通信できなくても画面は壊さない */ }
+  };
+  useEffect(() => { loadQueue(); }, []);
 
   const stocks = useMemo(() => (data.stocks || []).filter(s => s && (s.name || s.address)), [data.stocks]);
 
@@ -30919,18 +30926,23 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     setSending(true);
     try {
       const payload = {
-        token: api.token || "", subject, body,
-        property: propName, priceText: ctx.priceText, docUrl,
-        to: targets.map(r => ({ id: r.id, email: r.email, company: r.company || "", name: r.name || "" })),
+        status: "pending", subject, body,
+        property: propName, price_text: ctx.priceText, doc_url: docUrl, memo,
+        recipients: targets.map(r => ({ id: r.id, email: r.email, company: r.company || "", name: r.name || "" })),
+        requested_by: currentUser || "",
       };
-      const res = await fetch(api.url, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(payload) });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || "送信に失敗しました");
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_queue`, {
+        method: "POST",
+        headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", "Prefer": "return=representation" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`受付できませんでした（${res.status}）`);
       recordSent(targets, "アプリから送信");
-      alert(`✅ ${json.sent} 件に送信しました${json.failed ? `\n（失敗 ${json.failed} 件）` : ""}`);
-      setStep("stock"); setPicked([]); setDocUrl("");
+      alert(`📨 ${targets.length} 件の送信を受け付けました。\n\n1分以内に順に送信されます。\n結果は最初の画面の「送信の状況」で確認できます。`);
+      setStep("stock"); setPicked([]); setDocUrl(""); setMemo("");
+      setTimeout(loadQueue, 1500);
     } catch (e) {
-      alert(`送信できませんでした。\n\n${e.message}\n\n「送信の設定」でURLと合言葉が正しいか確認してください。`);
+      alert(`送信を受け付けられませんでした。\n\n${e.message}\n\n電波の良いところでもう一度お試しください。`);
     }
     setSending(false);
   };
@@ -30956,11 +30968,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     setStep("stock"); setPicked([]);
   };
 
-  const saveApi = () => {
-    setData(d => ({ ...d, mailApi: { url: apiUrl.trim(), token: apiToken.trim() } }));
-    setShowSetting(false);
-    alert("送信の設定を保存しました");
-  };
+  const QSTATE = { pending: { t: "順番待ち", c: C.warn }, working: { t: "送信中", c: C.accent }, done: { t: "完了", c: C.success } };
 
   const Head = ({ title, back }) => (
     <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
@@ -31014,15 +31022,27 @@ function OfferPage({ data, setData, onBack, currentUser }) {
           </div>
         ) : null}
 
-        <div style={{ marginTop: 20, textAlign: "center" }}>
-          <button onClick={() => setShowSetting(v => !v)} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit" }}>送信の設定{canSend ? "（設定済み）" : "（未設定）"}</button>
-        </div>
-        {showSetting ? (
-          <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 16, marginTop: 10 }}>
-            <div style={{ color: C.muted, fontSize: 12, lineHeight: 1.7, marginBottom: 12 }}>一斉送信の窓口（GASウェブアプリ）のURL。<br />ここに貼ると、この画面から直接メールを送れるようになります。<br />合言葉は入力済みなので、URLだけ貼れば完了です。</div>
-            <Field label="窓口のURL（これだけ貼ればOK）"><input style={inp} value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="https://script.google.com/macros/s/..../exec" /></Field>
-            <Field label="合言葉（変更不要）"><input style={inp} value={apiToken} onChange={e => setApiToken(e.target.value)} placeholder="hikari-sakidashi-2026" /></Field>
-            <button onClick={saveApi} style={{ width: "100%", background: C.accent, border: "none", borderRadius: 10, padding: "13px 0", color: "#fff", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>保存</button>
+        {queue.length ? (
+          <div style={{ marginTop: 22 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>送信の状況</div>
+              <button onClick={loadQueue} style={{ background: "none", border: "none", color: C.accent, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="refresh" size={12} /> 更新</button>
+            </div>
+            {queue.map(q => {
+              const s = QSTATE[q.status] || { t: q.status, c: C.muted };
+              return (
+                <div key={q.id} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                    <span style={{ fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 999, background: s.c + "22", color: s.c }}>{s.t}</span>
+                    <span style={{ color: C.text, fontSize: 13, fontWeight: 700 }}>{q.property || "(物件なし)"}</span>
+                  </div>
+                  <div style={{ color: C.muted, fontSize: 11 }}>
+                    {(q.recipients || []).length}件中 {q.status === "done" ? `${q.sent}件送信済` : "処理待ち"}{q.failed ? ` / 失敗${q.failed}件` : ""}
+                  </div>
+                  {q.error ? <div style={{ color: C.danger, fontSize: 11, marginTop: 4 }}>{q.error}</div> : null}
+                </div>
+              );
+            })}
           </div>
         ) : null}
       </div>
@@ -31126,15 +31146,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         <div style={{ color: C.text, fontSize: 13, lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{offerFill(body, sample, ctx)}</div>
       </div>
 
-      {canSend ? (
-        <button onClick={doSend} disabled={sending} style={{ width: "100%", background: sending ? C.borderDim : C.accent, border: "none", borderRadius: 12, padding: "17px 0", color: "#fff", fontWeight: 800, fontSize: 16, cursor: sending ? "default" : "pointer", fontFamily: "inherit", marginBottom: 10 }}>{sending ? "送信中..." : `${targets.length} 件に送信する`}</button>
-      ) : (
-        <div style={{ background: C.warnBg, border: `1px solid ${C.warn}`, borderRadius: 12, padding: 14, marginBottom: 12, color: C.text, fontSize: 13, lineHeight: 1.8 }}>
-          <div style={{ fontWeight: 700, marginBottom: 6 }}>アプリから直接送る設定がまだです</div>
-          下のボタンで送信リストを書き出し、スプレッドシートの「一斉送信」から送ってください。<br />
-          （前の画面の「送信の設定」でURLを入れると、ここから直接送れるようになります）
-        </div>
-      )}
+      <button onClick={doSend} disabled={sending} style={{ width: "100%", background: sending ? C.borderDim : C.accent, border: "none", borderRadius: 12, padding: "17px 0", color: "#fff", fontWeight: 800, fontSize: 16, cursor: sending ? "default" : "pointer", fontFamily: "inherit", marginBottom: 10 }}>{sending ? "受付中..." : `${targets.length} 件に送信する`}</button>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button onClick={exportForSheet} style={{ flex: 1, minWidth: 140, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "13px 8px", color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>送信リストをCSVで出す</button>
