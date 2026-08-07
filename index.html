@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-08-v9.353-hanro-rename";
+const APP_VERSION = "2026-08-08-v9.354-offer-send";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2049,7 +2049,9 @@ const DEFAULT_DATA = {
   ukeoiDocs: [], // 🆕 v9.304: 保存したリフォーム工事請負契約書（入力内容のスナップショット。全社共有）
   baikaiDocs: [], // 🆕 v9.308: 保存した専任媒介契約書（入力内容のスナップショット。全社共有）
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
-  hanro: [], // 🆕 v9.352: 販路リスト（買取業者・投資家の名簿。先行打診の送り先）
+  hanro: [], // 🆕 v9.352: 買取業者・投資家リスト（先行打診の送り先）
+  offers: [], // 🆕 v9.354: 先行打診の送信履歴（いつ・どの物件を・何件に送ったか）
+  mailApi: { url: "", token: "" }, // 🆕 v9.354: 一斉送信の窓口（GASウェブアプリのURLと合言葉）
   memberGoals: {},
   // 🆕 v8.67: デモ目標値を 0 に。実目標は Supabase の値を使う
   annualGoals: { sell: 0, profit: 0, buyCount: 0, brokerFee: 0 },
@@ -2610,7 +2612,7 @@ async function saveToSupabase(data, retries = 3) {
         });
         // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去（手動削除を尊重）
         // 配列の項目別マージ（mergeItems を使う）
-        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro"];
+        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro", "offers"];
         const mergedArrays = {};
         arrayKeys.forEach(k => {
           const localArr = Array.isArray(data[k]) ? data[k] : [];
@@ -28082,6 +28084,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
   if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "investors") return <InvestorListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "hanro") return <HanroListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
+  if (subPage === "offer") return <OfferPage data={data} setData={setData} onBack={() => setSubPage(null)} currentUser={currentUser} />;
   if (subPage === "shorui") return <ShoruiPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "dm") return <DMPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   const hasPin = !!getPin();
@@ -28320,6 +28323,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       {[
         { key: "yakusho", icon: "landmark", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
         { key: "investors", icon: "gem", title: "投資家リスト", desc: "反響で「投資家」を選択した顧客を自動集約", count: (data.stocks || []).reduce((a, s) => a + (s.viewings || []).filter(v => v.purpose === "投資家").length, 0) + (data.mediations || []).reduce((a, m) => a + (m.viewings || []).filter(v => v.purpose === "投資家").length, 0) },
+        { key: "offer", icon: "mail", title: "先行打診（一斉メール）", desc: "市場に出す前に、買取業者・投資家へまとめてご案内", count: (data.offers || []).length },
         { key: "hanro", icon: "handshake", title: "買取業者・投資家リスト", desc: "物件を市場に出す前に声をかける先の名簿", count: (data.hanro || []).length },
         { key: "shorui", icon: "folder", title: "書類関係", desc: "精算書ひな形・各種テンプレート", count: null },
         { key: "keiyaku", icon: "clipboard", title: "契約書自動作成ツール", desc: "重要事項説明書＋売買契約書をExcelで自動生成（会社PCで起動中のとき）", count: null, action: openKeiyakuTool },
@@ -30698,7 +30702,334 @@ function generateTaxStatementXlsx(form, tax, num, variant) {
   XLSX.writeFile(wb, _fname);
 }
 
-// 🆕 v9.352: 販路リスト（買取業者・投資家の名簿）
+// 🆕 v9.354: 先行打診（市場に出す前に、買取業者・投資家へ一斉にご案内）
+//   物件を選ぶ → 条件に合う先が自動で絞られる → 文面を確認 → 送信
+//   送信は「一斉送信の窓口（GASウェブアプリ）」へ投げる。未設定でも送信リストを書き出して手動送信できる。
+const OFFER_SUBJECT_DEFAULT = "【未公開】{{物件名}}のご案内";
+const OFFER_BODY_DEFAULT = `{{宛名}}
+
+お世話になっております。
+ひかり不動産の下田でございます。
+
+このたび下記の物件を仕入れました。
+一般に公開する前に、まずは御社（貴殿）にご案内いたします。
+
+━━━━━━━━━━━━━━━
+■ 物件
+{{物件名}}
+■ 価格
+{{価格}}
+■ 資料
+{{資料URL}}
+━━━━━━━━━━━━━━━
+
+ご興味をお持ちいただけましたら、本メールにご返信ください。
+先着で対応させていただきます。
+
+何卒よろしくお願い申し上げます。`;
+
+function offerFill(text, rec, ctx) {
+  const company = String(rec.company || "").trim();
+  const person = String(rec.name || "").trim();
+  const atena = company
+    ? (person ? `${company}\n${person} 様` : `${company} ご担当者様`)
+    : (person ? `${person} 様` : "ご担当者様");
+  return String(text || "")
+    .replace(/\{\{宛名\}\}/g, atena)
+    .replace(/\{\{会社名\}\}/g, company)
+    .replace(/\{\{担当者\}\}/g, person || "ご担当者")
+    .replace(/\{\{物件名\}\}/g, ctx.propName || "")
+    .replace(/\{\{価格\}\}/g, ctx.priceText || "")
+    .replace(/\{\{資料URL\}\}/g, ctx.docUrl || "（資料は追ってお送りします）");
+}
+
+function offerPriceText(man) {
+  const n = Number(man) || 0;
+  if (!n) return "応相談";
+  return n >= 10000 ? `${(n / 10000).toFixed(n % 10000 === 0 ? 0 : 1)}億円` : `${n.toLocaleString()}万円`;
+}
+
+function OfferPage({ data, setData, onBack, currentUser }) {
+  const [step, setStep] = useState("stock");
+  const [stockId, setStockId] = useState(null);
+  const [priceMan, setPriceMan] = useState("");
+  const [propName, setPropName] = useState("");
+  const [docUrl, setDocUrl] = useState("");
+  const [subject, setSubject] = useState(OFFER_SUBJECT_DEFAULT);
+  const [body, setBody] = useState(OFFER_BODY_DEFAULT);
+  const [picked, setPicked] = useState([]);
+  const [sending, setSending] = useState(false);
+  const [showSetting, setShowSetting] = useState(false);
+  const [apiUrl, setApiUrl] = useState((data.mailApi || {}).url || "");
+  const [apiToken, setApiToken] = useState((data.mailApi || {}).token || "");
+
+  const hanro = data.hanro || [];
+  const api = data.mailApi || {};
+  const canSend = !!(api.url && /^https:\/\//.test(String(api.url)));
+
+  const stocks = useMemo(() => (data.stocks || []).filter(s => s && (s.name || s.address)), [data.stocks]);
+
+  // 送れる先（メールあり・配信停止でない）
+  const sendable = useMemo(() => hanro.filter(r => r.email && !r.optOut), [hanro]);
+
+  // 条件に合うか（価格帯・エリア）
+  const matchOf = (r) => {
+    const p = Number(priceMan) || 0;
+    let priceOK = true;
+    if (p) {
+      const lo = Number(r.budgetMin) || 0;
+      const hi = Number(r.budgetMax) || 0;
+      if (lo && p < lo) priceOK = false;
+      if (hi && p > hi) priceOK = false;
+    }
+    let areaOK = true;
+    const areas = String(r.areas || "").split(/[,、・\/\s]+/).map(s => s.trim()).filter(Boolean);
+    if (areas.length && propName) {
+      areaOK = areas.some(a => propName.includes(a));
+    }
+    return { priceOK, areaOK, hit: priceOK && areaOK };
+  };
+
+  const ctx = { propName, priceText: offerPriceText(priceMan), docUrl };
+  const targets = useMemo(() => sendable.filter(r => picked.includes(r.id)), [sendable, picked]);
+
+  const chooseStock = (s) => {
+    setStockId(s ? s.id : null);
+    const nm = s ? (s.name || s.address || "") : "";
+    setPropName(nm);
+    const man = s ? Math.round((Number(s.sellPrice) || 0) / 10000) : 0;
+    setPriceMan(man ? String(man) : "");
+    // 条件に合う先を初期選択
+    setTimeout(() => {
+      const p = man;
+      const auto = sendable.filter(r => {
+        const lo = Number(r.budgetMin) || 0, hi = Number(r.budgetMax) || 0;
+        if (p && lo && p < lo) return false;
+        if (p && hi && p > hi) return false;
+        const areas = String(r.areas || "").split(/[,、・\/\s]+/).map(x => x.trim()).filter(Boolean);
+        if (areas.length && nm) return areas.some(a => nm.includes(a));
+        return true;
+      }).map(r => r.id);
+      setPicked(auto);
+    }, 0);
+    setStep("targets");
+  };
+
+  const toggle = (id) => setPicked(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+
+  const recordSent = (list, note) => {
+    const now = new Date();
+    const stamp = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")}`;
+    setData(d => {
+      const ids = list.map(r => r.id);
+      const hanro2 = (d.hanro || []).map(r => ids.includes(r.id) ? { ...r, lastSentAt: stamp, updatedAt: now.toISOString() } : r);
+      const offer = {
+        id: Date.now() + Math.floor(Math.random() * 10000),
+        stockId, propName, priceMan: Number(priceMan) || 0, docUrl, subject,
+        count: list.length, toIds: ids, sentAt: now.toISOString(), sentBy: currentUser || "", note: note || "",
+      };
+      return { ...d, hanro: hanro2, offers: [...(d.offers || []), offer] };
+    });
+  };
+
+  const doSend = async () => {
+    if (!targets.length) { alert("送る相手が選ばれていません"); return; }
+    if (!window.confirm(`${targets.length} 件に送信します。\n\n件名: ${offerFill(subject, targets[0], ctx)}\n\nよろしいですか？`)) return;
+    setSending(true);
+    try {
+      const payload = {
+        token: api.token || "", subject, body,
+        property: propName, priceText: ctx.priceText, docUrl,
+        to: targets.map(r => ({ id: r.id, email: r.email, company: r.company || "", name: r.name || "" })),
+      };
+      const res = await fetch(api.url, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(payload) });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "送信に失敗しました");
+      recordSent(targets, "アプリから送信");
+      alert(`✅ ${json.sent} 件に送信しました${json.failed ? `\n（失敗 ${json.failed} 件）` : ""}`);
+      setStep("stock"); setPicked([]); setDocUrl("");
+    } catch (e) {
+      alert(`送信できませんでした。\n\n${e.message}\n\n「送信の設定」でURLと合言葉が正しいか確認してください。`);
+    }
+    setSending(false);
+  };
+
+  const exportForSheet = () => {
+    if (!targets.length) { alert("送る相手が選ばれていません"); return; }
+    const rows = targets.map(r => ({ 日付: "", 地域: r.areas || "", 業者名: r.company || "", 名前: r.name || "", アドレス: r.email }));
+    downloadCSV(rows, `先行打診_送信リスト_${new Date().toISOString().slice(0, 10)}.csv`);
+    alert("送信リストをCSVで書き出しました。\n\nスプレッドシートに貼り付けて、\n「一斉送信 → 3. 本番」で送れます。\n\n送り終わったら「送信済みとして記録」を押してください。");
+  };
+
+  const copyBody = async () => {
+    const txt = `件名: ${offerFill(subject, targets[0] || {}, ctx)}\n\n${offerFill(body, targets[0] || {}, ctx)}`;
+    try { await navigator.clipboard.writeText(txt); alert("件名と本文をコピーしました"); }
+    catch (e) { alert("コピーできませんでした。長押しで選択してコピーしてください。"); }
+  };
+
+  const markManually = () => {
+    if (!targets.length) return;
+    if (!window.confirm(`${targets.length} 件を「送信済み」として記録しますか？\n（実際の送信は行いません）`)) return;
+    recordSent(targets, "手動送信を記録");
+    alert("記録しました");
+    setStep("stock"); setPicked([]);
+  };
+
+  const saveApi = () => {
+    setData(d => ({ ...d, mailApi: { url: apiUrl.trim(), token: apiToken.trim() } }));
+    setShowSetting(false);
+    alert("送信の設定を保存しました");
+  };
+
+  const Head = ({ title, back }) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+      <button onClick={back} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+      <div style={{ fontSize: 19, fontWeight: 800, color: C.text }}><NavIcon name="mail" size={19} /> {title}</div>
+    </div>
+  );
+
+  const StepBar = ({ n }) => (
+    <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+      {["物件", "送る相手", "文面・送信"].map((s, i) => (
+        <div key={s} style={{ flex: 1, textAlign: "center", padding: "7px 0", borderRadius: 8, fontSize: 11, fontWeight: 700, background: i + 1 === n ? C.accent : C.cardBg, color: i + 1 === n ? "#fff" : C.muted, border: `1px solid ${i + 1 === n ? C.accent : C.borderDim}` }}>{i + 1}. {s}</div>
+      ))}
+    </div>
+  );
+
+  // ===== STEP 1: 物件を選ぶ =====
+  if (step === "stock") {
+    return (
+      <div>
+        <Head title="先行打診" back={onBack} />
+        <StepBar n={1} />
+        <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>市場に出す前に、買取業者・投資家へまとめてご案内します。<br />まず、どの物件を案内するか選んでください。</div>
+
+        {!sendable.length ? (
+          <div style={{ background: C.warnBg, border: `1px solid ${C.warn}`, borderRadius: 12, padding: 14, marginBottom: 14, color: C.text, fontSize: 13, lineHeight: 1.7 }}>
+            送り先が1件もありません。先に「その他 → 買取業者・投資家リスト」で登録してください。
+          </div>
+        ) : (
+          <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>送れる先：{sendable.length}件（メール登録あり・配信停止を除く）</div>
+        )}
+
+        {stocks.map(s => (
+          <button key={s.id} onClick={() => chooseStock(s)} style={{ width: "100%", textAlign: "left", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 10, cursor: "pointer", fontFamily: "inherit" }}>
+            <div style={{ color: C.text, fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{s.name || s.address}</div>
+            <div style={{ color: C.muted, fontSize: 12 }}>{s.status || ""}　{s.sellPrice ? `売価 ${offerPriceText(Math.round(Number(s.sellPrice) / 10000))}` : "価格未設定"}</div>
+          </button>
+        ))}
+
+        <button onClick={() => chooseStock(null)} style={{ width: "100%", background: C.cardBg, border: `1px dashed ${C.border}`, borderRadius: 14, padding: 16, marginTop: 4, color: C.muted, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>物件を選ばずに自由に書いて送る</button>
+
+        <div style={{ marginTop: 20, textAlign: "center" }}>
+          <button onClick={() => setShowSetting(v => !v)} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit" }}>送信の設定{canSend ? "（設定済み）" : "（未設定）"}</button>
+        </div>
+        {showSetting ? (
+          <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 16, marginTop: 10 }}>
+            <div style={{ color: C.muted, fontSize: 12, lineHeight: 1.7, marginBottom: 12 }}>一斉送信の窓口（GASウェブアプリ）のURLと合言葉。<br />設定すると、この画面から直接メールを送れます。</div>
+            <Field label="窓口のURL"><input style={inp} value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="https://script.google.com/macros/s/..../exec" /></Field>
+            <Field label="合言葉"><input style={inp} value={apiToken} onChange={e => setApiToken(e.target.value)} placeholder="hikari-..." /></Field>
+            <button onClick={saveApi} style={{ width: "100%", background: C.accent, border: "none", borderRadius: 10, padding: "13px 0", color: "#fff", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>保存</button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  // ===== STEP 2: 送る相手 =====
+  if (step === "targets") {
+    const hitCount = sendable.filter(r => matchOf(r).hit).length;
+    const excluded = hanro.filter(r => !r.email || r.optOut);
+    return (
+      <div>
+        <Head title="送る相手を選ぶ" back={() => setStep("stock")} />
+        <StepBar n={2} />
+
+        <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+          <Field label="物件名（メールに差し込まれます）"><input style={inp} value={propName} onChange={e => setPropName(e.target.value)} placeholder="熊谷市◯◯ 中古戸建" /></Field>
+          <Field label="価格（万円）"><input style={inp} type="number" inputMode="numeric" value={priceMan} onChange={e => setPriceMan(e.target.value)} placeholder="980" /></Field>
+          <div style={{ color: C.muted, fontSize: 12 }}>この価格とエリアで、条件に合う先が {hitCount} 件あります</div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <button onClick={() => setPicked(sendable.filter(r => matchOf(r).hit).map(r => r.id))} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>条件に合う先だけ</button>
+          <button onClick={() => setPicked(sendable.map(r => r.id))} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>全員</button>
+          <button onClick={() => setPicked([])} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.muted, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>全解除</button>
+        </div>
+
+        <div style={{ color: C.accent, fontWeight: 800, fontSize: 14, marginBottom: 10 }}>{picked.length} 件を選択中</div>
+
+        {sendable.map(r => {
+          const m = matchOf(r);
+          const on = picked.includes(r.id);
+          return (
+            <button key={r.id} onClick={() => toggle(r.id)} style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "flex-start", gap: 12, background: on ? C.accentBg : C.cardBg, border: `1px solid ${on ? C.accent : C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 8, cursor: "pointer", fontFamily: "inherit" }}>
+              <span style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${on ? C.accent : C.border}`, background: on ? C.accent : "transparent", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0, marginTop: 2 }}>{on ? "✓" : ""}</span>
+              <span style={{ flex: 1 }}>
+                <span style={{ display: "block", color: C.text, fontWeight: 700, fontSize: 14 }}>{r.company || r.name}{r.company && r.name ? `　${r.name}` : ""}</span>
+                <span style={{ display: "block", color: C.muted, fontSize: 11, marginTop: 3 }}>{r.email}</span>
+                <span style={{ display: "block", marginTop: 5 }}>
+                  {m.hit ? <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.successBg, color: C.success }}>条件に合う</span>
+                    : <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.bgDark, color: C.muted }}>{!m.priceOK ? "価格が範囲外" : "エリア外"}</span>}
+                  {r.lastSentAt ? <span style={{ fontSize: 10, color: C.muted, marginLeft: 8 }}>前回 {r.lastSentAt}</span> : null}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+
+        {excluded.length ? (
+          <div style={{ background: C.bgDark, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginTop: 8, color: C.muted, fontSize: 12, lineHeight: 1.7 }}>
+            送れない先 {excluded.length}件（メール未登録 or 配信停止）は自動で除外しています。
+          </div>
+        ) : null}
+
+        <button onClick={() => setStep("compose")} disabled={!picked.length} style={{ width: "100%", background: picked.length ? C.accent : C.borderDim, border: "none", borderRadius: 12, padding: "16px 0", color: "#fff", fontWeight: 800, fontSize: 16, cursor: picked.length ? "pointer" : "default", fontFamily: "inherit", marginTop: 14 }}>次へ（文面を確認）</button>
+      </div>
+    );
+  }
+
+  // ===== STEP 3: 文面・送信 =====
+  const sample = targets[0] || { company: "◯◯不動産", name: "山田" };
+  return (
+    <div>
+      <Head title="文面を確認して送信" back={() => setStep("targets")} />
+      <StepBar n={3} />
+
+      <div style={{ background: C.accentBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 14, marginBottom: 14, color: C.text, fontWeight: 700, fontSize: 14 }}>{targets.length} 件に送ります</div>
+
+      <Field label="資料のリンク（ドライブ等のURL）"><input style={inp} value={docUrl} onChange={e => setDocUrl(e.target.value)} placeholder="https://drive.google.com/..." /></Field>
+      <Field label="件名"><input style={inp} value={subject} onChange={e => setSubject(e.target.value)} /></Field>
+      <Field label="本文（{{宛名}} {{物件名}} {{価格}} {{資料URL}} が差し込まれます）">
+        <textarea style={{ ...inp, minHeight: 260, resize: "vertical", fontSize: 14, lineHeight: 1.7 }} value={body} onChange={e => setBody(e.target.value)} />
+      </Field>
+
+      <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>実際に届くメール（1件目でプレビュー）</div>
+      <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+        <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${C.borderDim}` }}>{offerFill(subject, sample, ctx)}</div>
+        <div style={{ color: C.text, fontSize: 13, lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{offerFill(body, sample, ctx)}</div>
+      </div>
+
+      {canSend ? (
+        <button onClick={doSend} disabled={sending} style={{ width: "100%", background: sending ? C.borderDim : C.accent, border: "none", borderRadius: 12, padding: "17px 0", color: "#fff", fontWeight: 800, fontSize: 16, cursor: sending ? "default" : "pointer", fontFamily: "inherit", marginBottom: 10 }}>{sending ? "送信中..." : `${targets.length} 件に送信する`}</button>
+      ) : (
+        <div style={{ background: C.warnBg, border: `1px solid ${C.warn}`, borderRadius: 12, padding: 14, marginBottom: 12, color: C.text, fontSize: 13, lineHeight: 1.8 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>アプリから直接送る設定がまだです</div>
+          下のボタンで送信リストを書き出し、スプレッドシートの「一斉送信」から送ってください。<br />
+          （前の画面の「送信の設定」でURLを入れると、ここから直接送れるようになります）
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button onClick={exportForSheet} style={{ flex: 1, minWidth: 140, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "13px 8px", color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>送信リストをCSVで出す</button>
+        <button onClick={copyBody} style={{ flex: 1, minWidth: 120, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "13px 8px", color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>文面をコピー</button>
+      </div>
+      <button onClick={markManually} style={{ width: "100%", background: "none", border: "none", color: C.muted, fontSize: 12, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", marginTop: 14 }}>送信済みとして記録する（手で送った場合）</button>
+    </div>
+  );
+}
+
+// 🆕 v9.352: 買取業者・投資家リスト
 //   市場に出す前の「先行打診」の送り先をここで一元管理する。
 //   ・買取業者は手入力／CSV取込、投資家は反響（案内記録）から取り込み
 //   ・配信停止フラグを立てた先は打診対象から自動で外れる
