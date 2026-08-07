@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-02-v9.351-addr-check-mark-pos";
+const APP_VERSION = "2026-08-07-v9.352-hanro-list";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2049,6 +2049,7 @@ const DEFAULT_DATA = {
   ukeoiDocs: [], // 🆕 v9.304: 保存したリフォーム工事請負契約書（入力内容のスナップショット。全社共有）
   baikaiDocs: [], // 🆕 v9.308: 保存した専任媒介契約書（入力内容のスナップショット。全社共有）
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
+  hanro: [], // 🆕 v9.352: 販路リスト（買取業者・投資家の名簿。先行打診の送り先）
   memberGoals: {},
   // 🆕 v8.67: デモ目標値を 0 に。実目標は Supabase の値を使う
   annualGoals: { sell: 0, profit: 0, buyCount: 0, brokerFee: 0 },
@@ -2609,7 +2610,7 @@ async function saveToSupabase(data, retries = 3) {
         });
         // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去（手動削除を尊重）
         // 配列の項目別マージ（mergeItems を使う）
-        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos"];
+        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro"];
         const mergedArrays = {};
         arrayKeys.forEach(k => {
           const localArr = Array.isArray(data[k]) ? data[k] : [];
@@ -28080,6 +28081,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
   if (subPage === "yakusho") return <YakushoPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "sekisan") return <SekisanPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "investors") return <InvestorListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
+  if (subPage === "hanro") return <HanroListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "shorui") return <ShoruiPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "dm") return <DMPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   const hasPin = !!getPin();
@@ -28318,6 +28320,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       {[
         { key: "yakusho", icon: "landmark", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
         { key: "investors", icon: "gem", title: "投資家リスト", desc: "反響で「投資家」を選択した顧客を自動集約", count: (data.stocks || []).reduce((a, s) => a + (s.viewings || []).filter(v => v.purpose === "投資家").length, 0) + (data.mediations || []).reduce((a, m) => a + (m.viewings || []).filter(v => v.purpose === "投資家").length, 0) },
+        { key: "hanro", icon: "handshake", title: "販路リスト", desc: "買取業者・投資家の名簿／先行打診の送り先", count: (data.hanro || []).length },
         { key: "shorui", icon: "folder", title: "書類関係", desc: "精算書ひな形・各種テンプレート", count: null },
         { key: "keiyaku", icon: "clipboard", title: "契約書自動作成ツール", desc: "重要事項説明書＋売買契約書をExcelで自動生成（会社PCで起動中のとき）", count: null, action: openKeiyakuTool },
         { key: "dm", icon: "mail", title: "DM管理", desc: "送付・返送・反応の管理／窓付き封筒の手紙を一括作成", count: (data.jiage || []).filter(j => dmStateFor(j) === "送付対象").length },
@@ -30693,6 +30696,264 @@ function generateTaxStatementXlsx(form, tax, num, variant) {
       ? `固定資産税都市計画税精算書_BC間(当社→買主)_${_safe(form.buyerName, "買主")}_${todayStr}.xlsx`
       : `固定資産税都市計画税精算書_${_safe(form.buyerName, "買主")}_${todayStr}.xlsx`;
   XLSX.writeFile(wb, _fname);
+}
+
+// 🆕 v9.352: 販路リスト（買取業者・投資家の名簿）
+//   市場に出す前の「先行打診」の送り先をここで一元管理する。
+//   ・買取業者は手入力／CSV取込、投資家は反響（案内記録）から取り込み
+//   ・配信停止フラグを立てた先は打診対象から自動で外れる
+const HANRO_KINDS = ["買取業者", "投資家"];
+const HANRO_TYPE_OPTIONS = ["戸建", "土地", "区分", "アパート", "収益", "再建築不可", "借地", "何でも"];
+
+function hanroBlank() {
+  return { id: null, kind: "買取業者", company: "", name: "", email: "", tel: "", areas: "", budgetMin: "", budgetMax: "", types: "", note: "", optOut: false, lastSentAt: "" };
+}
+
+// テスト用サンプル（メールは example.com＝実在しないので誤送信しない）
+function hanroSamples() {
+  const base = [
+    { kind: "買取業者", company: "サンプル建設株式会社", name: "佐藤", email: "sample1@example.com", tel: "048-000-0001", areas: "熊谷・行田・深谷", budgetMin: 300, budgetMax: 2000, types: "戸建,再建築不可", note: "現金決済。告知物件も可" },
+    { kind: "買取業者", company: "サンプル住販株式会社", name: "鈴木", email: "sample2@example.com", tel: "048-000-0002", areas: "北本・鴻巣・桶川", budgetMin: 500, budgetMax: 3000, types: "戸建,土地", note: "決済まで2週間" },
+    { kind: "買取業者", company: "サンプル不動産", name: "高橋", email: "sample3@example.com", tel: "048-000-0003", areas: "川越・坂戸・鶴ヶ島", budgetMin: 200, budgetMax: 1000, types: "何でも", note: "安いものを数多く" },
+    { kind: "投資家", company: "", name: "サンプル太郎", email: "sample4@example.com", tel: "090-0000-0004", areas: "埼玉県北部", budgetMin: 300, budgetMax: 800, types: "戸建,収益", note: "利回り12%以上" },
+    { kind: "投資家", company: "", name: "サンプル花子", email: "sample5@example.com", tel: "090-0000-0005", areas: "行田・熊谷", budgetMin: 0, budgetMax: 500, types: "戸建", note: "現金。ボロ戸建希望" },
+  ];
+  const now = new Date().toISOString();
+  return base.map((r, i) => ({ ...hanroBlank(), ...r, id: Date.now() + i, createdAt: now, updatedAt: now }));
+}
+
+function HanroListPage({ data, setData, onBack }) {
+  const [search, setSearch] = useState("");
+  const [filterKind, setFilterKind] = useState([]);
+  const [editing, setEditing] = useState(null);
+
+  const list = useMemo(() => data.hanro || [], [data.hanro]);
+
+  const filtered = useMemo(() => list.filter(r => {
+    if (filterKind.length && !filterKind.includes(r.kind)) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const t = [r.company, r.name, r.email, r.tel, r.areas, r.types, r.note].join(" ").toLowerCase();
+      if (!t.includes(q)) return false;
+    }
+    return true;
+  }), [list, search, filterKind]);
+
+  const kpi = useMemo(() => ({
+    total: list.length,
+    gyosha: list.filter(r => r.kind === "買取業者").length,
+    toushi: list.filter(r => r.kind === "投資家").length,
+    stop: list.filter(r => r.optOut).length,
+  }), [list]);
+
+  const saveRec = (rec) => {
+    const mail = String(rec.email || "").trim();
+    if (!rec.company && !rec.name) { alert("会社名か担当者名のどちらかは入れてください"); return; }
+    if (mail && !/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(mail)) { alert("メールアドレスの形が正しくありません"); return; }
+    setData(d => {
+      const arr = [...(d.hanro || [])];
+      const now = new Date().toISOString();
+      const i = arr.findIndex(x => x.id === rec.id);
+      if (i >= 0) arr[i] = { ...arr[i], ...rec, email: mail, updatedAt: now };
+      else arr.push({ ...rec, email: mail, id: Date.now() + Math.floor(Math.random() * 100000), createdAt: now, updatedAt: now });
+      return { ...d, hanro: arr };
+    });
+    setEditing(null);
+  };
+
+  const removeRec = (rec) => {
+    if (!window.confirm(`「${rec.company || rec.name}」を販路リストから削除しますか？`)) return;
+    setData(d => ({ ...d, hanro: (d.hanro || []).filter(x => x.id !== rec.id) }));
+    setEditing(null);
+  };
+
+  const addSamples = () => {
+    setData(d => ({ ...d, hanro: [...(d.hanro || []), ...hanroSamples()] }));
+    alert("テスト用サンプルを5件入れました。\n（メールは example.com なので実際には送られません）");
+  };
+
+  // 反響（案内記録）で「投資家」を選んだ人を取り込む
+  const importInvestors = () => {
+    const cand = [];
+    const push = (v) => {
+      if (v.purpose !== "投資家") return;
+      const name = String(v.customer || "").trim();
+      const email = String(v.email || "").trim();
+      if (!name && !email) return;
+      cand.push({
+        ...hanroBlank(), kind: "投資家", name, email,
+        tel: String(v.contact || "").trim(),
+        areas: String(v.investArea || "").trim(),
+        types: String(v.investType || "").trim(),
+        note: [v.investBudget ? "予算:" + v.investBudget : "", v.note || ""].filter(Boolean).join(" / "),
+      });
+    };
+    (data.stocks || []).forEach(s => (s.viewings || []).forEach(push));
+    (data.mediations || []).forEach(m => (m.viewings || []).forEach(push));
+
+    const cur = data.hanro || [];
+    const seen = new Set();
+    cur.forEach(r => {
+      if (r.email) seen.add("m:" + String(r.email).toLowerCase());
+      if (r.name) seen.add("n:" + String(r.name).trim());
+    });
+    const add = [];
+    cand.forEach(c => {
+      const km = c.email ? "m:" + c.email.toLowerCase() : "";
+      const kn = c.name ? "n:" + c.name : "";
+      if ((km && seen.has(km)) || (!km && kn && seen.has(kn))) return;
+      if (km) seen.add(km);
+      if (kn) seen.add(kn);
+      add.push(c);
+    });
+    if (!add.length) { alert("新しく取り込める投資家はいませんでした。\n（すでに全員リストに入っています）"); return; }
+    if (!window.confirm(`投資家リストから ${add.length} 件を取り込みます。よろしいですか？`)) return;
+    const now = new Date().toISOString();
+    setData(d => ({ ...d, hanro: [...(d.hanro || []), ...add.map((c, i) => ({ ...c, id: Date.now() + i, createdAt: now, updatedAt: now }))] }));
+    alert(`${add.length} 件を取り込みました`);
+  };
+
+  const exportCSV = () => {
+    const rows = filtered.map(r => ({
+      種別: r.kind, 会社名: r.company, 担当者名: r.name, メール: r.email, 電話: r.tel,
+      希望エリア: r.areas, 予算下限万円: r.budgetMin, 予算上限万円: r.budgetMax,
+      得意な物件: r.types, 配信停止: r.optOut ? "停止" : "", 最終打診日: r.lastSentAt, メモ: r.note,
+    }));
+    downloadCSV(rows, `販路リスト_${new Date().toISOString().slice(0, 10)}.csv`);
+  };
+
+  // ===== 編集フォーム =====
+  if (editing) {
+    const set = (k, v) => setEditing(e => ({ ...e, [k]: v }));
+    const toggleType = (t) => {
+      const cur = String(editing.types || "").split(",").map(s => s.trim()).filter(Boolean);
+      const next = cur.includes(t) ? cur.filter(x => x !== t) : [...cur, t];
+      set("types", next.join(","));
+    };
+    const curTypes = String(editing.types || "").split(",").map(s => s.trim()).filter(Boolean);
+    return (
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+          <button onClick={() => setEditing(null)} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>{editing.id ? "販路を編集" : "販路を追加"}</div>
+        </div>
+
+        <Field label="種別">
+          <div style={{ display: "flex", gap: 8 }}>
+            {HANRO_KINDS.map(k => (
+              <button key={k} onClick={() => set("kind", k)} style={{ flex: 1, padding: "12px 0", borderRadius: 10, border: `2px solid ${editing.kind === k ? C.accent : C.borderDim}`, background: editing.kind === k ? C.accentBg : C.cardBg, color: C.text, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>{k}</button>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="会社名"><input style={inp} value={editing.company} onChange={e => set("company", e.target.value)} placeholder="株式会社◯◯" /></Field>
+        <Field label="担当者名"><input style={inp} value={editing.name} onChange={e => set("name", e.target.value)} placeholder="山田" /></Field>
+        <Field label="メールアドレス（打診の送り先）"><input style={inp} type="email" inputMode="email" value={editing.email} onChange={e => set("email", e.target.value)} placeholder="info@example.co.jp" /></Field>
+        <Field label="電話"><input style={inp} type="tel" inputMode="tel" value={editing.tel} onChange={e => set("tel", e.target.value)} placeholder="048-000-0000" /></Field>
+        <Field label="希望エリア"><input style={inp} value={editing.areas} onChange={e => set("areas", e.target.value)} placeholder="熊谷・行田・深谷" /></Field>
+
+        <Field label="買える価格帯（万円）">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input style={{ ...inp, flex: 1 }} type="number" inputMode="numeric" value={editing.budgetMin} onChange={e => set("budgetMin", e.target.value)} placeholder="下限" />
+            <span style={{ color: C.muted }}>〜</span>
+            <input style={{ ...inp, flex: 1 }} type="number" inputMode="numeric" value={editing.budgetMax} onChange={e => set("budgetMax", e.target.value)} placeholder="上限" />
+          </div>
+        </Field>
+
+        <Field label="得意な物件（複数可）">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {HANRO_TYPE_OPTIONS.map(t => (
+              <button key={t} onClick={() => toggleType(t)} style={{ padding: "8px 12px", borderRadius: 999, border: `1px solid ${curTypes.includes(t) ? C.accent : C.borderDim}`, background: curTypes.includes(t) ? C.accentBg : C.cardBg, color: C.text, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>{t}</button>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="メモ"><textarea style={{ ...inp, minHeight: 80, resize: "vertical" }} value={editing.note} onChange={e => set("note", e.target.value)} placeholder="決済スピード・付き合いの深さなど" /></Field>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 10, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 16, cursor: "pointer" }}>
+          <input type="checkbox" checked={!!editing.optOut} onChange={e => set("optOut", e.target.checked)} style={{ width: 20, height: 20 }} />
+          <span style={{ color: C.text, fontSize: 14, fontWeight: 600 }}>配信停止（今後の打診から外す）</span>
+        </label>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => saveRec(editing)} style={{ flex: 1, background: C.accent, border: "none", borderRadius: 12, padding: "16px 0", color: "#fff", fontWeight: 800, fontSize: 16, cursor: "pointer", fontFamily: "inherit" }}>保存</button>
+          {editing.id ? <button onClick={() => removeRec(editing)} style={{ background: C.danger + "22", border: `1px solid ${C.danger}`, borderRadius: 12, padding: "16px 18px", color: C.danger, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>削除</button> : null}
+        </div>
+      </div>
+    );
+  }
+
+  // ===== 一覧 =====
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}><NavIcon name="handshake" size={20} /> 販路リスト</div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+        {[
+          { label: "登録数", count: kpi.total, color: C.accent, icon: "🤝" },
+          { label: "買取業者", count: kpi.gyosha, color: C.success, icon: "🏢" },
+          { label: "投資家", count: kpi.toushi, color: "#a855f7", icon: "💎" },
+          { label: "配信停止", count: kpi.stop, color: C.muted, icon: "🚫" },
+        ].map(k => (
+          <div key={k.label} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}>
+            <div style={{ fontSize: 16 }}>{k.icon}</div>
+            <div style={{ color: k.color, fontWeight: 800, fontSize: 18, lineHeight: 1 }}>{k.count}</div>
+            <div style={{ color: C.muted, fontSize: 9, marginTop: 4 }}>{k.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <button onClick={() => setEditing(hanroBlank())} style={{ width: "100%", background: C.accent, border: "none", borderRadius: 12, padding: "15px 0", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: "inherit", marginBottom: 10 }}>＋ 販路を追加</button>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <button onClick={importInvestors} style={{ flex: 1, minWidth: 150, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "11px 8px", color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="download" size={14} /> 投資家リストから取り込み</button>
+        <button onClick={exportCSV} style={{ flex: 1, minWidth: 110, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "11px 8px", color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="file" size={14} /> CSV出力</button>
+      </div>
+
+      <SearchBar value={search} onChange={setSearch} placeholder="会社名・担当者・エリア・メモで検索..." />
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>種別</div>
+      <FilterChips options={HANRO_KINDS} value={filterKind} onChange={setFilterKind} multi />
+
+      <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>{filtered.length}件表示</div>
+
+      {!list.length ? (
+        <div style={{ background: C.cardBg, border: `1px dashed ${C.border}`, borderRadius: 14, padding: 28, textAlign: "center" }}>
+          <div style={{ fontSize: 30, marginBottom: 8 }}>🤝</div>
+          <div style={{ color: C.text, fontWeight: 700, marginBottom: 6 }}>まだ販路が登録されていません</div>
+          <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 16 }}>買取業者や投資家を登録すると、<br />物件を市場に出す前の「先行打診」の送り先になります。</div>
+          <button onClick={addSamples} style={{ background: C.cardBg, border: `1px solid ${C.accent}`, borderRadius: 10, padding: "12px 18px", color: C.accent, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>テスト用サンプルを5件入れる</button>
+        </div>
+      ) : null}
+
+      {filtered.map(r => (
+        <button key={r.id} onClick={() => setEditing({ ...hanroBlank(), ...r })} style={{ width: "100%", textAlign: "left", background: C.cardBg, border: `1px solid ${r.optOut ? C.border : C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 10, cursor: "pointer", fontFamily: "inherit", opacity: r.optOut ? 0.55 : 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, background: r.kind === "投資家" ? "#a855f722" : C.successBg, color: r.kind === "投資家" ? "#a855f7" : C.success }}>{r.kind}</span>
+            <span style={{ color: C.text, fontWeight: 700, fontSize: 15 }}>{r.company || r.name || "(無題)"}</span>
+            {r.company && r.name ? <span style={{ color: C.muted, fontSize: 13 }}>{r.name}</span> : null}
+            {r.optOut ? <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, background: C.dangerBg, color: C.danger }}>配信停止</span> : null}
+          </div>
+          <div style={{ color: C.muted, fontSize: 12, lineHeight: 1.8 }}>
+            {r.email ? <div><NavIcon name="mail" size={12} /> {r.email}</div> : <div style={{ color: C.danger }}>メール未登録（打診に送れません）</div>}
+            {r.areas ? <div><NavIcon name="mappin" size={12} /> {r.areas}</div> : null}
+            {(r.budgetMin || r.budgetMax) ? <div><NavIcon name="banknote" size={12} /> {r.budgetMin || 0}万 〜 {r.budgetMax || "上限なし"}{r.budgetMax ? "万" : ""}</div> : null}
+            {r.types ? <div><NavIcon name="building" size={12} /> {r.types}</div> : null}
+            {r.lastSentAt ? <div><NavIcon name="clock" size={12} /> 最終打診 {r.lastSentAt}</div> : null}
+          </div>
+          {r.note ? <div style={{ color: C.muted, fontSize: 12, marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.borderDim}` }}>{r.note}</div> : null}
+        </button>
+      ))}
+
+      {list.length ? (
+        <div style={{ textAlign: "center", marginTop: 16 }}>
+          <button onClick={addSamples} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>テスト用サンプルを5件追加</button>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
