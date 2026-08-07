@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-08-v9.354-offer-send";
+const APP_VERSION = "2026-08-08-v9.355-offer-template";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2051,6 +2051,7 @@ const DEFAULT_DATA = {
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
   hanro: [], // 🆕 v9.352: 買取業者・投資家リスト（先行打診の送り先）
   offers: [], // 🆕 v9.354: 先行打診の送信履歴（いつ・どの物件を・何件に送ったか）
+  offerTemplates: [], // 🆕 v9.355: 自分で保存した文面テンプレ
   mailApi: { url: "", token: "" }, // 🆕 v9.354: 一斉送信の窓口（GASウェブアプリのURLと合言葉）
   memberGoals: {},
   // 🆕 v8.67: デモ目標値を 0 に。実目標は Supabase の値を使う
@@ -2612,7 +2613,7 @@ async function saveToSupabase(data, retries = 3) {
         });
         // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去（手動削除を尊重）
         // 配列の項目別マージ（mergeItems を使う）
-        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro", "offers"];
+        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro", "offers", "offerTemplates"];
         const mergedArrays = {};
         arrayKeys.forEach(k => {
           const localArr = Array.isArray(data[k]) ? data[k] : [];
@@ -30713,28 +30714,85 @@ function generateTaxStatementXlsx(form, tax, num, variant) {
 // 🆕 v9.354: 先行打診（市場に出す前に、買取業者・投資家へ一斉にご案内）
 //   物件を選ぶ → 条件に合う先が自動で絞られる → 文面を確認 → 送信
 //   送信は「一斉送信の窓口（GASウェブアプリ）」へ投げる。未設定でも送信リストを書き出して手動送信できる。
-const OFFER_SUBJECT_DEFAULT = "【未公開】{{物件名}}のご案内";
-const OFFER_BODY_DEFAULT = `{{宛名}}
+// 文面テンプレ（案件ごとに変えるのは「所在・価格・資料URL・ひとこと」だけ）
+const OFFER_PRESETS = [
+  {
+    key: "std", name: "買取業者むけ",
+    subject: "【未公開】{{物件名}}／{{価格}}",
+    body: `{{宛名}}
 
-お世話になっております。
+いつもお世話になっております。
 ひかり不動産の下田でございます。
 
-このたび下記の物件を仕入れました。
-一般に公開する前に、まずは御社（貴殿）にご案内いたします。
+このたび下記物件を仕入れました。
+一般に公開する前に、先にご案内させていただきます。
 
 ━━━━━━━━━━━━━━━
-■ 物件
+■ 所在
 {{物件名}}
 ■ 価格
 {{価格}}
 ■ 資料
 {{資料URL}}
 ━━━━━━━━━━━━━━━
-
+{{ひとこと}}
 ご興味をお持ちいただけましたら、本メールにご返信ください。
-先着で対応させていただきます。
+先着順で対応させていただきます。
 
-何卒よろしくお願い申し上げます。`;
+何卒よろしくお願い申し上げます。`,
+  },
+  {
+    key: "toushi", name: "投資家むけ",
+    subject: "【未公開】{{物件名}}（{{価格}}）のご案内",
+    body: `{{宛名}}
+
+お世話になっております。
+ひかり不動産の下田でございます。
+
+市場に出す前の物件を1件ご案内いたします。
+
+━━━━━━━━━━━━━━━
+■ 所在
+{{物件名}}
+■ 価格
+{{価格}}
+■ 資料（現況写真・図面）
+{{資料URL}}
+━━━━━━━━━━━━━━━
+{{ひとこと}}
+現地のご案内も承ります。
+ご興味がありましたら、本メールにご返信ください。
+
+よろしくお願いいたします。`,
+  },
+  {
+    key: "kuse", name: "癖あり物件",
+    subject: "【未公開・要相談】{{物件名}}／{{価格}}",
+    body: `{{宛名}}
+
+お世話になっております。
+ひかり不動産の下田でございます。
+
+いわゆる「癖のある」物件が出ましたので、
+扱える先にだけ先行してご案内しております。
+
+━━━━━━━━━━━━━━━
+■ 所在
+{{物件名}}
+■ 価格
+{{価格}}
+■ 資料
+{{資料URL}}
+━━━━━━━━━━━━━━━
+{{ひとこと}}
+条件面はご相談に応じます。
+ご検討いただけそうでしたら、本メールにご返信ください。
+
+よろしくお願いいたします。`,
+  },
+];
+const OFFER_SUBJECT_DEFAULT = OFFER_PRESETS[0].subject;
+const OFFER_BODY_DEFAULT = OFFER_PRESETS[0].body;
 
 function offerFill(text, rec, ctx) {
   const company = String(rec.company || "").trim();
@@ -30742,13 +30800,16 @@ function offerFill(text, rec, ctx) {
   const atena = company
     ? (person ? `${company}\n${person} 様` : `${company} ご担当者様`)
     : (person ? `${person} 様` : "ご担当者様");
+  const memo = String(ctx.memo || "").trim();
   return String(text || "")
     .replace(/\{\{宛名\}\}/g, atena)
     .replace(/\{\{会社名\}\}/g, company)
     .replace(/\{\{担当者\}\}/g, person || "ご担当者")
     .replace(/\{\{物件名\}\}/g, ctx.propName || "")
     .replace(/\{\{価格\}\}/g, ctx.priceText || "")
-    .replace(/\{\{資料URL\}\}/g, ctx.docUrl || "（資料は追ってお送りします）");
+    .replace(/\{\{資料URL\}\}/g, ctx.docUrl || "（資料は追ってお送りします）")
+    .replace(/\{\{ひとこと\}\}/g, memo ? "\n" + memo + "\n" : "")
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 function offerPriceText(man) {
@@ -30763,8 +30824,10 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   const [priceMan, setPriceMan] = useState("");
   const [propName, setPropName] = useState("");
   const [docUrl, setDocUrl] = useState("");
+  const [memo, setMemo] = useState("");
   const [subject, setSubject] = useState(OFFER_SUBJECT_DEFAULT);
   const [body, setBody] = useState(OFFER_BODY_DEFAULT);
+  const [tplKey, setTplKey] = useState("std");
   const [picked, setPicked] = useState([]);
   const [sending, setSending] = useState(false);
   const [showSetting, setShowSetting] = useState(false);
@@ -30780,7 +30843,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   // 送れる先（メールあり・配信停止でない）
   const sendable = useMemo(() => hanro.filter(r => r.email && !r.optOut), [hanro]);
 
-  // 条件に合うか（価格帯・エリア）
+  // 条件に合うか（価格帯だけで判定。エリアは見ない＝買える業者しか登録しない前提）
   const matchOf = (r) => {
     const p = Number(priceMan) || 0;
     let priceOK = true;
@@ -30790,15 +30853,27 @@ function OfferPage({ data, setData, onBack, currentUser }) {
       if (lo && p < lo) priceOK = false;
       if (hi && p > hi) priceOK = false;
     }
-    let areaOK = true;
-    const areas = String(r.areas || "").split(/[,、・\/\s]+/).map(s => s.trim()).filter(Boolean);
-    if (areas.length && propName) {
-      areaOK = areas.some(a => propName.includes(a));
-    }
-    return { priceOK, areaOK, hit: priceOK && areaOK };
+    return { priceOK, hit: priceOK };
   };
 
-  const ctx = { propName, priceText: offerPriceText(priceMan), docUrl };
+  const ctx = { propName, priceText: offerPriceText(priceMan), docUrl, memo };
+  const allTemplates = useMemo(() => [...OFFER_PRESETS, ...((data.offerTemplates || []).map(t => ({ ...t, key: "u" + t.id, user: true })))], [data.offerTemplates]);
+  const applyTpl = (t) => { setTplKey(t.key); setSubject(t.subject); setBody(t.body); };
+  const saveTpl = () => {
+    const nm = window.prompt("このテンプレの名前を付けてください", "新しいテンプレ");
+    if (!nm) return;
+    const t = { id: Date.now(), name: nm, subject, body };
+    setData(d => ({ ...d, offerTemplates: [...(d.offerTemplates || []), t] }));
+    setTplKey("u" + t.id);
+    alert("テンプレを保存しました");
+  };
+  const deleteTpl = () => {
+    const t = allTemplates.find(x => x.key === tplKey);
+    if (!t || !t.user) { alert("最初から入っているテンプレは消せません"); return; }
+    if (!window.confirm(`テンプレ「${t.name}」を削除しますか？`)) return;
+    setData(d => ({ ...d, offerTemplates: (d.offerTemplates || []).filter(x => "u" + x.id !== tplKey) }));
+    applyTpl(OFFER_PRESETS[0]);
+  };
   const targets = useMemo(() => sendable.filter(r => picked.includes(r.id)), [sendable, picked]);
 
   const chooseStock = (s) => {
@@ -30814,8 +30889,6 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         const lo = Number(r.budgetMin) || 0, hi = Number(r.budgetMax) || 0;
         if (p && lo && p < lo) return false;
         if (p && hi && p > hi) return false;
-        const areas = String(r.areas || "").split(/[,、・\/\s]+/).map(x => x.trim()).filter(Boolean);
-        if (areas.length && nm) return areas.some(a => nm.includes(a));
         return true;
       }).map(r => r.id);
       setPicked(auto);
@@ -30864,7 +30937,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
 
   const exportForSheet = () => {
     if (!targets.length) { alert("送る相手が選ばれていません"); return; }
-    const rows = targets.map(r => ({ 日付: "", 地域: r.areas || "", 業者名: r.company || "", 名前: r.name || "", アドレス: r.email }));
+    const rows = targets.map(r => ({ 日付: "", 地域: "", 業者名: r.company || "", 名前: r.name || "", アドレス: r.email }));
     downloadCSV(rows, `先行打診_送信リスト_${new Date().toISOString().slice(0, 10)}.csv`);
     alert("送信リストをCSVで書き出しました。\n\nスプレッドシートに貼り付けて、\n「一斉送信 → 3. 本番」で送れます。\n\n送り終わったら「送信済みとして記録」を押してください。");
   };
@@ -30966,13 +31039,15 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         <StepBar n={2} />
 
         <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
-          <Field label="物件名（メールに差し込まれます）"><input style={inp} value={propName} onChange={e => setPropName(e.target.value)} placeholder="熊谷市◯◯ 中古戸建" /></Field>
-          <Field label="価格（万円）"><input style={inp} type="number" inputMode="numeric" value={priceMan} onChange={e => setPriceMan(e.target.value)} placeholder="980" /></Field>
-          <div style={{ color: C.muted, fontSize: 12 }}>この価格とエリアで、条件に合う先が {hitCount} 件あります</div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", marginBottom: 6, fontWeight: 600 }}>価格（万円）— この金額で絞り込みます</div>
+            <input style={inp} type="number" inputMode="numeric" value={priceMan} onChange={e => setPriceMan(e.target.value)} placeholder="980" />
+          </div>
+          <div style={{ color: C.muted, fontSize: 12 }}>この価格で買える先が {hitCount} 件あります</div>
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <button onClick={() => setPicked(sendable.filter(r => matchOf(r).hit).map(r => r.id))} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>条件に合う先だけ</button>
+          <button onClick={() => setPicked(sendable.filter(r => matchOf(r).hit).map(r => r.id))} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>価格が合う先だけ</button>
           <button onClick={() => setPicked(sendable.map(r => r.id))} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>全員</button>
           <button onClick={() => setPicked([])} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.muted, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>全解除</button>
         </div>
@@ -30989,8 +31064,8 @@ function OfferPage({ data, setData, onBack, currentUser }) {
                 <span style={{ display: "block", color: C.text, fontWeight: 700, fontSize: 14 }}>{r.company || r.name}{r.company && r.name ? `　${r.name}` : ""}</span>
                 <span style={{ display: "block", color: C.muted, fontSize: 11, marginTop: 3 }}>{r.email}</span>
                 <span style={{ display: "block", marginTop: 5 }}>
-                  {m.hit ? <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.successBg, color: C.success }}>条件に合う</span>
-                    : <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.bgDark, color: C.muted }}>{!m.priceOK ? "価格が範囲外" : "エリア外"}</span>}
+                  {m.hit ? <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.successBg, color: C.success }}>価格が合う</span>
+                    : <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.bgDark, color: C.muted }}>価格が範囲外</span>}
                   {r.lastSentAt ? <span style={{ fontSize: 10, color: C.muted, marginLeft: 8 }}>前回 {r.lastSentAt}</span> : null}
                 </span>
               </span>
@@ -31018,11 +31093,32 @@ function OfferPage({ data, setData, onBack, currentUser }) {
 
       <div style={{ background: C.accentBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 14, marginBottom: 14, color: C.text, fontWeight: 700, fontSize: 14 }}>{targets.length} 件に送ります</div>
 
-      <Field label="資料のリンク（ドライブ等のURL）"><input style={inp} value={docUrl} onChange={e => setDocUrl(e.target.value)} placeholder="https://drive.google.com/..." /></Field>
+      <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>文面テンプレ</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+        {allTemplates.map(t => (
+          <button key={t.key} onClick={() => applyTpl(t)} style={{ padding: "8px 13px", borderRadius: 999, border: `1px solid ${tplKey === t.key ? C.accent : C.borderDim}`, background: tplKey === t.key ? C.accentBg : C.cardBg, color: C.text, fontSize: 13, fontWeight: tplKey === t.key ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>{t.name}</button>
+        ))}
+      </div>
+
+      <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+        <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>案件ごとに入れ替えるのはここだけ</div>
+        <Field label="所在（物件名・住所）"><input style={inp} value={propName} onChange={e => setPropName(e.target.value)} placeholder="熊谷市籠原南1-225 中古戸建" /></Field>
+        <Field label="価格（万円）"><input style={inp} type="number" inputMode="numeric" value={priceMan} onChange={e => setPriceMan(e.target.value)} placeholder="980" /></Field>
+        <Field label="資料のリンク（ドライブ等のURL）"><input style={inp} value={docUrl} onChange={e => setDocUrl(e.target.value)} placeholder="https://drive.google.com/..." /></Field>
+        <div style={{ marginBottom: 0 }}>
+          <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", marginBottom: 6, fontWeight: 600 }}>ひとこと（任意・入れなければ本文から自動で消えます）</div>
+          <textarea style={{ ...inp, minHeight: 64, resize: "vertical" }} value={memo} onChange={e => setMemo(e.target.value)} placeholder="※再建築不可のため現金決済のみでお願いいたします。" />
+        </div>
+      </div>
+
       <Field label="件名"><input style={inp} value={subject} onChange={e => setSubject(e.target.value)} /></Field>
-      <Field label="本文（{{宛名}} {{物件名}} {{価格}} {{資料URL}} が差し込まれます）">
+      <Field label="本文（差し込み：宛名／物件名／価格／資料URL／ひとこと）">
         <textarea style={{ ...inp, minHeight: 260, resize: "vertical", fontSize: 14, lineHeight: 1.7 }} value={body} onChange={e => setBody(e.target.value)} />
       </Field>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button onClick={saveTpl} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>この文面をテンプレとして保存</button>
+        <button onClick={deleteTpl} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 14px", color: C.muted, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>削除</button>
+      </div>
 
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>実際に届くメール（1件目でプレビュー）</div>
       <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
@@ -31057,17 +31153,17 @@ const HANRO_KINDS = ["買取業者", "投資家"];
 const HANRO_TYPE_OPTIONS = ["戸建", "土地", "区分", "アパート", "収益", "再建築不可", "借地", "何でも"];
 
 function hanroBlank() {
-  return { id: null, kind: "買取業者", company: "", name: "", email: "", tel: "", areas: "", budgetMin: "", budgetMax: "", types: "", note: "", optOut: false, lastSentAt: "" };
+  return { id: null, kind: "買取業者", company: "", name: "", email: "", tel: "", budgetMin: "", budgetMax: "", types: "", note: "", optOut: false, lastSentAt: "" };
 }
 
 // テスト用サンプル（メールは example.com＝実在しないので誤送信しない）
 function hanroSamples() {
   const base = [
-    { kind: "買取業者", company: "サンプル建設株式会社", name: "佐藤", email: "sample1@example.com", tel: "048-000-0001", areas: "熊谷・行田・深谷", budgetMin: 300, budgetMax: 2000, types: "戸建,再建築不可", note: "現金決済。告知物件も可" },
-    { kind: "買取業者", company: "サンプル住販株式会社", name: "鈴木", email: "sample2@example.com", tel: "048-000-0002", areas: "北本・鴻巣・桶川", budgetMin: 500, budgetMax: 3000, types: "戸建,土地", note: "決済まで2週間" },
-    { kind: "買取業者", company: "サンプル不動産", name: "高橋", email: "sample3@example.com", tel: "048-000-0003", areas: "川越・坂戸・鶴ヶ島", budgetMin: 200, budgetMax: 1000, types: "何でも", note: "安いものを数多く" },
-    { kind: "投資家", company: "", name: "サンプル太郎", email: "sample4@example.com", tel: "090-0000-0004", areas: "埼玉県北部", budgetMin: 300, budgetMax: 800, types: "戸建,収益", note: "利回り12%以上" },
-    { kind: "投資家", company: "", name: "サンプル花子", email: "sample5@example.com", tel: "090-0000-0005", areas: "行田・熊谷", budgetMin: 0, budgetMax: 500, types: "戸建", note: "現金。ボロ戸建希望" },
+    { kind: "買取業者", company: "サンプル建設株式会社", name: "佐藤", email: "sample1@example.com", tel: "048-000-0001", budgetMin: 300, budgetMax: 2000, types: "戸建,再建築不可", note: "現金決済。告知物件も可" },
+    { kind: "買取業者", company: "サンプル住販株式会社", name: "鈴木", email: "sample2@example.com", tel: "048-000-0002", budgetMin: 500, budgetMax: 3000, types: "戸建,土地", note: "決済まで2週間" },
+    { kind: "買取業者", company: "サンプル不動産", name: "高橋", email: "sample3@example.com", tel: "048-000-0003", budgetMin: 200, budgetMax: 1000, types: "何でも", note: "安いものを数多く" },
+    { kind: "投資家", company: "", name: "サンプル太郎", email: "sample4@example.com", tel: "090-0000-0004", budgetMin: 300, budgetMax: 800, types: "戸建,収益", note: "利回り12%以上" },
+    { kind: "投資家", company: "", name: "サンプル花子", email: "sample5@example.com", tel: "090-0000-0005", budgetMin: 0, budgetMax: 500, types: "戸建", note: "現金。ボロ戸建希望" },
   ];
   const now = new Date().toISOString();
   return base.map((r, i) => ({ ...hanroBlank(), ...r, id: Date.now() + i, createdAt: now, updatedAt: now }));
@@ -31084,7 +31180,7 @@ function HanroListPage({ data, setData, onBack }) {
     if (filterKind.length && !filterKind.includes(r.kind)) return false;
     if (search) {
       const q = search.toLowerCase();
-      const t = [r.company, r.name, r.email, r.tel, r.areas, r.types, r.note].join(" ").toLowerCase();
+      const t = [r.company, r.name, r.email, r.tel, r.types, r.note].join(" ").toLowerCase();
       if (!t.includes(q)) return false;
     }
     return true;
@@ -31167,7 +31263,7 @@ function HanroListPage({ data, setData, onBack }) {
   const exportCSV = () => {
     const rows = filtered.map(r => ({
       種別: r.kind, 会社名: r.company, 担当者名: r.name, メール: r.email, 電話: r.tel,
-      希望エリア: r.areas, 予算下限万円: r.budgetMin, 予算上限万円: r.budgetMax,
+      予算下限万円: r.budgetMin, 予算上限万円: r.budgetMax,
       得意な物件: r.types, 配信停止: r.optOut ? "停止" : "", 最終打診日: r.lastSentAt, メモ: r.note,
     }));
     downloadCSV(rows, `買取業者・投資家リスト_${new Date().toISOString().slice(0, 10)}.csv`);
@@ -31201,7 +31297,6 @@ function HanroListPage({ data, setData, onBack }) {
         <Field label="担当者名"><input style={inp} value={editing.name} onChange={e => set("name", e.target.value)} placeholder="山田" /></Field>
         <Field label="メールアドレス（打診の送り先）"><input style={inp} type="email" inputMode="email" value={editing.email} onChange={e => set("email", e.target.value)} placeholder="info@example.co.jp" /></Field>
         <Field label="電話"><input style={inp} type="tel" inputMode="tel" value={editing.tel} onChange={e => set("tel", e.target.value)} placeholder="048-000-0000" /></Field>
-        <Field label="希望エリア"><input style={inp} value={editing.areas} onChange={e => set("areas", e.target.value)} placeholder="熊谷・行田・深谷" /></Field>
 
         <Field label="買える価格帯（万円）">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -31264,7 +31359,7 @@ function HanroListPage({ data, setData, onBack }) {
         <button onClick={exportCSV} style={{ flex: 1, minWidth: 110, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "11px 8px", color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="file" size={14} /> CSV出力</button>
       </div>
 
-      <SearchBar value={search} onChange={setSearch} placeholder="会社名・担当者・エリア・メモで検索..." />
+      <SearchBar value={search} onChange={setSearch} placeholder="会社名・担当者・メールで検索..." />
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>種別</div>
       <FilterChips options={HANRO_KINDS} value={filterKind} onChange={setFilterKind} multi />
 
@@ -31289,7 +31384,6 @@ function HanroListPage({ data, setData, onBack }) {
           </div>
           <div style={{ color: C.muted, fontSize: 12, lineHeight: 1.8 }}>
             {r.email ? <div><NavIcon name="mail" size={12} /> {r.email}</div> : <div style={{ color: C.danger }}>メール未登録（打診に送れません）</div>}
-            {r.areas ? <div><NavIcon name="mappin" size={12} /> {r.areas}</div> : null}
             {(r.budgetMin || r.budgetMax) ? <div><NavIcon name="banknote" size={12} /> {r.budgetMin || 0}万 〜 {r.budgetMax || "上限なし"}{r.budgetMax ? "万" : ""}</div> : null}
             {r.types ? <div><NavIcon name="building" size={12} /> {r.types}</div> : null}
             {r.lastSentAt ? <div><NavIcon name="clock" size={12} /> 最終打診 {r.lastSentAt}</div> : null}
