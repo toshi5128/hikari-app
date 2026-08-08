@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-08-v9.356-offer-queue";
+const APP_VERSION = "2026-08-08-v9.357-offer-manual-input";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -30831,6 +30831,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   const [picked, setPicked] = useState([]);
   const [sending, setSending] = useState(false);
   const [queue, setQueue] = useState([]);
+  const [showStocks, setShowStocks] = useState(false);
 
   const hanro = data.hanro || [];
 
@@ -30883,23 +30884,28 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   };
   const targets = useMemo(() => sendable.filter(r => picked.includes(r.id)), [sendable, picked]);
 
-  const chooseStock = (s) => {
-    setStockId(s ? s.id : null);
-    const nm = s ? (s.name || s.address || "") : "";
-    setPropName(nm);
-    const man = s ? Math.round((Number(s.sellPrice) || 0) / 10000) : 0;
-    setPriceMan(man ? String(man) : "");
-    // 条件に合う先を初期選択
-    setTimeout(() => {
-      const p = man;
-      const auto = sendable.filter(r => {
-        const lo = Number(r.budgetMin) || 0, hi = Number(r.budgetMax) || 0;
-        if (p && lo && p < lo) return false;
-        if (p && hi && p > hi) return false;
-        return true;
-      }).map(r => r.id);
-      setPicked(auto);
-    }, 0);
+  // 在庫から所在・価格を取り込む（成約済みは一覧に出さない）
+  const activeStocks = useMemo(
+    () => stocks.filter(s => !["売決完了", "売契完了"].includes(s.status)),
+    [stocks]
+  );
+  const fillFromStock = (s) => {
+    setStockId(s.id);
+    setPropName(s.name || s.address || "");
+    const man = Math.round((Number(s.sellPrice) || 0) / 10000);
+    if (man) setPriceMan(String(man));
+    setShowStocks(false);
+  };
+
+  // 送る相手へ進む（価格に合う先を初期選択）
+  const goTargets = () => {
+    const p = Number(priceMan) || 0;
+    setPicked(sendable.filter(r => {
+      const lo = Number(r.budgetMin) || 0, hi = Number(r.budgetMax) || 0;
+      if (p && lo && p < lo) return false;
+      if (p && hi && p > hi) return false;
+      return true;
+    }).map(r => r.id));
     setStep("targets");
   };
 
@@ -30991,7 +30997,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
       <div>
         <Head title="先行打診" back={onBack} />
         <StepBar n={1} />
-        <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>市場に出す前に、買取業者・投資家へまとめてご案内します。<br />まず、どの物件を案内するか選んでください。</div>
+        <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>市場に出す前に、買取業者・投資家へまとめてご案内します。<br />案内する物件の情報を入れてください。</div>
 
         {!sendable.length ? (
           <div style={{ background: C.warnBg, border: `1px solid ${C.warn}`, borderRadius: 12, padding: 14, marginBottom: 14, color: C.text, fontSize: 13, lineHeight: 1.7 }}>
@@ -31001,14 +31007,34 @@ function OfferPage({ data, setData, onBack, currentUser }) {
           <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>送れる先：{sendable.length}件（メール登録あり・配信停止を除く）</div>
         )}
 
-        {stocks.map(s => (
-          <button key={s.id} onClick={() => chooseStock(s)} style={{ width: "100%", textAlign: "left", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 10, cursor: "pointer", fontFamily: "inherit" }}>
-            <div style={{ color: C.text, fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{s.name || s.address}</div>
-            <div style={{ color: C.muted, fontSize: 12 }}>{s.status || ""}　{s.sellPrice ? `売価 ${offerPriceText(Math.round(Number(s.sellPrice) / 10000))}` : "価格未設定"}</div>
-          </button>
-        ))}
+        <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
+          <Field label="所在（物件名・住所）"><input style={inp} value={propName} onChange={e => setPropName(e.target.value)} placeholder="熊谷市籠原南1-225 中古戸建" /></Field>
+          <Field label="価格（万円）"><input style={inp} type="number" inputMode="numeric" value={priceMan} onChange={e => setPriceMan(e.target.value)} placeholder="980" /></Field>
+          <Field label="資料のリンク（ドライブ等のURL・任意）"><input style={inp} value={docUrl} onChange={e => setDocUrl(e.target.value)} placeholder="https://drive.google.com/..." /></Field>
+          <div style={{ marginBottom: 0 }}>
+            <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", marginBottom: 6, fontWeight: 600 }}>ひとこと（任意・入れなければ本文から自動で消えます）</div>
+            <textarea style={{ ...inp, minHeight: 64, resize: "vertical" }} value={memo} onChange={e => setMemo(e.target.value)} placeholder="※再建築不可のため現金決済のみでお願いいたします。" />
+          </div>
+        </div>
 
-        <button onClick={() => chooseStock(null)} style={{ width: "100%", background: C.cardBg, border: `1px dashed ${C.border}`, borderRadius: 14, padding: 16, marginTop: 4, color: C.muted, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>物件を選ばずに自由に書いて送る</button>
+        <button onClick={goTargets} disabled={!propName.trim()} style={{ width: "100%", background: propName.trim() ? C.accent : C.borderDim, border: "none", borderRadius: 12, padding: "16px 0", color: "#fff", fontWeight: 800, fontSize: 16, cursor: propName.trim() ? "pointer" : "default", fontFamily: "inherit" }}>次へ（送る相手を選ぶ）</button>
+        {!propName.trim() ? <div style={{ color: C.muted, fontSize: 11, textAlign: "center", marginTop: 6 }}>所在を入れると次に進めます</div> : null}
+
+        {activeStocks.length ? (
+          <div style={{ marginTop: 18 }}>
+            <button onClick={() => setShowStocks(v => !v)} style={{ width: "100%", background: "none", border: "none", color: C.muted, fontSize: 12, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit" }}>{showStocks ? "閉じる" : `在庫から取り込む（進行中 ${activeStocks.length}件）`}</button>
+            {showStocks ? (
+              <div style={{ marginTop: 8 }}>
+                {activeStocks.map(s => (
+                  <button key={s.id} onClick={() => fillFromStock(s)} style={{ width: "100%", textAlign: "left", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 13, marginBottom: 8, cursor: "pointer", fontFamily: "inherit" }}>
+                    <div style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{s.name || s.address}</div>
+                    <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>{s.status || ""}　{s.sellPrice ? `売価 ${offerPriceText(Math.round(Number(s.sellPrice) / 10000))}` : "価格未設定"}</div>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {(data.offers || []).length ? (
           <div style={{ marginTop: 22 }}>
@@ -31059,11 +31085,8 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         <StepBar n={2} />
 
         <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", marginBottom: 6, fontWeight: 600 }}>価格（万円）— この金額で絞り込みます</div>
-            <input style={inp} type="number" inputMode="numeric" value={priceMan} onChange={e => setPriceMan(e.target.value)} placeholder="980" />
-          </div>
-          <div style={{ color: C.muted, fontSize: 12 }}>この価格で買える先が {hitCount} 件あります</div>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{propName || "(物件名なし)"}</div>
+          <div style={{ color: C.muted, fontSize: 12 }}>{offerPriceText(priceMan)}　→ この価格で買える先が {hitCount} 件</div>
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -31120,15 +31143,11 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         ))}
       </div>
 
-      <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
-        <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>案件ごとに入れ替えるのはここだけ</div>
-        <Field label="所在（物件名・住所）"><input style={inp} value={propName} onChange={e => setPropName(e.target.value)} placeholder="熊谷市籠原南1-225 中古戸建" /></Field>
-        <Field label="価格（万円）"><input style={inp} type="number" inputMode="numeric" value={priceMan} onChange={e => setPriceMan(e.target.value)} placeholder="980" /></Field>
-        <Field label="資料のリンク（ドライブ等のURL）"><input style={inp} value={docUrl} onChange={e => setDocUrl(e.target.value)} placeholder="https://drive.google.com/..." /></Field>
-        <div style={{ marginBottom: 0 }}>
-          <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", marginBottom: 6, fontWeight: 600 }}>ひとこと（任意・入れなければ本文から自動で消えます）</div>
-          <textarea style={{ ...inp, minHeight: 64, resize: "vertical" }} value={memo} onChange={e => setMemo(e.target.value)} placeholder="※再建築不可のため現金決済のみでお願いいたします。" />
-        </div>
+      <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 16, color: C.muted, fontSize: 12, lineHeight: 1.9 }}>
+        <div><span style={{ color: C.text, fontWeight: 700 }}>{propName || "(物件名なし)"}</span>　{offerPriceText(priceMan)}</div>
+        {docUrl ? <div>資料：{docUrl}</div> : <div>資料リンクなし</div>}
+        {memo ? <div>ひとこと：{memo}</div> : null}
+        <div style={{ marginTop: 4 }}>直すときは ← で最初の画面に戻ってください</div>
       </div>
 
       <Field label="件名"><input style={inp} value={subject} onChange={e => setSubject(e.target.value)} /></Field>
