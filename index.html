@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-08-v9.360-price-preview";
+const APP_VERSION = "2026-08-08-v9.361-doc-block";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -30733,9 +30733,10 @@ const OFFER_PRESETS = [
 {{物件名}}
 ■ 価格
 {{価格}}
-■ 資料
-{{資料URL}}
 ━━━━━━━━━━━━━━━
+
+■ 資料
+{{資料}}
 {{ひとこと}}
 ご検討いただける場合は、下記をご返信いただけますと助かります。
 
@@ -30764,9 +30765,10 @@ const OFFER_PRESETS = [
 {{物件名}}
 ■ 価格
 {{価格}}
-■ 資料（現況写真・図面）
-{{資料URL}}
 ━━━━━━━━━━━━━━━
+
+■ 資料（現況写真・図面）
+{{資料}}
 {{ひとこと}}
 現地のご案内、収支の試算のお手伝いも承っております。
 ご興味をお持ちいただけましたら、本メールにご返信ください。
@@ -30792,9 +30794,10 @@ const OFFER_PRESETS = [
 {{物件名}}
 ■ 価格
 {{価格}}
-■ 資料
-{{資料URL}}
 ━━━━━━━━━━━━━━━
+
+■ 資料
+{{資料}}
 {{ひとこと}}
 条件面はご相談に応じます。
 お買取りをご検討いただける場合は、
@@ -30806,22 +30809,42 @@ const OFFER_PRESETS = [
 const OFFER_SUBJECT_DEFAULT = OFFER_PRESETS[0].subject;
 const OFFER_BODY_DEFAULT = OFFER_PRESETS[0].body;
 
+// 資料のご案内ブロック（ギガファイル便などのURL・有効期限・パスワード）
+function offerDocBlock(ctx) {
+  const url = String(ctx.docUrl || "").trim();
+  if (!url) return "資料は追ってお送りいたします。";
+  const lines = ["以下のURLからダウンロードしてください。", "", url];
+  const meta = [];
+  const lim = String(ctx.docLimit || "").trim();
+  const pw = String(ctx.docPass || "").trim();
+  if (lim) meta.push("ダウンロード有効期限：" + lim);
+  if (pw) meta.push("リンクパスワード：" + pw);
+  if (meta.length) { lines.push(""); meta.forEach(m => lines.push(m)); }
+  return lines.join("\n");
+}
+
+// 相手によって変わらない差し込み（送信前にアプリ側で埋めてしまう）
+function offerFillCommon(text, ctx) {
+  const memo = String(ctx.memo || "").trim();
+  return String(text || "")
+    .replace(/\{\{物件名\}\}/g, ctx.propName || "")
+    .replace(/\{\{価格\}\}/g, ctx.priceText || "")
+    .replace(/\{\{資料\}\}/g, offerDocBlock(ctx))
+    .replace(/\{\{資料URL\}\}/g, ctx.docUrl || "（資料は追ってお送りします）")
+    .replace(/\{\{ひとこと\}\}/g, memo ? "\n" + memo + "\n" : "")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
 function offerFill(text, rec, ctx) {
   const company = String(rec.company || "").trim();
   const person = String(rec.name || "").trim();
   const atena = company
     ? (person ? `${company}\n${person} 様` : `${company} ご担当者様`)
     : (person ? `${person} 様` : "ご担当者様");
-  const memo = String(ctx.memo || "").trim();
-  return String(text || "")
+  return offerFillCommon(text, ctx)
     .replace(/\{\{宛名\}\}/g, atena)
     .replace(/\{\{会社名\}\}/g, company)
-    .replace(/\{\{担当者\}\}/g, person || "ご担当者")
-    .replace(/\{\{物件名\}\}/g, ctx.propName || "")
-    .replace(/\{\{価格\}\}/g, ctx.priceText || "")
-    .replace(/\{\{資料URL\}\}/g, ctx.docUrl || "（資料は追ってお送りします）")
-    .replace(/\{\{ひとこと\}\}/g, memo ? "\n" + memo + "\n" : "")
-    .replace(/\n{3,}/g, "\n\n");
+    .replace(/\{\{担当者\}\}/g, person || "ご担当者");
 }
 
 function offerPriceText(man) {
@@ -30836,6 +30859,8 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   const [priceMan, setPriceMan] = useState("");
   const [propName, setPropName] = useState("");
   const [docUrl, setDocUrl] = useState("");
+  const [docLimit, setDocLimit] = useState("");
+  const [docPass, setDocPass] = useState("");
   const [memo, setMemo] = useState("");
   const [subject, setSubject] = useState(OFFER_SUBJECT_DEFAULT);
   const [body, setBody] = useState(OFFER_BODY_DEFAULT);
@@ -30876,7 +30901,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     return { priceOK, hit: priceOK };
   };
 
-  const ctx = { propName, priceText: offerPriceText(priceMan), docUrl, memo };
+  const ctx = { propName, priceText: offerPriceText(priceMan), docUrl, docLimit, docPass, memo };
   const allTemplates = useMemo(() => [...OFFER_PRESETS, ...((data.offerTemplates || []).map(t => ({ ...t, key: "u" + t.id, user: true })))], [data.offerTemplates]);
   const applyTpl = (t) => { setTplKey(t.key); setSubject(t.subject); setBody(t.body); };
   const saveTpl = () => {
@@ -30944,7 +30969,9 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     setSending(true);
     try {
       const payload = {
-        status: "pending", subject, body,
+        // 相手によらない差し込み（物件名・価格・資料ブロック・ひとこと）はここで埋めてしまう。
+        // 残る {{宛名}} などは送信側が1通ずつ差し替える。
+        status: "pending", subject: offerFillCommon(subject, ctx), body: offerFillCommon(body, ctx),
         property: propName, price_text: ctx.priceText, doc_url: docUrl, memo,
         recipients: targets.map(r => ({ id: r.id, email: r.email, company: r.company || "", name: r.name || "" })),
         requested_by: currentUser || "",
@@ -30957,7 +30984,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
       if (!res.ok) throw new Error(`受付できませんでした（${res.status}）`);
       recordSent(targets, "アプリから送信");
       alert(`📨 ${targets.length} 件の送信を受け付けました。\n\n1分以内に順に送信されます。\n結果は最初の画面の「送信の状況」で確認できます。`);
-      setStep("stock"); setPicked([]); setDocUrl(""); setMemo("");
+      setStep("stock"); setPicked([]); setDocUrl(""); setDocLimit(""); setDocPass(""); setMemo("");
       setTimeout(loadQueue, 1500);
     } catch (e) {
       alert(`送信を受け付けられませんでした。\n\n${e.message}\n\n電波の良いところでもう一度お試しください。`);
@@ -31034,7 +31061,17 @@ function OfferPage({ data, setData, onBack, currentUser }) {
                 : "空欄のままだと「応相談」で送られます。金額での絞り込みもかからず、全員が対象になります"}
             </div>
           </div>
-          <Field label="資料のリンク（ドライブ等のURL・任意）"><input style={inp} value={docUrl} onChange={e => setDocUrl(e.target.value)} placeholder="https://drive.google.com/..." /></Field>
+          <Field label="資料のリンク（ギガファイル便・ドライブ等・任意）"><input style={inp} value={docUrl} onChange={e => setDocUrl(e.target.value)} placeholder="https://xxx.gigafile.nu/..." /></Field>
+          {docUrl.trim() ? (
+            <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
+              <Field label="ダウンロード有効期限（任意）"><input style={inp} value={docLimit} onChange={e => setDocLimit(e.target.value)} placeholder="2026/08/22 15:07" /></Field>
+              <div style={{ marginBottom: 0 }}>
+                <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", marginBottom: 6, fontWeight: 600 }}>リンクパスワード（任意）</div>
+                <input style={inp} value={docPass} onChange={e => setDocPass(e.target.value)} placeholder="QvVUKLde" />
+              </div>
+              <div style={{ color: C.muted, fontSize: 11, marginTop: 8, lineHeight: 1.6 }}>入れた項目だけメールに出ます。空欄の行は自動で消えます。</div>
+            </div>
+          ) : null}
           <div style={{ marginBottom: 0 }}>
             <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", marginBottom: 6, fontWeight: 600 }}>ひとこと（任意・入れなければ本文から自動で消えます）</div>
             <textarea style={{ ...inp, minHeight: 64, resize: "vertical" }} value={memo} onChange={e => setMemo(e.target.value)} placeholder="※再建築不可のため現金決済のみでお願いいたします。" />
@@ -31175,7 +31212,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
       </div>
 
       <Field label="件名"><input style={inp} value={subject} onChange={e => setSubject(e.target.value)} /></Field>
-      <Field label="本文（差し込み：宛名／物件名／価格／資料URL／ひとこと）">
+      <Field label="本文（差し込み：宛名／物件名／価格／資料／ひとこと）">
         <textarea style={{ ...inp, minHeight: 260, resize: "vertical", fontSize: 14, lineHeight: 1.7 }} value={body} onChange={e => setBody(e.target.value)} />
       </Field>
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
