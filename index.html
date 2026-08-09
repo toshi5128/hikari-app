@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-08-v9.362-kind-switch";
+const APP_VERSION = "2026-08-08-v9.363-sender-select";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -30722,7 +30722,7 @@ const OFFER_PRESETS = [
     body: `{{宛名}}
 
 いつもお世話になっております。
-ひかり不動産の下田でございます。
+ひかり不動産の{{差出人}}でございます。
 
 このたび下記の物件を取り扱うこととなりました。
 一般に公開する前に、御社にてお買取りが可能かどうか
@@ -30755,7 +30755,7 @@ const OFFER_PRESETS = [
     body: `{{宛名}}
 
 お世話になっております。
-ひかり不動産の下田でございます。
+ひかり不動産の{{差出人}}でございます。
 
 ご希望の条件に近い物件が出ましたので、
 一般に公開する前にご案内させていただきます。
@@ -30784,7 +30784,7 @@ const OFFER_PRESETS = [
     body: `{{宛名}}
 
 いつもお世話になっております。
-ひかり不動産の下田でございます。
+ひかり不動産の{{差出人}}でございます。
 
 いわゆる「癖のある」物件が出ましたので、
 お取り扱いいただける先にのみご案内しております。
@@ -30809,6 +30809,15 @@ const OFFER_PRESETS = [
 const OFFER_SUBJECT_DEFAULT = OFFER_PRESETS[0].subject;
 const OFFER_BODY_DEFAULT = OFFER_PRESETS[0].body;
 
+// 送れる担当者（差出人名は担当者シートの表記と合わせること。署名はシート側から自動で付く）
+const OFFER_SENDERS = [
+  { key: "shimoda", short: "下田", name: "ひかり不動産 下田", mail: "shimoda@hikari-fudosan.com" },
+  { key: "nagashima", short: "長島", name: "ひかり不動産 長島", mail: "nag@hikarifudosan.com" },
+  { key: "yatsu", short: "谷津", name: "ひかり不動産 谷津", mail: "ya@hikarifudosan.com" },
+  { key: "higa", short: "比嘉", name: "ひかり不動産 比嘉", mail: "biz@hikarifudosan.com" },
+  { key: "isoda", short: "磯田", name: "ひかり不動産 磯田", mail: "isoda@hikari-fudosan.jp" },
+];
+
 // 資料のご案内ブロック（ギガファイル便などのURL・有効期限・パスワード）
 function offerDocBlock(ctx) {
   const url = String(ctx.docUrl || "").trim();
@@ -30827,6 +30836,7 @@ function offerDocBlock(ctx) {
 function offerFillCommon(text, ctx) {
   const memo = String(ctx.memo || "").trim();
   return String(text || "")
+    .replace(/\{\{差出人\}\}/g, ctx.senderShort || "")
     .replace(/\{\{物件名\}\}/g, ctx.propName || "")
     .replace(/\{\{価格\}\}/g, ctx.priceText || "")
     .replace(/\{\{資料\}\}/g, offerDocBlock(ctx))
@@ -30870,6 +30880,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   const [queue, setQueue] = useState([]);
   const [showStocks, setShowStocks] = useState(false);
   const [kindSel, setKindSel] = useState("買取業者");
+  const [senderKey, setSenderKey] = useState("shimoda");
 
   const hanro = data.hanro || [];
 
@@ -30902,7 +30913,8 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     return { priceOK, hit: priceOK };
   };
 
-  const ctx = { propName, priceText: offerPriceText(priceMan), docUrl, docLimit, docPass, memo };
+  const sender = OFFER_SENDERS.find(s => s.key === senderKey) || OFFER_SENDERS[0];
+  const ctx = { propName, priceText: offerPriceText(priceMan), docUrl, docLimit, docPass, memo, senderShort: sender.short };
   const allTemplates = useMemo(() => [...OFFER_PRESETS, ...((data.offerTemplates || []).map(t => ({ ...t, key: "u" + t.id, user: true })))], [data.offerTemplates]);
   const applyTpl = (t) => { setTplKey(t.key); setSubject(t.subject); setBody(t.body); };
   const saveTpl = () => {
@@ -30990,6 +31002,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         // 相手によらない差し込み（物件名・価格・資料ブロック・ひとこと）はここで埋めてしまう。
         // 残る {{宛名}} などは送信側が1通ずつ差し替える。
         status: "pending", subject: offerFillCommon(subject, ctx), body: offerFillCommon(body, ctx),
+        sender_name: sender.name, sender_mail: sender.mail,
         property: propName, price_text: ctx.priceText, doc_url: docUrl, memo,
         recipients: targets.map(r => ({ id: r.id, email: r.email, company: r.company || "", name: r.name || "" })),
         requested_by: currentUser || "",
@@ -31164,6 +31177,16 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         <Head title="送る相手を選ぶ" back={() => setStep("stock")} />
         <StepBar n={2} />
 
+        <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>誰の名前で送りますか</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+          {OFFER_SENDERS.map(s => (
+            <button key={s.key} onClick={() => setSenderKey(s.key)} style={{ padding: "9px 14px", borderRadius: 999, border: `2px solid ${senderKey === s.key ? C.accent : C.borderDim}`, background: senderKey === s.key ? C.accentBg : C.cardBg, color: C.text, fontSize: 13, fontWeight: senderKey === s.key ? 800 : 500, cursor: "pointer", fontFamily: "inherit" }}>{s.short}</button>
+          ))}
+        </div>
+        <div style={{ color: C.muted, fontSize: 11, marginBottom: 16, lineHeight: 1.6 }}>
+          差出人名・署名・返信先が「{sender.short}」さんのものに切り替わります（返信は {sender.mail} に届きます）
+        </div>
+
         <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>どちら向けに送りますか（文面も自動で切り替わります）</div>
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
           {[
@@ -31229,7 +31252,10 @@ function OfferPage({ data, setData, onBack, currentUser }) {
       <Head title="文面を確認して送信" back={() => setStep("targets")} />
       <StepBar n={3} />
 
-      <div style={{ background: C.accentBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 14, marginBottom: 14, color: C.text, fontWeight: 700, fontSize: 14 }}>{targets.length} 件に送ります</div>
+      <div style={{ background: C.accentBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{targets.length} 件に送ります</div>
+        <div style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>差出人：{sender.name}　／　返信先：{sender.mail}</div>
+      </div>
 
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>文面テンプレ</div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
