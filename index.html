@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-08-v9.361-doc-block";
+const APP_VERSION = "2026-08-08-v9.362-kind-switch";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -30869,6 +30869,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   const [sending, setSending] = useState(false);
   const [queue, setQueue] = useState([]);
   const [showStocks, setShowStocks] = useState(false);
+  const [kindSel, setKindSel] = useState("買取業者");
 
   const hanro = data.hanro || [];
 
@@ -30934,15 +30935,32 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     setShowStocks(false);
   };
 
+  // 価格が合うか
+  const priceOk = (r) => {
+    const p = Number(priceMan) || 0;
+    if (!p) return true;
+    const lo = Number(r.budgetMin) || 0, hi = Number(r.budgetMax) || 0;
+    if (lo && p < lo) return false;
+    if (hi && p > hi) return false;
+    return true;
+  };
+
+  // 送り先の種別を切り替える（選び直し＋文面も用途に合わせる）
+  const applyKind = (k) => {
+    setKindSel(k);
+    setPicked(sendable.filter(r => (!k || r.kind === k) && priceOk(r)).map(r => r.id));
+    // 本文を触っていなければ、用途に合ったテンプレへ自動で切り替える
+    const untouched = OFFER_PRESETS.some(t => t.body === body);
+    if (untouched) {
+      const want = k === "投資家" ? "toushi" : "kaitori";
+      const t = OFFER_PRESETS.find(x => x.key === want);
+      if (t && t.key !== tplKey) { setTplKey(t.key); setSubject(t.subject); setBody(t.body); }
+    }
+  };
+
   // 送る相手へ進む（価格に合う先を初期選択）
   const goTargets = () => {
-    const p = Number(priceMan) || 0;
-    setPicked(sendable.filter(r => {
-      const lo = Number(r.budgetMin) || 0, hi = Number(r.budgetMax) || 0;
-      if (p && lo && p < lo) return false;
-      if (p && hi && p > hi) return false;
-      return true;
-    }).map(r => r.id));
+    setPicked(sendable.filter(r => (!kindSel || r.kind === kindSel) && priceOk(r)).map(r => r.id));
     setStep("targets");
   };
 
@@ -31138,12 +31156,28 @@ function OfferPage({ data, setData, onBack, currentUser }) {
 
   // ===== STEP 2: 送る相手 =====
   if (step === "targets") {
-    const hitCount = sendable.filter(r => matchOf(r).hit).length;
+    const shown = sendable.filter(r => !kindSel || r.kind === kindSel);
+    const hitCount = shown.filter(r => matchOf(r).hit).length;
     const excluded = hanro.filter(r => !r.email || r.optOut);
     return (
       <div>
         <Head title="送る相手を選ぶ" back={() => setStep("stock")} />
         <StepBar n={2} />
+
+        <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>どちら向けに送りますか（文面も自動で切り替わります）</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          {[
+            { k: "買取業者", label: "買取業者へ", sub: "買えるか確認" },
+            { k: "投資家", label: "投資家へ", sub: "物件のご提案" },
+            { k: "", label: "両方", sub: "まとめて" },
+          ].map(o => (
+            <button key={o.label} onClick={() => applyKind(o.k)} style={{ flex: 1, background: kindSel === o.k ? C.accentBg : C.cardBg, border: `2px solid ${kindSel === o.k ? C.accent : C.borderDim}`, borderRadius: 12, padding: "11px 4px", cursor: "pointer", fontFamily: "inherit" }}>
+              <div style={{ color: C.text, fontWeight: 800, fontSize: 13 }}>{o.label}</div>
+              <div style={{ color: C.muted, fontSize: 10, marginTop: 2 }}>{o.sub}</div>
+              <div style={{ color: kindSel === o.k ? C.accent : C.muted, fontSize: 11, fontWeight: 700, marginTop: 3 }}>{sendable.filter(r => !o.k || r.kind === o.k).length}件</div>
+            </button>
+          ))}
+        </div>
 
         <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
           <div style={{ color: C.text, fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{propName || "(物件名なし)"}</div>
@@ -31151,14 +31185,14 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <button onClick={() => setPicked(sendable.filter(r => matchOf(r).hit).map(r => r.id))} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>価格が合う先だけ</button>
-          <button onClick={() => setPicked(sendable.map(r => r.id))} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>全員</button>
+          <button onClick={() => setPicked(shown.filter(r => matchOf(r).hit).map(r => r.id))} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>価格が合う先だけ</button>
+          <button onClick={() => setPicked(shown.map(r => r.id))} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>全員</button>
           <button onClick={() => setPicked([])} style={{ flex: 1, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", color: C.muted, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>全解除</button>
         </div>
 
         <div style={{ color: C.accent, fontWeight: 800, fontSize: 14, marginBottom: 10 }}>{picked.length} 件を選択中</div>
 
-        {sendable.map(r => {
+        {shown.map(r => {
           const m = matchOf(r);
           const on = picked.includes(r.id);
           return (
