@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-08-v9.364-quota-carryover";
+const APP_VERSION = "2026-08-09-v9.365-viewing-handled";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -590,6 +590,38 @@ const RESULT_INFO = {
   "普通": { icon: "😐", color: "#f59e0b" },
   "NG": { icon: "❌", color: "#ef4444" },
 };
+// 🆕 v9.365: 反響の「対応した / まだしてない」
+//   ・v.handled（true=対応済）/ v.handledBy（対応した人）/ v.handledAt（対応した日時ISO）
+//   ・古い反響は handled が無い＝「未対応」扱い
+const HANDLED_INFO = {
+  "未対応": { icon: "🔴", color: "#ef4444" },
+  "対応済": { icon: "✅", color: "#10b981" },
+};
+function viewingHandledKey(v) { return (v && v.handled) ? "対応済" : "未対応"; }
+// 対応済にした人・日付の短い表示（例: 対応済 下田 8/9）
+function viewingHandledCaption(v) {
+  if (!v || !v.handled) return "";
+  const who = v.handledBy || "";
+  let when = "";
+  if (v.handledAt) {
+    const d = new Date(v.handledAt);
+    if (!isNaN(d.getTime())) when = d.toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" });
+  }
+  return [who, when].filter(Boolean).join(" ");
+}
+// 反響日が新しい順（同日は元の並び順を維持）
+//   blankFirst=true のときは日付未入力（＝今まさに追加した反響）を先頭に置く
+function sortViewingsByDateDesc(indexed, blankFirst) {
+  const key = o => {
+    const d = String(o.v?.date || "");
+    return d || (blankFirst ? "9999-99-99" : "");
+  };
+  return [...indexed].sort((a, b) => {
+    const c = key(b).localeCompare(key(a));
+    if (c !== 0) return c;
+    return (a.idx ?? a.originalIdx ?? 0) - (b.idx ?? b.originalIdx ?? 0);
+  });
+}
 
 // CSV/Excelダウンロード（UTF-8 BOM付き、Excel日本語対応）
 function downloadCSV(rows, filename) {
@@ -10689,6 +10721,31 @@ function MediationView({ data, setData, dealType, setDealType }) {
     }));
   };
 
+  // 🆕 v9.365: 反響の「対応済み / 未対応」を1タップで切り替え
+  const handleToggleViewingHandled = (medId, viewingIdx) => {
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    setData(d => ({
+      ...d,
+      mediations: (d.mediations || []).map(m => {
+        if (m.id !== medId) return m;
+        return {
+          ...m,
+          viewings: (m.viewings || []).map((v, idx) => {
+            if (idx !== viewingIdx) return v;
+            const next = !v.handled;
+            return {
+              ...v,
+              handled: next,
+              handledBy: next ? currentUser : "",
+              handledAt: next ? new Date().toISOString() : "",
+              updatedAt: Date.now(),
+            };
+          }),
+        };
+      }),
+    }));
+  };
+
   // 🆕 SUUMO/アットホーム反響取り込み
   const handleParseImport = () => {
     const parsed = parseInquiryEmail(importText);
@@ -10713,6 +10770,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
       customer: importParsed.customer || "", contact: importParsed.contact || "", email: importParsed.email || "",
       funding: "", purpose: "", budget: importParsed.propertyPrice || "", people: "",
       channel: importParsed.channel || "", prospect: "", result: "未実施", nextAction: "",
+      handled: false, handledBy: "", handledAt: "", // 🆕 v9.365: 取り込んだ反響は未対応から
       note: [importParsed.note, importParsed.customerAddress ? `📍 顧客住所: ${importParsed.customerAddress}` : "", importParsed.propertyUrl ? `🔗 ${importParsed.propertyUrl}` : ""].filter(Boolean).join("\n"),
       comments: [],
     };
@@ -10882,11 +10940,16 @@ function MediationView({ data, setData, dealType, setDealType }) {
             const hotCount = viewings.filter(v => v.prospect === "熱い").length;
             const kentouCount = viewings.filter(v => v.prospect === "検討中").length;
             const totalComments = viewings.reduce((a, v) => a + ((v.comments || []).length), 0);
+            const unhandledCount = viewings.filter(v => !v.handled).length; // 🆕 v9.365
             return (
               <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
                 <button onClick={() => setViewingsExpandedByMed(p => ({ ...p, [m.id]: !expanded }))}
                   style={{ width: "100%", background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
                   <span style={{ color: "#06b6d4", fontSize: 12, fontWeight: 700 }}><NavIcon name="eye" size={12} /> 反響 {all}件</span>
+                  {/* 🆕 v9.365: 未対応の件数を一番目立つ位置に */}
+                  {unhandledCount > 0
+                    ? <span style={{ background: "#ef4444", color: "#fff", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>🔴未対応 {unhandledCount}件</span>
+                    : all > 0 && <span style={{ background: "#10b98133", color: "#10b981", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>✅全部対応済</span>}
                   {hotCount > 0 && <span style={{ background: "#ef444433", color: "#ef4444", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}><NavIcon name="flame" size={12} />{hotCount}</span>}
                   {kentouCount > 0 && <span style={{ background: "#f59e0b33", color: "#f59e0b", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>🟡{kentouCount}</span>}
                   {withVisit > 0 && <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}><NavIcon name="calendar" size={12} />{withVisit}</span>}
@@ -10899,10 +10962,12 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   const _filter = viewingFiltersByMed[m.id] || null;
                   const _prospectCounts = { "熱い": 0, "検討中": 0, "普通": 0, "冷たい": 0 };
                   const _resultCounts = { "未実施": 0, "好印象": 0, "普通": 0, "NG": 0 };
+                  const _handledCounts = { "未対応": 0, "対応済": 0 }; // 🆕 v9.365
                   viewings.forEach(v => {
                     if (v && v.prospect && (v.prospect in _prospectCounts)) _prospectCounts[v.prospect]++;
                     const r = (v && v.result) || "未実施";
                     if (r in _resultCounts) _resultCounts[r]++;
+                    _handledCounts[viewingHandledKey(v)]++;
                   });
                   const _setFilter = (type, value) => {
                     setViewingFiltersByMed(p => {
@@ -10921,11 +10986,17 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   // フィルタ適用（元 index 保持）
                   const _indexed = viewings.map((v, idx) => ({ v, idx }));
                   let _shown = _filter
-                    ? _indexed.filter(({ v }) => (_filter.type === "result" ? (v.result || "未実施") : v[_filter.type]) === _filter.value)
+                    ? _indexed.filter(({ v }) => (
+                        _filter.type === "handled" ? viewingHandledKey(v)
+                        : _filter.type === "result" ? (v.result || "未実施")
+                        : v[_filter.type]
+                      ) === _filter.value)
                     : _indexed;
                   if (_searchText) {
                     _shown = _shown.filter(({ v }) => (v.customer || "").toLowerCase().includes(_searchText));
                   }
+                  // 🆕 v9.365: 反響日が新しい順に並べる
+                  _shown = sortViewingsByDateDesc(_shown);
                   return (
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
                     {/* 🆕 v8.93: 顧客名検索ボックス */}
@@ -10955,6 +11026,26 @@ function MediationView({ data, setData, dealType, setDealType }) {
                         background: !_filter ? C.accent : "transparent",
                         color: !_filter ? "#fff" : C.muted, cursor: "pointer",
                       }}>すべて {viewings.length}</button>
+                    </div>
+                    {/* 🆕 v9.365: 対応状況フィルター */}
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4, alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>対応</span>
+                      {Object.keys(HANDLED_INFO).map(h => {
+                        const info = HANDLED_INFO[h];
+                        const c = _handledCounts[h] || 0;
+                        const active = _filter && _filter.type === "handled" && _filter.value === h;
+                        const dim = c === 0;
+                        return (
+                          <button key={h} onClick={() => !dim && _setFilter("handled", h)} disabled={dim} style={{
+                            padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                            border: active ? `1.5px solid ${info.color}` : `1px solid ${info.color}55`,
+                            background: active ? info.color : info.color + "11",
+                            color: active ? "#fff" : info.color,
+                            cursor: dim ? "not-allowed" : "pointer",
+                            opacity: dim ? 0.35 : 1,
+                          }}>{info.icon}{h}({c})</button>
+                        );
+                      })}
                     </div>
                     <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4, alignItems: "center" }}>
                       <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>見込度</span>
@@ -11005,14 +11096,19 @@ function MediationView({ data, setData, dealType, setDealType }) {
                       const rep = repeatMap[vi];
                       const isRepeat = rep && rep.repeat > 1;
                       const repeatColor = "#f97316";
+                      const unhandled = !v.handled; // 🆕 v9.365
                       return (
                         <div key={vi} style={{
-                          background: isRepeat ? "#f9731611" : C.cardBg,
+                          background: unhandled ? "#ef444411" : (isRepeat ? "#f9731611" : C.cardBg),
                           border: `1px solid ${isRepeat ? repeatColor + "66" : C.borderDim}`,
-                          borderLeft: isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`,
+                          borderLeft: unhandled ? `4px solid #ef4444` : (isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`),
                           borderRadius: 8, padding: "10px 12px"
                         }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 5 }}>
+                            {/* 🆕 v9.365: 対応済みかどうかを名前の前に出す */}
+                            <span style={{ background: unhandled ? "#ef4444" : "#10b98133", color: unhandled ? "#fff" : "#10b981", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                              {unhandled ? "🔴未対応" : `✅対応済${viewingHandledCaption(v) ? " " + viewingHandledCaption(v) : ""}`}
+                            </span>
                             <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
                             {rep && rep.total > 1 && (
                               <span style={{
@@ -11023,7 +11119,12 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             {prospect && <span style={{ background: prospect.color + "33", color: prospect.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{prospect.icon}{v.prospect}</span>}
                             {result && v.result !== "未実施" && <span style={{ background: result.color + "33", color: result.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{result.icon}{v.result}</span>}
                             {v.nextAction && <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}><NavIcon name="refresh" size={12} />{v.nextAction}</span>}
-                            <button onClick={(ev) => { ev.stopPropagation(); openEdit(m, vi); }} style={{ marginLeft: "auto", background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
+                            {/* 🆕 v9.365: ワンタップで対応済み／未対応を切り替え */}
+                            <button onClick={(ev) => { ev.stopPropagation(); handleToggleViewingHandled(m.id, vi); }}
+                              style={{ marginLeft: "auto", background: unhandled ? "#10b98122" : "transparent", border: `1.5px solid ${unhandled ? "#10b981" : C.muted + "66"}`, color: unhandled ? "#10b981" : C.muted, borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
+                              {unhandled ? "✓ 対応済みにする" : "↩ 未対応に戻す"}
+                            </button>
+                            <button onClick={(ev) => { ev.stopPropagation(); openEdit(m, vi); }} style={{ background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
                           </div>
                           <div style={{ fontSize: 11, color: C.muted, marginBottom: 5, lineHeight: 1.6 }}>
                             <NavIcon name="calendar" size={15} /> 反響:{v.date || "—"}
@@ -11236,7 +11337,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   date: "", visitDate: "", visitTime: "",
                   customer: "", contact: "", email: "",
                   funding: "", purpose: "", budget: "", people: "", channel: "",
-                  prospect: "", result: "未実施", nextAction: "", note: ""
+                  prospect: "", result: "未実施", nextAction: "", note: "",
+                  handled: false, handledBy: "", handledAt: "" // 🆕 v9.365: 最初は未対応
                 };
                 // 🆕 新規反響は配列の先頭に追加（ボタンのすぐ下に表示される）
                 setForm(p => ({ ...p, viewings: [newItem, ...(p.viewings || [])] }));
@@ -11260,8 +11362,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
               // 🆕 v8.72: 同名顧客のリピート判定（form.viewings の元 index で参照可能なマップ）
               const repeatMap = computeViewingRepeats(form.viewings || []);
               // 🆕 反響日が新しい順にソート（元の index は内部処理用に保持）
-              const arr = (form.viewings || []).map((vv, originalIdx) => ({ v: vv, originalIdx }));
-              arr.sort((a, b) => (b.v.date || "").localeCompare(a.v.date || ""));
+              const arr = sortViewingsByDateDesc((form.viewings || []).map((vv, originalIdx) => ({ v: vv, originalIdx })), true);
               return arr.map(({ v, originalIdx: i }) => {
               const isExpanded = !!expandedViewings[i];
               const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val, updatedAt: Date.now() } : vv) }));
@@ -11283,6 +11384,10 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        {/* 🆕 v9.365: 対応済みかどうか */}
+                        <span style={{ background: v.handled ? "#10b98133" : "#ef4444", color: v.handled ? "#10b981" : "#fff", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                          {v.handled ? `✅対応済${viewingHandledCaption(v) ? " " + viewingHandledCaption(v) : ""}` : "🔴未対応"}
+                        </span>
                         <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
                         {rep && rep.total > 1 && (
                           <span style={{
@@ -11476,6 +11581,37 @@ function MediationView({ data, setData, dealType, setDealType }) {
                           </div>
                         </div>
                       )}
+
+                      {/* 🆕 v9.365: 対応状況（この反響に電話・返信をしたか） */}
+                      <Field label="🙋 対応状況">
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                          {["未対応", "対応済"].map(key => {
+                            const info = HANDLED_INFO[key];
+                            const active = viewingHandledKey(v) === key;
+                            const toHandled = key === "対応済";
+                            return (
+                              <button key={key} onClick={() => setForm(p => ({
+                                ...p,
+                                viewings: (p.viewings || []).map((vv, j) => j !== i ? vv : {
+                                  ...vv,
+                                  handled: toHandled,
+                                  handledBy: toHandled ? (vv.handledBy || currentUser || "") : "",
+                                  handledAt: toHandled ? (vv.handledAt || new Date().toISOString()) : "",
+                                  updatedAt: Date.now(),
+                                }),
+                              }))}
+                                style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                                  background: active ? info.color : C.inset, color: active ? "#fff" : info.color,
+                                  border: `1.5px solid ${info.color}` }}>
+                                {info.icon} {key}
+                              </button>
+                            );
+                          })}
+                          {v.handled && viewingHandledCaption(v) && (
+                            <span style={{ fontSize: 10, color: C.muted }}>（{viewingHandledCaption(v)}）</span>
+                          )}
+                        </div>
+                      </Field>
 
                       {/* 見込度（チップ式） */}
                       <Field label="🔥 見込度">
@@ -11810,6 +11946,31 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     }));
   };
 
+  // 🆕 v9.365: 反響の「対応済み / 未対応」を1タップで切り替え
+  const handleToggleViewingHandled = (stockId, viewingIdx) => {
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    setData(d => ({
+      ...d,
+      stocks: (d.stocks || []).map(s => {
+        if (s.id !== stockId) return s;
+        return {
+          ...s,
+          viewings: (s.viewings || []).map((v, idx) => {
+            if (idx !== viewingIdx) return v;
+            const next = !v.handled;
+            return {
+              ...v,
+              handled: next,
+              handledBy: next ? currentUser : "",
+              handledAt: next ? new Date().toISOString() : "",
+              updatedAt: Date.now(),
+            };
+          }),
+        };
+      }),
+    }));
+  };
+
   const openEdit = (s, expandViewingIdx) => {
     // 🆕 詳細は誰でも見れる（編集権限がない場合は保存ボタンを無効化）
     setForm({
@@ -12017,6 +12178,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         importParsed.propertyUrl ? `🔗 ${importParsed.propertyUrl}` : "",
       ].filter(Boolean).join("\n"),
       comments: [],
+      handled: false, handledBy: "", handledAt: "", // 🆕 v9.365: 取り込んだ反響は未対応から
     };
     const targetStock = (data.stocks || []).find(s => s.id === importTargetStockId);
     const targetName = targetStock?.name || "物件";
@@ -12392,6 +12554,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               const hotCount = viewings.filter(v => v.prospect === "熱い").length;
               const kentouCount = viewings.filter(v => v.prospect === "検討中").length;
               const totalComments = viewings.reduce((a, v) => a + ((v.comments || []).length), 0);
+              const unhandledCount = viewings.filter(v => !v.handled).length; // 🆕 v9.365
               return (
                 <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
                   <button
@@ -12404,6 +12567,16 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     <span style={{ color: "#06b6d4", fontSize: 12, fontWeight: 700 }}>
                       <NavIcon name="eye" size={15} /> 反響 {all}件
                     </span>
+                    {/* 🆕 v9.365: 未対応の件数を一番目立つ位置に */}
+                    {unhandledCount > 0 ? (
+                      <span style={{ background: "#ef4444", color: "#fff", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                        🔴未対応 {unhandledCount}件
+                      </span>
+                    ) : all > 0 && (
+                      <span style={{ background: "#10b98133", color: "#10b981", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                        ✅全部対応済
+                      </span>
+                    )}
                     {hotCount > 0 && (
                       <span style={{ background: "#ef444433", color: "#ef4444", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
                         <NavIcon name="flame" size={15} />{hotCount}
@@ -12433,10 +12606,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     const _filter = viewingFiltersByStock[s.id] || null;
                     const _prospectCounts = { "熱い": 0, "検討中": 0, "普通": 0, "冷たい": 0 };
                     const _resultCounts = { "未実施": 0, "好印象": 0, "普通": 0, "NG": 0 };
+                    const _handledCounts = { "未対応": 0, "対応済": 0 }; // 🆕 v9.365
                     viewings.forEach(v => {
                       if (v && v.prospect && (v.prospect in _prospectCounts)) _prospectCounts[v.prospect]++;
                       const r = (v && v.result) || "未実施";
                       if (r in _resultCounts) _resultCounts[r]++;
+                      _handledCounts[viewingHandledKey(v)]++;
                     });
                     const _setFilter = (type, value) => {
                       setViewingFiltersByStock(p => {
@@ -12454,11 +12629,17 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     const _searchText = (viewingSearchByStock[s.id] || "").trim().toLowerCase();
                     const _indexed = viewings.map((v, idx) => ({ v, idx }));
                     let _shown = _filter
-                      ? _indexed.filter(({ v }) => (_filter.type === "result" ? (v.result || "未実施") : v[_filter.type]) === _filter.value)
+                      ? _indexed.filter(({ v }) => (
+                          _filter.type === "handled" ? viewingHandledKey(v)
+                          : _filter.type === "result" ? (v.result || "未実施")
+                          : v[_filter.type]
+                        ) === _filter.value)
                       : _indexed;
                     if (_searchText) {
                       _shown = _shown.filter(({ v }) => (v.customer || "").toLowerCase().includes(_searchText));
                     }
+                    // 🆕 v9.365: 反響日が新しい順に並べる
+                    _shown = sortViewingsByDateDesc(_shown);
                     return (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
                       {/* 🆕 v8.93: 顧客名検索ボックス */}
@@ -12488,6 +12669,26 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                           background: !_filter ? C.accent : "transparent",
                           color: !_filter ? "#fff" : C.muted, cursor: "pointer",
                         }}>すべて {viewings.length}</button>
+                      </div>
+                      {/* 🆕 v9.365: 対応状況フィルター */}
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4, alignItems: "center" }}>
+                        <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>対応</span>
+                        {Object.keys(HANDLED_INFO).map(h => {
+                          const info = HANDLED_INFO[h];
+                          const c = _handledCounts[h] || 0;
+                          const active = _filter && _filter.type === "handled" && _filter.value === h;
+                          const dim = c === 0;
+                          return (
+                            <button key={h} onClick={() => !dim && _setFilter("handled", h)} disabled={dim} style={{
+                              padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+                              border: active ? `1.5px solid ${info.color}` : `1px solid ${info.color}55`,
+                              background: active ? info.color : info.color + "11",
+                              color: active ? "#fff" : info.color,
+                              cursor: dim ? "not-allowed" : "pointer",
+                              opacity: dim ? 0.35 : 1,
+                            }}>{info.icon}{h}({c})</button>
+                          );
+                        })}
                       </div>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4, alignItems: "center" }}>
                         <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>見込度</span>
@@ -12538,15 +12739,20 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                         const rep = repeatMap[vi];
                         const isRepeat = rep && rep.repeat > 1;
                         const repeatColor = "#f97316";
+                        const unhandled = !v.handled; // 🆕 v9.365
                         return (
                           <div key={vi} style={{
-                            background: isRepeat ? "#f9731611" : C.cardBg,
+                            background: unhandled ? "#ef444411" : (isRepeat ? "#f9731611" : C.cardBg),
                             border: `1px solid ${isRepeat ? repeatColor + "66" : C.borderDim}`,
-                            borderLeft: isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`,
+                            borderLeft: unhandled ? `4px solid #ef4444` : (isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`),
                             borderRadius: 8, padding: "10px 12px"
                           }}>
                             {/* 顧客情報 */}
                             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 5 }}>
+                              {/* 🆕 v9.365: 対応済みかどうかを名前の前に出す */}
+                              <span style={{ background: unhandled ? "#ef4444" : "#10b98133", color: unhandled ? "#fff" : "#10b981", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                                {unhandled ? "🔴未対応" : `✅対応済${viewingHandledCaption(v) ? " " + viewingHandledCaption(v) : ""}`}
+                              </span>
                               <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
                               {rep && rep.total > 1 && (
                                 <span style={{
@@ -12569,7 +12775,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                                   <NavIcon name="refresh" size={15} />{v.nextAction}
                                 </span>
                               )}
-                              <button onClick={(ev) => { ev.stopPropagation(); openEdit(s, vi); }} style={{ marginLeft: "auto", background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
+                              {/* 🆕 v9.365: ワンタップで対応済み／未対応を切り替え */}
+                              <button onClick={(ev) => { ev.stopPropagation(); handleToggleViewingHandled(s.id, vi); }}
+                                style={{ marginLeft: "auto", background: unhandled ? "#10b98122" : "transparent", border: `1.5px solid ${unhandled ? "#10b981" : C.muted + "66"}`, color: unhandled ? "#10b981" : C.muted, borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
+                                {unhandled ? "✓ 対応済みにする" : "↩ 未対応に戻す"}
+                              </button>
+                              <button onClick={(ev) => { ev.stopPropagation(); openEdit(s, vi); }} style={{ background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
                             </div>
 
                             {/* 日付・案内 */}
@@ -12903,7 +13114,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                   date: "", visitDate: "", visitTime: "",
                   customer: "", contact: "", email: "",
                   funding: "", purpose: "", budget: "", people: "", channel: "",
-                  prospect: "", result: "未実施", nextAction: "", note: ""
+                  prospect: "", result: "未実施", nextAction: "", note: "",
+                  handled: false, handledBy: "", handledAt: "" // 🆕 v9.365: 最初は未対応
                 };
                 // 🆕 新規反響は配列の先頭に追加（ボタンのすぐ下に表示される）
                 setForm(p => ({ ...p, viewings: [newItem, ...(p.viewings || [])] }));
@@ -12927,8 +13139,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               // 🆕 v8.72: 同名顧客のリピート判定（form.viewings の元 index で参照可能なマップ）
               const repeatMap = computeViewingRepeats(form.viewings || []);
               // 🆕 反響日が新しい順にソート（元の index は内部処理用に保持）
-              const arr = (form.viewings || []).map((vv, originalIdx) => ({ v: vv, originalIdx }));
-              arr.sort((a, b) => (b.v.date || "").localeCompare(a.v.date || ""));
+              const arr = sortViewingsByDateDesc((form.viewings || []).map((vv, originalIdx) => ({ v: vv, originalIdx })), true);
               return arr.map(({ v, originalIdx: i }) => {
               const isExpanded = !!expandedViewings[i];
               const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val, updatedAt: Date.now() } : vv) }));
@@ -12950,6 +13161,10 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        {/* 🆕 v9.365: 対応済みかどうか */}
+                        <span style={{ background: v.handled ? "#10b98133" : "#ef4444", color: v.handled ? "#10b981" : "#fff", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                          {v.handled ? `✅対応済${viewingHandledCaption(v) ? " " + viewingHandledCaption(v) : ""}` : "🔴未対応"}
+                        </span>
                         <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
                         {rep && rep.total > 1 && (
                           <span style={{
@@ -13143,6 +13358,37 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                           </div>
                         </div>
                       )}
+
+                      {/* 🆕 v9.365: 対応状況（この反響に電話・返信をしたか） */}
+                      <Field label="🙋 対応状況">
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                          {["未対応", "対応済"].map(key => {
+                            const info = HANDLED_INFO[key];
+                            const active = viewingHandledKey(v) === key;
+                            const toHandled = key === "対応済";
+                            return (
+                              <button key={key} onClick={() => setForm(p => ({
+                                ...p,
+                                viewings: (p.viewings || []).map((vv, j) => j !== i ? vv : {
+                                  ...vv,
+                                  handled: toHandled,
+                                  handledBy: toHandled ? (vv.handledBy || currentUser || "") : "",
+                                  handledAt: toHandled ? (vv.handledAt || new Date().toISOString()) : "",
+                                  updatedAt: Date.now(),
+                                }),
+                              }))}
+                                style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                                  background: active ? info.color : C.inset, color: active ? "#fff" : info.color,
+                                  border: `1.5px solid ${info.color}` }}>
+                                {info.icon} {key}
+                              </button>
+                            );
+                          })}
+                          {v.handled && viewingHandledCaption(v) && (
+                            <span style={{ fontSize: 10, color: C.muted }}>（{viewingHandledCaption(v)}）</span>
+                          )}
+                        </div>
+                      </Field>
 
                       {/* 見込度（チップ式） */}
                       <Field label="🔥 見込度">
