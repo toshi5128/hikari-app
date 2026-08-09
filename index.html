@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-09-v9.368-investors-auto";
+const APP_VERSION = "2026-08-09-v9.369-investors-dedupe";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -28620,7 +28620,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 20 }}>その他の機能</div>
       {[
         { key: "yakusho", icon: "landmark", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
-        { key: "investors", icon: "gem", title: "投資家リスト", desc: "反響で「投資家」を選んだ顧客を自動集約（先行打診の送り先にも自動で入る）", count: (data.stocks || []).reduce((a, s) => a + (s.viewings || []).filter(v => v.purpose === "投資家").length, 0) + (data.mediations || []).reduce((a, m) => a + (m.viewings || []).filter(v => v.purpose === "投資家").length, 0) },
+        { key: "investors", icon: "gem", title: "投資家リスト", desc: "反響で「投資家」を選んだ顧客を自動集約（先行打診の送り先にも自動で入る）", count: collectInvestorTargets(data).length }, // 🆕 v9.369: 問合せ件数ではなく「人数」
         { key: "offer", icon: "mail", title: "先行打診（一斉メール）", desc: "市場に出す前に、買取業者・投資家へまとめてご案内", count: (data.offers || []).length },
         { key: "hanro", icon: "handshake", title: "買取業者リスト", desc: "物件を市場に出す前に声をかける買取業者の名簿", count: (data.hanro || []).filter(r => r && r.kind !== "投資家").length },
         { key: "shorui", icon: "folder", title: "書類関係", desc: "精算書ひな形・各種テンプレート", count: null },
@@ -31982,26 +31982,69 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
     return list;
   }, [data.stocks, data.mediations]);
 
-  // フィルター適用
-  const filtered = useMemo(() => investors.filter(v => {
+  // 🆕 v9.369: 1人1行に名寄せする（同じ人が何度問い合わせても1件）
+  //   ・見分け方は先行打診とまったく同じ（メール → 電話 → 氏名）＝両画面の人数が必ず一致する
+  //   ・各回の問合せは items に履歴として残す（▼で開くと全部見られる）
+  const people = useMemo(() => {
+    const groups = new Map();
+    investors.forEach(v => {
+      const key = investorKeyOf(v);
+      if (!key) return;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(v);
+    });
+    const out = [];
+    groups.forEach((items, key) => {
+      items.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+      const pick = (fn) => { for (const it of items) { const x = fn(it); if (x) return x; } return ""; };
+      const latest = items[0];
+      out.push({
+        key,
+        name: pick(v => v.customer) || "(名前未入力)",
+        email: pick(v => v.email),
+        contact: pick(v => v.contact),
+        investArea: pick(v => v.investArea),
+        investBudget: pick(v => v.investBudget),
+        investYield: pick(v => v.investYield),
+        investType: pick(v => v.investType),
+        funding: pick(v => v.funding),
+        budget: pick(v => v.budget),
+        prospect: latest.prospect || "",
+        result: latest.result || "",
+        nextAction: pick(v => v.nextAction),
+        date: latest.date || "",
+        visitDate: latest.visitDate || "",
+        visitTime: latest.visitTime || "",
+        stockId: latest.stockId,
+        stockName: latest.stockName || "",
+        stockAssignee: pick(v => v.stockAssignee),
+        items,
+      });
+    });
+    out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    return out;
+  }, [investors]);
+
+  // フィルターは「その人のどれかの問合せが当てはまれば表示」
+  const filtered = useMemo(() => people.filter(p => {
     if (search) {
       const q = search.toLowerCase();
-      const text = [v.customer, v.investArea, v.investBudget, v.investType, v.stockName, v.note, v.contact, v.email].join(" ").toLowerCase();
+      const text = p.items.map(v => [v.customer, v.investArea, v.investBudget, v.investType, v.stockName, v.note, v.contact, v.email].join(" ")).join(" ").toLowerCase();
       if (!text.includes(q)) return false;
     }
-    if (filterProspect.length && !filterProspect.includes(v.prospect || "")) return false;
-    if (filterResult.length && !filterResult.includes(v.result || "")) return false;
+    if (filterProspect.length && !p.items.some(v => filterProspect.includes(v.prospect || ""))) return false;
+    if (filterResult.length && !p.items.some(v => filterResult.includes(v.result || ""))) return false;
     return true;
-  }), [investors, search, filterProspect, filterResult]);
+  }), [people, search, filterProspect, filterResult]);
 
-  // KPI
-  const kpi = useMemo(() => {
-    const total = investors.length;
-    const hot = investors.filter(v => v.prospect === "熱い").length;
-    const active = investors.filter(v => !["NG", "ご縁なし"].includes(v.nextAction)).length;
-    const closed = investors.filter(v => v.nextAction === "成約").length;
-    return { total, hot, active, closed };
-  }, [investors]);
+  // KPI（すべて「人数」。問合せの回数とは別物なので混同しないよう明記する）
+  const kpi = useMemo(() => ({
+    total: people.length,
+    inquiries: investors.length,
+    hot: people.filter(p => p.items.some(v => v.prospect === "熱い")).length,
+    mailable: people.filter(p => p.email).length,
+    closed: people.filter(p => p.items.some(v => v.nextAction === "成約")).length,
+  }), [people, investors]);
 
   return (
     <div>
@@ -32010,12 +32053,12 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
         <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}><NavIcon name="gem" size={20} /> 投資家リスト</div>
       </div>
 
-      {/* KPI */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+      {/* KPI（人数ベース） */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 6 }}>
         {[
-          { label: "総投資家数", count: kpi.total, color: "#a855f7", icon: "💎" },
+          { label: "投資家（人）", count: kpi.total, color: "#a855f7", icon: "💎" },
           { label: "🔥熱い", count: kpi.hot, color: C.danger, icon: "🔥" },
-          { label: "アクティブ", count: kpi.active, color: C.success, icon: "✅" },
+          { label: "打診できる", count: kpi.mailable, color: C.success, icon: "📨" },
           { label: "成約済", count: kpi.closed, color: C.accent, icon: "🎉" },
         ].map(k => (
           <div key={k.label} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}>
@@ -32024,6 +32067,11 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
             <div style={{ color: C.muted, fontSize: 9, marginTop: 4 }}>{k.label}</div>
           </div>
         ))}
+      </div>
+      {/* 🆕 v9.369: 「人数」と「問合せの回数」の違いを明記（先行打診の件数と食い違って見えるのを防ぐ） */}
+      <div style={{ color: C.muted, fontSize: 11, marginBottom: 14, lineHeight: 1.6 }}>
+        同じ人の問合せは1件にまとめています（問合せ {kpi.inquiries} 件 → {kpi.total} 人）。
+        先行打診でメールを送れるのは、メールが分かっている {kpi.mailable} 人です。
       </div>
 
       <SearchBar value={search} onChange={setSearch} placeholder="名前・エリア・予算・物件で検索..." />
@@ -32035,40 +32083,25 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
 
       {/* Excelダウンロードボタン */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
-        <div style={{ color: C.muted, fontSize: 12 }}>{filtered.length}件表示</div>
+        <div style={{ color: C.muted, fontSize: 12 }}>{filtered.length}人表示</div>
         <div style={{ display: "flex", gap: 6 }}>
           <button onClick={() => {
             if (!filtered.length) { alert("ダウンロードするデータがありません"); return; }
-            // 投資家別サマリー（一人一行・6項目）
-            const investorMap = new Map();
-            filtered.forEach(v => {
-              const name = (v.customer || "").trim();
-              const email = (v.email || "").trim().toLowerCase();
-              const key = name || email || `_${v.key}`;
-              if (!investorMap.has(key)) {
-                investorMap.set(key, {
-                  name: v.customer || "",
-                  emails: new Set(),
-                  stockNames: new Set(),
-                  assignees: new Set(),
-                  investAreas: new Set(),
-                  investYields: new Set(),
-                });
-              }
-              const g = investorMap.get(key);
-              if (v.email) g.emails.add(v.email);
-              if (v.stockName) g.stockNames.add(v.stockName);
-              if (v.stockAssignee) g.assignees.add(v.stockAssignee);
-              if (v.investArea) g.investAreas.add(v.investArea);
-              if (v.investYield) g.investYields.add(v.investYield);
-            });
-            const rows = [...investorMap.values()].map(g => ({
-              "名前": g.name,
-              "メールアドレス": [...g.emails].join("、"),
-              "反響物件": [...g.stockNames].join("、"),
-              "担当者": [...g.assignees].join("、"),
-              "希望エリア": [...g.investAreas].join("、"),
-              "利回り": [...g.investYields].join("、"),
+            // 🆕 v9.369: 画面と同じ名寄せ（1人1行）でそのまま出す
+            const rows = filtered.map(p => ({
+              "名前": p.name,
+              "メールアドレス": p.email,
+              "電話番号": p.contact,
+              "問合せ回数": p.items.length,
+              "最終問合せ日": p.date,
+              "反響物件": [...new Set(p.items.map(v => v.stockName).filter(Boolean))].join("、"),
+              "担当者": [...new Set(p.items.map(v => v.stockAssignee).filter(Boolean))].join("、"),
+              "希望エリア": p.investArea,
+              "希望価格帯": p.investBudget,
+              "物件タイプ希望": p.investType,
+              "利回り": p.investYield,
+              "打診メール": !p.email ? "送れない(メール無し)"
+                : ((data.investorMail || []).find(x => x && String(x.id) === String(p.key))?.optOut ? "送らない" : "送る"),
             }));
             const ymd = new Date().toISOString().split("T")[0];
             downloadCSV(rows, `投資家リスト_${ymd}.csv`);
@@ -32079,7 +32112,8 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
           }}><NavIcon name="download" size={15} /> 投資家別CSV</button>
           <button onClick={() => {
             if (!filtered.length) { alert("ダウンロードするデータがありません"); return; }
-            const rows = filtered.map(v => ({
+            // 案件別＝問合せ1回につき1行（名寄せ前の生データ）
+            const rows = filtered.flatMap(p => p.items).map(v => ({
               "反響日": v.date || "",
               "反響曜日": dayOfWeekLabel(v.date)?.label || "",
               "案内日": v.visitDate || "",
@@ -32122,38 +32156,44 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
         </div>
       ) : (
         <div style={{ display: "grid", gap: 10 }}>
-          {filtered.map(v => {
-            const isExpanded = !!expandedRows[v.key];
-            const prospect = PROSPECT_INFO[v.prospect];
-            const result = RESULT_INFO[v.result];
-            const dow = dayOfWeekLabel(v.date);
+          {filtered.map(p => {
+            const isExpanded = !!expandedRows[p.key];
+            const prospect = PROSPECT_INFO[p.prospect];
+            const result = RESULT_INFO[p.result];
+            const dow = dayOfWeekLabel(p.date);
+            const repeat = p.items.length > 1;
             return (
-              <div key={v.key} style={{ background: C.cardBg, border: `1.5px solid #a855f733`, borderRadius: 12, padding: 14 }}>
-                {/* サマリー */}
+              <div key={p.key} style={{ background: C.cardBg, border: `1.5px solid ${repeat ? "#f9731666" : "#a855f733"}`, borderLeft: repeat ? "4px solid #f97316" : `1.5px solid #a855f733`, borderRadius: 12, padding: 14 }}>
+                {/* サマリー（1人1枚） */}
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 15, fontWeight: 800, color: C.text }}>{v.customer || "(名前未入力)"}</span>
-                      {prospect && (
-                        <span style={{ background: prospect.color + "33", color: prospect.color, padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700 }}>
-                          {prospect.icon}{v.prospect}
+                      <span style={{ fontSize: 15, fontWeight: 800, color: C.text }}>{p.name}</span>
+                      {/* 🆕 v9.369: 何回問い合わせが来ている人か */}
+                      {repeat && (
+                        <span style={{ background: "#f9731633", color: "#f97316", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                          <NavIcon name="refresh" size={15} /> 問合せ {p.items.length}回
                         </span>
                       )}
-                      {v.nextAction && (
+                      {prospect && (
+                        <span style={{ background: prospect.color + "33", color: prospect.color, padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700 }}>
+                          {prospect.icon}{p.prospect}
+                        </span>
+                      )}
+                      {p.nextAction && (
                         <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 600 }}>
-                          <NavIcon name="refresh" size={15} />{v.nextAction}
+                          <NavIcon name="refresh" size={15} />{p.nextAction}
                         </span>
                       )}
                       {/* 🆕 v9.367: 先行打診メールを送る／送らない（このお客さま単位・全端末で共有） */}
                       {(() => {
-                        const ikey = investorKeyOf(v);
-                        const flag = (data.investorMail || []).find(x => x && String(x.id) === String(ikey));
+                        const flag = (data.investorMail || []).find(x => x && String(x.id) === String(p.key));
                         const off = !!(flag && flag.optOut);
-                        if (!String(v.email || "").trim()) {
+                        if (!p.email) {
                           return <span style={{ background: C.muted + "22", color: C.muted, padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>メール無し（打診は電話で）</span>;
                         }
                         return (
-                          <button onClick={() => setData(d => toggleInvestorOptOut(d, ikey, !off))}
+                          <button onClick={() => setData(d => toggleInvestorOptOut(d, p.key, !off))}
                             style={{ background: off ? "#ef444422" : "#10b98122", border: `1.5px solid ${off ? "#ef4444" : "#10b981"}`, color: off ? "#ef4444" : "#10b981", borderRadius: 999, padding: "2px 9px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700 }}>
                             {off ? "🚫 打診メール 送らない" : "📨 打診メール 送る"}
                           </button>
@@ -32161,46 +32201,64 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
                       })()}
                     </div>
                     <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, lineHeight: 1.6 }}>
-                      <NavIcon name="calendar" size={15} /> 反響:{v.date || "—"}{dow && <span style={{ color: dow.color, marginLeft: 2 }}>({dow.label})</span>}
-                      {v.visitDate && (() => { const vdow = dayOfWeekLabel(v.visitDate); return (
+                      <NavIcon name="calendar" size={15} /> {repeat ? "最新の反響" : "反響"}:{p.date || "—"}{dow && <span style={{ color: dow.color, marginLeft: 2 }}>({dow.label})</span>}
+                      {p.visitDate && (() => { const vdow = dayOfWeekLabel(p.visitDate); return (
                         <span style={{ color: "#06b6d4", marginLeft: 8, fontWeight: 700 }}>
-                          → 案内:{v.visitDate}{vdow && <span style={{ color: vdow.color, marginLeft: 2 }}>({vdow.label})</span>}{v.visitTime ? " " + v.visitTime : ""}
+                          → 案内:{p.visitDate}{vdow && <span style={{ color: vdow.color, marginLeft: 2 }}>({vdow.label})</span>}{p.visitTime ? " " + p.visitTime : ""}
                         </span>
                       ); })()}
-                      <br /><NavIcon name="home" size={15} /> <span onClick={() => onJumpToStock && onJumpToStock(v.stockId)} style={{ color: C.accent, textDecoration: "underline", cursor: "pointer" }}>{v.stockName}</span>
+                      <br /><NavIcon name="home" size={15} /> <span onClick={() => onJumpToStock && onJumpToStock(p.stockId)} style={{ color: C.accent, textDecoration: "underline", cursor: "pointer" }}>{p.stockName}</span>
+                      {repeat ? <span style={{ marginLeft: 6 }}>ほか {p.items.length - 1}件</span> : null}
                     </div>
-                    {(v.investArea || v.investBudget || v.investYield || v.investType) && (
+                    {(p.investArea || p.investBudget || p.investYield || p.investType) && (
                       <div style={{ background: "#7c3aed11", borderLeft: `3px solid #a855f7`, padding: "8px 10px", borderRadius: 4, fontSize: 12, lineHeight: 1.7 }}>
-                        {v.investArea && <div><NavIcon name="map" size={15} /> <strong style={{ color: "#a855f7" }}>希望エリア：</strong>{v.investArea}</div>}
-                        {v.investBudget && <div><NavIcon name="banknote" size={15} /> <strong style={{ color: "#a855f7" }}>希望価格：</strong>{v.investBudget}</div>}
-                        {v.investYield && <div><NavIcon name="trendup" size={15} /> <strong style={{ color: "#a855f7" }}>利回り希望：</strong>{v.investYield}</div>}
-                        {v.investType && <div><NavIcon name="building" size={15} /> <strong style={{ color: "#a855f7" }}>物件タイプ：</strong>{v.investType}</div>}
+                        {p.investArea && <div><NavIcon name="map" size={15} /> <strong style={{ color: "#a855f7" }}>希望エリア：</strong>{p.investArea}</div>}
+                        {p.investBudget && <div><NavIcon name="banknote" size={15} /> <strong style={{ color: "#a855f7" }}>希望価格：</strong>{p.investBudget}</div>}
+                        {p.investYield && <div><NavIcon name="trendup" size={15} /> <strong style={{ color: "#a855f7" }}>利回り希望：</strong>{p.investYield}</div>}
+                        {p.investType && <div><NavIcon name="building" size={15} /> <strong style={{ color: "#a855f7" }}>物件タイプ：</strong>{p.investType}</div>}
                       </div>
                     )}
                   </div>
-                  <button onClick={() => setExpandedRows(p => ({ ...p, [v.key]: !isExpanded }))}
+                  <button onClick={() => setExpandedRows(x => ({ ...x, [p.key]: !isExpanded }))}
                     style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
                     {isExpanded ? "▲" : "▼"}
                   </button>
                 </div>
 
-                {/* 詳細 */}
+                {/* 詳細（連絡先＋問合せの履歴を全部） */}
                 {isExpanded && (
                   <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.borderDim}`, fontSize: 12, lineHeight: 1.7 }}>
-                    {(v.contact || v.email) && (
+                    {(p.contact || p.email) && (
                       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                        {v.contact && <a href={`tel:${v.contact}`} style={{ flex: 1, textDecoration: "none", background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 8, padding: "8px 10px", textAlign: "center", fontSize: 12, fontWeight: 700 }}><NavIcon name="phone" size={12} /> {v.contact}</a>}
-                        {v.email && <a href={`mailto:${v.email}`} style={{ flex: 1, textDecoration: "none", background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "8px 10px", textAlign: "center", fontSize: 12, fontWeight: 700 }}><NavIcon name="mail" size={12} /> {v.email}</a>}
+                        {p.contact && <a href={`tel:${p.contact}`} style={{ flex: 1, textDecoration: "none", background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 8, padding: "8px 10px", textAlign: "center", fontSize: 12, fontWeight: 700 }}><NavIcon name="phone" size={12} /> {p.contact}</a>}
+                        {p.email && <a href={`mailto:${p.email}`} style={{ flex: 1, textDecoration: "none", background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "8px 10px", textAlign: "center", fontSize: 12, fontWeight: 700 }}><NavIcon name="mail" size={12} /> {p.email}</a>}
                       </div>
                     )}
-                    {v.funding && <div><NavIcon name="banknote" size={15} /> 資金種別：{v.funding}</div>}
-                    {v.budget && <div>💵 検討予算：{v.budget}</div>}
-                    {v.people && <div><NavIcon name="user" size={15} /> ‍<NavIcon name="user" size={15} /> ‍<NavIcon name="user" size={15} /> 来場人数：{v.people}</div>}
-                    {v.channel && <div><NavIcon name="handshake" size={15} /> 経由：{v.channel}</div>}
-                    {result && <div>{result.icon} 結果：<span style={{ color: result.color, fontWeight: 700 }}>{v.result}</span></div>}
-                    {v.note && <div style={{ marginTop: 8, padding: 8, background: C.inset, borderRadius: 6 }}><NavIcon name="filetext" size={15} /> {v.note}</div>}
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}`, fontSize: 11, color: C.muted }}>
-                      担当者：{v.stockAssignee || "(未設定)"}
+                    {p.funding && <div><NavIcon name="banknote" size={15} /> 資金種別：{p.funding}</div>}
+                    {p.budget && <div>💵 検討予算：{p.budget}</div>}
+                    {result && <div>{result.icon} 直近の結果：<span style={{ color: result.color, fontWeight: 700 }}>{p.result}</span></div>}
+
+                    {/* 🆕 v9.369: この人の問合せ履歴（新しい順） */}
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#a855f7", marginBottom: 6 }}>問合せの履歴（{p.items.length}件）</div>
+                      {p.items.map((v, i) => {
+                        const r2 = RESULT_INFO[v.result];
+                        const p2 = PROSPECT_INFO[v.prospect];
+                        return (
+                          <div key={v.key || i} style={{ background: C.inset, borderRadius: 6, padding: "8px 10px", marginBottom: 6 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+                              <span style={{ color: C.text, fontWeight: 700 }}>{v.date || "—"}</span>
+                              <span onClick={() => onJumpToStock && onJumpToStock(v.stockId)} style={{ color: C.accent, textDecoration: "underline", cursor: "pointer" }}>{v.stockName}</span>
+                              {p2 && <span style={{ background: p2.color + "33", color: p2.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{p2.icon}{v.prospect}</span>}
+                              {r2 && v.result !== "未実施" && <span style={{ background: r2.color + "33", color: r2.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{r2.icon}{v.result}</span>}
+                              {v.visitDate && <span style={{ color: "#06b6d4", fontWeight: 700 }}>案内:{v.visitDate}{v.visitTime ? " " + v.visitTime : ""}</span>}
+                              {v.channel && <span style={{ color: C.muted }}>{v.channel}</span>}
+                              {v.stockAssignee && <span style={{ color: C.muted, marginLeft: "auto" }}>担当:{v.stockAssignee}</span>}
+                            </div>
+                            {v.note && <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.5 }}><NavIcon name="filetext" size={12} /> {v.note}</div>}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
