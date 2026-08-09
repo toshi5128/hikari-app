@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-09-v9.366-offer-senders";
+const APP_VERSION = "2026-08-09-v9.367-investors-auto";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1284,6 +1284,34 @@ function migrateUnTombDemoSeedsV881(d) {
   };
 }
 
+// 🆕 v9.367: 先行打診の投資家を「反響から自動集約」に一本化したので、
+//   名簿(hanro)に入っていたテスト用サンプル6件を 1 回だけ消す。
+//   ・v8.80 の「名前で当てて実データまで消した」事故の教訓で、削除対象は id を明示指定する
+//   ・tombstone も立てて、他端末の古いキャッシュから復活しないようにする
+const V9367_SAMPLE_HANRO_IDS = [
+  1786114862450, 1786114862451, 1786114862452, // サンプル建設 / サンプル住販 / サンプル不動産
+  1786114862453, 1786114862454,                 // サンプル太郎 / サンプル花子（投資家サンプル）
+  1786195284506,                                // テスト会社 下田
+];
+function migrateClearHanroSamplesV9367(d) {
+  if (!d || typeof d !== "object") return d;
+  const ids = new Set(V9367_SAMPLE_HANRO_IDS.map(String));
+  const cur = Array.isArray(d.hanro) ? d.hanro : [];
+  const kept = cur.filter(r => !(r && ids.has(String(r.id))));
+  const now = Date.now();
+  const tombs = { ...(d.tombstones || {}) };
+  const hanroTomb = { ...(tombs.hanro || {}) };
+  V9367_SAMPLE_HANRO_IDS.forEach(id => { hanroTomb[String(id)] = now; });
+  tombs.hanro = hanroTomb;
+  if (cur.length !== kept.length) console.log(`[v9.367] 名簿のサンプルを ${cur.length - kept.length} 件削除しました`);
+  return {
+    ...d,
+    hanro: kept,
+    tombstones: tombs,
+    migrations: { ...(d.migrations || {}), v9367_clear_hanro_samples: now },
+  };
+}
+
 function migrateResetDemoSeedTimestampsV868(d) {
   if (!d || typeof d !== "object") return d;
   const DEMO_STOCK_NAMES = new Set([
@@ -2081,7 +2109,8 @@ const DEFAULT_DATA = {
   ukeoiDocs: [], // 🆕 v9.304: 保存したリフォーム工事請負契約書（入力内容のスナップショット。全社共有）
   baikaiDocs: [], // 🆕 v9.308: 保存した専任媒介契約書（入力内容のスナップショット。全社共有）
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
-  hanro: [], // 🆕 v9.352: 買取業者・投資家リスト（先行打診の送り先）
+  hanro: [], // 🆕 v9.352: 買取業者リスト（先行打診の送り先。投資家は反響から自動集約＝v9.367）
+  investorMail: [], // 🆕 v9.367: 投資家の打診メール設定（id＝名寄せキー / optOut / lastSentAt）
   offers: [], // 🆕 v9.354: 先行打診の送信履歴（いつ・どの物件を・何件に送ったか）
   offerTemplates: [], // 🆕 v9.355: 自分で保存した文面テンプレ
   mailApi: { url: "", token: "" }, // 🆕 v9.354: 一斉送信の窓口（GASウェブアプリのURLと合言葉）
@@ -2645,7 +2674,7 @@ async function saveToSupabase(data, retries = 3) {
         });
         // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去（手動削除を尊重）
         // 配列の項目別マージ（mergeItems を使う）
-        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro", "offers", "offerTemplates"];
+        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro", "offers", "offerTemplates", "investorMail"];
         const mergedArrays = {};
         arrayKeys.forEach(k => {
           const localArr = Array.isArray(data[k]) ? data[k] : [];
@@ -4939,6 +4968,20 @@ function MainApp({ onLock, onSwitchUser }) {
     v881MigratedRef.current = true;
     console.log("[v8.81] v8.80 が登録した tombstones を解除します…");
     setData(d => migrateUnTombDemoSeedsV881(d));
+  }, [data]);
+
+  // 🆕 v9.367: 名簿(hanro)のテスト用サンプルを削除（1回限り）
+  const v9367MigratedRef = useRef(false);
+  useEffect(() => {
+    if (v9367MigratedRef.current) return;
+    if (!data) return;
+    if (data.migrations && data.migrations.v9367_clear_hanro_samples) {
+      v9367MigratedRef.current = true;
+      return;
+    }
+    v9367MigratedRef.current = true;
+    console.log("[v9.367] 名簿のサンプルを削除します…");
+    setData(d => migrateClearHanroSamplesV9367(d));
   }, [data]);
 
   // 🆕 v8.83: デモ jiage の nextVisit をクリア（カレンダー表示を消す）
@@ -28577,9 +28620,9 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 20 }}>その他の機能</div>
       {[
         { key: "yakusho", icon: "landmark", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
-        { key: "investors", icon: "gem", title: "投資家リスト", desc: "反響で「投資家」を選択した顧客を自動集約", count: (data.stocks || []).reduce((a, s) => a + (s.viewings || []).filter(v => v.purpose === "投資家").length, 0) + (data.mediations || []).reduce((a, m) => a + (m.viewings || []).filter(v => v.purpose === "投資家").length, 0) },
+        { key: "investors", icon: "gem", title: "投資家リスト", desc: "反響で「投資家」を選んだ顧客を自動集約（先行打診の送り先にも自動で入る）", count: (data.stocks || []).reduce((a, s) => a + (s.viewings || []).filter(v => v.purpose === "投資家").length, 0) + (data.mediations || []).reduce((a, m) => a + (m.viewings || []).filter(v => v.purpose === "投資家").length, 0) },
         { key: "offer", icon: "mail", title: "先行打診（一斉メール）", desc: "市場に出す前に、買取業者・投資家へまとめてご案内", count: (data.offers || []).length },
-        { key: "hanro", icon: "handshake", title: "買取業者・投資家リスト", desc: "物件を市場に出す前に声をかける先の名簿", count: (data.hanro || []).length },
+        { key: "hanro", icon: "handshake", title: "買取業者リスト", desc: "物件を市場に出す前に声をかける買取業者の名簿", count: (data.hanro || []).filter(r => r && r.kind !== "投資家").length },
         { key: "shorui", icon: "folder", title: "書類関係", desc: "精算書ひな形・各種テンプレート", count: null },
         { key: "keiyaku", icon: "clipboard", title: "契約書自動作成ツール", desc: "重要事項説明書＋売買契約書をExcelで自動生成（会社PCで起動中のとき）", count: null, action: openKeiyakuTool },
         { key: "dm", icon: "mail", title: "DM管理", desc: "送付・返送・反応の管理／窓付き封筒の手紙を一括作成", count: (data.jiage || []).filter(j => dmStateFor(j) === "送付対象").length },
@@ -31066,6 +31109,104 @@ const OFFER_SENDERS = [
   { key: "isoda", short: "磯田", name: "ひかり不動産 磯田", mail: "isoda@hikari-fudosan.jp" },
 ];
 
+// 🆕 v9.367: 先行打診の「投資家」は反響（購入目的＝投資家）から自動で集める
+//   ・名簿へ手で写す運用は廃止。反響そのものが唯一の原本になる。
+//   ・同じ人はメール（無ければ電話 → 氏名）で名寄せし、いちばん新しい反響の内容を採用
+//   ・「送らない（配信停止）」「最後に打診した日」だけ data.investorMail に持つ（反響本体は触らない）
+
+// 「1500〜3000万」「〜700万円」「300台」などの自由記述から下限・上限（万円）を読む。
+// 読めない書き方は空のまま＝価格の絞り込みで外さない（取りこぼさない側に倒す）。
+function parseInvestBudget(text) {
+  const s = String(text || "").trim();
+  if (!s) return { min: "", max: "" };
+  const z = s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  const nums = [];
+  const re = /(\d+(?:\.\d+)?)\s*(億|万)?/g;
+  let m;
+  while ((m = re.exec(z))) {
+    let n = parseFloat(m[1]);
+    if (m[2] === "億") n *= 10000;
+    nums.push(Math.round(n));
+  }
+  if (!nums.length) return { min: "", max: "" };
+  if (/[〜～~ー–—]/.test(z) && nums.length >= 2) {
+    return { min: String(Math.min(nums[0], nums[1])), max: String(Math.max(nums[0], nums[1])) };
+  }
+  if (/^\s*[〜～~]/.test(z) || /(以下|以内|まで)/.test(z)) return { min: "", max: String(nums[0]) };
+  if (/(以上|から|台|超)/.test(z)) return { min: String(nums[0]), max: "" };
+  return { min: "", max: "" }; // 「500」だけ等、上限か下限か決められないものは絞り込みに使わない
+}
+
+// 同じ人かどうかの見分け方（メール → 電話 → 氏名の順）
+function investorKeyOf(v) {
+  const email = String(v.email || "").trim().toLowerCase();
+  if (email) return email;
+  const tel = String(v.contact || "").replace(/[\s\-()（）]/g, "");
+  if (tel) return "t:" + tel;
+  const nm = String(v.customer || "").trim();
+  return nm ? "n:" + nm : "";
+}
+
+// 反響の投資家を「名簿と同じ形」に整えて返す（先行打診の送り先として使える形）
+function collectInvestorTargets(data) {
+  if (!data || typeof data !== "object") return [];
+  const flags = {};
+  (data.investorMail || []).forEach(f => { if (f && f.id != null) flags[String(f.id)] = f; });
+  const groups = new Map();
+  const add = (v, from) => {
+    if (!v || v.purpose !== "投資家") return;
+    const key = investorKeyOf(v);
+    if (!key) return;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ v, from });
+  };
+  (data.stocks || []).forEach(s => (s.viewings || []).forEach(v => add(v, s.name || "")));
+  (data.mediations || []).forEach(m => (m.viewings || []).forEach(v => add(v, (m.name || "") + "（仲介）")));
+
+  const out = [];
+  groups.forEach((items, key) => {
+    items.sort((a, b) => String(b.v.date || "").localeCompare(String(a.v.date || "")));
+    // 新しい反響を優先しつつ、空欄は古い反響で埋める
+    const pick = (fn) => { for (const it of items) { const x = fn(it.v); if (x) return String(x).trim(); } return ""; };
+    const budget = pick(v => v.investBudget);
+    const b = parseInvestBudget(budget);
+    const areas = pick(v => v.investArea);
+    const f = flags[key] || {};
+    out.push({
+      id: "inv:" + key,
+      kind: "投資家",
+      company: "",
+      name: pick(v => v.customer),
+      email: pick(v => v.email),
+      tel: pick(v => v.contact),
+      types: pick(v => v.investType),
+      areas,
+      budgetMin: b.min, budgetMax: b.max,
+      note: [budget ? "希望価格:" + budget : "", areas ? "エリア:" + areas : ""].filter(Boolean).join(" / "),
+      optOut: !!f.optOut,
+      lastSentAt: f.lastSentAt || "",
+      _investor: true,          // 反響から自動で来た人の印
+      _key: key,
+      _count: items.length,     // 何回問合せが来ているか
+      _date: items[0].v.date || "",
+      _from: items[0].from || "",
+      _result: items[0].v.result || "",
+    });
+  });
+  out.sort((a, b) => String(b._date).localeCompare(String(a._date)));
+  return out;
+}
+
+// 投資家の「送る／送らない」を切り替える（data.investorMail に持つ）
+function toggleInvestorOptOut(d, key, next) {
+  const now = new Date().toISOString();
+  const arr = [...(d.investorMail || [])];
+  const i = arr.findIndex(x => x && String(x.id) === String(key));
+  if (i >= 0) arr[i] = { ...arr[i], optOut: next, updatedAt: now };
+  else arr.push({ id: key, optOut: next, lastSentAt: "", updatedAt: now });
+  return { ...d, investorMail: arr };
+}
+
 // 資料のご案内ブロック（ギガファイル便などのURL・有効期限・パスワード）
 function offerDocBlock(ctx) {
   const url = String(ctx.docUrl || "").trim();
@@ -31130,7 +31271,10 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   const [kindSel, setKindSel] = useState("買取業者");
   const [senderKey, setSenderKey] = useState("shimoda");
 
-  const hanro = data.hanro || [];
+  // 🆕 v9.367: 買取業者＝名簿(hanro)、投資家＝反響から自動集約
+  const hanro = useMemo(() => (data.hanro || []).filter(r => r && r.kind !== "投資家"), [data.hanro]);
+  const investorRows = useMemo(() => collectInvestorTargets(data), [data.stocks, data.mediations, data.investorMail]);
+  const pool = useMemo(() => [...hanro, ...investorRows], [hanro, investorRows]);
 
   // 送信キュー（Supabase）の最近の状況
   const loadQueue = async () => {
@@ -31146,7 +31290,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   const stocks = useMemo(() => (data.stocks || []).filter(s => s && (s.name || s.address)), [data.stocks]);
 
   // 送れる先（メールあり・配信停止でない）
-  const sendable = useMemo(() => hanro.filter(r => r.email && !r.optOut), [hanro]);
+  const sendable = useMemo(() => pool.filter(r => r.email && !r.optOut), [pool]);
 
   // 条件に合うか（価格帯だけで判定。エリアは見ない＝買える業者しか登録しない前提）
   const matchOf = (r) => {
@@ -31232,12 +31376,20 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     setData(d => {
       const ids = list.map(r => r.id);
       const hanro2 = (d.hanro || []).map(r => ids.includes(r.id) ? { ...r, lastSentAt: stamp, updatedAt: now.toISOString() } : r);
+      // 🆕 v9.367: 反響から来た投資家は data.investorMail 側に最終打診日を記録
+      const invKeys = list.filter(r => r && r._investor && r._key).map(r => String(r._key));
+      const investorMail2 = [...(d.investorMail || [])];
+      invKeys.forEach(k => {
+        const i = investorMail2.findIndex(x => x && String(x.id) === k);
+        if (i >= 0) investorMail2[i] = { ...investorMail2[i], lastSentAt: stamp, updatedAt: now.toISOString() };
+        else investorMail2.push({ id: k, optOut: false, lastSentAt: stamp, updatedAt: now.toISOString() });
+      });
       const offer = {
         id: Date.now() + Math.floor(Math.random() * 10000),
         stockId, propName, priceMan: Number(priceMan) || 0, docUrl, subject,
         count: list.length, toIds: ids, sentAt: now.toISOString(), sentBy: currentUser || "", note: note || "",
       };
-      return { ...d, hanro: hanro2, offers: [...(d.offers || []), offer] };
+      return { ...d, hanro: hanro2, investorMail: investorMail2, offers: [...(d.offers || []), offer] };
     });
   };
 
@@ -31322,10 +31474,14 @@ function OfferPage({ data, setData, onBack, currentUser }) {
 
         {!sendable.length ? (
           <div style={{ background: C.warnBg, border: `1px solid ${C.warn}`, borderRadius: 12, padding: 14, marginBottom: 14, color: C.text, fontSize: 13, lineHeight: 1.7 }}>
-            送り先が1件もありません。先に「その他 → 買取業者・投資家リスト」で登録してください。
+            送り先が1件もありません。先に「その他 → 買取業者リスト」で登録してください。<br />
+            （投資家は反響で「購入目的＝投資家」を選ぶと、ここへ自動で入ります）
           </div>
         ) : (
-          <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>送れる先：{sendable.length}件（メール登録あり・配信停止を除く）</div>
+          <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>
+            送れる先：{sendable.length}件（メール登録あり・配信停止を除く）<br />
+            <span style={{ fontSize: 11 }}>買取業者 {hanro.filter(r => r.email && !r.optOut).length}件（名簿）／ 投資家 {investorRows.filter(r => r.email && !r.optOut).length}人（反響から自動）</span>
+          </div>
         )}
 
         <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
@@ -31425,7 +31581,8 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   if (step === "targets") {
     const shown = sendable.filter(r => !kindSel || r.kind === kindSel);
     const hitCount = shown.filter(r => matchOf(r).hit).length;
-    const excluded = hanro.filter(r => !r.email || r.optOut);
+    const excluded = pool.filter(r => !r.email || r.optOut);
+    const noMailInvestors = investorRows.filter(r => !r.email && !r.optOut); // 🆕 メールが無い＝電話で当たる人
     return (
       <div>
         <Head title="送る相手を選ぶ" back={() => setStep("stock")} />
@@ -31476,8 +31633,19 @@ function OfferPage({ data, setData, onBack, currentUser }) {
             <button key={r.id} onClick={() => toggle(r.id)} style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "flex-start", gap: 12, background: on ? C.accentBg : C.cardBg, border: `1px solid ${on ? C.accent : C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 8, cursor: "pointer", fontFamily: "inherit" }}>
               <span style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${on ? C.accent : C.border}`, background: on ? C.accent : "transparent", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0, marginTop: 2 }}>{on ? "✓" : ""}</span>
               <span style={{ flex: 1 }}>
-                <span style={{ display: "block", color: C.text, fontWeight: 700, fontSize: 14 }}>{r.company || r.name}{r.company && r.name ? `　${r.name}` : ""}</span>
+                <span style={{ display: "block", color: C.text, fontWeight: 700, fontSize: 14 }}>
+                  {r.company || r.name}{r.company && r.name ? `　${r.name}` : ""}
+                  {r._investor ? <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "#a855f722", color: "#a855f7", marginLeft: 6 }}>反響から</span> : null}
+                </span>
                 <span style={{ display: "block", color: C.muted, fontSize: 11, marginTop: 3 }}>{r.email}</span>
+                {/* 🆕 v9.367: 反響から来た投資家は、どの物件・何回・希望エリアが分かるようにする */}
+                {r._investor ? (
+                  <span style={{ display: "block", color: C.muted, fontSize: 10, marginTop: 3, lineHeight: 1.6 }}>
+                    {r._from ? `${r._from} の反響` : "反響"}{r._date ? `（${r._date}）` : ""}
+                    {r._count > 1 ? `　問合せ${r._count}回` : ""}
+                    {r.areas ? `　希望:${r.areas}` : ""}
+                  </span>
+                ) : null}
                 <span style={{ display: "block", marginTop: 5 }}>
                   {m.hit ? <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.successBg, color: C.success }}>価格が合う</span>
                     : <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.bgDark, color: C.muted }}>価格が範囲外</span>}
@@ -31491,6 +31659,14 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         {excluded.length ? (
           <div style={{ background: C.bgDark, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginTop: 8, color: C.muted, fontSize: 12, lineHeight: 1.7 }}>
             送れない先 {excluded.length}件（メール未登録 or 配信停止）は自動で除外しています。
+            {noMailInvestors.length ? (
+              <>
+                <br />
+                <span style={{ color: C.text, fontWeight: 700 }}>うち投資家 {noMailInvestors.length}人はメールが無いので電話でどうぞ：</span>
+                <br />
+                {noMailInvestors.map(r => `${r.name || "(名前なし)"}${r.tel ? "（" + r.tel + "）" : ""}`).join("　/　")}
+              </>
+            ) : null}
           </div>
         ) : null}
 
@@ -31555,7 +31731,8 @@ function OfferPage({ data, setData, onBack, currentUser }) {
 //   市場に出す前の「先行打診」の送り先をここで一元管理する。
 //   ・買取業者は手入力／CSV取込、投資家は反響（案内記録）から取り込み
 //   ・配信停止フラグを立てた先は打診対象から自動で外れる
-const HANRO_KINDS = ["買取業者", "投資家"];
+// 🆕 v9.367: 投資家は反響から自動集約になったので、この名簿は買取業者だけ
+const HANRO_KINDS = ["買取業者"];
 const HANRO_TYPE_OPTIONS = ["戸建", "土地", "区分", "アパート", "収益", "再建築不可", "借地", "何でも"];
 
 function hanroBlank() {
@@ -31568,8 +31745,6 @@ function hanroSamples() {
     { kind: "買取業者", company: "サンプル建設株式会社", name: "佐藤", email: "sample1@example.com", tel: "048-000-0001", budgetMin: 300, budgetMax: 2000, types: "戸建,再建築不可", note: "現金決済。告知物件も可" },
     { kind: "買取業者", company: "サンプル住販株式会社", name: "鈴木", email: "sample2@example.com", tel: "048-000-0002", budgetMin: 500, budgetMax: 3000, types: "戸建,土地", note: "決済まで2週間" },
     { kind: "買取業者", company: "サンプル不動産", name: "高橋", email: "sample3@example.com", tel: "048-000-0003", budgetMin: 200, budgetMax: 1000, types: "何でも", note: "安いものを数多く" },
-    { kind: "投資家", company: "", name: "サンプル太郎", email: "sample4@example.com", tel: "090-0000-0004", budgetMin: 300, budgetMax: 800, types: "戸建,収益", note: "利回り12%以上" },
-    { kind: "投資家", company: "", name: "サンプル花子", email: "sample5@example.com", tel: "090-0000-0005", budgetMin: 0, budgetMax: 500, types: "戸建", note: "現金。ボロ戸建希望" },
   ];
   const now = new Date().toISOString();
   return base.map((r, i) => ({ ...hanroBlank(), ...r, id: Date.now() + i, createdAt: now, updatedAt: now }));
@@ -31577,25 +31752,23 @@ function hanroSamples() {
 
 function HanroListPage({ data, setData, onBack }) {
   const [search, setSearch] = useState("");
-  const [filterKind, setFilterKind] = useState([]);
   const [editing, setEditing] = useState(null);
 
-  const list = useMemo(() => data.hanro || [], [data.hanro]);
+  // 🆕 v9.367: このリストは買取業者だけ（昔の「投資家」行が残っていても出さない）
+  const list = useMemo(() => (data.hanro || []).filter(r => r && r.kind !== "投資家"), [data.hanro]);
 
   const filtered = useMemo(() => list.filter(r => {
-    if (filterKind.length && !filterKind.includes(r.kind)) return false;
     if (search) {
       const q = search.toLowerCase();
       const t = [r.company, r.name, r.email, r.tel, r.types, r.note].join(" ").toLowerCase();
       if (!t.includes(q)) return false;
     }
     return true;
-  }), [list, search, filterKind]);
+  }), [list, search]);
 
   const kpi = useMemo(() => ({
     total: list.length,
-    gyosha: list.filter(r => r.kind === "買取業者").length,
-    toushi: list.filter(r => r.kind === "投資家").length,
+    gyosha: list.length,
     stop: list.filter(r => r.optOut).length,
   }), [list]);
 
@@ -31622,49 +31795,12 @@ function HanroListPage({ data, setData, onBack }) {
 
   const addSamples = () => {
     setData(d => ({ ...d, hanro: [...(d.hanro || []), ...hanroSamples()] }));
-    alert("テスト用サンプルを5件入れました。\n（メールは example.com なので実際には送られません）");
+    alert("テスト用サンプルを3件入れました。\n（メールは example.com なので実際には送られません）");
   };
 
-  // 反響（案内記録）で「投資家」を選んだ人を取り込む
-  const importInvestors = () => {
-    const cand = [];
-    const push = (v) => {
-      if (v.purpose !== "投資家") return;
-      const name = String(v.customer || "").trim();
-      const email = String(v.email || "").trim();
-      if (!name && !email) return;
-      cand.push({
-        ...hanroBlank(), kind: "投資家", name, email,
-        tel: String(v.contact || "").trim(),
-        areas: String(v.investArea || "").trim(),
-        types: String(v.investType || "").trim(),
-        note: [v.investBudget ? "予算:" + v.investBudget : "", v.note || ""].filter(Boolean).join(" / "),
-      });
-    };
-    (data.stocks || []).forEach(s => (s.viewings || []).forEach(push));
-    (data.mediations || []).forEach(m => (m.viewings || []).forEach(push));
-
-    const cur = data.hanro || [];
-    const seen = new Set();
-    cur.forEach(r => {
-      if (r.email) seen.add("m:" + String(r.email).toLowerCase());
-      if (r.name) seen.add("n:" + String(r.name).trim());
-    });
-    const add = [];
-    cand.forEach(c => {
-      const km = c.email ? "m:" + c.email.toLowerCase() : "";
-      const kn = c.name ? "n:" + c.name : "";
-      if ((km && seen.has(km)) || (!km && kn && seen.has(kn))) return;
-      if (km) seen.add(km);
-      if (kn) seen.add(kn);
-      add.push(c);
-    });
-    if (!add.length) { alert("新しく取り込める投資家はいませんでした。\n（すでに全員リストに入っています）"); return; }
-    if (!window.confirm(`投資家リストから ${add.length} 件を取り込みます。よろしいですか？`)) return;
-    const now = new Date().toISOString();
-    setData(d => ({ ...d, hanro: [...(d.hanro || []), ...add.map((c, i) => ({ ...c, id: Date.now() + i, createdAt: now, updatedAt: now }))] }));
-    alert(`${add.length} 件を取り込みました`);
-  };
+  // 🆕 v9.367: 「投資家リストから取り込み」は廃止。
+  //   投資家は反響（購入目的＝投資家）から先行打診の送り先へ自動で入るため、
+  //   名簿へ写す作業そのものが不要になった（写し忘れ・二重管理の元だった）。
 
   const exportCSV = () => {
     const rows = filtered.map(r => ({
@@ -31691,14 +31827,7 @@ function HanroListPage({ data, setData, onBack }) {
           <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>{editing.id ? "編集" : "新しく追加"}</div>
         </div>
 
-        <Field label="種別">
-          <div style={{ display: "flex", gap: 8 }}>
-            {HANRO_KINDS.map(k => (
-              <button key={k} onClick={() => set("kind", k)} style={{ flex: 1, padding: "12px 0", borderRadius: 10, border: `2px solid ${editing.kind === k ? C.accent : C.borderDim}`, background: editing.kind === k ? C.accentBg : C.cardBg, color: C.text, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>{k}</button>
-            ))}
-          </div>
-        </Field>
-
+        {/* 🆕 v9.367: 種別の切替は廃止（このリストは買取業者だけ。投資家は反響から自動） */}
         <Field label="会社名"><input style={inp} value={editing.company} onChange={e => set("company", e.target.value)} placeholder="株式会社◯◯" /></Field>
         <Field label="担当者名"><input style={inp} value={editing.name} onChange={e => set("name", e.target.value)} placeholder="山田" /></Field>
         <Field label="メールアドレス（打診の送り先）"><input style={inp} type="email" inputMode="email" value={editing.email} onChange={e => set("email", e.target.value)} placeholder="info@example.co.jp" /></Field>
@@ -31740,14 +31869,17 @@ function HanroListPage({ data, setData, onBack }) {
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
-        <div style={{ fontSize: 19, fontWeight: 800, color: C.text }}><NavIcon name="handshake" size={19} /> 買取業者・投資家リスト</div>
+        <div style={{ fontSize: 19, fontWeight: 800, color: C.text }}><NavIcon name="handshake" size={19} /> 買取業者リスト</div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+      {/* 🆕 v9.367: 投資家は反響から自動で集まるので、このリストは買取業者だけ */}
+      <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 14, color: C.muted, fontSize: 12, lineHeight: 1.7 }}>
+        💎 投資家はここに登録しません。反響で「購入目的＝投資家」を選ぶと、先行打診の送り先へ<b style={{ color: C.text }}>自動で入ります</b>（今 {collectInvestorTargets(data).filter(r => r.email && !r.optOut).length} 人）。
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
         {[
-          { label: "登録数", count: kpi.total, color: C.accent, icon: "🤝" },
           { label: "買取業者", count: kpi.gyosha, color: C.success, icon: "🏢" },
-          { label: "投資家", count: kpi.toushi, color: "#a855f7", icon: "💎" },
           { label: "配信停止", count: kpi.stop, color: C.muted, icon: "🚫" },
         ].map(k => (
           <div key={k.label} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}>
@@ -31758,16 +31890,13 @@ function HanroListPage({ data, setData, onBack }) {
         ))}
       </div>
 
-      <button onClick={() => setEditing(hanroBlank())} style={{ width: "100%", background: C.accent, border: "none", borderRadius: 12, padding: "15px 0", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: "inherit", marginBottom: 10 }}>＋ 業者・投資家を追加</button>
+      <button onClick={() => setEditing(hanroBlank())} style={{ width: "100%", background: C.accent, border: "none", borderRadius: 12, padding: "15px 0", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: "inherit", marginBottom: 10 }}>＋ 買取業者を追加</button>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-        <button onClick={importInvestors} style={{ flex: 1, minWidth: 150, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "11px 8px", color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="download" size={14} /> 投資家リストから取り込み</button>
         <button onClick={exportCSV} style={{ flex: 1, minWidth: 110, background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "11px 8px", color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="file" size={14} /> CSV出力</button>
       </div>
 
       <SearchBar value={search} onChange={setSearch} placeholder="会社名・担当者・メールで検索..." />
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>種別</div>
-      <FilterChips options={HANRO_KINDS} value={filterKind} onChange={setFilterKind} multi />
 
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>{filtered.length}件表示</div>
 
@@ -31775,15 +31904,15 @@ function HanroListPage({ data, setData, onBack }) {
         <div style={{ background: C.cardBg, border: `1px dashed ${C.border}`, borderRadius: 14, padding: 28, textAlign: "center" }}>
           <div style={{ fontSize: 30, marginBottom: 8 }}>🤝</div>
           <div style={{ color: C.text, fontWeight: 700, marginBottom: 6 }}>まだ1件も登録されていません</div>
-          <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 16 }}>買取業者や投資家を登録しておくと、<br />物件を市場に出す前に、この人たちへ<br />まとめて声をかけられるようになります。</div>
-          <button onClick={addSamples} style={{ background: C.cardBg, border: `1px solid ${C.accent}`, borderRadius: 10, padding: "12px 18px", color: C.accent, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>テスト用サンプルを5件入れる</button>
+          <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 16 }}>買取業者を登録しておくと、<br />物件を市場に出す前に、この人たちへ<br />まとめて声をかけられるようになります。<br /><span style={{ fontSize: 12 }}>（投資家は反響から自動で集まります）</span></div>
+          <button onClick={addSamples} style={{ background: C.cardBg, border: `1px solid ${C.accent}`, borderRadius: 10, padding: "12px 18px", color: C.accent, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>テスト用サンプルを3件入れる</button>
         </div>
       ) : null}
 
       {filtered.map(r => (
         <button key={r.id} onClick={() => setEditing({ ...hanroBlank(), ...r })} style={{ width: "100%", textAlign: "left", background: C.cardBg, border: `1px solid ${r.optOut ? C.border : C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 10, cursor: "pointer", fontFamily: "inherit", opacity: r.optOut ? 0.55 : 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, background: r.kind === "投資家" ? "#a855f722" : C.successBg, color: r.kind === "投資家" ? "#a855f7" : C.success }}>{r.kind}</span>
+            <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, background: C.successBg, color: C.success }}>買取業者</span>
             <span style={{ color: C.text, fontWeight: 700, fontSize: 15 }}>{r.company || r.name || "(無題)"}</span>
             {r.company && r.name ? <span style={{ color: C.muted, fontSize: 13 }}>{r.name}</span> : null}
             {r.optOut ? <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, background: C.dangerBg, color: C.danger }}>配信停止</span> : null}
@@ -31800,7 +31929,7 @@ function HanroListPage({ data, setData, onBack }) {
 
       {list.length ? (
         <div style={{ textAlign: "center", marginTop: 16 }}>
-          <button onClick={addSamples} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>テスト用サンプルを5件追加</button>
+          <button onClick={addSamples} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>テスト用サンプルを3件追加</button>
         </div>
       ) : null}
     </div>
@@ -32008,6 +32137,21 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
                           <NavIcon name="refresh" size={15} />{v.nextAction}
                         </span>
                       )}
+                      {/* 🆕 v9.367: 先行打診メールを送る／送らない（このお客さま単位・全端末で共有） */}
+                      {(() => {
+                        const ikey = investorKeyOf(v);
+                        const flag = (data.investorMail || []).find(x => x && String(x.id) === String(ikey));
+                        const off = !!(flag && flag.optOut);
+                        if (!String(v.email || "").trim()) {
+                          return <span style={{ background: C.muted + "22", color: C.muted, padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>メール無し（打診は電話で）</span>;
+                        }
+                        return (
+                          <button onClick={() => setData(d => toggleInvestorOptOut(d, ikey, !off))}
+                            style={{ background: off ? "#ef444422" : "#10b98122", border: `1.5px solid ${off ? "#ef4444" : "#10b981"}`, color: off ? "#ef4444" : "#10b981", borderRadius: 999, padding: "2px 9px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700 }}>
+                            {off ? "🚫 打診メール 送らない" : "📨 打診メール 送る"}
+                          </button>
+                        );
+                      })()}
                     </div>
                     <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, lineHeight: 1.6 }}>
                       <NavIcon name="calendar" size={15} /> 反響:{v.date || "—"}{dow && <span style={{ color: dow.color, marginLeft: 2 }}>({dow.label})</span>}
