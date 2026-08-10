@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-09-v9.369-investors-dedupe";
+const APP_VERSION = "2026-08-10-v9.370-viewing-collapse";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -609,6 +609,44 @@ function viewingHandledCaption(v) {
   }
   return [who, when].filter(Boolean).join(" ");
 }
+// 🆕 v9.370: 反響リストを開いた時の「間延び」対策
+//   ・最初は5件だけ出す（「もっと見る」で全部）
+//   ・開いている間だけ画面上部に帯を固定し、どこまでスクロールしてもワンタップで閉じられる
+//     （このアプリは親要素の overflow-x:hidden の影響で position:sticky が効かないため fixed で作る）
+const VIEWING_PREVIEW_COUNT = 5;
+
+function ViewingCloseBar({ title, total, unhandled, onClose }) {
+  return (
+    <div style={{
+      position: "fixed", top: 0, left: 0, right: 0, zIndex: 150,
+      background: C.cardBg, borderBottom: `2px solid #06b6d4`,
+      boxShadow: "0 3px 12px rgba(0,0,0,0.28)",
+      padding: "9px 12px", paddingTop: "max(9px, env(safe-area-inset-top))",
+      display: "flex", alignItems: "center", gap: 10,
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title || "(無題)"}</div>
+        <div style={{ fontSize: 10, fontWeight: 700, color: "#06b6d4", marginTop: 1 }}>
+          <NavIcon name="eye" size={12} /> 反響 {total}件
+          {unhandled > 0 ? <span style={{ color: "#ef4444", marginLeft: 6 }}>🔴未対応 {unhandled}件</span> : null}
+        </div>
+      </div>
+      <button onClick={onClose} style={{
+        background: "#06b6d4", border: "none", color: "#fff", borderRadius: 999,
+        padding: "9px 16px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 800, flexShrink: 0,
+      }}>▲ 閉じる</button>
+    </div>
+  );
+}
+
+// 閉じたうえで、その物件カードの先頭まで戻る
+function scrollToCard(elementId) {
+  try {
+    const el = document.getElementById(elementId);
+    if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+  } catch (e) { /* 画面が無くても落とさない */ }
+}
+
 // 反響日が新しい順（同日は元の並び順を維持）
 //   blankFirst=true のときは日付未入力（＝今まさに追加した反響）を先頭に置く
 function sortViewingsByDateDesc(indexed, blankFirst) {
@@ -10503,6 +10541,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const [viewingFiltersByMed, setViewingFiltersByMed] = useState({});
   // 🆕 v8.93: 反響リストの顧客名検索（仲介案件）
   const [viewingSearchByMed, setViewingSearchByMed] = useState({});
+  // 🆕 v9.370: 反響を全件表示するか（既定は5件だけ）
+  const [viewingShowAllByMed, setViewingShowAllByMed] = useState({});
   // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
   const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   const [newViewingComment, setNewViewingComment] = useState({});
@@ -10947,11 +10987,25 @@ function MediationView({ data, setData, dealType, setDealType }) {
         )}
       </div>
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
+      {/* 🆕 v9.370: 反響を開いている間だけ、画面上部に「閉じる」帯を固定する */}
+      {(() => {
+        const openId = Object.keys(viewingsExpandedByMed).find(k => viewingsExpandedByMed[k]);
+        if (!openId) return null;
+        const om = filtered.find(x => String(x.id) === String(openId));
+        if (!om) return null;
+        const vs = om.viewings || [];
+        return (
+          <ViewingCloseBar
+            title={om.name} total={vs.length} unhandled={vs.filter(v => !v.handled).length}
+            onClose={() => { setViewingsExpandedByMed({}); scrollToCard(`mediation-item-${om.id}`); }}
+          />
+        );
+      })()}
       {filtered.length === 0 && (
         <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 32, textAlign: "center", color: C.muted }}>仲介案件がまだありません</div>
       )}
       {filtered.map(m => (
-        <div key={m.id} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
+        <div key={m.id} id={`mediation-item-${m.id}`} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
             <Tag label={m.status} color={statusColor(m.status)} />
             <MemberTag name={m.assignee} />
@@ -10986,7 +11040,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
             const unhandledCount = viewings.filter(v => !v.handled).length; // 🆕 v9.365
             return (
               <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
-                <button onClick={() => setViewingsExpandedByMed(p => ({ ...p, [m.id]: !expanded }))}
+                {/* 🆕 v9.370: 開けるのは1件だけ（別の物件を開くと前のは自動で閉じる＝カードが積み上がらない） */}
+                <button onClick={() => setViewingsExpandedByMed(p => (p[m.id] ? {} : { [m.id]: true }))}
                   style={{ width: "100%", background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
                   <span style={{ color: "#06b6d4", fontSize: 12, fontWeight: 700 }}><NavIcon name="eye" size={12} /> 反響 {all}件</span>
                   {/* 🆕 v9.365: 未対応の件数を一番目立つ位置に */}
@@ -11040,6 +11095,11 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   }
                   // 🆕 v9.365: 反響日が新しい順に並べる
                   _shown = sortViewingsByDateDesc(_shown);
+                  // 🆕 v9.370: 最初は5件だけ（カードが間延びしないように）
+                  const _showAll = !!viewingShowAllByMed[m.id];
+                  const _hidden = Math.max(0, _shown.length - VIEWING_PREVIEW_COUNT);
+                  const _list = _showAll ? _shown : _shown.slice(0, VIEWING_PREVIEW_COUNT);
+                  const _closeSection = () => { setViewingsExpandedByMed({}); setViewingShowAllByMed(p => { const n = { ...p }; delete n[m.id]; return n; }); scrollToCard(`mediation-item-${m.id}`); };
                   return (
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
                     {/* 🆕 v8.93: 顧客名検索ボックス */}
@@ -11129,7 +11189,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                       })}
                     </div>
                     <div style={{ display: "grid", gap: 8 }}>
-                    {_shown.map(({ v, idx: vi }) => {
+                    {_list.map(({ v, idx: vi }) => {
                       const prospect = PROSPECT_INFO[v.prospect];
                       const result = RESULT_INFO[v.result];
                       const dow = dayOfWeekLabel(v.date);
@@ -11271,6 +11331,23 @@ function MediationView({ data, setData, dealType, setDealType }) {
                       );
                     })}
                     </div>
+                    {/* 🆕 v9.370: 「もっと見る」と、下からでも閉じられるボタン */}
+                    {_hidden > 0 && !_showAll && (
+                      <button onClick={() => setViewingShowAllByMed(p => ({ ...p, [m.id]: true }))}
+                        style={{ width: "100%", marginTop: 8, background: "#06b6d411", border: `1.5px solid #06b6d466`, color: "#06b6d4", borderRadius: 10, padding: "11px 0", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>
+                        ▼ もっと見る（残り {_hidden}件）
+                      </button>
+                    )}
+                    {_showAll && _shown.length > VIEWING_PREVIEW_COUNT && (
+                      <button onClick={() => { setViewingShowAllByMed(p => { const n = { ...p }; delete n[m.id]; return n; }); scrollToCard(`mediation-item-${m.id}`); }}
+                        style={{ width: "100%", marginTop: 8, background: "transparent", border: `1px solid ${C.borderDim}`, color: C.muted, borderRadius: 10, padding: "10px 0", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>
+                        ▲ 最初の{VIEWING_PREVIEW_COUNT}件に戻す
+                      </button>
+                    )}
+                    <button onClick={_closeSection}
+                      style={{ width: "100%", marginTop: 8, background: C.inset, border: `1.5px solid ${C.borderDim}`, color: C.text, borderRadius: 10, padding: "12px 0", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 800 }}>
+                      ▲ 反響を閉じる
+                    </button>
                   </div>
                   );
                 })()}
@@ -11751,6 +11828,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [viewingFiltersByStock, setViewingFiltersByStock] = useState({});
   // 🆕 v8.93: 反響リストの顧客名検索（仕入案件）
   const [viewingSearchByStock, setViewingSearchByStock] = useState({});
+  // 🆕 v9.370: 反響を全件表示するか（既定は5件だけ）
+  const [viewingShowAllByStock, setViewingShowAllByStock] = useState({});
   // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
   const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   // 🆕 反響ごとのコメント機能
@@ -12543,6 +12622,20 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         )}
       </div>
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{filtered.length}件表示</div>
+      {/* 🆕 v9.370: 反響を開いている間だけ、画面上部に「閉じる」帯を固定する */}
+      {(() => {
+        const openId = Object.keys(viewingsExpandedByStock).find(k => viewingsExpandedByStock[k]);
+        if (!openId) return null;
+        const os = filtered.find(x => String(x.id) === String(openId));
+        if (!os) return null;
+        const vs = os.viewings || [];
+        return (
+          <ViewingCloseBar
+            title={os.name} total={vs.length} unhandled={vs.filter(v => !v.handled).length}
+            onClose={() => { setViewingsExpandedByStock({}); scrollToCard(`stock-item-${os.id}`); }}
+          />
+        );
+      })()}
       {filtered.map(s => {
         const profit = s.sellPrice - s.buyCost;
         const sinfo = s.status !== "売決完了" ? stagnantInfo(s.buyDate) : null;
@@ -12600,8 +12693,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               const unhandledCount = viewings.filter(v => !v.handled).length; // 🆕 v9.365
               return (
                 <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                  {/* 🆕 v9.370: 開けるのは1件だけ（別の物件を開くと前のは自動で閉じる＝カードが積み上がらない） */}
                   <button
-                    onClick={() => setViewingsExpandedByStock(p => ({ ...p, [s.id]: !expanded }))}
+                    onClick={() => setViewingsExpandedByStock(p => (p[s.id] ? {} : { [s.id]: true }))}
                     style={{
                       width: "100%", background: "none", border: "none",
                       display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
@@ -12683,6 +12777,11 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     }
                     // 🆕 v9.365: 反響日が新しい順に並べる
                     _shown = sortViewingsByDateDesc(_shown);
+                    // 🆕 v9.370: 最初は5件だけ（カードが間延びしないように）
+                    const _showAll = !!viewingShowAllByStock[s.id];
+                    const _hidden = Math.max(0, _shown.length - VIEWING_PREVIEW_COUNT);
+                    const _list = _showAll ? _shown : _shown.slice(0, VIEWING_PREVIEW_COUNT);
+                    const _closeSection = () => { setViewingsExpandedByStock({}); setViewingShowAllByStock(p => { const n = { ...p }; delete n[s.id]; return n; }); scrollToCard(`stock-item-${s.id}`); };
                     return (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
                       {/* 🆕 v8.93: 顧客名検索ボックス */}
@@ -12772,7 +12871,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                         })}
                       </div>
                       <div style={{ display: "grid", gap: 8 }}>
-                      {_shown.map(({ v, idx: vi }) => {
+                      {_list.map(({ v, idx: vi }) => {
                         const prospect = PROSPECT_INFO[v.prospect];
                         const result = RESULT_INFO[v.result];
                         const dow = dayOfWeekLabel(v.date);
@@ -12983,6 +13082,23 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                         );
                       })}
                       </div>
+                      {/* 🆕 v9.370: 「もっと見る」と、下からでも閉じられるボタン */}
+                      {_hidden > 0 && !_showAll && (
+                        <button onClick={() => setViewingShowAllByStock(p => ({ ...p, [s.id]: true }))}
+                          style={{ width: "100%", marginTop: 8, background: "#06b6d411", border: `1.5px solid #06b6d466`, color: "#06b6d4", borderRadius: 10, padding: "11px 0", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>
+                          ▼ もっと見る（残り {_hidden}件）
+                        </button>
+                      )}
+                      {_showAll && _shown.length > VIEWING_PREVIEW_COUNT && (
+                        <button onClick={() => { setViewingShowAllByStock(p => { const n = { ...p }; delete n[s.id]; return n; }); scrollToCard(`stock-item-${s.id}`); }}
+                          style={{ width: "100%", marginTop: 8, background: "transparent", border: `1px solid ${C.borderDim}`, color: C.muted, borderRadius: 10, padding: "10px 0", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}>
+                          ▲ 最初の{VIEWING_PREVIEW_COUNT}件に戻す
+                        </button>
+                      )}
+                      <button onClick={_closeSection}
+                        style={{ width: "100%", marginTop: 8, background: C.inset, border: `1.5px solid ${C.borderDim}`, color: C.text, borderRadius: 10, padding: "12px 0", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 800 }}>
+                        ▲ 反響を閉じる
+                      </button>
                     </div>
                     );
                   })()}
