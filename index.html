@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-10-v9.371-viewing-collapse";
+const APP_VERSION = "2026-08-11-v9.372-status-spec";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -742,7 +742,66 @@ const STATUS_GROUPS = [
   { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
-const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "仕入", "リフォーム請負", "失注", "NG"];
+// 🆕 v9.372: 地上げステータスの刷新（STATUS-SPEC-v1）
+//   ・判断基準は「明日その家に行っていいか？」の一本。ステータスは感想ではなく“次の行動”を表す。
+//   ・機能していなかった NG を廃止し、「訪問禁止（人が理由）」と「対象外（物件が理由）」に分割。
+//   ・NG は既存データに残っているため選択肢からは外すが、値としては保持して再分類を促す（§5）。
+const ATTACK_STATUSES = ["未訪問", "初訪", "再訪", "見込み", "中長期見込", "見込無し", "訪問禁止", "対象外", "交渉中", "媒介", "仕入", "リフォーム請負", "失注"];
+// 廃止済みだが既存データに残っている値（フィルタ・表示では扱う）
+const LEGACY_ATTACK_STATUSES = ["NG"];
+// もう追いかけない状態（期限切れ督促・アクティブ件数・訪問候補から外す）
+//   ・旧「NG」「断られた」に加えて、新しい 訪問禁止 / 対象外 もここに入る
+const CLOSED_JIAGE_STATUSES = ["訪問禁止", "対象外", "NG", "断られた", "仕入れ完了"];
+// フィルタや集計で「全部」を回すとき用
+const ATTACK_STATUSES_WITH_LEGACY = [...ATTACK_STATUSES, ...LEGACY_ATTACK_STATUSES];
+// 選択欄の直下に常時表示する説明文（ツールチップ不可＝現場では読まれない）
+const JIAGE_STATUS_DESC = {
+  "未訪問": "まだ一度も行っていない",
+  "初訪": "一度行った。まだ判断がついていない",
+  "再訪": "また行く家。今日は会えなかった、または話が続きそう",
+  "見込み": "売却の意思がある。具体的に進める",
+  "中長期見込": "いずれ売る。半年〜数年先",
+  "見込無し": "今は売る気がない。半年後にまた行く",
+  "訪問禁止": "「来るな」と言われた家。二度と行かない。DMも送らない",
+  "対象外": "物件として成立しない。建物がない・工事中・住所不明",
+  "交渉中": "条件を詰めている最中",
+  "媒介": "媒介契約を締結した",
+  "仕入": "自社で買い取った",
+  "リフォーム請負": "リフォーム工事を受注した",
+  "失注": "商談まで行ったが不成立",
+  "NG": "廃止されました。訪問禁止 / 対象外 / 見込無し のいずれかに変更してください",
+};
+// 廃止された NG の画面表示名（要再分類であることを常に見せる）
+function jiageStatusLabel(status) {
+  return status === "NG" ? "NG（要再分類）" : status;
+}
+// 訪問禁止か（この1か所で判定を統一する。DM・ルート除外もここを見る）
+function isBanned(item) {
+  return !!item && (item.status === "訪問禁止" || (item.raw && item.raw.status === "訪問禁止"));
+}
+// 訪問禁止の解除ができる人（統括部長のみ。§6）
+function canUnban(data, currentUser) {
+  if (!currentUser) return false;
+  const boss = (data && data.adminMember) || "下田";
+  return currentUser === boss;
+}
+// 判断フロー・言われた言葉の例（§4.1 / §4.2）
+//   「売る気はない」と「もう来るな」を分けることが本改修の核心。
+//   前者は時間が解決する層で、訪問禁止に混ぜると資産を捨てることになる。
+const JIAGE_STATUS_FLOW = [
+  { q: "Q1　その家、明日行っていい？", a: [["はい", "再訪"], ["いいえ", "↓ Q2へ"]] },
+  { q: "Q2　行かない理由は「人」か「物件」か？", a: [["物件", "対象外"], ["人", "↓ Q3へ"]] },
+  { q: "Q3　断られたのは「売却」か「訪問そのもの」か？", a: [["売却", "見込無し"], ["訪問", "訪問禁止"]] },
+];
+const JIAGE_STATUS_WORDS = [
+  ["勝手に調べるな、余計なお世話だ", "訪問禁止"],
+  ["もう来ないでくれ", "訪問禁止"],
+  ["次来たら警察を呼ぶ / 会社に言う", "訪問禁止"],
+  ["売る気はない", "見込無し"],
+  ["間に合ってます", "見込無し"],
+  ["今は忙しい", "再訪"],
+  ["息子と相談しないと分からない", "再訪"],
+];
 // 🆕 v9.264: 失注理由（商談まで行ったが不成立だった理由）。成約率分析・作戦改善用
 const LOST_REASONS = ["他社に決定", "価格が折り合わない", "売る気がない", "連絡が取れない", "相続でもめた", "その他"];
 // 🆕 v9.265: 成約理由（媒介・仕入で決まった勝因）。勝ちパターン分析用
@@ -762,9 +821,12 @@ const JIAGE_STATUS_COLORS = {
   // 🆕 v9.319: リフォーム請負（自社でリフォーム工事を受注＝成約の一種）
   "リフォーム請負": "#16a34a", // グリーン
   // 🆕 v9.264: 失注（商談したが不成立）
-  "失注": "#be123c",       // 臙脂（NGの暗赤茶と区別）
-  // 🆕 v9.1: NG（訪問禁止）ステータス追加
-  "NG": "#7f1d1d",         // 暗赤茶
+  "失注": "#be123c",       // 臙脂（訪問禁止の暗赤茶と区別）
+  // 🆕 v9.372: 訪問禁止（人が理由・二度と行かない）／対象外（物件が理由）
+  "訪問禁止": "#7f1d1d",   // 暗赤茶（最も強い禁止色）
+  "対象外": "#78716c",     // ストーン（グレー系＝物件が成立しない）
+  // 廃止済み。再分類してほしいので目立つ琥珀にする
+  "NG": "#f59e0b",         // 琥珀（要再分類）
 };
 // 🆕 仲介案件：媒介の種類とフェーズ
 const MEDIATION_TYPES = ["専属専任", "専任", "一般"];
@@ -960,7 +1022,8 @@ function migrateJiageDataV840(d) {
     "興味あり": "見込み",
     "検討中": "見込み",
     "断られた": "見込無し",
-    "NG": "見込無し",
+    // 🆕 v9.372: NG→見込無し の自動変換は廃止（STATUS-SPEC-v1 §5）。
+    //   67%が理由不明のため機械的に振り分けると誤変換になる。NG のまま残し、人が再分類する。
     "不在": "初訪",
     "居住している": "初訪",
   };
@@ -1559,6 +1622,7 @@ function migrateBackfillReshinV843(d) {
     "見込み", "見込",
     "中長期見込",
     "見込無し", "NG", "断られた",
+    "訪問禁止", "対象外", // 🆕 v9.372: 二度と行かない家・物件が無い家を再訪に上げない
     "交渉中",
     "媒介",
     "仕入", "仕入れ完了",
@@ -1924,12 +1988,12 @@ function computeMyDailyAlerts(data, member, todayStr) {
   const overdueJiage = (data.jiage || []).filter(j =>
     j.assignee && isMine(j.assignee) &&
     j.nextVisit && j.nextVisit < todayStr &&
-    !["NG", "断られた", "仕入れ完了", "媒介"].includes(j.status)
+    !CLOSED_JIAGE_STATUSES.includes(j.status) && j.status !== "媒介"
   );
   const overdueOwner = (data.owners || []).filter(o =>
     o.assignee && isMine(o.assignee) &&
     o.nextFollowDate && o.nextFollowDate < todayStr &&
-    !["NG", "断られた", "仕入れ完了"].includes(o.status)
+    !CLOSED_JIAGE_STATUSES.includes(o.status)
   );
   const stagnant180 = (data.stocks || []).filter(s => {
     if (!isMine(s.assignee) || s.status === "売決完了") return false;
@@ -1943,7 +2007,7 @@ function computeMyDailyAlerts(data, member, todayStr) {
     const days = Math.floor((new Date(todayStr) - new Date(s.buyDate + "T00:00:00")) / 86400000);
     return days >= 90 && days < 180;
   });
-  const dmUn = (data.jiage || []).filter(j => isMine(j.assignee) && j.dm === "未");
+  const dmUn = (data.jiage || []).filter(j => isMine(j.assignee) && j.dm === "未" && j.status !== "訪問禁止"); // 🆕 v9.372: 訪問禁止はDM対象外
   const mediationStagnant = (data.mediations || []).filter(m => {
     if (!isMine(m.assignee)) return false;
     if (!["売出中", "媒介契約"].includes(m.status)) return false;
@@ -6205,7 +6269,10 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     // 色判定
     // 🆕 v8.131: 16色フル差別化
     const colorByStatus = (status) => {
-      if (status === "NG" || status === "断られた") return "#7f1d1d";
+      // 🆕 v9.372: 訪問禁止＝暗赤茶（最も強い禁止色）/ 対象外＝ストーン / 旧NGは要再分類で琥珀
+      if (status === "訪問禁止" || status === "断られた") return "#7f1d1d";
+      if (status === "対象外") return "#78716c";
+      if (status === "NG") return "#f59e0b";
       if (status === "見込み" || status === "見込" || status === "興味あり" || status === "検討中") return "#ec4899"; // ピンク
       if (status === "交渉中") return "#c026d3";        // マゼンタ
       if (status === "中長期見込") return "#0d9488";  // ティール
@@ -6309,7 +6376,10 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           if (st === "失注") return "💔";
           if (st === "不在") return "🚪";
           if (st === "見込無し") return "❌";
-          if (st === "NG" || st === "断られた") return "⛔";
+          // 🆕 v9.372: 訪問禁止＝⛔ / 対象外＝🚫 / 旧NGは要再分類の⚠
+          if (st === "訪問禁止" || st === "断られた") return "⛔";
+          if (st === "対象外") return "🚫";
+          if (st === "NG") return "⚠️";
           if (st === "居住している") return "🏡";
           return null;
         };
@@ -7548,6 +7618,116 @@ function Field({ label, children }) {
       <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", marginBottom: 6, fontWeight: 600 }}>{label}</div>
       {children}
     </div>
+  );
+}
+
+// 🆕 v9.372: 地上げステータスの選択欄（説明文を直下に常時表示＋「判断に迷ったら」）
+//   STATUS-SPEC-v1 §4：ツールチップやホバーは不可（現場では読まれない）
+function JiageStatusSelect({ value, onChange, label = "ステータス変更", onOpenHelp }) {
+  const cur = value || "";
+  const isLegacy = LEGACY_ATTACK_STATUSES.includes(cur);
+  const desc = JIAGE_STATUS_DESC[cur] || "";
+  const color = JIAGE_STATUS_COLORS[cur] || C.muted;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.06em", fontWeight: 600 }}>{label}</div>
+        {onOpenHelp && (
+          <button onClick={onOpenHelp} style={{
+            marginLeft: "auto", background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent,
+            borderRadius: 999, padding: "3px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+          }}>❓ 判断に迷ったら</button>
+        )}
+      </div>
+      <select style={inp} value={cur} onChange={e => onChange(e.target.value)}>
+        {/* 廃止済みの値が入っている間だけ、その値も選択肢に出す（勝手に書き換わらないように） */}
+        {isLegacy && <option value={cur}>{jiageStatusLabel(cur)}</option>}
+        {ATTACK_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+      </select>
+      {/* 説明文は常時表示 */}
+      {desc && (
+        <div style={{
+          marginTop: 6, padding: "8px 10px", borderRadius: 8,
+          background: isLegacy ? "#f59e0b18" : C.inset,
+          borderLeft: `3px solid ${color}`,
+          color: isLegacy ? "#b45309" : C.muted, fontSize: 12, lineHeight: 1.6, fontWeight: isLegacy ? 700 : 400,
+        }}>{desc}</div>
+      )}
+    </div>
+  );
+}
+
+// 廃止済みの値が入っているレコードを開いても、勝手に別の値へ書き換わらないようにする
+//   （選択肢に無い値だと select が先頭を表示 → そのまま保存されて誤変換になるため）
+function attackStatusOptions(current) {
+  const cur = String(current || "");
+  return (cur && !ATTACK_STATUSES.includes(cur)) ? [cur, ...ATTACK_STATUSES] : ATTACK_STATUSES;
+}
+
+// 判断フローと「言われた言葉」の対応表（§4.1 / §4.2）
+function JiageStatusHelp({ onClose }) {
+  return (
+    <BottomSheet title="ステータスの決め方" onClose={onClose}>
+      <div style={{ background: C.accent + "14", border: `1.5px solid ${C.accent}55`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: C.text, lineHeight: 1.6 }}>
+          「明日その家に行っていいか？」で決める
+        </div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 6, lineHeight: 1.7 }}>
+          ステータスは自分の感想ではなく、<b style={{ color: C.text }}>次の行動</b>を書くところです。
+        </div>
+      </div>
+
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.text, marginBottom: 8 }}>迷ったらこの順で</div>
+      {JIAGE_STATUS_FLOW.map((f, i) => (
+        <div key={i} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 8 }}>{f.q}</div>
+          {f.a.map(([cond, ans], j) => {
+            const isStatus = !!JIAGE_STATUS_DESC[ans];
+            return (
+              <div key={j} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 4 }}>
+                <span style={{ color: C.muted, minWidth: 46 }}>{cond}</span>
+                <span style={{ color: C.muted }}>→</span>
+                {isStatus ? (
+                  <span style={{ background: (JIAGE_STATUS_COLORS[ans] || C.muted) + "33", color: JIAGE_STATUS_COLORS[ans] || C.text, padding: "2px 10px", borderRadius: 999, fontWeight: 800, fontSize: 12 }}>{ans}</span>
+                ) : (
+                  <span style={{ color: C.muted, fontSize: 12 }}>{ans}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.text, margin: "18px 0 8px" }}>言われた言葉で選ぶ</div>
+      <div style={{ border: `1px solid ${C.borderDim}`, borderRadius: 10, overflow: "hidden" }}>
+        {JIAGE_STATUS_WORDS.map(([word, st], i) => (
+          <div key={i} style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "10px 12px",
+            background: i % 2 ? C.inset : C.cardBg, borderBottom: i < JIAGE_STATUS_WORDS.length - 1 ? `1px solid ${C.borderDim}` : "none",
+          }}>
+            <span style={{ flex: 1, fontSize: 12, color: C.text, lineHeight: 1.5 }}>「{word}」</span>
+            <span style={{ background: (JIAGE_STATUS_COLORS[st] || C.muted) + "33", color: JIAGE_STATUS_COLORS[st] || C.text, padding: "3px 10px", borderRadius: 999, fontWeight: 800, fontSize: 11, flexShrink: 0 }}>{st}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ background: "#f59e0b14", border: `1.5px solid #f59e0b55`, borderRadius: 10, padding: 12, marginTop: 16, fontSize: 12, color: C.text, lineHeight: 1.8 }}>
+        <b>いちばん大事なところ</b><br />
+        「<b>売る気はない</b>」と「<b>もう来るな</b>」は別物です。<br />
+        前者は時間が解決します（半年後にまた行く＝見込無し）。<br />
+        訪問禁止に混ぜてしまうと、売れたはずの家を自分から捨てることになります。
+      </div>
+
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.text, margin: "18px 0 8px" }}>それぞれの意味</div>
+      {ATTACK_STATUSES.map(s => (
+        <div key={s} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "7px 0", borderBottom: `1px solid ${C.borderDim}` }}>
+          <span style={{ background: (JIAGE_STATUS_COLORS[s] || C.muted) + "33", color: JIAGE_STATUS_COLORS[s] || C.text, padding: "2px 9px", borderRadius: 999, fontWeight: 800, fontSize: 11, flexShrink: 0, minWidth: 78, textAlign: "center" }}>{s}</span>
+          <span style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{JIAGE_STATUS_DESC[s]}</span>
+        </div>
+      ))}
+
+      <button onClick={onClose} style={{ ...btnStyle(), width: "100%", marginTop: 18, padding: "14px 0", fontSize: 15 }}>閉じる</button>
+    </BottomSheet>
   );
 }
 
@@ -10167,7 +10347,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           </Field>
           <Field label="📊 訪問状況">
             <select style={inp} value={quickEditJiageForm.status} onChange={e => setQuickEditJiageForm(p => ({ ...p, status: e.target.value }))}>
-              {ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}
+              {attackStatusOptions(quickEditJiageForm.status).map(s => <option key={s} value={s}>{jiageStatusLabel(s)}</option>)}
             </select>
           </Field>
           {(() => { const dow = dayOfWeekLabel(quickEditJiageForm.nextVisit); return (
@@ -14531,9 +14711,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   };
 
   const pipeline = useMemo(() => {
-    const jiageActive = filterByMember((data.jiage || []).filter(j => !["NG", "仕入れ完了", "媒介"].includes(j.status)));
+    const jiageActive = filterByMember((data.jiage || []).filter(j => !CLOSED_JIAGE_STATUSES.includes(j.status) && j.status !== "媒介"));
     const jiageMediation = filterByMember((data.jiage || []).filter(j => j.status === "媒介"));
-    const ownersActive = filterByMember((data.owners || []).filter(o => !["断られた", "仕入れ完了", "NG"].includes(o.status)));
+    const ownersActive = filterByMember((data.owners || []).filter(o => !CLOSED_JIAGE_STATUSES.includes(o.status)));
     const sekisanActive = filterByMember((data.sekisan || []).filter(s => s.judgment !== "見送り"));
     const sekisanHot = sekisanActive.filter(s => s.judgment === "熱い");
     const sekisanCheck = sekisanActive.filter(s => s.judgment === "検討中");
@@ -14549,10 +14729,10 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
 
   const alerts = useMemo(() => {
     const overdueJiage = filterByMember((data.jiage || []).filter(j =>
-      j.nextVisit && j.nextVisit < today && !["NG", "断られた", "仕入れ完了", "媒介"].includes(j.status)
+      j.nextVisit && j.nextVisit < today && !CLOSED_JIAGE_STATUSES.includes(j.status) && j.status !== "媒介"
     ));
     const overdueOwner = filterByMember((data.owners || []).filter(o =>
-      o.nextFollowDate && o.nextFollowDate < today && !["NG", "断られた", "仕入れ完了"].includes(o.status)
+      o.nextFollowDate && o.nextFollowDate < today && !CLOSED_JIAGE_STATUSES.includes(o.status)
     ));
     const stagnant90 = filterByMember((data.stocks || []).filter(s => {
       if (s.status === "売決完了") return false;
@@ -14564,7 +14744,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
       const d = daysSinceBuy(s.buyDate);
       return d != null && d >= 180;
     }));
-    const dmUn = filterByMember((data.jiage || []).filter(j => j.dm === "未"));
+    const dmUn = filterByMember((data.jiage || []).filter(j => j.dm === "未" && j.status !== "訪問禁止")); // 🆕 v9.372: 訪問禁止はDM対象外
     const hotNotPurchased = filterByMember((data.sekisan || []).filter(s => {
       if (s.judgment !== "熱い") return false;
       return !(data.stocks || []).some(st => st.fromSekisanId === s.id);
@@ -16347,7 +16527,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
             </Field>
             <Field label="🚦 ステータス">
               <select style={inp} value={editingJiage.status || ""} onChange={e => setEditingJiage({ ...editingJiage, status: e.target.value })}>
-                {ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}
+                {attackStatusOptions(editingJiage.status).map(s => <option key={s} value={s}>{jiageStatusLabel(s)}</option>)}
               </select>
             </Field>
             <Field label="📅 次回訪問日時">
@@ -16867,6 +17047,10 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const today = useTodayDate();
+  // 🆕 v9.372: ステータス刷新（判断ヘルプ・訪問禁止の確認ダイアログ）
+  const [showStatusHelp, setShowStatusHelp] = useState(false);
+  const [banTarget, setBanTarget] = useState(null);
+  const [banText, setBanText] = useState("");
   // 🆕 v9.0: 探索ルートトラッカー state
   // 🆕 v9.39: 探索 ON/OFF を localStorage に永続化 → 他タブに移動して戻っても継続
   //   ・以前は useState(false) で、 JiageRoot アンマウント時に state が消えていた
@@ -18610,10 +18794,20 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     }
     // クイックフィルター
     if (quickFilter === "overdue") {
-      if (!(item.nextDate && item.nextDate < today && !["NG", "断られた", "仕入れ完了"].includes(item.status))) return false;
+      if (!(item.nextDate && item.nextDate < today && !CLOSED_JIAGE_STATUSES.includes(item.status))) return false;
     }
     if (quickFilter === "dm_un") {
       if (item.type !== "jiage" || item.dm !== "未") return false;
+      // 🆕 v9.372: 訪問禁止＝DMも送らない（§6）。DM未送付リストから必ず外す
+      if (item.status === "訪問禁止") return false;
+    }
+    // 🆕 v9.372: 旧NGだけを抜き出して再分類するためのフィルタ（§5）
+    if (quickFilter === "ng_reclassify") {
+      if (item.status !== "NG") return false;
+    }
+    // 🆕 v9.372: 訪問禁止だけを一覧する（誤って訪問しないための確認用）
+    if (quickFilter === "banned") {
+      if (item.status !== "訪問禁止") return false;
     }
     if (quickFilter === "hot") {
       if (!(item.status === "見込" || item.status === "興味あり")) return false;
@@ -18755,12 +18949,12 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     });
     return arr;
   }, [filtered]);
-  const isOverdue = item => item.nextDate && item.nextDate < today && !["NG", "断られた", "仕入れ完了"].includes(item.status);
+  const isOverdue = item => item.nextDate && item.nextDate < today && !CLOSED_JIAGE_STATUSES.includes(item.status);
   
   // ⛔ NGや断られた物件（もう訪問しない）
   // 🆕 v8.87: 「見込無し」と「訪問結果＝訪問禁止(rejected)」も NG 扱い → 枠を赤く
   const isNoGo = item => {
-    if (["NG", "断られた", "お断り", "見込無し"].includes(item.status)) return true;
+    if (CLOSED_JIAGE_STATUSES.concat(["お断り", "見込無し"]).includes(item.status)) return true;
     const lv = getLatestVisit(item);
     if (lv && lv.entry && lv.entry.result === "rejected") return true;
     return false;
@@ -18938,6 +19132,12 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 訪問記録を保存（新規 / 編集 両対応）
   const saveVisitRecord = () => {
     if (!visitRecordTarget || !visitForm) return;
+    // 🆕 v9.372: 訪問記録からも訪問禁止にできるので、ここでも「言われた言葉」を必須にする（§4.3）
+    const _banReason = String(visitForm.banReason || "").trim();
+    if (visitForm.status === "訪問禁止" && !_banReason) {
+      alert("⛔ 訪問禁止にするには、言われた言葉の記入が必要です。");
+      return;
+    }
     const isEdit = !!visitForm.editingId;
     const dow = new Date(visitForm.date).getDay(); // 0=日
     // 🆕 v9.13: 同行者を取り込み（最大2人にトリム）
@@ -19120,11 +19320,20 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
           approaches: appr,
           jiage: d.jiage.map(j => {
             if (j.id !== targetId) return j;
+            const _st = visitForm.status || newStatus || j.status;
+            // 🆕 v9.372: 訪問禁止にしたときは、言われた言葉・記録者・日時を必ず残す
+            const _ban = (_st === "訪問禁止" && _banReason) ? {
+              banReason: _banReason,
+              bannedAt: new Date().toISOString(),
+              bannedBy: visitForm.assignee || getCurrentUser() || "",
+              memo: [j.memo, `【訪問禁止 ${new Date().toISOString().slice(0, 10)} ${visitForm.assignee || getCurrentUser() || ""}】${_banReason}`].filter(Boolean).join("\n"),
+            } : {};
             return {
               ...j,
               visitLog: [...(j.visitLog || []), newEntry],
-              status: visitForm.status || newStatus || j.status,
+              status: _st,
               assignee: visitForm.assignee || j.assignee,
+              ..._ban,
             };
           }),
         };
@@ -19169,6 +19378,68 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       setData(d => ({ ...d, owners: d.owners.map(o => o.id === item.rawId ? updated : o) }));
       setSelected(s => ({ ...s, item: { ...s.item, status, raw: updated } }));
     }
+  };
+
+  // 🆕 v9.372: 訪問禁止まわり（STATUS-SPEC-v1 §4.3 / §6）
+  //   ・訪問禁止にするときは必ず「言われた言葉」を残す（空欄では確定できない）
+  //   ・解除は統括部長のみ。誰がいつ解除したかも残す。
+  const requestStatusChange = (item, next) => {
+    const prev = item.status || "";
+    if (next === prev) return;
+    if (next === "訪問禁止") { setBanTarget(item); setBanText(""); return; }
+    if (prev === "訪問禁止") {
+      if (!canUnban(data, currentUser)) {
+        alert(`⛔ 訪問禁止の解除は${(data.adminMember || "下田")}さんだけができます。\n\n解除が必要なときは声をかけてください。`);
+        return;
+      }
+      if (!window.confirm("訪問禁止を解除します。よろしいですか？")) return;
+      const raw = item.raw || {};
+      const updated = { ...raw, status: next, unbannedBy: currentUser || "", unbannedAt: new Date().toISOString() };
+      if (item.type === "jiage") {
+        setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
+      } else {
+        setData(d => ({ ...d, owners: d.owners.map(o => o.id === item.rawId ? updated : o) }));
+      }
+      setSelected(s => ({ ...s, item: { ...s.item, status: next, raw: updated } }));
+      return;
+    }
+    updateStatus(item, next);
+  };
+
+  const confirmBan = () => {
+    const item = banTarget;
+    if (!item) return;
+    const reason = String(banText || "").trim();
+    if (!reason) { alert("言われた言葉を入力してください（必須）"); return; }
+    const now = new Date().toISOString();
+    const raw = item.raw || {};
+    const stamp = `【訪問禁止 ${now.slice(0, 10)} ${currentUser || ""}】${reason}`;
+    const updated = {
+      ...raw,
+      status: "訪問禁止",
+      banReason: reason,
+      bannedAt: now,
+      bannedBy: currentUser || "",
+      memo: [raw.memo, stamp].filter(Boolean).join("\n"),
+    };
+    if (item.type === "jiage") {
+      setData(d => ({ ...d, jiage: d.jiage.map(j => j.id === item.rawId ? updated : j) }));
+    } else {
+      setData(d => ({ ...d, owners: d.owners.map(o => o.id === item.rawId ? updated : o) }));
+    }
+    setSelected(s => (s ? { ...s, item: { ...s.item, status: "訪問禁止", memo: updated.memo, raw: updated } } : s));
+    setBanTarget(null);
+    setBanText("");
+  };
+
+  // 同じ所有者の「別の家」が訪問禁止になっていないか（§6 紐づけ単位は物件でなく所有者）
+  const bannedSiblingsOf = (item) => {
+    const owner = String((item && (item.ownerName || (item.raw && item.raw.owner))) || "").trim();
+    if (!owner) return [];
+    const myId = item.rawId;
+    return (data.jiage || [])
+      .filter(j => j && j.status === "訪問禁止" && j.id !== myId && String(j.owner || "").trim() === owner)
+      .map(j => ({ address: j.address, banReason: j.banReason }));
   };
 
   // 🆕 v9.264: 失注理由の更新（jiageのみ）。status と同じ最小差分パターン（_fieldUpdatedAtは保存時に自動付与）
@@ -21104,7 +21375,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             });
 
             // 🆕 v9.51: 訪問ルート提案 — 表示中ピンを停留所候補に
-            const routeAllStops = itemsWithCoord.map(i => {
+            // 🆕 v9.372: 訪問禁止の家はルート候補から必ず外す（地図には出るが「行き先」にはしない）
+            const routeAllStops = itemsWithCoord.filter(i => i.status !== "訪問禁止").map(i => {
               const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
               const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
               return { id: (i.id != null ? i.id : i.rawId), lat, lng, name: i.address || i.ownerName || "(無住所)" };
@@ -22437,7 +22709,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   { key: "addr_ok",        label: "✅ 場所確認済", color: "#16a34a", count: pendingPinSummary.addrOkTotal },
                                   { key: "result_absent",  label: "🚪 不在",     color: "#92400e", count: _resultCount("absent") },
                                   { key: "result_ignore",  label: "🙈 居留守",   color: "#b45309", count: _resultCount("ignore") },
-                                  { key: "result_rejected",label: "🚷 訪問禁止", color: "#7f1d1d", count: _resultCount("rejected") },
+                                  { key: "result_rejected",label: "🚷 訪問禁止(記録)", color: "#7f1d1d", count: _resultCount("rejected") },
+                                  // 🆕 v9.372: ステータス刷新（STATUS-SPEC-v1）
+                                  { key: "banned",         label: "⛔ 訪問禁止",  color: "#7f1d1d", count: (data.jiage || []).filter(j => j.status === "訪問禁止").length },
+                                  { key: "ng_reclassify",  label: "⚠️ NG(要再分類)", color: "#f59e0b", count: (data.jiage || []).filter(j => j.status === "NG").length },
                                 ]; })().map(p => {
                                   // 🆕 v9.105: 訪問結果（不在/居留守/訪問禁止）は複数選択（resultFilters）。それ以外は従来どおり単一選択（quickFilter）。
                                   const isResult = (p.key === "result_absent" || p.key === "result_ignore" || p.key === "result_rejected");
@@ -22504,7 +22779,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               })()}
                               <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}><NavIcon name="clipboard" size={12} /> 営業ステータス</div>
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                                {ATTACK_STATUSES.map(st => {
+                                {/* 🆕 v9.372: 廃止した NG も、0件になるまでは絞り込めるように残す */}
+                                {ATTACK_STATUSES_WITH_LEGACY.filter(st => st !== "NG" || (data.jiage || []).some(j => j.status === "NG")).map(st => {
                                   const isActive = filterStatuses.includes(st);
                                   const count = (data.jiage || []).filter(j => j.status === st).length;
                                   const color = stColor(st);
@@ -22518,7 +22794,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                       border: `1.5px solid ${isActive ? color : (count > 0 ? color + "55" : C.borderDim)}`,
                                       fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: isActive ? 800 : 600,
                                     }}>
-                                      {isActive ? "✓ " : ""}{st} <span style={{ opacity: 0.8, fontSize: 9, marginLeft: 3 }}>{count}</span>
+                                      {isActive ? "✓ " : ""}{jiageStatusLabel(st)} <span style={{ opacity: 0.8, fontSize: 9, marginLeft: 3 }}>{count}</span>
                                     </button>
                                   );
                                 })}
@@ -23674,12 +23950,50 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             );
           })()}
 
+          {/* 🆕 v9.372: 旧NGは廃止。再分類を促すバナーを最初に出す（STATUS-SPEC-v1 §5） */}
+          {selected.item.status === "NG" && (
+            <div style={{ background: "#f59e0b18", border: `1.5px solid #f59e0b`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#b45309", marginBottom: 6 }}>⚠️ このステータスは廃止されました</div>
+              <div style={{ fontSize: 12, color: C.text, lineHeight: 1.8 }}>
+                <b>訪問禁止</b> / <b>対象外</b> / <b>見込無し</b> のいずれかに変更してください。<br />
+                <span style={{ color: C.muted }}>「もう来るな」と言われた家＝訪問禁止／建物が無い・工事中＝対象外／売る気がないだけ＝見込無し（半年後にまた行く）</span>
+              </div>
+            </div>
+          )}
+          {/* 🆕 v9.372: 同じ所有者の別の家が訪問禁止なら警告（§6 紐づけ単位は物件でなく所有者） */}
+          {(() => {
+            const warn = bannedSiblingsOf(selected.item);
+            if (!warn.length) return null;
+            return (
+              <div style={{ background: "#7f1d1d18", border: `1.5px solid #7f1d1d`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>⛔ この所有者は「訪問禁止」です</div>
+                <div style={{ fontSize: 12, color: C.text, lineHeight: 1.8 }}>
+                  同じ所有者（{selected.item.ownerName || "(名前なし)"}）の別の家が訪問禁止になっています。<b>訪問もDMもしないでください。</b>
+                  {warn[0].banReason ? <><br /><span style={{ color: C.muted }}>言われた言葉：「{warn[0].banReason}」</span></> : null}
+                  <br /><span style={{ color: C.muted }}>該当：{warn.map(w => w.address || "(住所なし)").join(" / ")}</span>
+                </div>
+              </div>
+            );
+          })()}
           {/* ステータス・次回日変更 */}
-          <Field label="ステータス変更">
-            <select style={inp} value={selected.item.status} onChange={e => updateStatus(selected.item, e.target.value)}>
-              {ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}
-            </select>
-          </Field>
+          <JiageStatusSelect
+            value={selected.item.status}
+            onChange={v => requestStatusChange(selected.item, v)}
+            onOpenHelp={() => setShowStatusHelp(true)}
+          />
+          {/* 🆕 v9.372: 訪問禁止のときは、いつ・誰が・何と言われたかを常に見せる */}
+          {selected.item.status === "訪問禁止" && (() => {
+            const raw = selected.item.raw || {};
+            return (
+              <div style={{ background: "#7f1d1d14", border: `1px solid #7f1d1d55`, borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 12, color: C.text, lineHeight: 1.8 }}>
+                {raw.banReason ? <div>言われた言葉：「{raw.banReason}」</div> : null}
+                <div style={{ color: C.muted }}>
+                  {raw.bannedBy ? `記録: ${raw.bannedBy}` : ""}{raw.bannedAt ? `　${String(raw.bannedAt).slice(0, 10)}` : ""}
+                </div>
+                <div style={{ color: C.muted, marginTop: 4 }}>訪問リスト・DM送付リストから自動で外れています。解除は{(data.adminMember || "下田")}のみ。</div>
+              </div>
+            );
+          })()}
           {/* 🆕 v9.264: 失注のときだけ失注理由を選ばせる（成約率・失注理由分析用） */}
           {selected.item.type === "jiage" && selected.item.status === "失注" && (
             <Field label="失注理由">
@@ -24751,7 +25065,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               <Field label="エリア"><select style={inp} value={form.area || ""} onChange={f("area")}><option value="">選択</option>{JIAGE_AREAS.map(a => <option key={a}>{a}</option>)}</select></Field>
               <Field label="DM状況"><select style={inp} value={form.dm || "未"} onChange={f("dm")}>{DM_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
               <Field label="住所確認"><select style={inp} value={form.visit || "未"} onChange={f("visit")}>{["未", "済", "異"].map(s => <option key={s}>{s}</option>)}</select></Field>
-              <Field label="訪問状況"><select style={inp} value={form.status} onChange={f("status")}>{ATTACK_STATUSES.map(s => <option key={s}>{s}</option>)}</select></Field>
+              <Field label="訪問状況"><select style={inp} value={form.status} onChange={f("status")}>{attackStatusOptions(form.status).map(s => <option key={s} value={s}>{jiageStatusLabel(s)}</option>)}</select></Field>
               {form.status === "失注" && <Field label="失注理由"><select style={inp} value={form.lostReason || ""} onChange={f("lostReason")}><option value="">選択してください</option>{LOST_REASONS.map(r => <option key={r}>{r}</option>)}</select></Field>}
               {(form.status === "媒介" || form.status === "仕入") && <Field label="成約理由（勝因）"><select style={inp} value={form.wonReason || ""} onChange={f("wonReason")}><option value="">選択してください</option>{WON_REASONS.map(r => <option key={r}>{r}</option>)}</select></Field>}
               <Field label="次回訪問日時"><div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}><input type="date" style={{ ...inp, flex: "1 1 100%" }} value={form.nextVisit || ""} onChange={f("nextVisit")} /><select style={{ ...inp, flex: 1 }} value={form.nextVisitTime || ""} onChange={f("nextVisitTime")} disabled={!form.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "開始" : t}</option>)}</select><span style={{ color: C.muted, flex: "none" }}>〜</span><select style={{ ...inp, flex: 1 }} value={form.nextVisitEndTime || ""} onChange={f("nextVisitEndTime")} disabled={!form.nextVisit}>{VISIT_TIME_OPTIONS.map(t => <option key={t} value={t}>{t === "" ? "終了" : t}</option>)}</select></div></Field>
@@ -24766,6 +25080,40 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* 🆕 v9.372: ステータスの決め方（判断フロー＋言われた言葉の例） */}
+      {showStatusHelp && <JiageStatusHelp onClose={() => setShowStatusHelp(false)} />}
+
+      {/* 🆕 v9.372: 訪問禁止の確認ダイアログ（理由必須・STATUS-SPEC-v1 §4.3） */}
+      {banTarget && (
+        <BottomSheet title="⛔ 訪問禁止にします" onClose={() => { setBanTarget(null); setBanText(""); }}>
+          <div style={{ background: "#7f1d1d14", border: `1.5px solid #7f1d1d66`, borderRadius: 12, padding: 14, marginBottom: 16, fontSize: 13, color: C.text, lineHeight: 1.9 }}>
+            この所有者は<b>訪問リストからもDM送付リストからも永久に外れます。</b><br />
+            解除は{(data.adminMember || "下田")}さんのみ可能です。
+          </div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 6, fontWeight: 700 }}>
+            言われた言葉をそのまま記入してください（必須）
+          </div>
+          <textarea
+            value={banText}
+            onChange={e => setBanText(e.target.value)}
+            placeholder="例）もう来ないでくれ、次来たら警察を呼ぶ"
+            style={{ ...inp, minHeight: 90, resize: "vertical" }}
+          />
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.7 }}>
+            ※「売る気はない」だけなら<b style={{ color: C.text }}>見込無し</b>です（半年後にまた行きます）。<br />
+            訪問そのものを断られたときだけ訪問禁止にしてください。
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+            <button onClick={() => { setBanTarget(null); setBanText(""); }} style={{ ...btnStyle("ghost"), flex: 1, padding: "14px 0", fontSize: 15 }}>キャンセル</button>
+            <button onClick={confirmBan} disabled={!banText.trim()} style={{
+              flex: 2, padding: "14px 0", fontSize: 15, fontWeight: 800, fontFamily: "inherit",
+              background: banText.trim() ? "#7f1d1d" : C.borderDim, border: "none", color: "#fff",
+              borderRadius: 10, cursor: banText.trim() ? "pointer" : "default",
+            }}>訪問禁止にする</button>
           </div>
         </BottomSheet>
       )}
@@ -25027,8 +25375,16 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="📊 ステータス（フェーズ）">
               <select style={inp} value={visitForm.status || ""} onChange={e => setVisitForm({ ...visitForm, status: e.target.value })}>
-                {ATTACK_STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
+                {attackStatusOptions(visitForm.status).map(st => <option key={st} value={st}>{jiageStatusLabel(st)}</option>)}
               </select>
+              {/* 🆕 v9.372: 訪問記録からも意味が分かるように説明を出す */}
+              {JIAGE_STATUS_DESC[visitForm.status] && (
+                <div style={{ marginTop: 5, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{JIAGE_STATUS_DESC[visitForm.status]}</div>
+              )}
+              <button onClick={() => setShowStatusHelp(true)} style={{
+                marginTop: 6, background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent,
+                borderRadius: 999, padding: "3px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+              }}>❓ 判断に迷ったら</button>
             </Field>
             <Field label="👤 担当者">
               <select style={inp} value={visitForm.assignee || ""} onChange={e => setVisitForm({ ...visitForm, assignee: e.target.value })}>
@@ -25036,6 +25392,27 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               </select>
             </Field>
           </div>
+
+          {/* 🆕 v9.372: 訪問禁止を選んだら、言われた言葉が必須（§4.3） */}
+          {visitForm.status === "訪問禁止" && (
+            <div style={{ background: "#7f1d1d14", border: `1.5px solid #7f1d1d`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>⛔ 訪問禁止にします</div>
+              <div style={{ fontSize: 12, color: C.text, lineHeight: 1.8, marginBottom: 10 }}>
+                この所有者は<b>訪問リストからもDM送付リストからも永久に外れます。</b><br />
+                解除は{(data.adminMember || "下田")}さんのみ可能です。
+              </div>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 6, fontWeight: 700 }}>言われた言葉をそのまま記入してください（必須）</div>
+              <textarea
+                value={visitForm.banReason || ""}
+                onChange={e => setVisitForm({ ...visitForm, banReason: e.target.value })}
+                placeholder="例）もう来ないでくれ、次来たら警察を呼ぶ"
+                style={{ ...inp, minHeight: 70, resize: "vertical" }}
+              />
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.7 }}>
+                ※「売る気はない」だけなら<b style={{ color: C.text }}>見込無し</b>です（半年後にまた行きます）。
+              </div>
+            </div>
+          )}
 
           {/* 居留守の気配サイン */}
           {visitForm.result === "ignore" && (
