@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-11-v9.374-help-front";
+const APP_VERSION = "2026-08-11-v9.375-viewing-callflow";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -609,11 +609,213 @@ function viewingHandledCaption(v) {
   }
   return [who, when].filter(Boolean).join(" ");
 }
+// 🆕 v9.375: 反響が何日放置されているかを一目で分かるようにする
+//   ・「2026-07-09」では33日経っていることに気づけない。「33日前」と書き、色で急かす。
+//   ・3日超＝黄 / 7日超＝赤（未対応のときだけ色を付ける。対応済みは灰色でよい）
+function daysAgoInfo(dateStr, urgent) {
+  const s = String(dateStr || "").trim();
+  if (!s) return null;
+  const d = new Date(s + (s.length === 10 ? "T00:00:00" : ""));
+  if (isNaN(d.getTime())) return null;
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days < 0) return { days, label: `あと${-days}日`, color: "#06b6d4" };
+  const label = days === 0 ? "今日" : days === 1 ? "昨日" : `${days}日前`;
+  if (!urgent) return { days, label, color: C.muted };
+  const color = days > 7 ? "#ef4444" : days > 3 ? "#f59e0b" : C.muted;
+  return { days, label, color };
+}
+
+// 🆕 v9.375: 反響への「当たった記録」（かけた・つながった・メールした）
+//   ・不在は「対応済み」にしない。かけ直しが消えてしまうため、記録だけ残す。
+const VIEWING_ATTEMPT_KINDS = {
+  tel_ok:     { icon: "📞", label: "つながった",   short: "📞つながった", handled: true },
+  tel_absent: { icon: "📵", label: "不在・留守電", short: "📵不在",       handled: false },
+  mail:       { icon: "📧", label: "メール送った", short: "📧メール",     handled: true },
+};
+// 反響1件に「かけた記録」を足した新しいオブジェクトを返す（保存は呼び出し側）
+function withViewingAttempt(v, kind, who) {
+  const def = VIEWING_ATTEMPT_KINDS[kind];
+  if (!def) return v;
+  const now = new Date().toISOString();
+  const entry = { id: Date.now() + Math.floor(Math.random() * 1000), kind, by: who || "", at: now };
+  const next = { ...v, attempts: [...(v.attempts || []), entry], updatedAt: Date.now() };
+  if (def.handled) {
+    next.handled = true;
+    next.handledBy = who || "";
+    next.handledAt = now;
+  }
+  return next;
+}
+// カードに出す「📵不在 2回（最終 8/11 下田）」の文字列
+function viewingAttemptCaption(v) {
+  const arr = (v && v.attempts) || [];
+  if (!arr.length) return "";
+  const last = arr[arr.length - 1];
+  const def = VIEWING_ATTEMPT_KINDS[last.kind];
+  const cnt = arr.filter(a => a.kind === last.kind).length;
+  let when = "";
+  const d = new Date(last.at);
+  if (!isNaN(d.getTime())) when = d.toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" });
+  return `${def ? def.short : "記録"}${cnt > 1 ? ` ${cnt}回` : ""}${when ? ` ${when}` : ""}${last.by ? " " + last.by : ""}`;
+}
+
 // 🆕 v9.370: 反響リストを開いた時の「間延び」対策
 //   ・最初は5件だけ出す（「もっと見る」で全部）
 //   ・開いている間だけ画面上部に帯を固定し、どこまでスクロールしてもワンタップで閉じられる
 //     （このアプリは親要素の overflow-x:hidden の影響で position:sticky が効かないため fixed で作る）
 const VIEWING_PREVIEW_COUNT = 5;
+
+// 🆕 v9.375: 反響カードの「当たる」ボタン。何をしたかまで1タップで残す。
+function ViewingActions({ v, onAttempt, onUnhandle }) {
+  const cap = viewingAttemptCaption(v);
+  if (!v.handled) {
+    return (
+      <div style={{ marginTop: 8 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["tel_ok", "#10b981"], ["tel_absent", "#f59e0b"], ["mail", "#0ea5e9"]].map(([k, c]) => {
+            const d = VIEWING_ATTEMPT_KINDS[k];
+            return (
+              <button key={k} onClick={(e) => { e.stopPropagation(); onAttempt(k); }}
+                style={{ flex: 1, background: c + "18", border: `1.5px solid ${c}`, color: c, borderRadius: 8, padding: "9px 3px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 800, lineHeight: 1.3 }}>
+                {d.icon}<br />{d.label}
+              </button>
+            );
+          })}
+        </div>
+        {cap && <div style={{ fontSize: 10, color: C.muted, marginTop: 5 }}>{cap}</div>}
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 11, color: "#10b981", fontWeight: 700 }}>{cap || "✅ 対応済み"}</span>
+      <button onClick={(e) => { e.stopPropagation(); onUnhandle(); }}
+        style={{ marginLeft: "auto", background: "transparent", border: `1px solid ${C.muted}55`, color: C.muted, borderRadius: 999, padding: "3px 10px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700 }}>↩ 未対応に戻す</button>
+    </div>
+  );
+}
+
+// 🆕 v9.375: 「今日かける反響」— 物件をまたいで未対応の反響だけを古い順に集める
+//   ・売れ終わった物件（仕入=売決完了 / 仲介=決済完了）の反響は対象外。もう追う相手ではない。
+//   ・在庫タブ → 物件を探す → 反響を開く → スクロール、の4手間を無くすのが目的。
+function collectPendingViewings(data) {
+  const out = [];
+  (data.stocks || []).forEach(s => {
+    if (!s || s.status === "売決完了") return;
+    (s.viewings || []).forEach((v, idx) => {
+      if (!v || v.handled) return;
+      out.push({ parentType: "stock", parentId: s.id, parentName: s.name || "(無題)", assignee: s.assignee || "", idx, v });
+    });
+  });
+  (data.mediations || []).forEach(m => {
+    if (!m || m.status === "決済完了") return;
+    (m.viewings || []).forEach((v, idx) => {
+      if (!v || v.handled) return;
+      out.push({ parentType: "mediation", parentId: m.id, parentName: (m.name || "(無題)") + "（仲介）", assignee: m.assignee || "", idx, v });
+    });
+  });
+  // 古いものから（放置が長いものほど上）
+  out.sort((a, b) => String(a.v.date || "9999").localeCompare(String(b.v.date || "9999")));
+  return out;
+}
+
+function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
+  const [onlyMine, setOnlyMine] = useState(false);
+  const all = collectPendingViewings(data);
+  const rows = onlyMine ? all.filter(r => r.assignee === currentUser) : all;
+
+  const applyAttempt = (row, kind) => {
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    const key = row.parentType === "stock" ? "stocks" : "mediations";
+    setData(d => ({
+      ...d,
+      [key]: (d[key] || []).map(p => p.id !== row.parentId ? p : {
+        ...p,
+        viewings: (p.viewings || []).map((vv, i) => i === row.idx ? withViewingAttempt(vv, kind, currentUser) : vv),
+      }),
+    }));
+  };
+
+  return (
+    <BottomSheet title={`📞 今日かける反響（${rows.length}件）`} onClose={onClose}>
+      <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.7, marginBottom: 12 }}>
+        まだ対応していない反響を、<b style={{ color: C.text }}>古い順</b>に並べています。<br />
+        売れ終わった物件の反響は入りません。
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[[false, `全員 ${all.length}件`], [true, `自分だけ ${all.filter(r => r.assignee === currentUser).length}件`]].map(([val, label]) => (
+          <button key={String(val)} onClick={() => setOnlyMine(val)} style={{
+            flex: 1, padding: "9px 4px", borderRadius: 10, cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 800,
+            background: onlyMine === val ? C.accent : C.cardBg, color: onlyMine === val ? "#fff" : C.muted,
+            border: `1.5px solid ${onlyMine === val ? C.accent : C.borderDim}`,
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {rows.length === 0 && (
+        <div style={{ background: "#10b98114", border: `1.5px solid #10b98155`, borderRadius: 12, padding: 24, textAlign: "center", color: C.text, fontSize: 14, fontWeight: 700 }}>
+          ✅ 未対応の反響はありません
+        </div>
+      )}
+
+      {rows.map((row, i) => {
+        const v = row.v;
+        const ag = daysAgoInfo(v.date, true);
+        return (
+          <div key={`${row.parentType}_${row.parentId}_${row.idx}_${i}`} style={{
+            background: C.cardBg, border: `1px solid ${C.borderDim}`,
+            borderLeft: `4px solid ${ag ? ag.color : C.borderDim}`,
+            borderRadius: 10, padding: 12, marginBottom: 10,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+              {ag && <span style={{ background: ag.color, color: "#fff", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{ag.label}</span>}
+              <span style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{v.customer || "(名前未入力)"}</span>
+              {v.prospect && PROSPECT_INFO[v.prospect] && (
+                <span style={{ background: PROSPECT_INFO[v.prospect].color + "33", color: PROSPECT_INFO[v.prospect].color, padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
+                  {PROSPECT_INFO[v.prospect].icon}{v.prospect}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.6 }}>
+              <span onClick={() => onJump && onJump(row)} style={{ color: C.accent, textDecoration: "underline", cursor: "pointer" }}>{row.parentName}</span>
+              {row.assignee ? <span style={{ marginLeft: 8 }}>担当:{row.assignee}</span> : null}
+              {v.date ? <span style={{ marginLeft: 8 }}>反響 {v.date}</span> : null}
+              {v.visitDate ? <span style={{ marginLeft: 8, color: "#06b6d4", fontWeight: 700 }}>→ 案内 {v.visitDate}{v.visitTime ? " " + v.visitTime : ""}</span> : null}
+            </div>
+            {(v.contact || v.email) && (
+              <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+                {v.contact && <a href={`tel:${v.contact}`} style={{ flex: 1, textDecoration: "none", background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 8, padding: "10px 6px", textAlign: "center", fontSize: 13, fontWeight: 800 }}><NavIcon name="phone" size={13} /> {v.contact}</a>}
+                {v.email && <a href={`mailto:${v.email}`} style={{ textDecoration: "none", background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "10px 14px", textAlign: "center", fontSize: 13, fontWeight: 800, flexShrink: 0 }}><NavIcon name="mail" size={13} /></a>}
+              </div>
+            )}
+            <ViewingActions v={v} onAttempt={(kind) => applyAttempt(row, kind)} onUnhandle={() => {}} />
+          </div>
+        );
+      })}
+      <button onClick={onClose} style={{ ...btnStyle("ghost"), width: "100%", marginTop: 8, padding: "14px 0", fontSize: 15 }}>閉じる</button>
+    </BottomSheet>
+  );
+}
+
+// 🆕 v9.375: 長いメモ（SUUMOの顧客住所＋URL）を畳んで一覧性を上げる
+function ViewingNote({ text }) {
+  const [open, setOpen] = useState(false);
+  const s = String(text || "");
+  if (!s) return null;
+  const LIMIT = 70;
+  const isLong = s.length > LIMIT;
+  return (
+    <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, padding: "6px 8px", background: C.inset, borderRadius: 4, lineHeight: 1.5 }}>
+      <NavIcon name="filetext" size={12} /> {open || !isLong ? s : s.slice(0, LIMIT) + "…"}
+      {isLong && (
+        <button onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+          style={{ marginLeft: 6, background: "transparent", border: "none", color: C.accent, cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700, padding: 0 }}>
+          {open ? "閉じる" : "全文"}
+        </button>
+      )}
+    </div>
+  );
+}
 
 function ViewingCloseBar({ title, total, unhandled, onClose }) {
   return (
@@ -2951,7 +3153,8 @@ function mergeWithDefault(remote) {
 // ============== 🆕 v6: 項目ごとマージ（編集の取り合いを防ぐ）==============
 // 「物件まるごと最後の勝ち」だと、2人が別の項目を編集しても片方が丸ごと負ける。
 // 項目ごとに更新時刻を持たせ、項目単位で新しい方を採用する。反響・写真・コメント等のリストは「上書き」でなく「合算」する。
-const MERGEABLE_ARRAY_FIELDS = new Set(["viewings", "photos", "comments", "visitLog", "history", "family", "dmLog"]);
+// 🆕 v9.375: attempts（反響へ電話・メールした記録）も合算対象に。別端末の記録が消えないように。
+const MERGEABLE_ARRAY_FIELDS = new Set(["viewings", "photos", "comments", "visitLog", "history", "family", "dmLog", "attempts"]);
 
 // 🆕 v8.35: ネスト配列の削除を tombstone で他端末に伝えるための設定
 //   ・viewings 用と同じパターンを、家族構成・履歴・訪問ログ・写真にも横展開
@@ -10731,6 +10934,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const [viewingSearchByMed, setViewingSearchByMed] = useState({});
   // 🆕 v9.370: 反響を全件表示するか（既定は5件だけ）
   const [viewingShowAllByMed, setViewingShowAllByMed] = useState({});
+  // 🆕 v9.375: 「今日かける反響」シート
+  const [showCallSheet, setShowCallSheet] = useState(false);
   // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
   const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   const [newViewingComment, setNewViewingComment] = useState({});
@@ -10993,6 +11198,18 @@ function MediationView({ data, setData, dealType, setDealType }) {
   };
 
   // 🆕 v9.365: 反響の「対応済み / 未対応」を1タップで切り替え
+  // 🆕 v9.375: 何をしたか（つながった／不在／メール）まで1タップで残す
+  const handleViewingAttempt = (medId, viewingIdx, kind) => {
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    setData(d => ({
+      ...d,
+      mediations: (d.mediations || []).map(m => m.id !== medId ? m : {
+        ...m,
+        viewings: (m.viewings || []).map((v, idx) => idx === viewingIdx ? withViewingAttempt(v, kind, currentUser) : v),
+      }),
+    }));
+  };
+
   const handleToggleViewingHandled = (medId, viewingIdx) => {
     if (!currentUser) { alert("先にログインしてください"); return; }
     setData(d => ({
@@ -11155,6 +11372,20 @@ function MediationView({ data, setData, dealType, setDealType }) {
           }}>{t.label}</button>;
         })}
       </div>
+      {/* 🆕 v9.375: 物件をまたいだ「今日かける反響」への入口 */}
+      {(() => {
+        const n = collectPendingViewings(data).length;
+        return (
+          <button onClick={() => setShowCallSheet(true)} style={{
+            width: "100%", marginBottom: 10, padding: "13px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit",
+            background: n > 0 ? "#ef444414" : C.cardBg, border: `1.5px solid ${n > 0 ? "#ef4444" : C.borderDim}`,
+            color: n > 0 ? "#ef4444" : C.muted, fontSize: 14, fontWeight: 800,
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+          }}>
+            📞 今日かける反響 {n > 0 ? `${n}件` : "なし"}{n > 0 ? " ›" : ""}
+          </button>
+        );
+      })()}
       <SearchBar value={search} onChange={setSearch} placeholder="物件名・売主で検索..." />
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}><NavIcon name="user" size={12} /> 表示する担当者{filterMember === "__ALL__" ? "（全員）" : ""}</div>
@@ -11410,16 +11641,13 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             {prospect && <span style={{ background: prospect.color + "33", color: prospect.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{prospect.icon}{v.prospect}</span>}
                             {result && v.result !== "未実施" && <span style={{ background: result.color + "33", color: result.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{result.icon}{v.result}</span>}
                             {v.nextAction && <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}><NavIcon name="refresh" size={12} />{v.nextAction}</span>}
-                            {/* 🆕 v9.365: ワンタップで対応済み／未対応を切り替え */}
-                            <button onClick={(ev) => { ev.stopPropagation(); handleToggleViewingHandled(m.id, vi); }}
-                              style={{ marginLeft: "auto", background: unhandled ? "#10b98122" : "transparent", border: `1.5px solid ${unhandled ? "#10b981" : C.muted + "66"}`, color: unhandled ? "#10b981" : C.muted, borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
-                              {unhandled ? "✓ 対応済みにする" : "↩ 未対応に戻す"}
-                            </button>
-                            <button onClick={(ev) => { ev.stopPropagation(); openEdit(m, vi); }} style={{ background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
+                            <button onClick={(ev) => { ev.stopPropagation(); openEdit(m, vi); }} style={{ marginLeft: "auto", background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
                           </div>
                           <div style={{ fontSize: 11, color: C.muted, marginBottom: 5, lineHeight: 1.6 }}>
                             <NavIcon name="calendar" size={15} /> 反響:{v.date || "—"}
                             {dow && <span style={{ color: dow.color, marginLeft: 2 }}>({dow.label})</span>}
+                            {/* 🆕 v9.375: 何日放置か */}
+                            {(() => { const ag = daysAgoInfo(v.date, unhandled); return ag ? <span style={{ color: ag.color, marginLeft: 6, fontWeight: 800 }}>{ag.label}</span> : null; })()}
                             {v.visitDate && <span style={{ color: "#06b6d4", marginLeft: 8, fontWeight: 700 }}>→ 案内:{v.visitDate}{visitDow && <span style={{ color: visitDow.color, marginLeft: 2 }}>({visitDow.label})</span>}{v.visitTime ? " " + v.visitTime : ""}</span>}
                           </div>
                           {(v.contact || v.email || v.budget || v.funding || v.purpose) && (
@@ -11442,7 +11670,11 @@ function MediationView({ data, setData, dealType, setDealType }) {
                               {v.email && <a href={`mailto:${v.email}`} onClick={(e) => e.stopPropagation()} style={{ flex: 1, textDecoration: "none", background: C.accent + "22", border: `1px solid ${C.accent}55`, color: C.accent, borderRadius: 6, padding: "5px 10px", textAlign: "center", fontSize: 11, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><NavIcon name="mail" size={12} /> メール</a>}
                             </div>
                           )}
-                          {v.note && <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, padding: "6px 8px", background: C.inset, borderRadius: 4, lineHeight: 1.5 }}><NavIcon name="filetext" size={12} /> {v.note}</div>}
+                          <ViewingNote text={v.note} />
+                          {/* 🆕 v9.375: 何をしたかまで1タップで残す */}
+                          <ViewingActions v={v}
+                            onAttempt={(kind) => handleViewingAttempt(m.id, vi, kind)}
+                            onUnhandle={() => handleToggleViewingHandled(m.id, vi)} />
                           {(() => {
                             const threadKey = `medview_${m.id}_${vi}`;
                             const cmtNewCount = countNewComments(comments, threadKey);
@@ -11555,6 +11787,23 @@ function MediationView({ data, setData, dealType, setDealType }) {
           </div>
         </div>
       ))}
+      {/* 🆕 v9.375: 今日かける反響（物件をまたいだ横断リスト） */}
+      {showCallSheet && (
+        <div style={{ position: "relative", zIndex: 520 }}>
+          <ViewingCallSheet data={data} setData={setData} currentUser={currentUser}
+            onClose={() => setShowCallSheet(false)}
+            onJump={(row) => {
+              setShowCallSheet(false);
+              if (row.parentType === "mediation") {
+                setDealType("mediation");
+                setViewingsExpandedByMed({ [row.parentId]: true });
+                scrollToCard(`mediation-item-${row.parentId}`);
+              } else {
+                setDealType("stock");
+              }
+            }} />
+        </div>
+      )}
       {showImport && (
         <BottomSheet title="📥 SUUMO/アットホーム反響取り込み" onClose={() => { setShowImport(false); setImportText(""); setImportParsed(null); setImportTargetMedId(null); }}>
           <div style={{ marginBottom: 14 }}>
@@ -12018,6 +12267,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [viewingSearchByStock, setViewingSearchByStock] = useState({});
   // 🆕 v9.370: 反響を全件表示するか（既定は5件だけ）
   const [viewingShowAllByStock, setViewingShowAllByStock] = useState({});
+  // 🆕 v9.375: 「今日かける反響」シート
+  const [showCallSheet, setShowCallSheet] = useState(false);
   // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
   const [commentsExpandedByViewing, setCommentsExpandedByViewing] = useState({});
   // 🆕 反響ごとのコメント機能
@@ -12257,6 +12508,18 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   };
 
   // 🆕 v9.365: 反響の「対応済み / 未対応」を1タップで切り替え
+  // 🆕 v9.375: 何をしたか（つながった／不在／メール）まで1タップで残す
+  const handleViewingAttempt = (stockId, viewingIdx, kind) => {
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    setData(d => ({
+      ...d,
+      stocks: (d.stocks || []).map(s => s.id !== stockId ? s : {
+        ...s,
+        viewings: (s.viewings || []).map((v, idx) => idx === viewingIdx ? withViewingAttempt(v, kind, currentUser) : v),
+      }),
+    }));
+  };
+
   const handleToggleViewingHandled = (stockId, viewingIdx) => {
     if (!currentUser) { alert("先にログインしてください"); return; }
     setData(d => ({
@@ -12731,6 +12994,20 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         })}
       </div>
 
+      {/* 🆕 v9.375: 物件をまたいだ「今日かける反響」への入口 */}
+      {(() => {
+        const n = collectPendingViewings(data).length;
+        return (
+          <button onClick={() => setShowCallSheet(true)} style={{
+            width: "100%", marginBottom: 10, padding: "13px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit",
+            background: n > 0 ? "#ef444414" : C.cardBg, border: `1.5px solid ${n > 0 ? "#ef4444" : C.borderDim}`,
+            color: n > 0 ? "#ef4444" : C.muted, fontSize: 14, fontWeight: 800,
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+          }}>
+            📞 今日かける反響 {n > 0 ? `${n}件` : "なし"}{n > 0 ? " ›" : ""}
+          </button>
+        );
+      })()}
       <SearchBar value={search} onChange={setSearch} placeholder="物件名・担当者で検索..." />
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}><NavIcon name="user" size={12} /> 表示する担当者{filterMember === "__ALL__" ? "（全員）" : ""}</div>
@@ -13105,18 +13382,15 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                                   <NavIcon name="refresh" size={15} />{v.nextAction}
                                 </span>
                               )}
-                              {/* 🆕 v9.365: ワンタップで対応済み／未対応を切り替え */}
-                              <button onClick={(ev) => { ev.stopPropagation(); handleToggleViewingHandled(s.id, vi); }}
-                                style={{ marginLeft: "auto", background: unhandled ? "#10b98122" : "transparent", border: `1.5px solid ${unhandled ? "#10b981" : C.muted + "66"}`, color: unhandled ? "#10b981" : C.muted, borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
-                                {unhandled ? "✓ 対応済みにする" : "↩ 未対応に戻す"}
-                              </button>
-                              <button onClick={(ev) => { ev.stopPropagation(); openEdit(s, vi); }} style={{ background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
+                              <button onClick={(ev) => { ev.stopPropagation(); openEdit(s, vi); }} style={{ marginLeft: "auto", background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
                             </div>
 
                             {/* 日付・案内 */}
                             <div style={{ fontSize: 11, color: C.muted, marginBottom: 5, lineHeight: 1.6 }}>
                               <NavIcon name="calendar" size={15} /> 反響:{v.date || "—"}
                               {dow && <span style={{ color: dow.color, marginLeft: 2 }}>({dow.label})</span>}
+                              {/* 🆕 v9.375: 何日放置か */}
+                              {(() => { const ag = daysAgoInfo(v.date, unhandled); return ag ? <span style={{ color: ag.color, marginLeft: 6, fontWeight: 800 }}>{ag.label}</span> : null; })()}
                               {v.visitDate && (
                                 <span style={{ color: "#06b6d4", marginLeft: 8, fontWeight: 700 }}>
                                   → 案内:{v.visitDate}
@@ -13160,12 +13434,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                               </div>
                             )}
 
-                            {/* メモ */}
-                            {v.note && (
-                              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, padding: "6px 8px", background: C.inset, borderRadius: 4, lineHeight: 1.5 }}>
-                                <NavIcon name="filetext" size={15} /> {v.note}
-                              </div>
-                            )}
+                            {/* メモ（長いものは畳む） */}
+                            <ViewingNote text={v.note} />
+                            {/* 🆕 v9.375: 何をしたかまで1タップで残す */}
+                            <ViewingActions v={v}
+                              onAttempt={(kind) => handleViewingAttempt(s.id, vi, kind)}
+                              onUnhandle={() => handleToggleViewingHandled(s.id, vi)} />
 
                             {/* 💬 コメント欄（折りたたみ式・新着指標つき） */}
                             {(() => {
@@ -13315,6 +13589,23 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         );
       })}
       {/* 🆕 SUUMO/アットホーム反響取り込み BottomSheet */}
+      {/* 🆕 v9.375: 今日かける反響（物件をまたいだ横断リスト） */}
+      {showCallSheet && (
+        <div style={{ position: "relative", zIndex: 520 }}>
+          <ViewingCallSheet data={data} setData={setData} currentUser={currentUser}
+            onClose={() => setShowCallSheet(false)}
+            onJump={(row) => {
+              setShowCallSheet(false);
+              if (row.parentType === "stock") {
+                setDealType("stock");
+                setViewingsExpandedByStock({ [row.parentId]: true });
+                scrollToCard(`stock-item-${row.parentId}`);
+              } else {
+                setDealType("mediation");
+              }
+            }} />
+        </div>
+      )}
       {showImport && (
         <BottomSheet title="📥 SUUMO/アットホーム反響取り込み" onClose={() => { setShowImport(false); setImportText(""); setImportParsed(null); setImportTargetStockId(null); }}>
           <div style={{ marginBottom: 14 }}>
