@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-11-v9.375-viewing-callflow";
+const APP_VERSION = "2026-08-11-v9.376-activity-breakdown";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7931,6 +7931,125 @@ function JiageStatusHelp({ onClose }) {
 
       <button onClick={onClose} style={{ ...btnStyle(), width: "100%", marginTop: 18, padding: "14px 0", fontSize: 15 }}>閉じる</button>
     </BottomSheet>
+  );
+}
+
+// 🆕 v9.376: 活動カウンターの「何件中何件」を一目で分かるようにする内訳カード
+//   ・地上げは訪問記録1件につき結果が必ず1つ自動加算されるので、割合が正確に出せる
+//   ・業者は手入力カウンターなので、残りを「会えた（目安）」として控えめに出す
+function ActivityBreakdown({ values, group, periodLabel }) {
+  const n = (k) => Number((values || {})[k]) || 0;
+  const isJiage = group === "jiage";
+
+  const outcomes = isJiage
+    ? [
+        { key: "面談", label: "会えた", color: "#10b981" },
+        { key: "地上不在", label: "不在", color: "#92400e" },
+        { key: "居留守", label: "居留守", color: "#b45309" },
+        { key: "訪問禁止", label: "門前払い", color: "#7f1d1d" },
+      ]
+    : [
+        { key: "不在", label: "不在", color: "#92400e" },
+        { key: "断り", label: "断り", color: "#ef4444" },
+        { key: "休み", label: "休み", color: "#94a3b8" },
+        { key: "閉店", label: "閉店", color: "#64748b" },
+      ];
+
+  // 回った総数
+  const visits = isJiage
+    ? outcomes.reduce((a, o) => a + n(o.key), 0)
+    : n("訪問") + n("業者初訪");
+  // 業者は「訪問 − 不在・断り・休み・閉店」を会えた数の目安として先頭に足す
+  const bars = isJiage
+    ? outcomes.map(o => ({ ...o, count: n(o.key) }))
+    : [{ key: "_met", label: "会えた（目安）", color: "#10b981", count: Math.max(0, visits - outcomes.reduce((a, o) => a + n(o.key), 0)) },
+       ...outcomes.map(o => ({ ...o, count: n(o.key) }))];
+  const barTotal = bars.reduce((a, b) => a + b.count, 0);
+
+  // 成果（会えたあとに何が起きたか）
+  const wins = isJiage
+    ? [["見込み", "#ec4899"], ["中長期見込", "#0d9488"], ["交渉中", "#c026d3"], ["媒介", "#7c3aed"], ["地上仕入", "#ca8a04"]]
+    : [["名刺取得", "#10b981"], ["アドレス取得", "#0ea5e9"], ["架電", "#f59e0b"], ["査定", "#a855f7"], ["仕入検討", "#ec4899"], ["仕入", "#ca8a04"], ["仲介受託", "#7c3aed"]];
+  const winTotal = wins.reduce((a, [k]) => a + n(k), 0);
+  const met = isJiage ? n("面談") : (bars[0] ? bars[0].count : 0);
+  const pct = (x, d) => (d > 0 ? Math.round(x / d * 100) : 0);
+
+  if (visits === 0 && winTotal === 0) {
+    return (
+      <div style={{ background: C.cardBg, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 12, textAlign: "center", color: C.muted, fontSize: 12 }}>
+        {periodLabel || ""}まだ記録がありません
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
+      {/* 回った数 */}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: C.muted, fontWeight: 700 }}>{periodLabel ? periodLabel + " " : ""}回った先</span>
+        <span style={{ fontSize: 30, fontWeight: 800, color: C.text, lineHeight: 1 }}>{visits}</span>
+        <span style={{ fontSize: 13, color: C.muted, fontWeight: 700 }}>件</span>
+        {isJiage && (n("初訪") > 0 || n("地上再訪") > 0) && (
+          <span style={{ marginLeft: "auto", fontSize: 11, color: C.muted }}>初回 {n("初訪")} / 再訪 {n("地上再訪")}</span>
+        )}
+      </div>
+
+      {/* 積み上げバー */}
+      {barTotal > 0 && (
+        <div style={{ display: "flex", height: 14, borderRadius: 7, overflow: "hidden", marginBottom: 10, background: C.inset }}>
+          {bars.filter(b => b.count > 0).map(b => (
+            <div key={b.key} title={`${b.label} ${b.count}`} style={{ width: `${b.count / barTotal * 100}%`, background: b.color }} />
+          ))}
+        </div>
+      )}
+
+      {/* 何件中何件 */}
+      <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+        {bars.map(b => (
+          <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: b.color, flexShrink: 0 }} />
+            <span style={{ color: C.text, fontWeight: 700, minWidth: 92 }}>{b.label}</span>
+            <span style={{ color: C.muted }}>{visits}件中</span>
+            <span style={{ color: b.color, fontWeight: 800, fontSize: 15 }}>{b.count}</span>
+            <span style={{ color: C.muted }}>件</span>
+            <span style={{ marginLeft: "auto", color: b.color, fontWeight: 800 }}>{pct(b.count, visits)}%</span>
+          </div>
+        ))}
+      </div>
+
+      {/* 成果 */}
+      <div style={{ borderTop: `1px solid ${C.borderDim}`, paddingTop: 10 }}>
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, marginBottom: 6 }}>
+          {isJiage
+            ? <>会えた <b style={{ color: "#10b981" }}>{met}</b> 件から　→　見込みになったのは <b style={{ color: "#ec4899" }}>{n("見込み") + n("中長期見込")}</b> 件（{pct(n("見込み") + n("中長期見込"), met)}%）</>
+            : <>訪問 <b style={{ color: C.text }}>{visits}</b> 件からの成果</>}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+          {wins.map(([k, c]) => {
+            const v = n(k);
+            return (
+              <span key={k} style={{
+                background: v > 0 ? c + "22" : "transparent", color: v > 0 ? c : C.muted,
+                border: `1px solid ${v > 0 ? c + "66" : C.borderDim}`,
+                padding: "3px 9px", borderRadius: 999, fontSize: 11, fontWeight: v > 0 ? 800 : 500,
+              }}>{approachItemLabel(k)} {v}</span>
+            );
+          })}
+          {isJiage && n("ポスティング") > 0 && (
+            <span style={{ background: "#0ea5e922", color: "#0ea5e9", border: "1px solid #0ea5e966", padding: "3px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>ポスティング {n("ポスティング")}</span>
+          )}
+          {isJiage && n("見込無し") > 0 && (
+            <span style={{ background: C.inset, color: C.muted, border: `1px solid ${C.borderDim}`, padding: "3px 9px", borderRadius: 999, fontSize: 11 }}>見込無し {n("見込無し")}</span>
+          )}
+        </div>
+      </div>
+
+      {!isJiage && (
+        <div style={{ fontSize: 10, color: C.muted, marginTop: 8, lineHeight: 1.6 }}>
+          ※ 業者は手入力のカウンターなので「会えた」は差し引きの目安です（名刺は1訪問で複数枚取れることがあります）
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -15872,6 +15991,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
             })}
           </div>
 
+          {/* 🆕 v9.376: この日の「何件中何件」内訳 */}
+          <ActivityBreakdown values={inputValues} group={salesSubTab} periodLabel={selectedDate === today ? "今日" : selectedDate} />
+
           {/* カウンター項目（2列コンパクトレイアウト） */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <div style={{ fontSize: 12, color: C.muted, fontWeight: 700 }}><NavIcon name="phone" size={12} /> {APPROACH_GROUPS[salesSubTab]?.label || ""}活動カウンター</div>
@@ -16502,6 +16624,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     );
                   })}
                 </div>
+
+                {/* 🆕 v9.376: 今月の「何件中何件」内訳（表を読む前に結論が分かるように） */}
+                <ActivityBreakdown values={totals} group={salesSubTab} periodLabel={`${Number(selectedYM.split("-")[1])}月`} />
 
                 {/* ===== 集計テーブル（常時表示） ===== */}
                 <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", background: C.panelBg, borderRadius: 10, border: `1px solid ${C.borderDim}`, marginBottom: 10 }}>
