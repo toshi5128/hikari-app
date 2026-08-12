@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-12-v9.377-reform-pin-color";
+const APP_VERSION = "2026-08-13-v9.378-filter-count-match";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -19167,12 +19167,22 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   }, [data.jiage]);
 
   const filtered = useMemo(() => allItems.filter(item => {
-    // 🆕 v8.115: 既定で📭DM不要を非表示（"excluded" フィルタ時のみ表示）
+    // 🆕 v8.115: 既定で📭DM不要を非表示（地図を開いた直後にDM不要のピンで埋まらないようにするため）
     //   通常物件・🟡地番待ち・⏳謄本待ち・🚪訪問OK は影響なし
-    //   excluded===true && quickFilter !== "excluded" → 非表示
+    // 🆕 v9.378: ただし「自分から指定して絞り込んだとき」は隠さない。
+    //   チップの件数は全件を数えるのに一覧は隠していたため、
+    //   「訪問禁止(記録) 29」を押しても1件しか出ない、という食い違いが起きていた。
+    //   （実データで 29件中28件、NG 41件中24件が excluded=true だった）
     {
       const _raw = item.raw || {};
-      if (_raw.excluded === true && quickFilter !== "excluded") return false;
+      const _explicitPick =
+        quickFilter === "excluded" ||          // DM不要そのものを見たい
+        quickFilter === "ng_reclassify" ||     // NG(要再分類)を潰したい
+        quickFilter === "banned" ||            // 訪問禁止を確認したい
+        resultFilters.length > 0 ||            // 訪問結果（不在/居留守/訪問禁止）で絞った
+        filterStatuses.length > 0 ||           // 営業ステータスで絞った
+        !!search;                              // 住所・所有者名で探している
+      if (_raw.excluded === true && !_explicitPick) return false;
     }
     // 🆕 v9.338: 取込日フィルタ（「7/28に取り込んだ分だけ地図に出す」）。印が無い古いピンは対象外
     if (batchFilter) {
@@ -23114,8 +23124,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}><NavIcon name="mappin" size={12} /> ピン状態</div>
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
                                 {(() => {
+                                  // 🆕 v9.378: 件数もエリアの絞り込みに合わせる（押した後に出る数と揃える）
+                                  const _inArea = (j) => areaFilter === "すべて" ? true
+                                    : areaFilter === "未設定" ? !JIAGE_AREAS.includes(j.area || "")
+                                    : (j.area || "") === areaFilter;
+                                  const _pool = (data.jiage || []).filter(_inArea);
                                   // 🆕 v9.71: 訪問結果（不在/居留守/訪問禁止）の件数を最新訪問結果で集計
-                                  const _resultCount = (want) => (data.jiage || []).filter(j =>
+                                  const _resultCount = (want) => _pool.filter(j =>
                                     isBasicStageStatus(j.status) && latestVisitResultKey(j) === want
                                   ).length;
                                   return [
@@ -23130,8 +23145,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   { key: "result_ignore",  label: "🙈 居留守",   color: "#b45309", count: _resultCount("ignore") },
                                   { key: "result_rejected",label: "🚷 訪問禁止(記録)", color: "#7f1d1d", count: _resultCount("rejected") },
                                   // 🆕 v9.372: ステータス刷新（STATUS-SPEC-v1）
-                                  { key: "banned",         label: "⛔ 訪問禁止",  color: "#7f1d1d", count: (data.jiage || []).filter(j => j.status === "訪問禁止").length },
-                                  { key: "ng_reclassify",  label: "⚠️ NG(要再分類)", color: "#f59e0b", count: (data.jiage || []).filter(j => j.status === "NG").length },
+                                  { key: "banned",         label: "⛔ 訪問禁止",  color: "#7f1d1d", count: _pool.filter(j => j.status === "訪問禁止").length },
+                                  { key: "ng_reclassify",  label: "⚠️ NG(要再分類)", color: "#f59e0b", count: _pool.filter(j => j.status === "NG").length },
                                 ]; })().map(p => {
                                   // 🆕 v9.105: 訪問結果（不在/居留守/訪問禁止）は複数選択（resultFilters）。それ以外は従来どおり単一選択（quickFilter）。
                                   const isResult = (p.key === "result_absent" || p.key === "result_ignore" || p.key === "result_rejected");
@@ -23201,7 +23216,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                 {/* 🆕 v9.372: 廃止した NG も、0件になるまでは絞り込めるように残す */}
                                 {ATTACK_STATUSES_WITH_LEGACY.filter(st => st !== "NG" || (data.jiage || []).some(j => j.status === "NG")).map(st => {
                                   const isActive = filterStatuses.includes(st);
-                                  const count = (data.jiage || []).filter(j => j.status === st).length;
+                                  // 🆕 v9.378: 件数もエリアの絞り込みに合わせる
+                                  const count = (data.jiage || []).filter(j => {
+                                    if (j.status !== st) return false;
+                                    if (areaFilter === "すべて") return true;
+                                    if (areaFilter === "未設定") return !JIAGE_AREAS.includes(j.area || "");
+                                    return (j.area || "") === areaFilter;
+                                  }).length;
                                   const color = stColor(st);
                                   return (
                                     <button key={st} onClick={() => {
