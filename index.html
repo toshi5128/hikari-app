@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-13-v9.378-filter-count-match";
+const APP_VERSION = "2026-08-22-v9.379-money-visibility-and-retired-login";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -489,6 +489,23 @@ const MEMBER_COLORS = {
   "脇本": "#ef4444", "谷津": "#8b5cf6", "下田": "#06b6d4", "比嘉": "#ec4899",
   "比嘉・下田": "#4f46e5",
 };
+
+// 🆕 v9.379: 退職したメンバー（ログイン禁止）
+//   ・MEMBERS からは外さない。外すと過去データの「担当：長島」が表示・集計から消えて履歴が壊れるため。
+//   ・ここに入れた人は「ログイン画面に出ない／端末に残ったログイン状態も自動で解除される」。
+const RETIRED_MEMBERS = ["長島"];
+function isRetiredMember(name) { return RETIRED_MEMBERS.includes(String(name || "").trim()); }
+// ログインや担当切替で選べるメンバー（退職者を除く）
+function activeMembers() { return MEMBERS.filter(m => !isRetiredMember(m)); }
+
+// 🆕 v9.379: 会社全体のお金の数字（年間売上・利益・目標達成率・月別グラフ・メンバー別ランキング）を見られる人。
+//   ・1件ごとの仕入/売却/利益は今まで通り全員見える。ここで隠すのは「会社の全体像」だけ。
+const MONEY_VIEWERS = ["下田", "比嘉"];
+function canViewMoney(user) {
+  const parts = expandAssignee(String(user || "").trim()); // 「比嘉・下田」のような連名も分解して判定
+  if (parts.length === 0) return false;
+  return parts.every(p => MONEY_VIEWERS.includes(p)); // 全員が対象者のときだけ見せる
+}
 
 // 🆕 v9.177: カレンダー予定の色を「担当者カラー」で決める（誰の予定か一目で分かる）。担当不明は種別色にフォールバック。
 function calMemberColor(e) {
@@ -2266,6 +2283,10 @@ function isAdminUser(data, currentUser) {
 // Edge Function を呼んでプッシュ通知を送信
 async function sendPushNotification(targets, title, body, extra = {}) {
   try {
+    // 🆕 v9.379: 退職メンバーの端末には通知を送らない（過去案件の担当として残っていても対象外）
+    const list = (Array.isArray(targets) ? targets : [targets]).filter(t => t && !isRetiredMember(t));
+    if (list.length === 0) return false;
+    targets = list;
     const res = await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
       method: "POST",
       headers: {
@@ -2445,9 +2466,16 @@ const DEFAULT_DATA = {
 // ============== 現在のユーザー識別 ==============
 const CURRENT_USER_KEY = "hikari_current_user";
 function getCurrentUser() {
-  try { return localStorage.getItem(CURRENT_USER_KEY) || ""; } catch { return ""; }
+  try {
+    const u = localStorage.getItem(CURRENT_USER_KEY) || "";
+    // 🆕 v9.379: 退職メンバーは端末にログイン状態が残っていても無効。
+    //   ここで一度きれいにしておくと、アプリのどこから見ても「未ログイン」に統一される。
+    if (u && isRetiredMember(u)) { try { localStorage.removeItem(CURRENT_USER_KEY); } catch {} return ""; }
+    return u;
+  } catch { return ""; }
 }
 function setCurrentUser(name) {
+  if (name && isRetiredMember(name)) return; // 🆕 v9.379: 退職メンバーにはログインできない
   try { localStorage.setItem(CURRENT_USER_KEY, name); } catch {}
 }
 
@@ -3998,6 +4026,8 @@ function UserAuthScreen({ onAuth }) {
   const lastUser = getCurrentUser();
 
   const handleSelectMember = (member) => {
+    // 🆕 v9.379: 退職メンバーは選ばれてもログインさせない（画面にも出ないが念のため）
+    if (isRetiredMember(member)) { alert("このアカウントは利用できません。"); return; }
     const hasPwd = !!memberPasswords[member];
     if (!hasPwd) {
       // パスワード未設定 → 警告のみで通す（初期セットアップ用）
@@ -4065,7 +4095,7 @@ function UserAuthScreen({ onAuth }) {
         <div style={{ textAlign: "center", marginBottom: 8 }}><img src="logo-full.png" alt="ひかり不動産" style={{ height: 100, width: "auto", maxWidth: "80%" }} /></div>
         <div style={{ fontSize: 14, color: C.muted, marginBottom: 24, textAlign: "center", lineHeight: 1.6 }}>あなたは誰ですか？<br /><span style={{ fontSize: 11 }}>名前をタップしてください</span></div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          {MEMBERS.map(m => {
+          {activeMembers().map(m => {
             const color = MEMBER_COLORS[m] || C.accent;
             const hasPwd = !!memberPasswords[m];
             const isAdmin = getAdminMembers(cache).includes(m);
@@ -8102,6 +8132,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
+  const canMoney = canViewMoney(currentUser); // 🆕 v9.379: 会社全体のお金の数字を見られるか（下田・比嘉のみ）
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const [selectedYear, setSelectedYear] = useState(currentYear);
   const [showGoalEdit, setShowGoalEdit] = useState(false);
@@ -10355,32 +10386,42 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       {/* 年間KPI */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 12 }}><NavIcon name="calendar" size={12} /> {selectedYear}年 年間実績</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-          <StatCard icon="banknote" label="年間売上" value={(yearSell / 10000).toFixed(0) + "万"} color={C.warn} sub={`決済${yearCompleted.length}件`} onClick={() => setKpiDetail("sold")} />
-          <StatCard icon="trendup" label="年間利益" value={(yearProfit / 10000).toFixed(0) + "万"} color={C.success} sub="税引前" onClick={() => setKpiDetail("sold")} />
-        </div>
+        {/* 🆕 v9.379: 売上・利益・手数料は下田・比嘉のみ。件数（仕入/売却/在庫）は全員に出す。 */}
+        {canMoney && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+            <StatCard icon="banknote" label="年間売上" value={(yearSell / 10000).toFixed(0) + "万"} color={C.warn} sub={`決済${yearCompleted.length}件`} onClick={() => setKpiDetail("sold")} />
+            <StatCard icon="trendup" label="年間利益" value={(yearProfit / 10000).toFixed(0) + "万"} color={C.success} sub="税引前" onClick={() => setKpiDetail("sold")} />
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
           <StatCard icon="cart" label="仕入件数" value={yearBought.length + "件"} color={C.accent} onClick={() => setKpiDetail("bought")} />
           <StatCard icon="check" label="売却件数" value={yearCompleted.length + "件"} color={C.success} onClick={() => setKpiDetail("sold")} />
           <StatCard icon="package" label="在庫" value={active.length + "件"} color={C.muted} onClick={() => setKpiDetail("active")} />
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-          <StatCard icon="bulb" label="平均利益" value={(avgProfit / 10000).toFixed(0) + "万"} color={C.purple} sub="1件あたり" />
-          <StatCard icon="percent" label="平均利益率" value={avgProfitRate.toFixed(1) + "%"} color={avgProfitRate > 20 ? C.success : C.warn} sub="売却完了分" />
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
-          <StatCard icon="handshake" label="年間 仲介手数料" value={(yearBrokerFee / 10000).toFixed(0) + "万"} color={C.purple} sub={`決済${yearMediationsSettled.length}件`} />
-        </div>
+        {canMoney && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+            <StatCard icon="bulb" label="平均利益" value={(avgProfit / 10000).toFixed(0) + "万"} color={C.purple} sub="1件あたり" />
+            <StatCard icon="percent" label="平均利益率" value={avgProfitRate.toFixed(1) + "%"} color={avgProfitRate > 20 ? C.success : C.warn} sub="売却完了分" />
+          </div>
+        )}
+        {canMoney && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
+            <StatCard icon="handshake" label="年間 仲介手数料" value={(yearBrokerFee / 10000).toFixed(0) + "万"} color={C.purple} sub={`決済${yearMediationsSettled.length}件`} />
+          </div>
+        )}
       </div>
 
       {/* 年間目標達成率ゲージ */}
       {selectedYear === currentYear && (() => {
         const goals = { sell: 30000, profit: 6000, buyCount: 30, brokerFee: 1500, ...(data.annualGoals || {}) };
         const monthsPassed = new Date().getMonth() + 1; // 1-12
+        // 🆕 v9.379: 金額の目標（売上・利益・仲介手数料）は下田・比嘉のみ。件数の目標は全員に出す。
         const items = [
-          { label: "売上", current: Math.round(yearSell / 10000), goal: goals.sell, unit: "万", color: C.warn, icon: "💰" },
-          { label: "利益", current: Math.round(yearProfit / 10000), goal: goals.profit, unit: "万", color: C.success, icon: "📈" },
-          { label: "仲介手数料", current: Math.round(yearBrokerFee / 10000), goal: goals.brokerFee, unit: "万", color: C.purple, icon: "🤝" },
+          ...(canMoney ? [
+            { label: "売上", current: Math.round(yearSell / 10000), goal: goals.sell, unit: "万", color: C.warn, icon: "💰" },
+            { label: "利益", current: Math.round(yearProfit / 10000), goal: goals.profit, unit: "万", color: C.success, icon: "📈" },
+            { label: "仲介手数料", current: Math.round(yearBrokerFee / 10000), goal: goals.brokerFee, unit: "万", color: C.purple, icon: "🤝" },
+          ] : []),
           { label: "仕入件数", current: yearBought.length, goal: goals.buyCount, unit: "件", color: C.accent, icon: "🏠" },
         ];
         return (
@@ -10464,7 +10505,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           : `📦 在庫物件（${active.length}件）`;
         return (
           <BottomSheet title={title} onClose={() => setKpiDetail(null)}>
-            {isSold && (
+            {/* 🆕 v9.379: 「会社の合計」なので下田・比嘉のみ（1件ごとの金額は下に今まで通り出る） */}
+            {isSold && canMoney && (
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 800, color: C.text, marginBottom: 12, padding: "8px 12px", background: C.inset, borderRadius: 10, border: `1px solid ${C.borderDim}` }}>
                 <span>合計 売上 <span style={{ color: C.warn }}>{man(yearSell)}</span></span>
                 <span>利益 <span style={{ color: C.success }}>{man(yearProfit)}</span></span>
@@ -10507,7 +10549,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
       {/* 今日フォロー予定は最上段の「今日のアクション」に統合 */}
 
-      {/* 月別売上・利益グラフ */}
+      {/* 月別売上・利益グラフ（🆕 v9.379: 下田・比嘉のみ） */}
+      {canMoney && (
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 12 }}><NavIcon name="calendar" size={12} /> 月別売上・利益（万円）</div>
         <ResponsiveContainer width="100%" height={170}>
@@ -10528,8 +10571,9 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           ))}
         </div>
       </div>
+      )}
 
-      {/* 月別仕入・売却件数 */}
+      {/* 月別仕入・売却件数（件数なので全員に見せる） */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 12 }}><NavIcon name="home" size={12} /> 月別仕入・売却件数</div>
         <ResponsiveContainer width="100%" height={140}>
@@ -10550,8 +10594,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
         </div>
       </div>
 
-      {/* メンバー別実績 */}
-      {memberData.length > 0 && (
+      {/* メンバー別実績（🆕 v9.379: 下田・比嘉のみ） */}
+      {canMoney && memberData.length > 0 && (
         <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 14, padding: 14 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 12 }}><NavIcon name="users" size={12} /> メンバー別実績（{selectedYear}年）</div>
           <ResponsiveContainer width="100%" height={Math.max(100, memberData.length * 36)}>
@@ -14644,6 +14688,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
+  const canMoney = canViewMoney(currentUser); // 🆕 v9.379: 会社全体のお金の数字を見られるか（下田・比嘉のみ）
 
   const [tab, setTab] = useState("cases"); // "cases" | "input" | "monthly" | "goals"
   // 🆕 v8.36: 業者 / 地上げ サブタブ
@@ -15660,12 +15705,13 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, paddingBottom: 8, borderBottom: `1px solid ${cfg.color}22` }}>
                     <span style={{ fontSize: 16 }}>{cfg.icon}</span>
                     <span style={{ color: cfg.color, fontSize: 12, fontWeight: 700 }}>{cfg.title} 詳細（{sortedItems.length}件）</span>
-                    {totalProfit !== null && (
+                    {/* 🆕 v9.379: 会社の合計金額は下田・比嘉のみ */}
+                    {totalProfit !== null && canMoney && (
                       <span style={{ marginLeft: "auto", fontSize: 11, color: C.muted }}>
                         合計売上 <span style={{ color: C.warn, fontWeight: 700 }}>{Math.round(totalSell/10000)}万</span> / 利益 <span style={{ color: C.success, fontWeight: 700 }}>{Math.round(totalProfit/10000)}万</span>
                       </span>
                     )}
-                    {totalBuy !== null && (
+                    {totalBuy !== null && canMoney && (
                       <span style={{ marginLeft: "auto", fontSize: 11, color: C.muted }}>
                         合計仕入 <span style={{ color: C.accent, fontWeight: 700 }}>{Math.round(totalBuy/10000)}万</span>
                       </span>
@@ -29643,7 +29689,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
             : <><NavIcon name="user" size={15} /> 一般モード：自分（<span style={{ color: C.text, fontWeight: 700 }}>{currentUser || "未設定"}</span>）のパスワードのみ変更できます</>
           }
         </div>
-        {MEMBERS.map(m => {
+        {activeMembers().map(m => {
           const hasPwd = !!memberPasswords[m];
           const canEdit = isAdmin || m === currentUser;
           const isMe = m === currentUser;
@@ -29697,7 +29743,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
               現在の管理者: <b style={{ color: "#FCD34D" }}>{admins.join("・")}</b>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {MEMBERS.map(m => {
+              {activeMembers().map(m => {
                 const on = admins.includes(m);
                 return (
                   <div key={m} style={{
@@ -29738,7 +29784,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
               <span style={{ color: C.text }}>現在: <b style={{ color: C.accent }}>{getNotifyMembers(data).join("・")}</b></span>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {MEMBERS.map(m => {
+              {activeMembers().map(m => {
                 const current = getNotifyMembers(data);
                 const active = current.includes(m);
                 return (
