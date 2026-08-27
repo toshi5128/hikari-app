@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-22-v9.380-home-calendar-only-for-members";
+const APP_VERSION = "2026-08-27-v9.381-jiage-auto-lookup";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6528,15 +6528,24 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     // 🆕 v8.131: 現地ピン5状態（16色フル差別化）
     const ONSITE_COLORS = {
       pendingLot:    "#fde047",  // 🟡 地番待ち
+      autoLookup:    "#a78bfa",  // 🤖 自動照会中（目印住所で謄本を取りに行っている最中）
       lookupPending: "#f97316",  // ⏳ 謄本待ち
       excluded:      "#cbd5e1",  // 📭 DM不要
       lookupFailed:  "#dc2626",  // 🔧 要修正
       dmReady:       "#16a34a",  // 🚪 訪問OK
     };
     const _ownerExists = (r) => !!((r.owner && String(r.owner).trim()) || (r.ownerName && String(r.ownerName).trim()));
+    // 🆕 v9.381: 自動照会中 = 地番は未確定だが、目印住所で謄本を取りに行っている最中のピン。
+    //   lookupTry 0=未照会 / 1=①そのまま外れ(次は②大字つき) / 2=②も外れ → ここで初めて担当者の番。
+    //   担当者の「🟡地番待ち」から外して、二度手間（自動で入るのに手で調べる）を防ぐ。
+    const isAutoLookupRaw = (r) => !!(r && r.coordsManual
+      && (!r.address || String(r.address).trim() === "")
+      && (r.landmark && String(r.landmark).trim() !== "")
+      && r.excluded !== true
+      && Number(r.lookupTry || 0) < 2);
     // 🆕 v8.125→v9.17: 所有者あり時は status を反映（NG→暗赤、見込み→ピンク 等）
     const colorForOnsite = (r, status) => {
-      if (!r.address || !String(r.address).trim()) return ONSITE_COLORS.pendingLot;
+      if (!r.address || !String(r.address).trim()) return isAutoLookupRaw(r) ? ONSITE_COLORS.autoLookup : ONSITE_COLORS.pendingLot;
       if (_ownerExists(r)) {
         // 訪問が進んでる場合は status の色を反映（初訪/再訪/見込み/NG など）
         if (status && status !== "未訪問") return colorByStatus(status);
@@ -6549,7 +6558,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     // 🆕 v8.98→v8.125: 地番待ち判定（raw経由）
     const isPendingLot = (it) => {
       const r = _raw(it);
-      return !!(r && r.coordsManual && (!r.address || String(r.address).trim() === ""));
+      return !!(r && r.coordsManual && (!r.address || String(r.address).trim() === "") && !isAutoLookupRaw(r));
     };
     // 🆕 v8.99→v8.125: 今日立てたピン判定（raw経由）
     const _todayStr = new Date().toDateString();
@@ -6699,7 +6708,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       // 🆕 v9.295: ここでは map に addTo しない。ループ後にクラスタへ一括投入（未対応時は個別 addTo にフォールバック）。
       const marker = L.marker([lat, lng], { icon });
       // 🆕 v8.98→v8.125: ポップアップ表示は地番優先（raw経由 landmark）
-      const popupTitle = (it.address && String(it.address).trim()) || (_r.landmark && `📍 ${_r.landmark}（地番待ち）`) || "(地番未入力)";
+      const popupTitle = (it.address && String(it.address).trim()) || (_r.landmark && `📍 ${_r.landmark}（${isAutoLookupRaw(_r) ? "自動照会中" : "地番待ち"}）`) || "(地番未入力)";
       // 🆕 v8.125→v9.16: 現地ピン5状態ラベル
       //   所有者あり時、 status が「未訪問」以外なら訪問進捗の status を優先表示
       //   （訪問記録を保存して「初訪/再訪/見込み/...」になったら、 そのstatus を表示）
@@ -6718,6 +6727,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           return it.status;
         }
         if (pendingLot) return "🟡 地番待ち";
+        if (isAutoLookupRaw(_r)) return "🤖 自動照会中";
         if (_ownerExists(_r)) {
           const s = it.status;
           if (_isBasicStage(s) && _latestResLabel && _RESULT_LABEL[_latestResLabel]) return `${_RESULT_LABEL[_latestResLabel]}（${s || "訪問OK"}）`;
@@ -18206,7 +18216,12 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const pendingPinSummary = useMemo(() => {
     const onsiteAll = (data.jiage || []).filter(j => !!j.coordsManual);
     const hasOwner = (j) => !!((j.owner && String(j.owner).trim()) || (j.ownerName && String(j.ownerName).trim()));
-    const pendingPins = onsiteAll.filter(j => !j.address || String(j.address).trim() === "");
+    // 🆕 v9.381: 地番が空のピンを「🤖自動照会中」と「🟡地番待ち(担当者の番)」に割る
+    const isAutoLookup = (j) => !!(j && (j.landmark && String(j.landmark).trim() !== "")
+      && j.excluded !== true && Number(j.lookupTry || 0) < 2);
+    const noAddrPins = onsiteAll.filter(j => !j.address || String(j.address).trim() === "");
+    const autoLookupPins = noAddrPins.filter(j => isAutoLookup(j));
+    const pendingPins = noAddrPins.filter(j => !isAutoLookup(j));
     const confirmedPins = onsiteAll.filter(j => j.address && String(j.address).trim() !== "");
     // 🆕 v8.114: hasOwner 最優先で 訪問OK → 残りを excluded で分割
     const dmReadyPins = confirmedPins.filter(j => hasOwner(j));
@@ -18220,6 +18235,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     pendingPins.forEach(p => {
       const a = p.assignee || "(未割当)";
       byAssignee[a] = (byAssignee[a] || 0) + 1;
+    });
+    const autoLookupByAssignee = {};
+    autoLookupPins.forEach(p => {
+      const a = p.assignee || "(未割当)";
+      autoLookupByAssignee[a] = (autoLookupByAssignee[a] || 0) + 1;
     });
     const confirmedByAssignee = {};
     confirmedPins.forEach(p => {
@@ -18267,6 +18287,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     return {
       total: pendingPins.length,
       byAssignee,
+      // 🆕 v9.381: 自動照会中（担当者は触らなくてよい分）
+      autoLookupTotal: autoLookupPins.length,
+      autoLookupByAssignee,
       todayTotal: todayTotalCount,
       confirmedTotal: confirmedPins.length,
       confirmedByAssignee,
@@ -19304,6 +19327,18 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     if (quickFilter === "pending_lot") {
       const raw = item.raw || {};
       if (!(raw.coordsManual && (!item.address || String(item.address).trim() === ""))) return false;
+      // 🆕 v9.381: 自動照会中は担当者の「地番待ち」に出さない
+      if ((raw.landmark && String(raw.landmark).trim() !== "") && raw.excluded !== true
+          && Number(raw.lookupTry || 0) < 2) return false;
+    }
+    // 🆕 v9.381: 🤖 自動照会中（目印住所で謄本を取りに行っている最中・担当者は触らなくてよい）
+    if (quickFilter === "auto_lookup") {
+      const raw = item.raw || {};
+      if (!raw.coordsManual) return false;
+      if (item.address && String(item.address).trim() !== "") return false;
+      if (!(raw.landmark && String(raw.landmark).trim() !== "")) return false;
+      if (raw.excluded === true) return false;
+      if (Number(raw.lookupTry || 0) >= 2) return false;
     }
     // 🆕 v8.107: 確定済み現地ピン（coordsManual かつ address 入り）
     if (quickFilter === "confirmed_onsite") {
@@ -23190,6 +23225,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   ).length;
                                   return [
                                   { key: "pending_lot",    label: "🟡 地番待ち",  color: "#fde047", count: pendingPinSummary.total },
+                                  { key: "auto_lookup",    label: "🤖 自動照会中", color: "#a78bfa", count: pendingPinSummary.autoLookupTotal },
                                   { key: "lookup_pending", label: "⏳ 謄本待ち",  color: "#f97316", count: pendingPinSummary.lookupPendingTotal },
                                   { key: "excluded",       label: "📭 DM不要",   color: "#cbd5e1", count: pendingPinSummary.excludedTotal },
                                   { key: "lookup_failed",  label: "🔧 要修正",   color: "#dc2626", count: pendingPinSummary.lookupFailedTotal },
