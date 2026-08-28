@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.385-viewing-absent-closebar";
+const APP_VERSION = "2026-08-29-v9.386-viewing-prospect-result";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -596,18 +596,24 @@ const CHANNEL_OPTIONS = ["", "直接", "アットホーム", "アットホーム
 const NEXTACTION_OPTIONS = ["", "申込予定", "再内見希望", "返事待ち", "連絡途絶", "成約", "ご縁なし"];
 // 🆕 v9.172: 次回訪問の時間候補（24時間制・15分刻み）。AM/PMの取り違え防止のためプルダウンで選ぶ。
 const VISIT_TIME_OPTIONS = (() => { const a = [""]; for (let h = 0; h < 24; h++) for (const m of ["00", "15", "30", "45"]) a.push(`${String(h).padStart(2, "0")}:${m}`); return a; })();
+// 🆕 v9.386: 見込度は「今どれくらい買いそうか」。"普通"という逃げ場を無くして入力率を上げる。
+//   （旧: 熱い/検討中/普通/冷たい → 84%が未入力だった）
 const PROSPECT_INFO = {
-  "熱い": { icon: "🔥", color: "#ef4444" },
-  "検討中": { icon: "🟡", color: "#f59e0b" },
-  "普通": { icon: "⚪", color: "#94a3b8" },
-  "冷たい": { icon: "❄️", color: "#06b6d4" },
+  "熱い": { icon: "🔥", color: "#ef4444", hint: "申込・再内見・資金の話が出ている" },
+  "検討中": { icon: "🟡", color: "#f59e0b", hint: "前向き。条件・家族・資金の確認待ち" },
+  "微妙": { icon: "🌀", color: "#8b5cf6", hint: "反応が薄い・他と比較中・連絡が鈍い" },
+  "ダメ": { icon: "❌", color: "#64748b", hint: "脈なし・他決め・条件が根本的に合わない" },
 };
+// 🆕 v9.386: 結果は「営業の感想」ではなく「何が起きたか（事実）」。案内の到達点で切る。
+//   （旧: 未実施/好印象/普通/NG → 選ばれた54件のうち44件がNGで、理由が残っていなかった）
 const RESULT_INFO = {
-  "未実施": { icon: "⏳", color: "#94a3b8" },
-  "好印象": { icon: "😊", color: "#10b981" },
-  "普通": { icon: "😐", color: "#f59e0b" },
-  "NG": { icon: "❌", color: "#ef4444" },
+  "未案内": { icon: "⏳", color: "#94a3b8", hint: "まだ現地を見せていない" },
+  "案内済": { icon: "👀", color: "#06b6d4", hint: "見せた。返事待ち" },
+  "申込": { icon: "📝", color: "#10b981", hint: "申込が入った" },
+  "見送り": { icon: "🚫", color: "#ef4444", hint: "断られた・他決め・消えた" },
 };
+// 🆕 v9.386: 見送りの理由。溜まると「この物件は価格で落ちている」が数字で見える。
+const LOST_REASON_OPTIONS = ["価格", "立地", "間取り", "築年", "資金", "他決め", "連絡途絶", "その他"];
 // 🆕 v9.365: 反響の「対応した / まだしてない」
 //   ・v.handled（true=対応済）/ v.handledBy（対応した人）/ v.handledAt（対応した日時ISO）
 //   ・古い反響は handled が無い＝「未対応」扱い
@@ -11512,7 +11518,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
       date: inquiryDateParsed, visitDate: "", visitTime: "",
       customer: importParsed.customer || "", contact: importParsed.contact || "", email: importParsed.email || "",
       funding: "", purpose: "", budget: importParsed.propertyPrice || "", people: "",
-      channel: importParsed.channel || "", prospect: "", result: "未実施", nextAction: "",
+      channel: importParsed.channel || "", prospect: "", result: "未案内", nextAction: "",
       handled: false, handledBy: "", handledAt: "", // 🆕 v9.365: 取り込んだ反響は未対応から
       note: [importParsed.note, importParsed.customerAddress ? `📍 顧客住所: ${importParsed.customerAddress}` : "", importParsed.propertyUrl ? `🔗 ${importParsed.propertyUrl}` : ""].filter(Boolean).join("\n"),
       comments: [],
@@ -11733,12 +11739,12 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   const repeatMap = computeViewingRepeats(viewings);
                   // 🆕 v8.85: フィルター用件数集計
                   const _filter = viewingFiltersByMed[m.id] || null;
-                  const _prospectCounts = { "熱い": 0, "検討中": 0, "普通": 0, "冷たい": 0 };
-                  const _resultCounts = { "未実施": 0, "好印象": 0, "普通": 0, "NG": 0 };
+                  const _prospectCounts = { "熱い": 0, "検討中": 0, "微妙": 0, "ダメ": 0 }; // 🆕 v9.386
+                  const _resultCounts = { "未案内": 0, "案内済": 0, "申込": 0, "見送り": 0 }; // 🆕 v9.386
                   const _handledCounts = { "未対応": 0, "不在留守電": 0, "対応済": 0 }; // 🆕 v9.365→v9.384
                   viewings.forEach(v => {
                     if (v && v.prospect && (v.prospect in _prospectCounts)) _prospectCounts[v.prospect]++;
-                    const r = (v && v.result) || "未実施";
+                    const r = (v && v.result) || "未案内";
                     if (r in _resultCounts) _resultCounts[r]++;
                     _handledCounts[viewingHandledKey(v)]++;
                   });
@@ -11761,7 +11767,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   let _shown = _filter
                     ? _indexed.filter(({ v }) => (
                         _filter.type === "handled" ? viewingHandledKey(v)
-                        : _filter.type === "result" ? (v.result || "未実施")
+                        : _filter.type === "result" ? (v.result || "未案内")
                         : v[_filter.type]
                       ) === _filter.value)
                     : _indexed;
@@ -11897,7 +11903,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                               }}><NavIcon name="refresh" size={15} /> {rep.repeat}回目 / 全{rep.total}件</span>
                             )}
                             {prospect && <span style={{ background: prospect.color + "33", color: prospect.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{prospect.icon}{v.prospect}</span>}
-                            {result && v.result !== "未実施" && <span style={{ background: result.color + "33", color: result.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{result.icon}{v.result}</span>}
+                            {result && v.result !== "未案内" && <span style={{ background: result.color + "33", color: result.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{result.icon}{v.result}{v.lostReason ? `（${v.lostReason}）` : ""}</span>}
                             {v.nextAction && <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}><NavIcon name="refresh" size={12} />{v.nextAction}</span>}
                             <button onClick={(ev) => { ev.stopPropagation(); openEdit(m, vi); }} style={{ marginLeft: "auto", background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
                           </div>
@@ -12152,7 +12158,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   date: "", visitDate: "", visitTime: "",
                   customer: "", contact: "", email: "",
                   funding: "", purpose: "", budget: "", people: "", channel: "",
-                  prospect: "", result: "未実施", nextAction: "", note: "",
+                  prospect: "", result: "未案内", nextAction: "", note: "",
                   handled: false, handledBy: "", handledAt: "" // 🆕 v9.365: 最初は未対応
                 };
                 // 🆕 新規反響は配列の先頭に追加（ボタンのすぐ下に表示される）
@@ -12240,9 +12246,9 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             <NavIcon name="banknote" size={15} />{v.funding}
                           </span>
                         )}
-                        {result && v.result !== "未実施" && (
+                        {result && v.result !== "未案内" && (
                           <span style={{ background: result.color + "33", color: result.color, padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 600 }}>
-                            {result.icon}{v.result}
+                            {result.icon}{v.result}{v.lostReason ? `（${v.lostReason}）` : ""}
                           </span>
                         )}
                       </div>
@@ -12448,7 +12454,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                           {Object.entries(PROSPECT_INFO).map(([key, info]) => {
                             const active = v.prospect === key;
                             return (
-                              <button key={key} onClick={() => updateV("prospect", active ? "" : key)}
+                              <button key={key} onClick={() => updateV("prospect", active ? "" : key)} title={info.hint || ""}
                                 style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
                                   background: active ? info.color : C.inset, color: active ? "#fff" : info.color,
                                   border: `1.5px solid ${info.color}` }}>
@@ -12463,9 +12469,9 @@ function MediationView({ data, setData, dealType, setDealType }) {
                       <Field label="✅ 結果">
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                           {Object.entries(RESULT_INFO).map(([key, info]) => {
-                            const active = (v.result || "未実施") === key;
+                            const active = (v.result || "未案内") === key;
                             return (
-                              <button key={key} onClick={() => updateV("result", key)}
+                              <button key={key} onClick={() => updateV("result", key)} title={info.hint || ""}
                                 style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
                                   background: active ? info.color : C.inset, color: active ? "#fff" : info.color,
                                   border: `1.5px solid ${info.color}` }}>
@@ -12474,6 +12480,23 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             );
                           })}
                         </div>
+                        {/* 🆕 v9.386: 「見送り」の時だけ理由を聞く。1タップで済ませて、値付けの材料にする。 */}
+                        {v.result === "見送り" && (
+                          <div style={{ marginTop: 8, padding: "8px 10px", background: "#ef444411", border: `1px solid #ef444455`, borderRadius: 10 }}>
+                            <div style={{ fontSize: 11, color: "#ef4444", fontWeight: 800, marginBottom: 6 }}>なぜ見送りになった？（1つ選ぶ）</div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {LOST_REASON_OPTIONS.map(r => {
+                                const on = v.lostReason === r;
+                                return (
+                                  <button key={r} onClick={() => updateV("lostReason", on ? "" : r)}
+                                    style={{ padding: "6px 11px", borderRadius: 14, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                                      background: on ? "#ef4444" : C.inset, color: on ? "#fff" : "#ef4444",
+                                      border: `1.5px solid #ef4444` }}>{r}</button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </Field>
 
                       {/* 次回アクション */}
@@ -13015,7 +13038,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       people: "",
       channel: importParsed.channel || "",
       prospect: "",
-      result: "未実施",
+      result: "未案内",
       nextAction: "",
       note: [
         importParsed.note,
@@ -13485,12 +13508,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     const repeatMap = computeViewingRepeats(viewings);
                     // 🆕 v8.85: フィルター用件数集計
                     const _filter = viewingFiltersByStock[s.id] || null;
-                    const _prospectCounts = { "熱い": 0, "検討中": 0, "普通": 0, "冷たい": 0 };
-                    const _resultCounts = { "未実施": 0, "好印象": 0, "普通": 0, "NG": 0 };
+                    const _prospectCounts = { "熱い": 0, "検討中": 0, "微妙": 0, "ダメ": 0 }; // 🆕 v9.386
+                    const _resultCounts = { "未案内": 0, "案内済": 0, "申込": 0, "見送り": 0 }; // 🆕 v9.386
                     const _handledCounts = { "未対応": 0, "不在留守電": 0, "対応済": 0 }; // 🆕 v9.365→v9.384
                     viewings.forEach(v => {
                       if (v && v.prospect && (v.prospect in _prospectCounts)) _prospectCounts[v.prospect]++;
-                      const r = (v && v.result) || "未実施";
+                      const r = (v && v.result) || "未案内";
                       if (r in _resultCounts) _resultCounts[r]++;
                       _handledCounts[viewingHandledKey(v)]++;
                     });
@@ -13512,7 +13535,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     let _shown = _filter
                       ? _indexed.filter(({ v }) => (
                           _filter.type === "handled" ? viewingHandledKey(v)
-                          : _filter.type === "result" ? (v.result || "未実施")
+                          : _filter.type === "result" ? (v.result || "未案内")
                           : v[_filter.type]
                         ) === _filter.value)
                       : _indexed;
@@ -13653,9 +13676,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                                   {prospect.icon}{v.prospect}
                                 </span>
                               )}
-                              {result && v.result !== "未実施" && (
+                              {result && v.result !== "未案内" && (
                                 <span style={{ background: result.color + "33", color: result.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
-                                  {result.icon}{v.result}
+                                  {result.icon}{v.result}{v.lostReason ? `（${v.lostReason}）` : ""}
                                 </span>
                               )}
                               {v.nextAction && (
@@ -14033,7 +14056,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                   date: "", visitDate: "", visitTime: "",
                   customer: "", contact: "", email: "",
                   funding: "", purpose: "", budget: "", people: "", channel: "",
-                  prospect: "", result: "未実施", nextAction: "", note: "",
+                  prospect: "", result: "未案内", nextAction: "", note: "",
                   handled: false, handledBy: "", handledAt: "" // 🆕 v9.365: 最初は未対応
                 };
                 // 🆕 新規反響は配列の先頭に追加（ボタンのすぐ下に表示される）
@@ -14121,9 +14144,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                             <NavIcon name="banknote" size={15} />{v.funding}
                           </span>
                         )}
-                        {result && v.result !== "未実施" && (
+                        {result && v.result !== "未案内" && (
                           <span style={{ background: result.color + "33", color: result.color, padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 600 }}>
-                            {result.icon}{v.result}
+                            {result.icon}{v.result}{v.lostReason ? `（${v.lostReason}）` : ""}
                           </span>
                         )}
                       </div>
@@ -14329,7 +14352,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                           {Object.entries(PROSPECT_INFO).map(([key, info]) => {
                             const active = v.prospect === key;
                             return (
-                              <button key={key} onClick={() => updateV("prospect", active ? "" : key)}
+                              <button key={key} onClick={() => updateV("prospect", active ? "" : key)} title={info.hint || ""}
                                 style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
                                   background: active ? info.color : C.inset, color: active ? "#fff" : info.color,
                                   border: `1.5px solid ${info.color}` }}>
@@ -14344,9 +14367,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                       <Field label="✅ 結果">
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                           {Object.entries(RESULT_INFO).map(([key, info]) => {
-                            const active = (v.result || "未実施") === key;
+                            const active = (v.result || "未案内") === key;
                             return (
-                              <button key={key} onClick={() => updateV("result", key)}
+                              <button key={key} onClick={() => updateV("result", key)} title={info.hint || ""}
                                 style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
                                   background: active ? info.color : C.inset, color: active ? "#fff" : info.color,
                                   border: `1.5px solid ${info.color}` }}>
@@ -14355,6 +14378,23 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                             );
                           })}
                         </div>
+                        {/* 🆕 v9.386: 「見送り」の時だけ理由を聞く。1タップで済ませて、値付けの材料にする。 */}
+                        {v.result === "見送り" && (
+                          <div style={{ marginTop: 8, padding: "8px 10px", background: "#ef444411", border: `1px solid #ef444455`, borderRadius: 10 }}>
+                            <div style={{ fontSize: 11, color: "#ef4444", fontWeight: 800, marginBottom: 6 }}>なぜ見送りになった？（1つ選ぶ）</div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {LOST_REASON_OPTIONS.map(r => {
+                                const on = v.lostReason === r;
+                                return (
+                                  <button key={r} onClick={() => updateV("lostReason", on ? "" : r)}
+                                    style={{ padding: "6px 11px", borderRadius: 14, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                                      background: on ? "#ef4444" : C.inset, color: on ? "#fff" : "#ef4444",
+                                      border: `1.5px solid #ef4444` }}>{r}</button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </Field>
 
                       {/* 次回アクション */}
@@ -33479,6 +33519,7 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
               "メールアドレス": v.email || "",
               "見込度": v.prospect || "",
               "結果": v.result || "",
+              "見送り理由": v.lostReason || "",
               "次回アクション": v.nextAction || "",
               "資金種別": v.funding || "",
               "希望エリア": v.investArea || "",
@@ -33603,7 +33644,7 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
                               <span style={{ color: C.text, fontWeight: 700 }}>{v.date || "—"}</span>
                               <span onClick={() => onJumpToStock && onJumpToStock(v.stockId)} style={{ color: C.accent, textDecoration: "underline", cursor: "pointer" }}>{v.stockName}</span>
                               {p2 && <span style={{ background: p2.color + "33", color: p2.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{p2.icon}{v.prospect}</span>}
-                              {r2 && v.result !== "未実施" && <span style={{ background: r2.color + "33", color: r2.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{r2.icon}{v.result}</span>}
+                              {r2 && v.result !== "未案内" && <span style={{ background: r2.color + "33", color: r2.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{r2.icon}{v.result}{v.lostReason ? `（${v.lostReason}）` : ""}</span>}
                               {v.visitDate && <span style={{ color: "#06b6d4", fontWeight: 700 }}>案内:{v.visitDate}{v.visitTime ? " " + v.visitTime : ""}</span>}
                               {v.channel && <span style={{ color: C.muted }}>{v.channel}</span>}
                               {v.stockAssignee && <span style={{ color: C.muted, marginLeft: "auto" }}>担当:{v.stockAssignee}</span>}
