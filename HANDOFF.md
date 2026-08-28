@@ -122,7 +122,12 @@ const hasOwner = (j) => !!((j.owner && String(j.owner).trim()) || (j.ownerName &
 
 **v8.116 リネーム**: 旧「📨 DM準備済」を「🚪 訪問OK」に変更（DM管理はスプレッドシート側に分離されたため）
 **v8.118 追加**: 「🔧 要修正」状態。Claude Code 側で謄本取得に失敗（地番打ち間違い等）したピンの隔離用
-**v9.383 追加**: 「🛑 取れない」状態（`lookupGiveUp` + `lookupGiveUpReason`）。
+**v9.384 追加（反響）**: 反響の対応状況を2択→3択に。`📵不在留守電` は
+`v.attempts` に `tel_absent` があり、まだ `handled` でない反響から**自動で導出**（新フィールドなし＝過去分も即反映）。
+「かけ直しが要る」ので⏳かけ直しリスト(`collectPendingViewings`)には残るが、🔴未対応の件数からは外れる。
+リストの並びは**最後に当たった日時**順（`viewingLastTouch`）＝さっき留守電を入れた相手が先頭に居座らない。
+
+**v9.383 追加: 「🛑 取れない」状態（`lookupGiveUp` + `lookupGiveUpReason`）。
 🔧要修正のうち **「その地番のままでは何度投げても謄本が出ない」と判明した分** の置き場。
 🔧要修正＝直せば取れる見込み、🛑取れない＝地番を調べ直すまで打ち止め、と役割を分ける。
 仕分けは `jiage-chiban/mark_giveup.py`（下見→`--apply`／`--undo`で戻す）。

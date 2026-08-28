@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-28-v9.383-jiage-giveup";
+const APP_VERSION = "2026-08-29-v9.384-viewing-absent";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -612,9 +612,39 @@ const RESULT_INFO = {
 //   ・古い反響は handled が無い＝「未対応」扱い
 const HANDLED_INFO = {
   "未対応": { icon: "🔴", color: "#ef4444" },
+  "不在留守電": { icon: "📵", color: "#f59e0b" },   // 🆕 v9.384
   "対応済": { icon: "✅", color: "#10b981" },
 };
-function viewingHandledKey(v) { return (v && v.handled) ? "対応済" : "未対応"; }
+// 🆕 v9.384: 「かけたけど留守電」は"未対応"ではない。こちらは動いている。
+//   ただし繋がってはいないので"対応済"にもしない＝かけ直しリストからは消さない。
+//   判定は既存の attempts(tel_absent) から自動で出す＝過去の記録もそのまま反映される。
+function viewingHandledKey(v) {
+  if (v && v.handled) return "対応済";
+  const arr = (v && v.attempts) || [];
+  if (arr.some(a => a && a.kind === "tel_absent")) return "不在留守電";
+  return "未対応";
+}
+function viewingHandledInfo(v) { return HANDLED_INFO[viewingHandledKey(v)] || HANDLED_INFO["未対応"]; }
+// カード先頭のバッジ文字（📵不在留守電 2回 8/11 下田 のように回数と最終日まで）
+function viewingStateLabel(v) {
+  const key = viewingHandledKey(v);
+  if (key === "対応済") {
+    const c = viewingHandledCaption(v);
+    return "✅対応済" + (c ? " " + c : "");
+  }
+  if (key === "不在留守電") {
+    const arr = ((v && v.attempts) || []).filter(a => a && a.kind === "tel_absent");
+    const last = arr[arr.length - 1];
+    let when = "";
+    if (last) {
+      const d = new Date(last.at);
+      if (!isNaN(d.getTime())) when = d.toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" });
+    }
+    return "📵不在留守電" + (arr.length > 1 ? " " + arr.length + "回" : "")
+      + (when ? " " + when : "") + (last && last.by ? " " + last.by : "");
+  }
+  return "🔴未対応";
+}
 // 対応済にした人・日付の短い表示（例: 対応済 下田 8/9）
 function viewingHandledCaption(v) {
   if (!v || !v.handled) return "";
@@ -715,6 +745,20 @@ function ViewingActions({ v, onAttempt, onUnhandle }) {
 // 🆕 v9.375: 「今日かける反響」— 物件をまたいで未対応の反響だけを古い順に集める
 //   ・売れ終わった物件（仕入=売決完了 / 仲介=決済完了）の反響は対象外。もう追う相手ではない。
 //   ・在庫タブ → 物件を探す → 反響を開く → スクロール、の4手間を無くすのが目的。
+// 🆕 v9.384: 最後に「当たった」日時。無ければ反響日。かけ直しの優先順位に使う。
+function viewingLastTouch(v) {
+  const arr = (v && v.attempts) || [];
+  let t = 0;
+  arr.forEach(a => {
+    const d = new Date((a && a.at) || "");
+    if (!isNaN(d.getTime())) t = Math.max(t, d.getTime());
+  });
+  if (t) return t;
+  const s = String((v && v.date) || "").trim();
+  if (!s) return Number.MAX_SAFE_INTEGER;      // 日付不明は最後
+  const d = new Date(s + (s.length === 10 ? "T00:00:00" : ""));
+  return isNaN(d.getTime()) ? Number.MAX_SAFE_INTEGER : d.getTime();
+}
 function collectPendingViewings(data) {
   const out = [];
   (data.stocks || []).forEach(s => {
@@ -731,8 +775,9 @@ function collectPendingViewings(data) {
       out.push({ parentType: "mediation", parentId: m.id, parentName: (m.name || "(無題)") + "（仲介）", assignee: m.assignee || "", idx, v });
     });
   });
-  // 古いものから（放置が長いものほど上）
-  out.sort((a, b) => String(a.v.date || "9999").localeCompare(String(b.v.date || "9999")));
+  // 🆕 v9.384: 「最後に当たってから長い順」に並べる。
+  //   反響日で並べると、さっき留守電を入れたばかりの相手がずっと先頭に居座ってしまう。
+  out.sort((a, b) => viewingLastTouch(a.v) - viewingLastTouch(b.v));
   return out;
 }
 
@@ -756,8 +801,8 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
   return (
     <BottomSheet title={`📞 今日かける反響（${rows.length}件）`} onClose={onClose}>
       <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.7, marginBottom: 12 }}>
-        まだ対応していない反響を、<b style={{ color: C.text }}>古い順</b>に並べています。<br />
-        売れ終わった物件の反響は入りません。
+        まだ<b style={{ color: C.text }}>繋がっていない</b>反響を、<b style={{ color: C.text }}>古い順</b>に並べています。<br />
+        📵不在・留守電はここに残ります（かけ直しが要るため）。売れ終わった物件の反響は入りません。
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
         {[[false, `全員 ${all.length}件`], [true, `自分だけ ${all.filter(r => r.assignee === currentUser).length}件`]].map(([val, label]) => (
@@ -771,7 +816,7 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
 
       {rows.length === 0 && (
         <div style={{ background: "#10b98114", border: `1.5px solid #10b98155`, borderRadius: 12, padding: 24, textAlign: "center", color: C.text, fontSize: 14, fontWeight: 700 }}>
-          ✅ 未対応の反響はありません
+          ✅ かけ直しの要る反響はありません
         </div>
       )}
 
@@ -787,6 +832,10 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
               {ag && <span style={{ background: ag.color, color: "#fff", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{ag.label}</span>}
               <span style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{v.customer || "(名前未入力)"}</span>
+              {/* 🆕 v9.384: 🔴未対応 / 📵不在留守電（回数・最終日）を出す */}
+              <span style={{ background: viewingHandledInfo(v).color, color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>
+                {viewingStateLabel(v)}
+              </span>
               {v.prospect && PROSPECT_INFO[v.prospect] && (
                 <span style={{ background: PROSPECT_INFO[v.prospect].color + "33", color: PROSPECT_INFO[v.prospect].color, padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
                   {PROSPECT_INFO[v.prospect].icon}{v.prospect}
@@ -11654,7 +11703,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
             const hotCount = viewings.filter(v => v.prospect === "熱い").length;
             const kentouCount = viewings.filter(v => v.prospect === "検討中").length;
             const totalComments = viewings.reduce((a, v) => a + ((v.comments || []).length), 0);
-            const unhandledCount = viewings.filter(v => !v.handled).length; // 🆕 v9.365
+            const unhandledCount = viewings.filter(v => viewingHandledKey(v) === "未対応").length; // 🆕 v9.384
+            const absentCount = viewings.filter(v => viewingHandledKey(v) === "不在留守電").length;
             return (
               <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
                 {/* 🆕 v9.370: 開けるのは1件だけ（別の物件を開くと前のは自動で閉じる＝カードが積み上がらない） */}
@@ -11662,9 +11712,9 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   style={{ width: "100%", background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
                   <span style={{ color: "#06b6d4", fontSize: 12, fontWeight: 700 }}><NavIcon name="eye" size={12} /> 反響 {all}件</span>
                   {/* 🆕 v9.365: 未対応の件数を一番目立つ位置に */}
-                  {unhandledCount > 0
-                    ? <span style={{ background: "#ef4444", color: "#fff", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>🔴未対応 {unhandledCount}件</span>
-                    : all > 0 && <span style={{ background: "#10b98133", color: "#10b981", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>✅全部対応済</span>}
+                  {unhandledCount > 0 && <span style={{ background: "#ef4444", color: "#fff", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>🔴未対応 {unhandledCount}件</span>}
+                  {absentCount > 0 && <span style={{ background: "#f59e0b", color: "#fff", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>📵不在 {absentCount}件</span>}
+                  {unhandledCount === 0 && absentCount === 0 && all > 0 && <span style={{ background: "#10b98133", color: "#10b981", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>✅全部対応済</span>}
                   {hotCount > 0 && <span style={{ background: "#ef444433", color: "#ef4444", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}><NavIcon name="flame" size={12} />{hotCount}</span>}
                   {kentouCount > 0 && <span style={{ background: "#f59e0b33", color: "#f59e0b", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>🟡{kentouCount}</span>}
                   {withVisit > 0 && <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "2px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}><NavIcon name="calendar" size={12} />{withVisit}</span>}
@@ -11677,7 +11727,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   const _filter = viewingFiltersByMed[m.id] || null;
                   const _prospectCounts = { "熱い": 0, "検討中": 0, "普通": 0, "冷たい": 0 };
                   const _resultCounts = { "未実施": 0, "好印象": 0, "普通": 0, "NG": 0 };
-                  const _handledCounts = { "未対応": 0, "対応済": 0 }; // 🆕 v9.365
+                  const _handledCounts = { "未対応": 0, "不在留守電": 0, "対応済": 0 }; // 🆕 v9.365→v9.384
                   viewings.forEach(v => {
                     if (v && v.prospect && (v.prospect in _prospectCounts)) _prospectCounts[v.prospect]++;
                     const r = (v && v.result) || "未実施";
@@ -11817,17 +11867,19 @@ function MediationView({ data, setData, dealType, setDealType }) {
                       const isRepeat = rep && rep.repeat > 1;
                       const repeatColor = "#f97316";
                       const unhandled = !v.handled; // 🆕 v9.365
+                      const _hKey = viewingHandledKey(v);            // 🆕 v9.384
+                      const _hColor = HANDLED_INFO[_hKey].color;
                       return (
                         <div key={vi} style={{
-                          background: unhandled ? "#ef444411" : (isRepeat ? "#f9731611" : C.cardBg),
+                          background: unhandled ? _hColor + "11" : (isRepeat ? "#f9731611" : C.cardBg),
                           border: `1px solid ${isRepeat ? repeatColor + "66" : C.borderDim}`,
-                          borderLeft: unhandled ? `4px solid #ef4444` : (isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`),
+                          borderLeft: unhandled ? `4px solid ${_hColor}` : (isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`),
                           borderRadius: 8, padding: "10px 12px"
                         }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 5 }}>
                             {/* 🆕 v9.365: 対応済みかどうかを名前の前に出す */}
-                            <span style={{ background: unhandled ? "#ef4444" : "#10b98133", color: unhandled ? "#fff" : "#10b981", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
-                              {unhandled ? "🔴未対応" : `✅対応済${viewingHandledCaption(v) ? " " + viewingHandledCaption(v) : ""}`}
+                            <span style={{ background: unhandled ? _hColor : "#10b98133", color: unhandled ? "#fff" : "#10b981", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                              {viewingStateLabel(v)}
                             </span>
                             <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
                             {rep && rep.total > 1 && (
@@ -12140,8 +12192,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         {/* 🆕 v9.365: 対応済みかどうか */}
-                        <span style={{ background: v.handled ? "#10b98133" : "#ef4444", color: v.handled ? "#10b981" : "#fff", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
-                          {v.handled ? `✅対応済${viewingHandledCaption(v) ? " " + viewingHandledCaption(v) : ""}` : "🔴未対応"}
+                        <span style={{ background: v.handled ? "#10b98133" : viewingHandledInfo(v).color, color: v.handled ? "#10b981" : "#fff", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                          {viewingStateLabel(v)}
                         </span>
                         <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
                         {rep && rep.total > 1 && (
@@ -12340,20 +12392,34 @@ function MediationView({ data, setData, dealType, setDealType }) {
                       {/* 🆕 v9.365: 対応状況（この反響に電話・返信をしたか） */}
                       <Field label="🙋 対応状況">
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                          {["未対応", "対応済"].map(key => {
+                          {["未対応", "不在留守電", "対応済"].map(key => {
                             const info = HANDLED_INFO[key];
                             const active = viewingHandledKey(v) === key;
                             const toHandled = key === "対応済";
+                            // 🆕 v9.384: 「不在留守電」は attempts に1回足して表す（対応済にはしない＝かけ直しに残る）
+                            const applyKey = (vv) => {
+                              if (key === "不在留守電") {
+                                const has = ((vv.attempts) || []).some(a => a && a.kind === "tel_absent");
+                                const base = has ? vv : withViewingAttempt(vv, "tel_absent", currentUser || "");
+                                return { ...base, handled: false, handledBy: "", handledAt: "", updatedAt: Date.now() };
+                              }
+                              // 「未対応」に戻す時は不在の記録も消す（残すとすぐ不在留守電に戻ってしまう）
+                              const attempts = key === "未対応"
+                                ? ((vv.attempts) || []).filter(a => !(a && a.kind === "tel_absent"))
+                                : (vv.attempts || []);
+                              return {
+                                ...vv,
+                                attempts,
+                                handled: toHandled,
+                                handledBy: toHandled ? (vv.handledBy || currentUser || "") : "",
+                                handledAt: toHandled ? (vv.handledAt || new Date().toISOString()) : "",
+                                updatedAt: Date.now(),
+                              };
+                            };
                             return (
                               <button key={key} onClick={() => setForm(p => ({
                                 ...p,
-                                viewings: (p.viewings || []).map((vv, j) => j !== i ? vv : {
-                                  ...vv,
-                                  handled: toHandled,
-                                  handledBy: toHandled ? (vv.handledBy || currentUser || "") : "",
-                                  handledAt: toHandled ? (vv.handledAt || new Date().toISOString()) : "",
-                                  updatedAt: Date.now(),
-                                }),
+                                viewings: (p.viewings || []).map((vv, j) => j !== i ? vv : applyKey(vv)),
                               }))}
                                 style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
                                   background: active ? info.color : C.inset, color: active ? "#fff" : info.color,
@@ -13353,7 +13419,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               const hotCount = viewings.filter(v => v.prospect === "熱い").length;
               const kentouCount = viewings.filter(v => v.prospect === "検討中").length;
               const totalComments = viewings.reduce((a, v) => a + ((v.comments || []).length), 0);
-              const unhandledCount = viewings.filter(v => !v.handled).length; // 🆕 v9.365
+              const unhandledCount = viewings.filter(v => viewingHandledKey(v) === "未対応").length; // 🆕 v9.384
+              const absentCount = viewings.filter(v => viewingHandledKey(v) === "不在留守電").length;
               return (
                 <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
                   {/* 🆕 v9.370: 開けるのは1件だけ（別の物件を開くと前のは自動で閉じる＝カードが積み上がらない） */}
@@ -13368,11 +13435,17 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                       <NavIcon name="eye" size={15} /> 反響 {all}件
                     </span>
                     {/* 🆕 v9.365: 未対応の件数を一番目立つ位置に */}
-                    {unhandledCount > 0 ? (
+                    {unhandledCount > 0 && (
                       <span style={{ background: "#ef4444", color: "#fff", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
                         🔴未対応 {unhandledCount}件
                       </span>
-                    ) : all > 0 && (
+                    )}
+                    {absentCount > 0 && (
+                      <span style={{ background: "#f59e0b", color: "#fff", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                        📵不在 {absentCount}件
+                      </span>
+                    )}
+                    {unhandledCount === 0 && absentCount === 0 && all > 0 && (
                       <span style={{ background: "#10b98133", color: "#10b981", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
                         ✅全部対応済
                       </span>
@@ -13406,7 +13479,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     const _filter = viewingFiltersByStock[s.id] || null;
                     const _prospectCounts = { "熱い": 0, "検討中": 0, "普通": 0, "冷たい": 0 };
                     const _resultCounts = { "未実施": 0, "好印象": 0, "普通": 0, "NG": 0 };
-                    const _handledCounts = { "未対応": 0, "対応済": 0 }; // 🆕 v9.365
+                    const _handledCounts = { "未対応": 0, "不在留守電": 0, "対応済": 0 }; // 🆕 v9.365→v9.384
                     viewings.forEach(v => {
                       if (v && v.prospect && (v.prospect in _prospectCounts)) _prospectCounts[v.prospect]++;
                       const r = (v && v.result) || "未実施";
@@ -13545,18 +13618,20 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                         const isRepeat = rep && rep.repeat > 1;
                         const repeatColor = "#f97316";
                         const unhandled = !v.handled; // 🆕 v9.365
+                        const _hKey = viewingHandledKey(v);            // 🆕 v9.384
+                        const _hColor = HANDLED_INFO[_hKey].color;
                         return (
                           <div key={vi} style={{
-                            background: unhandled ? "#ef444411" : (isRepeat ? "#f9731611" : C.cardBg),
+                            background: unhandled ? _hColor + "11" : (isRepeat ? "#f9731611" : C.cardBg),
                             border: `1px solid ${isRepeat ? repeatColor + "66" : C.borderDim}`,
-                            borderLeft: unhandled ? `4px solid #ef4444` : (isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`),
+                            borderLeft: unhandled ? `4px solid ${_hColor}` : (isRepeat ? `4px solid ${repeatColor}` : `1px solid ${C.borderDim}`),
                             borderRadius: 8, padding: "10px 12px"
                           }}>
                             {/* 顧客情報 */}
                             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 5 }}>
                               {/* 🆕 v9.365: 対応済みかどうかを名前の前に出す */}
-                              <span style={{ background: unhandled ? "#ef4444" : "#10b98133", color: unhandled ? "#fff" : "#10b981", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
-                                {unhandled ? "🔴未対応" : `✅対応済${viewingHandledCaption(v) ? " " + viewingHandledCaption(v) : ""}`}
+                              <span style={{ background: unhandled ? _hColor : "#10b98133", color: unhandled ? "#fff" : "#10b981", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                                {viewingStateLabel(v)}
                               </span>
                               <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
                               {rep && rep.total > 1 && (
@@ -13998,8 +14073,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         {/* 🆕 v9.365: 対応済みかどうか */}
-                        <span style={{ background: v.handled ? "#10b98133" : "#ef4444", color: v.handled ? "#10b981" : "#fff", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
-                          {v.handled ? `✅対応済${viewingHandledCaption(v) ? " " + viewingHandledCaption(v) : ""}` : "🔴未対応"}
+                        <span style={{ background: v.handled ? "#10b98133" : viewingHandledInfo(v).color, color: v.handled ? "#10b981" : "#fff", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                          {viewingStateLabel(v)}
                         </span>
                         <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
                         {rep && rep.total > 1 && (
@@ -14198,20 +14273,34 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                       {/* 🆕 v9.365: 対応状況（この反響に電話・返信をしたか） */}
                       <Field label="🙋 対応状況">
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                          {["未対応", "対応済"].map(key => {
+                          {["未対応", "不在留守電", "対応済"].map(key => {
                             const info = HANDLED_INFO[key];
                             const active = viewingHandledKey(v) === key;
                             const toHandled = key === "対応済";
+                            // 🆕 v9.384: 「不在留守電」は attempts に1回足して表す（対応済にはしない＝かけ直しに残る）
+                            const applyKey = (vv) => {
+                              if (key === "不在留守電") {
+                                const has = ((vv.attempts) || []).some(a => a && a.kind === "tel_absent");
+                                const base = has ? vv : withViewingAttempt(vv, "tel_absent", currentUser || "");
+                                return { ...base, handled: false, handledBy: "", handledAt: "", updatedAt: Date.now() };
+                              }
+                              // 「未対応」に戻す時は不在の記録も消す（残すとすぐ不在留守電に戻ってしまう）
+                              const attempts = key === "未対応"
+                                ? ((vv.attempts) || []).filter(a => !(a && a.kind === "tel_absent"))
+                                : (vv.attempts || []);
+                              return {
+                                ...vv,
+                                attempts,
+                                handled: toHandled,
+                                handledBy: toHandled ? (vv.handledBy || currentUser || "") : "",
+                                handledAt: toHandled ? (vv.handledAt || new Date().toISOString()) : "",
+                                updatedAt: Date.now(),
+                              };
+                            };
                             return (
                               <button key={key} onClick={() => setForm(p => ({
                                 ...p,
-                                viewings: (p.viewings || []).map((vv, j) => j !== i ? vv : {
-                                  ...vv,
-                                  handled: toHandled,
-                                  handledBy: toHandled ? (vv.handledBy || currentUser || "") : "",
-                                  handledAt: toHandled ? (vv.handledAt || new Date().toISOString()) : "",
-                                  updatedAt: Date.now(),
-                                }),
+                                viewings: (p.viewings || []).map((vv, j) => j !== i ? vv : applyKey(vv)),
                               }))}
                                 style={{ padding: "7px 12px", borderRadius: 16, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
                                   background: active ? info.color : C.inset, color: active ? "#fff" : info.color,
