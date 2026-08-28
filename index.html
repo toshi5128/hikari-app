@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.386-viewing-prospect-result";
+const APP_VERSION = "2026-08-29-v9.387-viewing-label-migration";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1686,6 +1686,35 @@ const V9367_SAMPLE_HANRO_IDS = [
   1786114862453, 1786114862454,                 // サンプル太郎 / サンプル花子（投資家サンプル）
   1786195284506,                                // テスト会社 下田
 ];
+// 🆕 v9.386: 反響の旧ラベル → 新ラベル。
+//   ※ この手の変換を「外からクラウドを直接書き換える」やり方でやると、
+//     古いデータを画面に抱えたままの端末が次に保存した瞬間に巻き戻る（2026-08-29に実際に発生）。
+//     なのでアプリ側で毎回チェックして直す。何度通しても同じ結果になる（冪等）ので安全。
+const V9386_PROSPECT_MAP = { "普通": "微妙", "冷たい": "ダメ" };
+const V9386_RESULT_MAP = { "未実施": "未案内", "好印象": "案内済", "普通": "案内済", "NG": "見送り" };
+function migrateViewingLabelsV9386(d) {
+  if (!d || typeof d !== "object") return d;
+  let n = 0;
+  const fixList = (list) => (list || []).map(p => {
+    const vs = p && p.viewings;
+    if (!Array.isArray(vs) || vs.length === 0) return p;
+    let touched = false;
+    const nv = vs.map(v => {
+      if (!v) return v;
+      let out = v;
+      if (V9386_PROSPECT_MAP[v.prospect]) { out = { ...out, prospect: V9386_PROSPECT_MAP[v.prospect] }; touched = true; n++; }
+      if (V9386_RESULT_MAP[v.result]) { out = { ...out, result: V9386_RESULT_MAP[v.result] }; touched = true; n++; }
+      return touched && out !== v ? { ...out, updatedAt: Date.now() } : out;
+    });
+    return touched ? { ...p, viewings: nv } : p;
+  });
+  const stocks = fixList(d.stocks);
+  const mediations = fixList(d.mediations);
+  if (!n) return d;
+  console.log(`[v9.386] 反響のラベルを ${n}箇所 新しい呼び名に直しました`);
+  return { ...d, stocks, mediations };
+}
+
 function migrateClearHanroSamplesV9367(d) {
   if (!d || typeof d !== "object") return d;
   const ids = new Set(V9367_SAMPLE_HANRO_IDS.map(String));
@@ -5390,6 +5419,13 @@ function MainApp({ onLock, onSwitchUser }) {
     v9367MigratedRef.current = true;
     console.log("[v9.367] 名簿のサンプルを削除します…");
     setData(d => migrateClearHanroSamplesV9367(d));
+  }, [data]);
+
+  // 🆕 v9.386: 反響ラベルの移行。フラグで1回だけにせず毎回見る＝
+  //   古い端末が巻き戻してもすぐ直る（自己修復）。直すものが無ければ何もしない。
+  useEffect(() => {
+    if (!data) return;
+    if (migrateViewingLabelsV9386(data) !== data) setData(d => migrateViewingLabelsV9386(d));
   }, [data]);
 
   // 🆕 v8.83: デモ jiage の nextVisit をクリア（カレンダー表示を消す）
