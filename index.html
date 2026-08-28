@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-28-v9.382-jiage-today-summary";
+const APP_VERSION = "2026-08-28-v9.383-jiage-giveup";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6532,9 +6532,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       lookupPending: "#f97316",  // ⏳ 謄本待ち
       excluded:      "#cbd5e1",  // 📭 DM不要
       lookupFailed:  "#dc2626",  // 🔧 要修正
+      lookupGiveUp:  "#475569",  // 🛑 取れない（何度やっても謄本が出ない・地番を調べ直すまで打ち止め）
       dmReady:       "#16a34a",  // 🚪 訪問OK
     };
     const _ownerExists = (r) => !!((r.owner && String(r.owner).trim()) || (r.ownerName && String(r.ownerName).trim()));
+    // 🆕 v9.383: 🛑取れない = 地番は入っているが、その地番のままでは何度投げても謄本が出ない。
+    //   🔧要修正（直せば取れる見込み）と分けて、再挑戦リストから外す。地番を調べ直したら解除。
+    const isGiveUpRaw = (r) => !!(r && r.lookupGiveUp === true);
     // 🆕 v9.381: 自動照会中 = 地番は未確定だが、目印住所で謄本を取りに行っている最中のピン。
     //   lookupTry 0=未照会 / 1=①そのまま外れ(次は②大字つき) / 2=②も外れ → ここで初めて担当者の番。
     //   担当者の「🟡地番待ち」から外して、二度手間（自動で入るのに手で調べる）を防ぐ。
@@ -6552,6 +6556,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         return ONSITE_COLORS.dmReady;  // 未訪問は訪問OK色（緑）
       }
       if (r.excluded === true) return ONSITE_COLORS.excluded;
+      if (isGiveUpRaw(r)) return ONSITE_COLORS.lookupGiveUp;
       if (r.lookupFailed === true) return ONSITE_COLORS.lookupFailed;
       return ONSITE_COLORS.lookupPending;
     };
@@ -6653,6 +6658,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
             return e || "✅";
           }
           if (_r.excluded === true) return "📭"; // 🆕 v9.373: DM不要（🚫は「対象外＝物件なし」ステータス専用にする）
+          if (isGiveUpRaw(_r)) return "🛑";
           if (_r.lookupFailed === true) return "🔧";
           return "⏳";  // 謄本待ち
         }
@@ -6735,6 +6741,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           return s;  // 「初訪」「再訪」「見込み」「中長期見込」「交渉中」「媒介」「仕入」「見込無し」「NG」 など
         }
         if (_r.excluded === true) return "📭 DM不要";
+        if (isGiveUpRaw(_r)) return "🛑 取れない";
         if (_r.lookupFailed === true) return "🔧 要修正";
         return "⏳ 謄本待ち";
       })();
@@ -6764,8 +6771,14 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const _excludedBadgeHtml = _isExcludedPin
         ? `<span style="background:#94a3b8;color:#fff;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;margin-left:4px;">📭 DM不要</span>`
         : "";
+      // 🆕 v9.383: 🛑取れないバッジ（理由も出す）。要修正バッジより優先。
+      const _isGiveUpPin = !!(it.coordsManual && it.address && !_ownerStr.trim() && !(it.raw && it.raw.excluded === true) && it.raw && it.raw.lookupGiveUp === true);
+      const _giveUpReason = _isGiveUpPin ? String((it.raw && it.raw.lookupGiveUpReason) || "") : "";
+      const _giveUpBadgeHtml = _isGiveUpPin
+        ? `<span style="background:#475569;color:#fff;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;margin-left:4px;">🛑 取れない${_giveUpReason ? `（${_giveUpReason}）` : ""}</span>`
+        : "";
       // 🆕 v8.118: 要修正バッジ（lookupFailed フラグ・所有者なし・対象外でない時のみ）
-      const _isLookupFailedPin = !!(it.coordsManual && it.address && !_ownerStr.trim() && !(it.raw && it.raw.excluded === true) && it.raw && it.raw.lookupFailed === true);
+      const _isLookupFailedPin = !!(it.coordsManual && it.address && !_ownerStr.trim() && !(it.raw && it.raw.excluded === true) && it.raw && it.raw.lookupFailed === true && !_isGiveUpPin);
       const _lookupFailedBadgeHtml = _isLookupFailedPin
         ? `<span style="background:#ef4444;color:#fff;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;margin-left:4px;">🔧 要修正</span>`
         : "";
@@ -6792,7 +6805,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           ${_whoWhenHtml}
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">${(it.ownerKana || (it.raw && it.raw.ownerKana)) ? `<div style="font-size:9px;color:#0ea5e9;line-height:1;margin-bottom:1px;">${it.ownerKana || it.raw.ownerKana}</div>` : ""}👤 ${it.ownerName}</div>` : ""}
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
-          <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_addrChkPopupHtml}${_excludedBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
+          <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_addrChkPopupHtml}${_excludedBadgeHtml}${_giveUpBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
           <button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を見る</button>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
@@ -6863,7 +6876,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const _vlog = (r.visitLog || i.visitLog || []);
       const _lastRes = (_vlog.length ? (_vlog[_vlog.length - 1] || {}).result : "") || "";
       // 🆕 v9.350: 場所確認(✓/?)の印もハッシュに含める → 押した直後に地図の印が変わる
-      return `${i.id || i.rawId || ""}|${i.lat ?? ""}|${i.lng ?? ""}|${i.ownerLat ?? ""}|${i.ownerLng ?? ""}|${i.status || ""}|${r.coordsManual ? 1 : 0}|${r.address || ""}|${r.owner || r.ownerName || ""}|${r.excluded === true ? 1 : 0}|${r.lookupFailed === true ? 1 : 0}|${_vlog.length}|${_lastRes}|${addrCheckOf(r) || ""}`;
+      return `${i.id || i.rawId || ""}|${i.lat ?? ""}|${i.lng ?? ""}|${i.ownerLat ?? ""}|${i.ownerLng ?? ""}|${i.status || ""}|${r.coordsManual ? 1 : 0}|${r.address || ""}|${r.owner || r.ownerName || ""}|${r.excluded === true ? 1 : 0}|${r.lookupFailed === true ? 1 : 0}|${r.lookupGiveUp === true ? 1 : 0}|${_vlog.length}|${_lastRes}|${addrCheckOf(r) || ""}`;
     }).join("¦"),
     pinTarget,
   ]);
@@ -18229,8 +18242,10 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const excludedPins = noOwnerPins.filter(j => j.excluded === true);
     // 🆕 v8.118: excluded でないものの中から lookupFailed を切り出し
     const noExcludedPins = noOwnerPins.filter(j => j.excluded !== true);
-    const lookupFailedPins = noExcludedPins.filter(j => j.lookupFailed === true);
-    const lookupPendingPins = noExcludedPins.filter(j => j.lookupFailed !== true);
+    // 🆕 v9.383: 🛑取れない（地番を調べ直すまで打ち止め）を 🔧要修正 から切り出す
+    const giveUpPins = noExcludedPins.filter(j => j.lookupGiveUp === true);
+    const lookupFailedPins = noExcludedPins.filter(j => j.lookupFailed === true && j.lookupGiveUp !== true);
+    const lookupPendingPins = noExcludedPins.filter(j => j.lookupFailed !== true && j.lookupGiveUp !== true);
     const byAssignee = {};
     pendingPins.forEach(p => {
       const a = p.assignee || "(未割当)";
@@ -18266,6 +18281,15 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     lookupFailedPins.forEach(p => {
       const a = p.assignee || "(未割当)";
       lookupFailedByAssignee[a] = (lookupFailedByAssignee[a] || 0) + 1;
+    });
+    // 🆕 v9.383: 🛑取れない の担当者別・理由別
+    const giveUpByAssignee = {};
+    const giveUpByReason = {};
+    giveUpPins.forEach(p => {
+      const a = p.assignee || "(未割当)";
+      giveUpByAssignee[a] = (giveUpByAssignee[a] || 0) + 1;
+      const r = String(p.lookupGiveUpReason || "理由なし");
+      giveUpByReason[r] = (giveUpByReason[r] || 0) + 1;
     });
     // 🆕 v9.348: 所有者宅の場所確認（🏠住所要確認 / ✅確認済み）。
     //   現地ピンに限らず全件（CSV取込ピンも所有者住所マップに出るため）。
@@ -18318,6 +18342,10 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       // 🆕 v8.118: 🔧要修正
       lookupFailedTotal: lookupFailedPins.length,
       lookupFailedByAssignee,
+      // 🆕 v9.383: 🛑取れない
+      giveUpTotal: giveUpPins.length,
+      giveUpByAssignee,
+      giveUpByReason,
       // 🆕 v9.348: 所有者宅の場所確認
       addrNgTotal: addrNgPins.length,
       addrNgByAssignee,
@@ -18639,16 +18667,19 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const excludedConfirmed = noOwnerConfirmed.filter(j => j.excluded === true);
     const noExcludedConfirmed = noOwnerConfirmed.filter(j => j.excluded !== true);
     // 🆕 v8.118: 要修正（lookupFailed）も除外（誤った地番で再課金しない）
-    const lookupFailedConfirmed = noExcludedConfirmed.filter(j => j.lookupFailed === true);
-    const lookupPending = noExcludedConfirmed.filter(j => j.lookupFailed !== true);
+    // 🆕 v9.383: 🛑取れない は 🔧要修正 と分けて数える（どちらも出力からは除外）
+    const giveUpConfirmed = noExcludedConfirmed.filter(j => j.lookupGiveUp === true);
+    const lookupFailedConfirmed = noExcludedConfirmed.filter(j => j.lookupFailed === true && j.lookupGiveUp !== true);
+    const lookupPending = noExcludedConfirmed.filter(j => j.lookupFailed !== true && j.lookupGiveUp !== true);
     const dmReadyCount = confirmed.length - noOwnerConfirmed.length;
     const excludedCount = excludedConfirmed.length;
     const lookupFailedCount = lookupFailedConfirmed.length;
+    const giveUpCount = giveUpConfirmed.length;
     if (lookupPending.length === 0) {
       const lines = [
         "📭 謄本待ちの現地ピンがありません",
         "",
-        `（地番待ち ${pendingLotCount}件、📭DM不要 ${excludedCount}件、🔧要修正 ${lookupFailedCount}件、🚪訪問OK ${dmReadyCount}件 は除外）`,
+        `（地番待ち ${pendingLotCount}件、📭DM不要 ${excludedCount}件、🔧要修正 ${lookupFailedCount}件、🛑取れない ${giveUpCount}件、🚪訪問OK ${dmReadyCount}件 は除外）`,
         "",
         "新しく地番を確定したピンができたら、ここから謄本取得用CSVを出力できます",
       ];
@@ -18686,6 +18717,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     ];
     if (excludedCount > 0) lines.push(`   📭 DM不要 ${excludedCount}件 は除外（本人居住・法人名義。飛び込みでは行き先になり得ます）`);
     if (lookupFailedCount > 0) lines.push(`   🔧 要修正 ${lookupFailedCount}件 は除外（謄本取得失敗・地番要確認）`);
+    if (giveUpCount > 0) lines.push(`   🛑 取れない ${giveUpCount}件 は除外（何度やっても出ない・地番の調べ直し待ち）`);
     if (dmReadyCount > 0) lines.push(`   🚪 訪問OK ${dmReadyCount}件 は除外（謄本取得済み）`);
     if (pendingLotCount > 0) lines.push(`   🟡 地番待ち ${pendingLotCount}件 は除外（地番未入力）`);
     lines.push("");
@@ -19186,6 +19218,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
             _fua.excluded = _now;
             _fua.excludedReason = _now;
           }
+          // 🆕 v9.383: 所有者が入ったら 🛑取れない も解除（地番を直して取れた＝もう打ち止めではない）
+          if (next.lookupGiveUp) {
+            next.lookupGiveUp = false;
+            next.lookupGiveUpReason = "";
+            _fua.lookupGiveUp = _now;
+            _fua.lookupGiveUpReason = _now;
+          }
           // 🆕 v8.118→v8.119: 所有者が入ったら lookupFailed も解除（sync 復活防止のため false 化）
           if (next.lookupFailed) {
             next.lookupFailed = false;
@@ -19377,6 +19416,17 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       if (hasOwner) return false;
       if (raw.excluded === true) return false;
       if (raw.lookupFailed === true) return false; // 🆕 v8.118
+      if (raw.lookupGiveUp === true) return false; // 🆕 v9.383
+    }
+    // 🆕 v9.383: 🛑 取れない（何度やっても謄本が出ない・地番を調べ直すまで打ち止め）
+    if (quickFilter === "give_up") {
+      const raw = item.raw || {};
+      if (!raw.coordsManual) return false;
+      if (!item.address || String(item.address).trim() === "") return false;
+      if (raw.excluded === true) return false;
+      const hasOwnerGU = (raw.owner && String(raw.owner).trim()) || (raw.ownerName && String(raw.ownerName).trim());
+      if (hasOwnerGU) return false;
+      if (raw.lookupGiveUp !== true) return false;
     }
     // 🆕 v8.118: 🔧 要修正（地番済・所有者なし・対象外でない・lookupFailed）
     if (quickFilter === "lookup_failed") {
@@ -19387,6 +19437,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       if (hasOwner) return false;
       if (raw.excluded === true) return false;
       if (raw.lookupFailed !== true) return false;
+      if (raw.lookupGiveUp === true) return false; // 🆕 v9.383: 🛑取れない は別枠
     }
     // 🆕 v8.111: 訪問OK（地番＋所有者）
     if (quickFilter === "dm_ready") {
@@ -21646,16 +21697,20 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
       const item = { ...form, id: editItem?.rawId || Date.now() };
       // 🆕 v8.118→v8.119: 地番(address)が変更されたら lookupFailed を自動解除（=⏳謄本待ちに戻す）
       //   - delete ではなく false 化＋_fieldUpdatedAt 更新（sync 復活防止）
-      if (editItem && editItem.raw && editItem.raw.lookupFailed === true) {
+      // 🆕 v9.383: 🛑取れない も同じく解除（地番を調べ直したら打ち止めを外す）
+      if (editItem && editItem.raw && (editItem.raw.lookupFailed === true || editItem.raw.lookupGiveUp === true)) {
         const prevAddr = String((editItem.raw.address || "")).trim();
         const newAddr  = String((item.address     || "")).trim();
         if (newAddr && newAddr !== prevAddr) {
           const _now = Date.now();
           item.lookupFailed = false;
           item.lookupNote = "";
+          item.lookupGiveUp = false;
+          item.lookupGiveUpReason = "";
           item._fieldUpdatedAt = {
             ...(item._fieldUpdatedAt || {}),
             lookupFailed: _now, lookupNote: _now,
+            lookupGiveUp: _now, lookupGiveUpReason: _now,
           };
           item.updatedAt = _now;
         }
@@ -22421,6 +22476,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           {pendingPinSummary.lookupFailedTotal > 0 && (
                             <span style={{ fontSize: 10, color: "#ef4444", fontWeight: 700 }}>/ <NavIcon name="wrench" size={12} /> 要修正 {pendingPinSummary.lookupFailedTotal}件</span>
                           )}
+                          {pendingPinSummary.giveUpTotal > 0 && (
+                            <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700 }}>/ 🛑 取れない {pendingPinSummary.giveUpTotal}件</span>
+                          )}
                           {pendingPinSummary.dmReadyTotal > 0 && (
                             <span style={{ fontSize: 10, color: C.success, fontWeight: 700 }}>/ 🚪訪問OK {pendingPinSummary.dmReadyTotal}件</span>
                           )}
@@ -22475,7 +22533,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
                               );
                             })}
-                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite" || quickFilter === "lookup_pending" || quickFilter === "dm_ready" || quickFilter === "excluded" || quickFilter === "lookup_failed" || quickFilter === "addr_ng" || quickFilter === "addr_ok" || quickFilter === "auto_lookup" || quickFilter === "today_new") && (
+                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite" || quickFilter === "lookup_pending" || quickFilter === "dm_ready" || quickFilter === "excluded" || quickFilter === "lookup_failed" || quickFilter === "addr_ng" || quickFilter === "addr_ok" || quickFilter === "auto_lookup" || quickFilter === "today_new" || quickFilter === "give_up") && (
                             <button onClick={() => { setFilterMember("__ALL__"); setQuickFilter(null); }}
                               style={{
                                 background: "transparent", color: C.muted,
@@ -22655,6 +22713,54 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                     }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
                                 );
                               })}
+                          </div>
+                        )}
+                        {/* 🆕 v9.383: 🛑取れない（地番を調べ直すまで打ち止め）担当者別＋理由 */}
+                        {pendingPinSummary.giveUpTotal > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
+                            {(() => {
+                              const isAll = quickFilter === "give_up" && filterMember === "__ALL__";
+                              return (
+                                <button onClick={() => {
+                                  if (isAll) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                                  else { setQuickFilter("give_up"); setFilterMember("__ALL__"); }
+                                }}
+                                  title={isAll ? "解除" : "何度やっても謄本が出ないピンだけ表示（地番を調べ直すまで打ち止め）"}
+                                  style={{
+                                    background: isAll ? "#475569" : "#47556922",
+                                    color: isAll ? "#fff" : "#94a3b8",
+                                    border: `1.5px solid #64748b`,
+                                    borderRadius: 12, padding: "3px 10px",
+                                    fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                  }}>{isAll ? "✓ " : ""}🛑 取れない: {pendingPinSummary.giveUpTotal}件</button>
+                              );
+                            })()}
+                            {Object.entries(pendingPinSummary.giveUpByAssignee)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([assignee, count]) => {
+                                const color = MEMBER_COLORS[assignee] || C.muted;
+                                const isFiltered = filterMember === assignee && quickFilter === "give_up";
+                                return (
+                                  <button key={"gu-" + assignee}
+                                    onClick={() => {
+                                      if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
+                                      else { setFilterMember(assignee); setQuickFilter("give_up"); }
+                                    }}
+                                    title={isFiltered ? "解除" : `${assignee} の取れないピンだけ表示`}
+                                    style={{
+                                      background: isFiltered ? color : color + "22",
+                                      color: isFiltered ? "#fff" : color,
+                                      border: `1.5px solid ${color}`,
+                                      borderRadius: 12, padding: "3px 10px",
+                                      fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                                );
+                              })}
+                            <span style={{ fontSize: 9, color: C.muted, marginLeft: 4, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {Object.entries(pendingPinSummary.giveUpByReason).sort((a, b) => b[1] - a[1]).map(([r, n]) => (
+                                <span key={"gur-" + r}>{r} {n}</span>
+                              ))}
+                            </span>
                           </div>
                         )}
                         {/* 🆕 v9.348: 🏠 住所要確認（所有者宅の場所が地図で特定できない）担当者別 */}
@@ -22965,6 +23071,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               owner: "", ownerName: "", ownerAddr: "",
                               excluded: true, excludedReason: "法人所有",
                               lookupFailed: false, lookupNote: "",
+                              lookupGiveUp: false, lookupGiveUpReason: "",
                             };
                           });
                           return { ...prev, jiage: next };
@@ -23326,6 +23433,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   { key: "lookup_pending", label: "⏳ 謄本待ち",  color: "#f97316", count: pendingPinSummary.lookupPendingTotal },
                                   { key: "excluded",       label: "📭 DM不要",   color: "#cbd5e1", count: pendingPinSummary.excludedTotal },
                                   { key: "lookup_failed",  label: "🔧 要修正",   color: "#dc2626", count: pendingPinSummary.lookupFailedTotal },
+                                  { key: "give_up",        label: "🛑 取れない",  color: "#64748b", count: pendingPinSummary.giveUpTotal },
                                   { key: "dm_ready",       label: "🚪 訪問OK",   color: "#16a34a", count: pendingPinSummary.dmReadyTotal },
                                   { key: "addr_ng",        label: "🏠 住所要確認", color: "#a855f7", count: pendingPinSummary.addrNgTotal },
                                   { key: "addr_ok",        label: "✅ 場所確認済", color: "#16a34a", count: pendingPinSummary.addrOkTotal },
@@ -24192,10 +24300,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             excludedReason: "本人居住",
                             lookupFailed: false,
                             lookupNote: "",
+                            lookupGiveUp: false,
+                            lookupGiveUpReason: "",
                             _fieldUpdatedAt: {
                               ...(j._fieldUpdatedAt || {}),
                               excluded: _now, excludedReason: _now,
                               lookupFailed: _now, lookupNote: _now,
+                              lookupGiveUp: _now, lookupGiveUpReason: _now,
                             },
                             updatedAt: _now,
                           };
@@ -24212,7 +24323,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   {/* 🆕 v8.118: 要修正フラグの手動トグル（excluded でない時のみ表示） */}
                   {_raw.excluded !== true && (
                     <div style={{ marginTop: 8 }}>
-                      {_raw.lookupFailed === true ? (
+                      {(_raw.lookupFailed === true || _raw.lookupGiveUp === true) ? (
                         <button onClick={() => {
                           if (!window.confirm("🔧 要修正 を解除しますか？\n（⏳謄本待ちに戻ります＝次回のCSV出力に含まれます）")) return;
                           setData(d => ({
@@ -24225,21 +24336,24 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                 ...j,
                                 lookupFailed: false,
                                 lookupNote: "",
+                                lookupGiveUp: false,
+                                lookupGiveUpReason: "",
                                 _fieldUpdatedAt: {
                                   ...(j._fieldUpdatedAt || {}),
                                   lookupFailed: _now, lookupNote: _now,
+                                  lookupGiveUp: _now, lookupGiveUpReason: _now,
                                 },
                                 updatedAt: _now,
                               };
                             }),
                           }));
                           setSelected(null);
-                          alert("✅ 要修正を解除しました。⏳謄本待ちに戻ります。");
+                          alert("✅ 解除しました。⏳謄本待ちに戻ります。");
                         }} style={{
                           width: "100%", background: "#ef444422", color: "#ef4444",
                           border: `1.5px solid #ef4444`, borderRadius: 8, padding: "8px 12px",
                           cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
-                        }}>↩️ 要修正を解除（謄本待ちに戻す）</button>
+                        }}>{_raw.lookupGiveUp === true ? "↩️ 取れないを解除（謄本待ちに戻す）" : "↩️ 要修正を解除（謄本待ちに戻す）"}</button>
                       ) : (
                         <button onClick={() => {
                           if (!window.confirm("このピンを🔧要修正にしますか？\n（地番が間違っている等で謄本取得を保留。CSV出力から除外されます。地番を直すと自動で解除されます。）")) return;

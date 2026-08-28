@@ -113,14 +113,22 @@ const hasOwner = (j) => !!((j.owner && String(j.owner).trim()) || (j.ownerName &
 // 1. 🟡 地番待ち   = coordsManual && !address
 // 2. 🚪 訪問OK     = coordsManual && address && hasOwner       （hasOwner 最優先）
 // 3. 🚫 対象外     = coordsManual && address && !hasOwner && excluded
-// 4. 🔧 要修正     = coordsManual && address && !hasOwner && !excluded && lookupFailed  ← 🆕 v8.118
-// 5. ⏳ 謄本待ち   = coordsManual && address && !hasOwner && !excluded && !lookupFailed
+// 4. 🛑 取れない   = coordsManual && address && !hasOwner && !excluded && lookupGiveUp   ← 🆕 v9.383
+// 5. 🔧 要修正     = coordsManual && address && !hasOwner && !excluded && lookupFailed && !lookupGiveUp  ← 🆕 v8.118
+// 6. ⏳ 謄本待ち   = coordsManual && address && !hasOwner && !excluded && !lookupFailed && !lookupGiveUp
 ```
 
 **重要**: `hasOwner` が真なら `excluded` / `lookupFailed` に関係なく **🚪 訪問OK**（後から所有者が入った場合の救済）
 
 **v8.116 リネーム**: 旧「📨 DM準備済」を「🚪 訪問OK」に変更（DM管理はスプレッドシート側に分離されたため）
 **v8.118 追加**: 「🔧 要修正」状態。Claude Code 側で謄本取得に失敗（地番打ち間違い等）したピンの隔離用
+**v9.383 追加**: 「🛑 取れない」状態（`lookupGiveUp` + `lookupGiveUpReason`）。
+🔧要修正のうち **「その地番のままでは何度投げても謄本が出ない」と判明した分** の置き場。
+🔧要修正＝直せば取れる見込み、🛑取れない＝地番を調べ直すまで打ち止め、と役割を分ける。
+仕分けは `jiage-chiban/mark_giveup.py`（下見→`--apply`／`--undo`で戻す）。
+理由は3種: `大字を反転しても取れず` / `住居表示のまま(地番不明)` / `地番違いの可能性`。
+解除は **地番を編集** するか、詳細パネルの「↩️ 取れないを解除」ボタン。所有者が入っても自動解除。
+`tohon_prepare.py` の再挑戦候補・謄本待ちからも除外される。
 
 ### v8.118 「🔧 要修正」の運用フロー
 
