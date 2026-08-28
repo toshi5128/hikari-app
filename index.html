@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-27-v9.381-jiage-auto-lookup";
+const APP_VERSION = "2026-08-28-v9.382-jiage-today-summary";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -18278,11 +18278,21 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       addrNgByAssignee[a] = (addrNgByAssignee[a] || 0) + 1;
     });
     const _todayDS = new Date().toDateString();
-    let todayTotalCount = 0;
-    onsiteAll.forEach(j => {
-      if (!j.createdAt) return;
-      try { if (new Date(j.createdAt).toDateString() === _todayDS) todayTotalCount++; }
-      catch (e) {}
+    const _isToday = (j) => {
+      if (!j.createdAt) return false;
+      try { return new Date(j.createdAt).toDateString() === _todayDS; } catch (e) { return false; }
+    };
+    // 🆕 v9.382: 今日立てた現地ピンの内訳（🤖自動照会中 / 🟡地番待ち / ✅地番確定）と担当者別
+    const _noAddr = (j) => !j.address || String(j.address).trim() === "";
+    const todayPins = onsiteAll.filter(_isToday);
+    const todayTotalCount = todayPins.length;
+    const todayAutoLookupCount = todayPins.filter(j => _noAddr(j) && isAutoLookup(j)).length;
+    const todayPendingCount = todayPins.filter(j => _noAddr(j) && !isAutoLookup(j)).length;
+    const todayConfirmedCount = todayPins.filter(j => !_noAddr(j)).length;
+    const todayByAssignee = {};
+    todayPins.forEach(p => {
+      const a = p.assignee || "(未割当)";
+      todayByAssignee[a] = (todayByAssignee[a] || 0) + 1;
     });
     return {
       total: pendingPins.length,
@@ -18291,6 +18301,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       autoLookupTotal: autoLookupPins.length,
       autoLookupByAssignee,
       todayTotal: todayTotalCount,
+      // 🆕 v9.382: 今日の新規の内訳
+      todayAutoLookup: todayAutoLookupCount,
+      todayPending: todayPendingCount,
+      todayConfirmed: todayConfirmedCount,
+      todayByAssignee,
       confirmedTotal: confirmedPins.length,
       confirmedByAssignee,
       lookupPendingTotal: lookupPendingPins.length,
@@ -19339,6 +19354,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       if (!(raw.landmark && String(raw.landmark).trim() !== "")) return false;
       if (raw.excluded === true) return false;
       if (Number(raw.lookupTry || 0) >= 2) return false;
+    }
+    // 🆕 v9.382: 🆕 今日の新規（今日立てた現地ピン）
+    if (quickFilter === "today_new") {
+      const raw = item.raw || {};
+      if (!raw.coordsManual || !raw.createdAt) return false;
+      try { if (new Date(raw.createdAt).toDateString() !== new Date().toDateString()) return false; }
+      catch (e) { return false; }
     }
     // 🆕 v8.107: 確定済み現地ピン（coordsManual かつ address 入り）
     if (quickFilter === "confirmed_onsite") {
@@ -22347,12 +22369,49 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   )}
                   {/* 🆕 v8.104→v8.105→v8.107: 現地ピン集計（地番待ち＋確定済み）*/}
                   <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${C.borderDim}` }}>
-                    {pendingPinSummary.total > 0 ? (
+                    {/* 🆕 v9.382: 「今日の新規」は常に一番上に出す（自動照会中だけの日でも消えないように） */}
+                    {pendingPinSummary.todayTotal > 0 && (() => {
+                      const isToday = quickFilter === "today_new" && filterMember === "__ALL__";
+                      return (
+                        <div style={{
+                          display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+                          marginBottom: 8, padding: "6px 8px", borderRadius: 8,
+                          background: "#22d3ee14", border: `1px solid #22d3ee55`,
+                        }}>
+                          <button onClick={() => {
+                            if (isToday) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                            else { setQuickFilter("today_new"); setFilterMember("__ALL__"); }
+                          }}
+                            title={isToday ? "解除して全件表示に戻す" : "今日立てた現地ピンだけ地図に表示"}
+                            style={{
+                              background: isToday ? "#22d3ee" : "transparent",
+                              color: isToday ? "#000" : "#22d3ee",
+                              border: `1.5px solid #22d3ee`,
+                              borderRadius: 12, padding: "3px 10px",
+                              fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+                            }}>{isToday ? "✓ " : ""}🆕 今日の新規 {pendingPinSummary.todayTotal}件</button>
+                          <span style={{ fontSize: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            {pendingPinSummary.todayAutoLookup > 0 && (<span style={{ color: "#a78bfa", fontWeight: 700 }}>🤖 自動照会中 {pendingPinSummary.todayAutoLookup}</span>)}
+                            {pendingPinSummary.todayPending > 0 && (<span style={{ color: "#fbbf24", fontWeight: 700 }}>🟡 地番待ち {pendingPinSummary.todayPending}</span>)}
+                            {pendingPinSummary.todayConfirmed > 0 && (<span style={{ color: C.success, fontWeight: 700 }}>✅ 地番確定 {pendingPinSummary.todayConfirmed}</span>)}
+                          </span>
+                          <span style={{ fontSize: 10, marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {Object.entries(pendingPinSummary.todayByAssignee).sort((a, b) => b[1] - a[1]).map(([a, n]) => (
+                              <span key={"td-" + a} style={{ color: MEMBER_COLORS[a] || C.muted, fontWeight: 700 }}>{a} {n}</span>
+                            ))}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                    {(pendingPinSummary.total > 0 || pendingPinSummary.autoLookupTotal > 0) ? (
                       <>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
                           <span style={{ fontSize: 11, color: "#fbbf24", fontWeight: 800 }}><NavIcon name="mappin" size={12} /> 現地ピン合計</span>
                           <span style={{ fontSize: 15, fontWeight: 800, color: "#fbbf24" }}>{pendingPinSummary.total}件</span>
                           <span style={{ fontSize: 10, color: C.muted }}>(要 地番入力)</span>
+                          {pendingPinSummary.autoLookupTotal > 0 && (
+                            <span style={{ fontSize: 10, color: "#a78bfa", fontWeight: 700 }}>/ 🤖 自動照会中 {pendingPinSummary.autoLookupTotal}件</span>
+                          )}
                           {pendingPinSummary.lookupPendingTotal > 0 && (
                             <span style={{ fontSize: 10, color: "#f97316", fontWeight: 700 }}>/ <NavIcon name="clock" size={12} /> 謄本待 {pendingPinSummary.lookupPendingTotal}件</span>
                           )}
@@ -22364,9 +22423,6 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           )}
                           {pendingPinSummary.dmReadyTotal > 0 && (
                             <span style={{ fontSize: 10, color: C.success, fontWeight: 700 }}>/ 🚪訪問OK {pendingPinSummary.dmReadyTotal}件</span>
-                          )}
-                          {pendingPinSummary.todayTotal > 0 && (
-                            <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>※ 今日新規 {pendingPinSummary.todayTotal}件</span>
                           )}
                         </div>
                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -22419,7 +22475,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
                               );
                             })}
-                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite" || quickFilter === "lookup_pending" || quickFilter === "dm_ready" || quickFilter === "excluded" || quickFilter === "lookup_failed" || quickFilter === "addr_ng" || quickFilter === "addr_ok") && (
+                          {(filterMember !== "__ALL__" || quickFilter === "pending_lot" || quickFilter === "confirmed_onsite" || quickFilter === "lookup_pending" || quickFilter === "dm_ready" || quickFilter === "excluded" || quickFilter === "lookup_failed" || quickFilter === "addr_ng" || quickFilter === "addr_ok" || quickFilter === "auto_lookup" || quickFilter === "today_new") && (
                             <button onClick={() => { setFilterMember("__ALL__"); setQuickFilter(null); }}
                               style={{
                                 background: "transparent", color: C.muted,
@@ -22429,6 +22485,49 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               }}><NavIcon name="x" size={15} /> 全件表示に戻す</button>
                           )}
                         </div>
+                        {/* 🆕 v9.382: 🤖自動照会中（目印住所で謄本を取りに行っている最中）担当者別 */}
+                        {pendingPinSummary.autoLookupTotal > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
+                            {(() => {
+                              const isAll = quickFilter === "auto_lookup" && filterMember === "__ALL__";
+                              return (
+                                <button onClick={() => {
+                                  if (isAll) { setQuickFilter(null); setFilterMember("__ALL__"); }
+                                  else { setQuickFilter("auto_lookup"); setFilterMember("__ALL__"); }
+                                }}
+                                  title={isAll ? "解除" : "自動照会中の現地ピンだけ表示（担当者は触らなくてOK）"}
+                                  style={{
+                                    background: isAll ? "#a78bfa" : "#a78bfa22",
+                                    color: isAll ? "#fff" : "#a78bfa",
+                                    border: `1.5px solid #a78bfa`,
+                                    borderRadius: 12, padding: "3px 10px",
+                                    fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                                  }}>{isAll ? "✓ " : ""}🤖 自動照会中: {pendingPinSummary.autoLookupTotal}件</button>
+                              );
+                            })()}
+                            {Object.entries(pendingPinSummary.autoLookupByAssignee)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([assignee, count]) => {
+                                const color = MEMBER_COLORS[assignee] || C.muted;
+                                const isFiltered = filterMember === assignee && quickFilter === "auto_lookup";
+                                return (
+                                  <button key={"al-" + assignee}
+                                    onClick={() => {
+                                      if (isFiltered) { setFilterMember("__ALL__"); setQuickFilter(null); }
+                                      else { setFilterMember(assignee); setQuickFilter("auto_lookup"); }
+                                    }}
+                                    title={isFiltered ? "解除" : `${assignee} の自動照会中だけ表示`}
+                                    style={{
+                                      background: isFiltered ? color : color + "22",
+                                      color: isFiltered ? "#fff" : color,
+                                      border: `1.5px solid ${color}`,
+                                      borderRadius: 12, padding: "3px 10px",
+                                      fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    }}>{isFiltered ? "✓ " : ""}{assignee}: {count}件</button>
+                                );
+                              })}
+                          </div>
+                        )}
                         {/* 🆕 v8.111: 謄本待ち（地番済・所有者なし）担当者別 */}
                         {pendingPinSummary.lookupPendingTotal > 0 && (
                           <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.borderDim}` }}>
@@ -22671,9 +22770,6 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.success, fontSize: 12, marginBottom: 6 }}>
                           <span style={{ fontSize: 14 }}><NavIcon name="check" size={14} /></span>
                           <span style={{ fontWeight: 700 }}>地番待ち: 0件 — 全件確定済み</span>
-                          {pendingPinSummary.todayTotal > 0 && (
-                            <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>(今日 {pendingPinSummary.todayTotal}件確定)</span>
-                          )}
                         </div>
                         {/* 🆕 v8.111→v8.116: 0件時でも謄本待ち / 訪問OK を担当者別表示 */}
                         {pendingPinSummary.lookupPendingTotal > 0 && (
@@ -23224,6 +23320,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                     isBasicStageStatus(j.status) && latestVisitResultKey(j) === want
                                   ).length;
                                   return [
+                                  { key: "today_new",      label: "🆕 今日の新規", color: "#22d3ee", count: pendingPinSummary.todayTotal },
                                   { key: "pending_lot",    label: "🟡 地番待ち",  color: "#fde047", count: pendingPinSummary.total },
                                   { key: "auto_lookup",    label: "🤖 自動照会中", color: "#a78bfa", count: pendingPinSummary.autoLookupTotal },
                                   { key: "lookup_pending", label: "⏳ 謄本待ち",  color: "#f97316", count: pendingPinSummary.lookupPendingTotal },
