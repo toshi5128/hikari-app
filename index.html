@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.387-viewing-label-migration";
+const APP_VERSION = "2026-08-29-v9.388-result-unified";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -593,6 +593,7 @@ const FUNDING_OPTIONS = ["", "現金", "住宅ローン", "事業ローン", "�
 const PURPOSE_OPTIONS = ["", "実需", "投資家", "セカンドハウス", "法人", "不明"];
 const PEOPLE_OPTIONS = ["", "1人", "夫婦", "家族", "親同伴", "その他"];
 const CHANNEL_OPTIONS = ["", "直接", "アットホーム", "アットホーム☎", "SUUMO", "SUUMO☎", "HOME'S", "その他ポータル", "仲介業者経由", "紹介"];
+// 🗄️ v9.388で入力欄を廃止（結果に一本化）。過去データの読み取り用に定義だけ残す。
 const NEXTACTION_OPTIONS = ["", "申込予定", "再内見希望", "返事待ち", "連絡途絶", "成約", "ご縁なし"];
 // 🆕 v9.172: 次回訪問の時間候補（24時間制・15分刻み）。AM/PMの取り違え防止のためプルダウンで選ぶ。
 const VISIT_TIME_OPTIONS = (() => { const a = [""]; for (let h = 0; h < 24; h++) for (const m of ["00", "15", "30", "45"]) a.push(`${String(h).padStart(2, "0")}:${m}`); return a; })();
@@ -609,7 +610,8 @@ const PROSPECT_INFO = {
 const RESULT_INFO = {
   "未案内": { icon: "⏳", color: "#94a3b8", hint: "まだ現地を見せていない" },
   "案内済": { icon: "👀", color: "#06b6d4", hint: "見せた。返事待ち" },
-  "申込": { icon: "📝", color: "#10b981", hint: "申込が入った" },
+  "申込": { icon: "📝", color: "#22c55e", hint: "申込が入った" },
+  "成約": { icon: "🎉", color: "#10b981", hint: "契約・決済まで決まった" },
   "見送り": { icon: "🚫", color: "#ef4444", hint: "断られた・他決め・消えた" },
 };
 // 🆕 v9.386: 見送りの理由。溜まると「この物件は価格で落ちている」が数字で見える。
@@ -1713,6 +1715,44 @@ function migrateViewingLabelsV9386(d) {
   if (!n) return d;
   console.log(`[v9.386] 反響のラベルを ${n}箇所 新しい呼び名に直しました`);
   return { ...d, stocks, mediations };
+}
+
+// 🆕 v9.388: 「次回アクション」は新しい結果と役割が重複していた（36件中33件がかぶり）。
+//   入力欄は畳んで結果に一本化する。過去の値は消さず、結果が未入力のものだけ移す。
+const V9388_NEXTACTION_MAP = {
+  "成約": { result: "成約" },
+  "申込予定": { result: "案内済" },
+  "再内見希望": { result: "案内済" },
+  "返事待ち": { result: "案内済" },
+  "ご縁なし": { result: "見送り" },
+  "連絡途絶": { result: "見送り", lostReason: "連絡途絶" },
+};
+function migrateNextActionToResultV9388(d) {
+  if (!d || typeof d !== "object") return d;
+  let n = 0;
+  const fixList = (list) => (list || []).map(p => {
+    const vs = p && p.viewings;
+    if (!Array.isArray(vs) || vs.length === 0) return p;
+    let touched = false;
+    const nv = vs.map(v => {
+      if (!v) return v;
+      const m = V9388_NEXTACTION_MAP[v.nextAction];
+      if (!m) return v;
+      // すでに結果を入れてあるものは触らない（人の入力が最優先）
+      const cur = String(v.result || "").trim();
+      if (cur && cur !== "未案内") return v;
+      touched = true; n++;
+      const out = { ...v, result: m.result, updatedAt: Date.now() };
+      if (m.lostReason && !out.lostReason) out.lostReason = m.lostReason;
+      return out;
+    });
+    return touched ? { ...p, viewings: nv } : p;
+  });
+  const stocks = fixList(d.stocks);
+  const mediations = fixList(d.mediations);
+  if (!n) return d;
+  console.log(`[v9.388] 次回アクション ${n}件 を結果に移しました`);
+  return { ...d, stocks, mediations, migrations: { ...(d.migrations || {}), v9388_nextaction_to_result: Date.now() } };
 }
 
 function migrateClearHanroSamplesV9367(d) {
@@ -5426,6 +5466,13 @@ function MainApp({ onLock, onSwitchUser }) {
   useEffect(() => {
     if (!data) return;
     if (migrateViewingLabelsV9386(data) !== data) setData(d => migrateViewingLabelsV9386(d));
+  }, [data]);
+
+  // 🆕 v9.388: 次回アクション → 結果（1回きり。フラグが巻き戻っても再実行して直る）
+  useEffect(() => {
+    if (!data) return;
+    if (data.migrations && data.migrations.v9388_nextaction_to_result) return;
+    if (migrateNextActionToResultV9388(data) !== data) setData(d => migrateNextActionToResultV9388(d));
   }, [data]);
 
   // 🆕 v8.83: デモ jiage の nextVisit をクリア（カレンダー表示を消す）
@@ -11940,7 +11987,6 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             )}
                             {prospect && <span style={{ background: prospect.color + "33", color: prospect.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{prospect.icon}{v.prospect}</span>}
                             {result && v.result !== "未案内" && <span style={{ background: result.color + "33", color: result.color, padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{result.icon}{v.result}{v.lostReason ? `（${v.lostReason}）` : ""}</span>}
-                            {v.nextAction && <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}><NavIcon name="refresh" size={12} />{v.nextAction}</span>}
                             <button onClick={(ev) => { ev.stopPropagation(); openEdit(m, vi); }} style={{ marginLeft: "auto", background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
                           </div>
                           <div style={{ fontSize: 11, color: C.muted, marginBottom: 5, lineHeight: 1.6 }}>
@@ -12533,13 +12579,6 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             </div>
                           </div>
                         )}
-                      </Field>
-
-                      {/* 次回アクション */}
-                      <Field label="🔁 次回アクション">
-                        <select style={inp} value={v.nextAction || ""} onChange={e => updateV("nextAction", e.target.value)}>
-                          {NEXTACTION_OPTIONS.map(o => <option key={o} value={o}>{o || "— 未選択 —"}</option>)}
-                        </select>
                       </Field>
 
                       {/* メモ */}
@@ -13717,11 +13756,6 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                                   {result.icon}{v.result}{v.lostReason ? `（${v.lostReason}）` : ""}
                                 </span>
                               )}
-                              {v.nextAction && (
-                                <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
-                                  <NavIcon name="refresh" size={15} />{v.nextAction}
-                                </span>
-                              )}
                               <button onClick={(ev) => { ev.stopPropagation(); openEdit(s, vi); }} style={{ marginLeft: "auto", background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}><NavIcon name="edit" size={12} /> 編集</button>
                             </div>
 
@@ -14431,13 +14465,6 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                             </div>
                           </div>
                         )}
-                      </Field>
-
-                      {/* 次回アクション */}
-                      <Field label="🔁 次回アクション">
-                        <select style={inp} value={v.nextAction || ""} onChange={e => updateV("nextAction", e.target.value)}>
-                          {NEXTACTION_OPTIONS.map(o => <option key={o} value={o}>{o || "— 未選択 —"}</option>)}
-                        </select>
                       </Field>
 
                       {/* メモ */}
@@ -33441,6 +33468,8 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
         prospect: latest.prospect || "",
         result: latest.result || "",
         nextAction: pick(v => v.nextAction),
+        result: pick(v => v.result && v.result !== "未案内" ? v.result : ""),   // 🆕 v9.388
+        lostReason: pick(v => v.lostReason),
         date: latest.date || "",
         visitDate: latest.visitDate || "",
         visitTime: latest.visitTime || "",
@@ -33472,7 +33501,7 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
     inquiries: investors.length,
     hot: people.filter(p => p.items.some(v => v.prospect === "熱い")).length,
     mailable: people.filter(p => p.email).length,
-    closed: people.filter(p => p.items.some(v => v.nextAction === "成約")).length,
+    closed: people.filter(p => p.items.some(v => v.result === "成約" || v.nextAction === "成約")).length,
   }), [people, investors]);
 
   return (
@@ -33610,9 +33639,10 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
                           {prospect.icon}{p.prospect}
                         </span>
                       )}
-                      {p.nextAction && (
-                        <span style={{ background: "#06b6d433", color: "#06b6d4", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 600 }}>
-                          <NavIcon name="refresh" size={15} />{p.nextAction}
+                      {/* 🆕 v9.388: 次回アクションは結果に一本化したので、結果を出す */}
+                      {p.result && p.result !== "未案内" && RESULT_INFO[p.result] && (
+                        <span style={{ background: RESULT_INFO[p.result].color + "33", color: RESULT_INFO[p.result].color, padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>
+                          {RESULT_INFO[p.result].icon}{p.result}{p.lostReason ? `（${p.lostReason}）` : ""}
                         </span>
                       )}
                       {/* 🆕 v9.367: 先行打診メールを送る／送らない（このお客さま単位・全端末で共有） */}
