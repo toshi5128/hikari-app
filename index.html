@@ -87,6 +87,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::
 <style>@keyframes hikariProgress{0%{width:0}100%{width:100%}}
 @keyframes hikariGoldPulse{0%,100%{box-shadow:0 0 15px rgba(252,211,77,0.35),inset 0 0 20px rgba(252,211,77,0.06)}50%{box-shadow:0 0 35px rgba(252,211,77,0.7),inset 0 0 40px rgba(252,211,77,0.12)}}
 @keyframes hikariBluePulse{0%,100%{box-shadow:0 0 15px rgba(59,130,246,0.35),inset 0 0 20px rgba(59,130,246,0.06)}50%{box-shadow:0 0 35px rgba(59,130,246,0.75),inset 0 0 40px rgba(59,130,246,0.14)}}
+@keyframes hikariCloseBarIn{0%{transform:translateY(24px);opacity:0}100%{transform:translateY(0);opacity:1}}
 @keyframes hikariRipple{0%{transform:scale(0.3);opacity:0.85}100%{transform:scale(3);opacity:0}}
 @keyframes hikariRippleCore{0%{transform:scale(0.5);opacity:1}100%{transform:scale(1.5);opacity:0}}
 @keyframes hikariFlashPulse{0%{opacity:0}15%{opacity:0.95}100%{opacity:0.82}}
@@ -235,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.384-viewing-absent";
+const APP_VERSION = "2026-08-29-v9.385-viewing-absent-closebar";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -883,26 +884,33 @@ function ViewingNote({ text }) {
   );
 }
 
+// 🆕 v9.370→v9.384: 画面「上」に固定していた頃は目に入らず気づかれなかった。
+//   スマホは指も視線も下にあるので、下タブのすぐ上に浮かせた"ボタンそのもの"に変える。
 function ViewingCloseBar({ title, total, unhandled, onClose }) {
   return (
     <div style={{
-      position: "fixed", top: 0, left: 0, right: 0, zIndex: 150,
-      background: C.cardBg, borderBottom: `2px solid #06b6d4`,
-      boxShadow: "0 3px 12px rgba(0,0,0,0.28)",
-      padding: "9px 12px", paddingTop: "max(9px, env(safe-area-inset-top))",
-      display: "flex", alignItems: "center", gap: 10,
+      position: "fixed", left: 0, right: 0,
+      bottom: "calc(62px + env(safe-area-inset-bottom))",
+      zIndex: 190, display: "flex", justifyContent: "center",
+      padding: "0 12px", pointerEvents: "none",
     }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title || "(無題)"}</div>
-        <div style={{ fontSize: 10, fontWeight: 700, color: "#06b6d4", marginTop: 1 }}>
-          <NavIcon name="eye" size={12} /> 反響 {total}件
-          {unhandled > 0 ? <span style={{ color: "#ef4444", marginLeft: 6 }}>🔴未対応 {unhandled}件</span> : null}
-        </div>
-      </div>
       <button onClick={onClose} style={{
+        pointerEvents: "auto", width: "100%", maxWidth: 460,
         background: "#06b6d4", border: "none", color: "#fff", borderRadius: 999,
-        padding: "9px 16px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 800, flexShrink: 0,
-      }}>▲ 閉じる</button>
+        padding: "11px 18px", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+        boxShadow: "0 8px 24px rgba(6,182,212,0.45), 0 2px 10px rgba(0,0,0,0.35)",
+        display: "flex", alignItems: "center", gap: 10,
+        animation: "hikariCloseBarIn 0.25s ease-out",
+      }}>
+        <span style={{ fontSize: 16, flexShrink: 0, fontWeight: 800 }}>▲</span>
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: "block", fontSize: 14, fontWeight: 800, lineHeight: 1.25 }}>反響を閉じる</span>
+          <span style={{
+            display: "block", fontSize: 10, fontWeight: 700, opacity: 0.92, marginTop: 2,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>{title || "(無題)"} ／ 反響 {total}件{unhandled > 0 ? ` ・ 🔴未対応 ${unhandled}件` : ""}</span>
+        </span>
+      </button>
     </div>
   );
 }
@@ -11662,7 +11670,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
         const vs = om.viewings || [];
         return (
           <ViewingCloseBar
-            title={om.name} total={vs.length} unhandled={vs.filter(v => !v.handled).length}
+            title={om.name} total={vs.length} unhandled={vs.filter(v => viewingHandledKey(v) === "未対応").length}
             onClose={() => { setViewingsExpandedByMed({}); scrollToCard(`mediation-item-${om.id}`); }}
           />
         );
@@ -13360,7 +13368,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         const vs = os.viewings || [];
         return (
           <ViewingCloseBar
-            title={os.name} total={vs.length} unhandled={vs.filter(v => !v.handled).length}
+            title={os.name} total={vs.length} unhandled={vs.filter(v => viewingHandledKey(v) === "未対応").length}
             onClose={() => { setViewingsExpandedByStock({}); scrollToCard(`stock-item-${os.id}`); }}
           />
         );
