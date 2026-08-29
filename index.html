@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.406.1-jiage-only-goals";
+const APP_VERSION = "2026-08-29-v9.408-hankyo-count-truth";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1493,7 +1493,7 @@ function bumpJiageStatusEdit(d, prevStatus, newStatus, assignee) {
   if (!member) return d;
   const todayStr = new Date().toISOString().split("T")[0];
   const appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
-  const idx = appr.findIndex(a => a.member === member && a.date === todayStr);
+  const idx = findApproachIndex(appr, member, todayStr);
   if (idx >= 0) {
     appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), [item]: ((appr[idx].values || {})[item] || 0) + 1 } };
   } else {
@@ -2124,6 +2124,157 @@ function migrateVisitCountersV9396(d) {
     approaches: [...approaches, ...added],
     migrations: { ...(d.migrations || {}), v9396_visit_counters: now },
   };
+}
+
+// 🆕 v9.407: 同じ日×同じ担当の行が2つ以上ある時に、どれを「その日の1本」とするかを1つに決める。
+//   端末ごとに違う行を選ぶと数字が行き来するので、判定は順番に依らないルールにする。
+//   ・中身(values)の多い方を優先 → 同じなら id の小さい方（先に作られた方）
+function findApproachRow(approaches, member, date) {
+  let best = null, bestN = -1;
+  (Array.isArray(approaches) ? approaches : []).forEach(a => {
+    if (!a || a.member !== member || a.date !== date) return;
+    const n = Object.keys(a.values || {}).length;
+    if (!best || n > bestN || (n === bestN && (Number(a.id) || 0) < (Number(best.id) || 0))) { best = a; bestN = n; }
+  });
+  return best || null;
+}
+function findApproachIndex(approaches, member, date) {
+  const row = findApproachRow(approaches, member, date);
+  return row ? (approaches || []).findIndex(a => a && a.id === row.id) : -1;
+}
+
+// 🆕 v9.407: 同じ日×同じ担当の行が重複していると、週・月の合計が二重に数えられる。
+//   1本（id が小さい方）に寄せて、余った行は中身を空にする。
+//   ※ 行ごと消すと他の端末から復活してしまうので「空にする」で揃える。
+//   ※ 値は足さずに「多い方」を採用。同じ日を2回数えた行なので、足すと水増しになる。
+function dedupeApproachRowsV9407(d) {
+  if (!d || !Array.isArray(d.approaches)) return d;
+  const groups = new Map();
+  d.approaches.forEach(a => {
+    if (!a || !a.date || !a.member) return;
+    if (a._mergedInto) return;   // すでに寄せた空の行は数えない（毎回やり直さないため）
+    const k = a.date + "|" + a.member;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(a);
+  });
+  const extraIds = new Map();   // 空にする行id → 寄せ先id
+  const baseById = new Map();   // 寄せ先id → まとめた中身
+  groups.forEach(list => {
+    if (list.length < 2) return;
+    const sorted = list.slice().sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+    const canon = sorted[0];
+    const values = { ...(canon.values || {}) };
+    const comments = [...(canon.comments || [])];
+    let memo = canon.memo || "", reflection = canon.reflection || "", area = canon.area || "";
+    const goals = { ...(canon.dailyGoals || {}) };
+    sorted.slice(1).forEach(a => {
+      Object.keys(a.values || {}).forEach(k2 => {
+        values[k2] = Math.max(Number(values[k2]) || 0, Number(a.values[k2]) || 0);
+      });
+      (a.comments || []).forEach(c => { if (c && !comments.some(x => x && x.id === c.id)) comments.push(c); });
+      if (!memo && a.memo) memo = a.memo;
+      if (!reflection && a.reflection) reflection = a.reflection;
+      if (!area && a.area) area = a.area;
+      Object.keys(a.dailyGoals || {}).forEach(k2 => { if (!goals[k2]) goals[k2] = a.dailyGoals[k2]; });
+      extraIds.set(a.id, canon.id);
+    });
+    baseById.set(canon.id, { values, comments, memo, reflection, area, dailyGoals: goals });
+  });
+  if (extraIds.size === 0) return d;
+  const now = Date.now();
+  const approaches = d.approaches.map(a => {
+    if (!a) return a;
+    if (baseById.has(a.id)) return { ...a, ...baseById.get(a.id), updatedAt: now };
+    if (extraIds.has(a.id)) return { ...a, values: {}, comments: [], _mergedInto: extraIds.get(a.id), updatedAt: now };
+    return a;
+  });
+  try { console.log(`[v9.407] 行動管理の重複行 ${extraIds.size} 件を1本にまとめました（週・月の二重計上を解消）`); } catch (e) {}
+  return { ...d, approaches };
+}
+
+// 🆕 v9.407: 「回った先 / 訪問の結果」は訪問記録が正本。ここが唯一の数え方。
+//   ・玄関先まで行った記録だけ（電話・メッセージは軒数に数えない）
+//   ・その家の1件目＝初訪、2件目以降＝地上再訪（日付順・時刻順）
+//   ・同行者にも同じだけ付ける（見込み等のKPIは本人だけなのでここでは扱わない）
+//   ・戻り値は "日付|担当" → { 初訪, 地上再訪, 面談, 居留守, 地上不在, 訪問禁止, 対象外 }（0も必ず入れる）
+const DERIVED_VISIT_ITEMS = ["初訪", "地上再訪", "面談", "居留守", "地上不在", "訪問禁止", "対象外"];
+const DERIVED_VISIT_ITEM_SET = new Set(DERIVED_VISIT_ITEMS);
+function countDoorVisitsByDay(jiage) {
+  const RES = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止", notarget: "対象外" };
+  const out = new Map();
+  const bump = (date, who, key) => {
+    if (!date || !who || !key) return;
+    const k = date + "|" + who;
+    let cur = out.get(k);
+    if (!cur) { cur = {}; DERIVED_VISIT_ITEMS.forEach(i => { cur[i] = 0; }); out.set(k, cur); }
+    cur[key] += 1;
+  };
+  (Array.isArray(jiage) ? jiage : []).forEach(j => {
+    if (!j) return;
+    const log = (Array.isArray(j.visitLog) ? j.visitLog : [])
+      .filter(v => v && DOOR_RESULT_KEYS.has(v.result)).slice()
+      .sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))
+        || String(a.time || "").localeCompare(String(b.time || "")));
+    log.forEach((v, i) => {
+      const who = v.recordedBy || j.assignee || "";
+      const members = [who, ...(Array.isArray(v.withMembers) ? v.withMembers : []).filter(m => m && m !== who)];
+      members.forEach(m => {
+        if (RES[v.result]) bump(v.date, m, RES[v.result]);
+        bump(v.date, m, i === 0 ? "初訪" : "地上再訪");
+      });
+    });
+  });
+  return out;
+}
+
+// 🆕 v9.407: 上の数え方に合わせて approaches のカウンターを直す（毎回・自己修復）。
+//   フラグで1回きりにしない＝古い端末や画面の巻き戻しが起きても次の起動で必ず直る。
+//   ・触るのは DERIVED_VISIT_ITEMS の7項目だけ（架電・ポスティング・新規地上・見込み等は一切触らない）
+//   ・訪問記録がある日×担当だけ。記録が無い日は手入力の可能性があるのでそのまま
+//   ・記録はあるのに行が無い日は行を作る（回った先が週合計から漏れないように）
+function reconcileVisitCountersV9407(d) {
+  if (!d || typeof d !== "object") return d;
+  const calc = countDoorVisitsByDay(d.jiage);
+  if (calc.size === 0) return d;
+  const now = Date.now();
+  let changed = 0;
+  // その日の「1本」を先に決める（重複行がある時に、空にした側へ書き戻さないため）
+  const canonId = new Map();
+  calc.forEach((c, key) => {
+    const i = key.indexOf("|");
+    const row = findApproachRow(d.approaches, key.slice(i + 1), key.slice(0, i));
+    if (row) canonId.set(key, row.id);
+  });
+  const approaches = (d.approaches || []).map(a => {
+    if (!a) return a;
+    const k = (a.date || "") + "|" + (a.member || "");
+    const c = calc.get(k);
+    if (!c || canonId.get(k) !== a.id) return a;
+    const v = a.values || {};
+    let diff = false;
+    const nv = { ...v };
+    DERIVED_VISIT_ITEMS.forEach(key => {
+      if ((Number(v[key]) || 0) !== c[key]) { nv[key] = c[key]; diff = true; }
+    });
+    if (!diff) return a;
+    changed++;
+    return { ...a, values: nv, updatedAt: now };
+  });
+  const added = [];
+  let seq = 0;
+  calc.forEach((c, key) => {
+    if (canonId.has(key)) return;
+    const idx = key.indexOf("|");
+    const date = key.slice(0, idx), member = key.slice(idx + 1);
+    if (!date || !member) return;
+    added.push({
+      id: now + (seq++), member, date, values: { ...c },
+      memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [], updatedAt: now,
+    });
+  });
+  if (!changed && added.length === 0) return d;
+  try { console.log(`[v9.407] 回った先/訪問の結果を訪問記録から数え直しました（修正 ${changed}日ぶん / 新規 ${added.length}日ぶん）`); } catch (e) {}
+  return { ...d, approaches: [...approaches, ...added] };
 }
 
 // 🆕 v9.399: 訪問結果のカウンター（会えた/不在/居留守/門前払い/対象外）を訪問記録から数え直す。
@@ -5502,6 +5653,9 @@ function MainApp({ onLock, onSwitchUser }) {
             saveMainCache(next);
             return next;
           });
+          // 🆕 v9.407: ピンが全部揃った合図。これが立つまで行動管理の数え直しは動かさない
+          //   （読み込み途中の少ない件数でカウンターを上書きしないため）
+          window.__hikariJiageCardsLoaded__ = true;
           try { console.log("[v9.256] 地上げピンを影武者カードから合体:", (cards || []).length + "件"); } catch (e) {}
         }).catch(() => {});
 
@@ -5903,11 +6057,15 @@ function MainApp({ onLock, onSwitchUser }) {
     if (migrateViewingLabelsV9386(data) !== data) setData(d => migrateViewingLabelsV9386(d));
   }, [data]);
 
-  // 🆕 v9.399: 訪問結果のカウンターを訪問記録から数え直す（1回きり）
+  // 🆕 v9.407: 回った先／訪問の結果は訪問記録が正本。毎回数え直す（自己修復）。
+  //   ・v9.399 は「1回きり」だったため、直した数字を古い画面の保存が上書きすると戻せなかった
+  //   ・ピンがまだ読み込めていない間は数えない（少ない数で上書きしてしまうため）
   useEffect(() => {
     if (!data) return;
-    if (data.migrations && data.migrations.v9399_result_counters) return;
-    if (migrateResultCountersV9399(data) !== data) setData(d => migrateResultCountersV9399(d));
+    if (!window.__hikariJiageCardsLoaded__) return;
+    // 同じ日×担当の重複行（週・月が二重に数えられる）を先に1本へ寄せる
+    if (dedupeApproachRowsV9407(data) !== data) { setData(d => dedupeApproachRowsV9407(d)); return; }
+    if (reconcileVisitCountersV9407(data) !== data) setData(d => reconcileVisitCountersV9407(d));
   }, [data]);
 
   // 🆕 v9.396: 初訪/再訪を訪問記録から数え直す（1回きり）
@@ -13393,15 +13551,17 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     });
   }, [myStocks, filterStatuses, filterMember, search, viewMode]);
 
-  // 🆕 v9.406: 反響の状態で物件を絞る（件数は「物件の数」）
-  //   ・🔴未対応＝まだ一度も当たっていない反響が残っている物件
-  //   ・📵不在留守電＝かけたが繋がらず、かけ直しが要る反響が残っている物件
+  // 🆕 v9.406 / 🔧 v9.408: 反響の状態で物件を絞る（件数は「反響の件数」＝物件数ではない）
+  //   ・🔴未対応＝まだ一度も当たっていない反響の件数
+  //   ・📵不在＝かけたが繋がらず、かけ直しが要る反響の件数
+  //   ・ボタンを押したときに絞られるのは「その反響を持つ物件」
   const stockViewingCounts = useMemo(() => {
     const c = { "未対応": 0, "不在留守電": 0 };
     filteredBase.forEach(s => {
-      const vs = s.viewings || [];
-      if (vs.some(v => viewingHandledKey(v) === "未対応")) c["未対応"]++;
-      if (vs.some(v => viewingHandledKey(v) === "不在留守電")) c["不在留守電"]++;
+      (s.viewings || []).forEach(v => {
+        const k = viewingHandledKey(v);
+        if (k in c) c[k]++;
+      });
     });
     return c;
   }, [filteredBase]);
@@ -14022,9 +14182,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       {/* 🆕 v9.406: 在庫一覧を反響の状態で絞る（🔴未対応がある物件 / 📵不在がある物件） */}
       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
         {[
-          ["all", `すべて ${filteredBase.length}`, C.accent],
-          ["未対応", `🔴未対応あり ${stockViewingCounts["未対応"]}`, "#ef4444"],
-          ["不在留守電", `📵不在あり ${stockViewingCounts["不在留守電"]}`, "#f59e0b"],
+          ["all", `すべて ${filteredBase.length}物件`, C.accent],
+          ["未対応", `🔴未対応 ${stockViewingCounts["未対応"]}件`, "#ef4444"],
+          ["不在留守電", `📵不在 ${stockViewingCounts["不在留守電"]}件`, "#f59e0b"],
         ].map(([val, label, col]) => {
           const active = stockViewingState === val;
           const dim = val !== "all" && !stockViewingCounts[val];
@@ -15603,6 +15763,13 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   const [selectedYM, setSelectedYM] = useState(currentYM);
   const [selectedDate, setSelectedDate] = useState(today);
   const [inputValues, setInputValues] = useState({});
+  // 🆕 v9.407: 画面を開いた時点のカウンター。保存では「これとの差分（自分が触った分）」だけを
+  //   最新値に足す。以前は画面の数字を丸ごと書き戻していたので、開いている間に訪問記録で
+  //   増えた 初訪/面談 などが古い数字に巻き戻っていた。
+  const baseValuesRef = useRef({});
+  // 🆕 v9.407: 保存の瞬間に「その時点の最新データ」を見るための窓口（自動保存は data を依存に持てないため）
+  const dataRef = useRef(data);
+  dataRef.current = data;
   const [memo, setMemo] = useState("");
   // 🆕 v8.49: 本日の振返り（メモは「本日の動き」にリネーム）
   const [reflection, setReflection] = useState("");
@@ -15704,7 +15871,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
 
   // 日次入力の既存データ
   const existing = useMemo(() =>
-    data.approaches.find(a => a.member === selectedMember && a.date === selectedDate),
+    findApproachRow(data.approaches, selectedMember, selectedDate),
     [data.approaches, selectedMember, selectedDate]);
 
   // 既存データ読み込み（担当者・日付が変わった時のみ実行）
@@ -15713,9 +15880,10 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     setIsLoaded(false);
     setLastSavedAt(null); // 切替時に保存時刻をリセット
     // 直接data.approachesから検索（existingを使わない）
-    const rec = data.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
+    const rec = findApproachRow(data.approaches, selectedMember, selectedDate);
     if (rec) {
       setInputValues(rec.values || {});
+      baseValuesRef.current = rec.values || {};   // 🆕 v9.407: 差分保存の基準
       setMemo(rec.memo || "");
       setReflection(rec.reflection || "");
       setMailDelivery(rec.mailDelivery || false);
@@ -15723,6 +15891,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
       setDailyGoals(rec.dailyGoals || {});
     } else {
       setInputValues({}); setMemo(""); setReflection(""); setMailDelivery(false); setArea(""); setDailyGoals({});
+      baseValuesRef.current = {};
     }
     const t = setTimeout(() => setIsLoaded(true), 100);
     return () => clearTimeout(t);
@@ -15762,6 +15931,30 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     }
   }, [pendingNav]);
 
+  // 🆕 v9.407: 「回った先／訪問の結果」の7項目は訪問記録が正本。
+  //   画面には保存済みカウンターではなく、記録から数え直した値をそのまま出す。
+  //   （記録が1件も無い日は触らない＝昔の手入力の数字はそのまま残す）
+  const autoVisitCounts = useMemo(() => countDoorVisitsByDay(data.jiage), [data.jiage]);
+  const dayAutoCounts = autoVisitCounts.get(selectedDate + "|" + selectedMember) || null;
+  const shownValues = useMemo(
+    () => (dayAutoCounts ? { ...inputValues, ...dayAutoCounts } : inputValues),
+    [inputValues, dayAutoCounts]);
+
+  // 🆕 v9.407: 保存する値を作る。画面の数字を丸ごと書き戻さず、
+  //   「画面を開いた時(base)から自分が動かした分」だけを最新値(cur)に足す。
+  //   触っていない項目は最新値がそのまま残る＝訪問記録で増えた分を巻き戻さない。
+  const mergeSaveValues = (cur) => {
+    const base = baseValuesRef.current || {};
+    const src = inputValues || {};
+    const out = { ...(cur || {}) };
+    new Set([...Object.keys(base), ...Object.keys(src)]).forEach(k => {
+      const b = Number(base[k]) || 0;
+      const now = Number(src[k]) || 0;
+      if (now !== b) out[k] = Math.max(0, (Number((cur || {})[k]) || 0) + (now - b));
+    });
+    return out;
+  };
+
   // ===== 自動保存：実際に変更があるときだけ保存（debounce 800ms） =====
   useEffect(() => {
     if (!isLoaded) return; // 初回読み込み完了前はスキップ
@@ -15772,11 +15965,19 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     }
 
     // 既存レコードと現在の入力を比較。同じなら保存しない（無駄なSupabaseリクエスト防止）
-    const rec = data.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
+    const rec = findApproachRow(data.approaches, selectedMember, selectedDate);
     if (rec) {
-      const sameValues = JSON.stringify(rec.values || {}) === JSON.stringify(inputValues);
+      // 🆕 v9.407: 比べるのは「画面の数字」ではなく「差分を足した結果」。
+      //   自分が何も触っていなければ最新値と同じ＝保存しない。
+      const nextValues = mergeSaveValues(rec.values || {});
+      const sameValues = JSON.stringify(rec.values || {}) === JSON.stringify(nextValues);
       const sameGoals = JSON.stringify(rec.dailyGoals || {}) === JSON.stringify(dailyGoals);
       if (sameValues && sameGoals && (rec.memo || "") === memo && (rec.reflection || "") === reflection && !!rec.mailDelivery === !!mailDelivery && (rec.area || "") === area) {
+        // 画面の数字が古い（開いている間に訪問記録で増えた）なら、保存せず表示だけ最新に合わせる
+        if (JSON.stringify(rec.values || {}) !== JSON.stringify(inputValues)) {
+          baseValuesRef.current = rec.values || {};
+          setInputValues(rec.values || {});
+        }
         setAutoSaveStatus("idle");
         return; // 完全に同じ → 保存しない
       }
@@ -15789,18 +15990,23 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     setAutoSaveStatus("saving");
     // 800msのdebounceで連打時の保存頻度を抑制
     const saveTimer = setTimeout(() => {
+      // 🆕 v9.407: 保存の直前に最新データを見て、差分だけを足した値を作る
+      const latestRec = findApproachRow(dataRef.current.approaches, selectedMember, selectedDate);
+      const savedValues = mergeSaveValues(latestRec ? (latestRec.values || {}) : {});
       setData(d => {
-        const existingRec = d.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
+        const existingRec = findApproachRow(d.approaches, selectedMember, selectedDate);
         const entry = {
           id: existingRec?.id || Date.now(),
           member: selectedMember, date: selectedDate,
-          values: inputValues, memo, reflection, mailDelivery, area, dailyGoals,
+          values: savedValues, memo, reflection, mailDelivery, area, dailyGoals,
           // 🛡️ 既存の追加フィールドを保持（コメント・始業/終業記録を消さない）
           comments: existingRec?.comments || [],
           goalSetAt: existingRec?.goalSetAt,
           goalNotifiedToManagers: existingRec?.goalNotifiedToManagers,
           closedAt: existingRec?.closedAt,
           closeNotifiedToManagers: existingRec?.closeNotifiedToManagers,
+          // 🆕 v9.407: 端末間マージで「新しい方」を選べるようにする（無いと 0 扱いで負ける）
+          updatedAt: Date.now(),
         };
         return {
           ...d,
@@ -15809,6 +16015,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
             : [...d.approaches, entry],
         };
       });
+      // 🆕 v9.407: 保存した値を画面と基準に反映（次の保存も差分だけで済むように）
+      baseValuesRef.current = savedValues;
+      setInputValues(savedValues);
       setAutoSaveStatus("saved");
       setLastSavedAt(new Date()); // 最終保存時刻を記録
     }, 800);
@@ -15864,11 +16073,13 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     if (!window.confirm(`今日の業務を終了して、下田さん・比嘉さんに就業報告を送ります。\nよろしいですか？\n\n※ カウンター実績と振り返りメモが通知されます。`)) return;
     const now = new Date().toISOString();
     setData(d => {
-      const rec = d.approaches.find(a => a.member === me && a.date === selectedDate);
+      const rec = findApproachRow(d.approaches, me, selectedDate);
       const entry = {
         id: rec?.id || Date.now(),
         member: me, date: selectedDate,
-        values: inputValues, memo, mailDelivery, area, dailyGoals,
+        // 🆕 v9.407: 画面の数字を丸ごと書き戻さない（差分だけ足す）
+        values: mergeSaveValues(rec ? (rec.values || {}) : {}), memo, mailDelivery, area, dailyGoals,
+        updatedAt: Date.now(),
         goalSetAt: rec?.goalSetAt || now,
         goalNotifiedToManagers: rec?.goalNotifiedToManagers || false,
         closedAt: now,
@@ -15884,8 +16095,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     });
     // 通知送信
     const resultLabel = APPROACH_ITEMS
-      .filter(item => (Number(inputValues[item]) || 0) > 0)
-      .map(item => `${approachItemLabel(item)}${inputValues[item]}`)
+      .filter(item => (Number(shownValues[item]) || 0) > 0)
+      .map(item => `${approachItemLabel(item)}${shownValues[item]}`)
       .join(" / ");
     const memoLabel = memo ? `\n💭 ${memo}` : "";
     const targets = getNotifyTargets(data, me, { member: selectedMember }); // 対象メンバーも含める
@@ -15918,7 +16129,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
       updatedAt: Date.now(),
     };
     setData(d => {
-      const rec = d.approaches.find(a => a.member === selectedMember && a.date === selectedDate);
+      const rec = findApproachRow(d.approaches, selectedMember, selectedDate);
       if (rec) {
         return {
           ...d,
@@ -15934,7 +16145,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
         approaches: [...d.approaches, {
           id: Date.now() + 1,
           member: selectedMember, date: selectedDate,
-          values: inputValues, memo, mailDelivery, area, dailyGoals,
+          values: mergeSaveValues({}), memo, mailDelivery, area, dailyGoals,
+          updatedAt: Date.now(),
           comments: [comment],
         }]
       };
@@ -16003,8 +16215,10 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     const entry = {
       id: existing?.id || Date.now(),
       member: selectedMember, date: selectedDate,
-      values: inputValues, memo,
+      // 🆕 v9.407: 画面の数字を丸ごと書き戻さない（差分だけ足す）
+      values: mergeSaveValues(existing ? (existing.values || {}) : {}), memo,
       mailDelivery, area, dailyGoals,
+      updatedAt: Date.now(),
       // 🛡️ 既存の追加フィールドを保持（コメント・始業/終業記録を消さない）
       comments: existing?.comments || [],
       goalSetAt: existing?.goalSetAt,
@@ -16856,7 +17070,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
           {(() => {
             // 🆕 目標対象項目のみで合計を計算（不在・断り・閉店は除外）
             const totalGoal = APPROACH_GOAL_ITEMS.reduce((a, item) => a + (Number(dailyGoals[item]) || 0), 0);
-            const totalDone = APPROACH_GOAL_ITEMS.reduce((a, item) => a + (Number(inputValues[item]) || 0), 0);
+            const totalDone = APPROACH_GOAL_ITEMS.reduce((a, item) => a + (Number(shownValues[item]) || 0), 0);
             const totalPct = totalGoal > 0 ? Math.min(totalDone / totalGoal * 100, 100) : 0;
             const isGoalSet = totalGoal > 0;
             const allAchieved = isGoalSet && totalDone >= totalGoal;
@@ -16956,7 +17170,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
 
           {/* 🆕 v9.376: この日の「何件中何件」内訳 */}
           <ActivityBreakdown
-            values={inputValues}
+            values={shownValues}
             group={salesSubTab}
             periodLabel={selectedDate === today ? "今日" : selectedDate}
             weekly={salesSubTab === "jiage" ? weeklyTotalsOf(data.approaches, selectedMember, selectedDate) : null}
@@ -17004,7 +17218,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
               const item = row.item;
               return ((item) => {
               const goal = Number(dailyGoals[item]) || 0;
-              const val = Number(inputValues[item]) || 0;
+              const val = Number(shownValues[item]) || 0;
               const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
               const remaining = Math.max(0, goal - val);
               const overAchieved = goal > 0 && val >= goal;
@@ -17120,9 +17334,12 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
             const item = manualEditAuto.item;
             const cat = APPROACH_CATEGORY[item] || { color: C.muted, icon: "" };
             const label = approachItemLabel(item);
-            const curVal = Number(inputValues[item]) || 0;
+            const curVal = Number(shownValues[item]) || 0;
             const setDraft = v => setManualEditAuto(p => p ? { ...p, draft: v } : p);
             const close = () => setManualEditAuto(null);
+            // 🆕 v9.407: 回った先／訪問の結果は訪問記録から数え直す項目。
+            //   ここで手で直しても記録どおりに戻るので、編集ボタンは出さず「記録を直す」へ誘導する。
+            const isDerived = DERIVED_VISIT_ITEM_SET.has(item);
             const apply = (v) => {
               const n = Math.max(0, Math.floor(Number(v) || 0));
               setInputValues(p => ({ ...p, [item]: n }));
@@ -17131,8 +17348,13 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
             return (
               <BottomSheet title={`✏️ ${cat.icon || ""} ${label} を編集`} onClose={close}>
                 <div style={{ color: C.muted, fontSize: 12, marginBottom: 14, lineHeight: 1.6 }}>
-                  この項目は通常「訪問記録の保存」で自動加算されます。<br />
-                  誤カウントを直したいときだけ手動で編集してください。
+                  {isDerived ? (
+                    <>この数字は<b style={{ color: C.text }}>訪問記録から毎回数え直して</b>います。<br />
+                    手で直しても記録どおりに戻ります。違っていたら下の記録そのものを直してください。</>
+                  ) : (
+                    <>この項目は通常「訪問記録の保存」で自動加算されます。<br />
+                    誤カウントを直したいときだけ手動で編集してください。</>
+                  )}
                 </div>
                 <div style={{ background: C.inset, borderRadius: 10, border: `1px solid ${cat.color}33`, padding: "16px 14px", marginBottom: 14, textAlign: "center" }}>
                   <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>現在の値</div>
@@ -17236,6 +17458,9 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     </div>
                   );
                 })()}
+                {isDerived ? (
+                  <button style={{ ...btnStyle(), width: "100%" }} onClick={close}>閉じる</button>
+                ) : (<>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
                   <button onClick={() => apply(curVal - 1)} disabled={curVal === 0} style={{
                     ...btnStyle("ghost"), padding: "12px", fontSize: 14, fontWeight: 700,
@@ -17264,6 +17489,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                   <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={close}>キャンセル</button>
                   <button style={{ ...btnStyle(), flex: 2 }} onClick={() => apply(manualEditAuto.draft)}>この値で保存</button>
                 </div>
+                </>)}
               </BottomSheet>
             );
           })()}
@@ -17334,7 +17560,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     // goalSetAt をマーク
                     const now = new Date().toISOString();
                     setData(d => {
-                      const rec = d.approaches.find(a => a.member === me && a.date === selectedDate);
+                      const rec = findApproachRow(d.approaches, me, selectedDate);
                       if (rec) {
                         return {
                           ...d,
@@ -21092,9 +21318,10 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
               const _oFirst = _oLog.length > 0 && _oLog[0] && _oLog[0].id === other.id;
               const compItems = computeBumpItems(other.result, other.bumpedStatus, other.posted, _oFirst).filter(it => COMPANION_ITEMS.has(it));
               if (compItems.length) {
-                const todayStr = new Date().toISOString().split("T")[0];
+                // 🆕 v9.407: 同行統合もその訪問の日付の行へ
+                const todayStr = other.date || visitForm.date || new Date().toISOString().split("T")[0];
                 compItems.forEach((ci, i) => {
-                  const idx = appr.findIndex(a => a.member === myName && a.date === todayStr);
+                  const idx = findApproachIndex(appr, myName, todayStr);
                   if (idx >= 0) appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), [ci]: ((appr[idx].values || {})[ci] || 0) + 1 } };
                   else appr.push({ id: Date.now() + Math.floor(Math.random() * 100000) + i, member: myName, date: todayStr, values: { [ci]: 1 }, memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [] });
                 });
@@ -21176,11 +21403,14 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
           .filter(v => v && DOOR_RESULT_KEYS.has(v.result)).length);
         const bumpItems = computeBumpItems(visitForm.result, _finalStatus, visitForm.posted, _isFirstVisit);
         let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
-        const todayStr = new Date().toISOString().split("T")[0];
+        // 🆕 v9.407: 加算先はその訪問の日付の行。
+        //   以前は「今日(UTC)」だったので、朝9時前(JST)の記録が前日の行に入ったり、
+        //   前の日付で記録した分が今日の行に乗ったりしていた。
+        const todayStr = visitForm.date || new Date().toISOString().split("T")[0];
         const _bumpFor = (member, items) => {
           if (!member || !items || !items.length) return;
           items.forEach((counterItem, i) => {
-            const idx = appr.findIndex(a => a.member === member && a.date === todayStr);
+            const idx = findApproachIndex(appr, member, todayStr);
             if (idx >= 0) {
               appr[idx] = { ...appr[idx], values: { ...(appr[idx].values || {}), [counterItem]: ((appr[idx].values || {})[counterItem] || 0) + 1 } };
             } else {
