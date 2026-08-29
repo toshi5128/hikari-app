@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-30-v9.411-kouho-counter-goal";
+const APP_VERSION = "2026-08-30-v9.412-agent-only-goals";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -498,12 +498,35 @@ const RETIRED_MEMBERS = ["長島"];
 function isRetiredMember(name) { return RETIRED_MEMBERS.includes(String(name || "").trim()); }
 // ログインや担当切替で選べるメンバー（退職者を除く）
 function activeMembers() { return MEMBERS.filter(m => !isRetiredMember(m)); }
+// 🆕 v9.410: 担当者の選択肢（退職者は出さない）。
+//   ・ただし既にその退職者が担当になっている古いデータでは、その人だけ選択肢に残す。
+//     （残さないと選択欄が空欄に見えたり、担当が付け替わったように見えてしまうため）
+//   ・過去データの集計・履歴は今まで通り MEMBERS 基準なので壊れない。
+function memberOptions(...current) {
+  const keep = [];
+  current.flat().forEach(v => {
+    const name = String(v || "").trim();
+    if (name && isRetiredMember(name) && !keep.includes(name)) keep.push(name);
+  });
+  return keep.length ? [...activeMembers(), ...keep] : activeMembers();
+}
 
 // 🆕 v9.406.1: 地上げ専任のメンバー（業者回りをしない人）。営業タブの目標を地上げの項目だけにする。
 //   ・入退社や担当替えは、この配列を書き換えるだけで切り替わる。
 //   ・過去に入れた業者側の目標値は消さない（表示と保存の対象から外れるだけ）。
 const JIAGE_ONLY_MEMBERS = ["下田", "谷津"];
 function isJiageOnlyMember(name) { return JIAGE_ONLY_MEMBERS.includes(String(name || "").trim()); }
+// 🆕 v9.410: 業者専任のメンバー（地上げはほとんどしない人）。営業タブの目標を業者の項目だけにする。
+//   ・地上げ専任と同じ考え方の裏返し。担当替えはこの配列を書き換えるだけ。
+//   ・過去に入れた地上げ側の目標値は消さない（表示と保存の対象から外れるだけ）。
+const AGENT_ONLY_MEMBERS = ["たっくん", "松村", "脇本"];
+function isAgentOnlyMember(name) { return AGENT_ONLY_MEMBERS.includes(String(name || "").trim()); }
+// そのメンバーがどちら専任か（"jiage" / "agent" / null＝両方やる人）
+function memberFocusGroup(name) {
+  if (isJiageOnlyMember(name)) return "jiage";
+  if (isAgentOnlyMember(name)) return "agent";
+  return null;
+}
 
 // 🆕 v9.379: 会社全体のお金の数字（年間売上・利益・目標達成率・月別グラフ・メンバー別ランキング）を見られる人。
 //   ・1件ごとの仕入/売却/利益は今まで通り全員見える。ここで隠すのは「会社の全体像」だけ。
@@ -1498,12 +1521,16 @@ function jiageGoalTotal(values, def) {
   return (def.parts || []).reduce((a, k) => a + (Number((values || {})[k]) || 0), 0);
 }
 // 🆕 v9.406.1→v9.409: そのメンバーの「目標を置く項目」。地上げ専任なら上の5つ。
+// 🆕 v9.410: 業者専任なら業者の項目だけ（地上げの項目は出さない）
 function goalItemsForMember(member) {
-  return isJiageOnlyMember(member) ? JIAGE_GOAL_DEFS.map(d => d.key) : APPROACH_GOAL_ITEMS;
+  if (isJiageOnlyMember(member)) return JIAGE_GOAL_DEFS.map(d => d.key);
+  if (isAgentOnlyMember(member)) return approachGroupItems("agent").filter(item => !NON_GOAL_ITEMS.has(item));
+  return APPROACH_GOAL_ITEMS;
 }
 // カウンター単位で目標を置く画面（今日の目標）は、カウンターのキーのまま扱う
 function counterGoalItemsForMember(member) {
-  const items = isJiageOnlyMember(member) ? approachGroupItems("jiage") : APPROACH_ITEMS;
+  const focus = memberFocusGroup(member);
+  const items = focus ? approachGroupItems(focus) : APPROACH_ITEMS;
   return items.filter(item => !NON_GOAL_ITEMS.has(item));
 }
 
@@ -10249,7 +10276,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                   border: `1px solid ${calFilterMember === "__ALL__" ? C.muted : C.borderDim}`,
                   fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0, fontWeight: calFilterMember === "__ALL__" ? 700 : 400,
                 }}>全員</button>
-                {MEMBERS.map(m => (
+                {memberOptions(calFilterMember).map(m => (
                   <button key={m} onClick={() => setCalFilterMember(m)} style={{
                     padding: "5px 11px", borderRadius: 16, cursor: "pointer", fontSize: 11,
                     background: calFilterMember === m ? MEMBER_COLORS[m] : C.inset,
@@ -10980,7 +11007,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           </Field>
           <Field label={`👥 担当者（複数選択可・${(eventForm.assignees || []).length}人選択中）`}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {MEMBERS.map(m => {
+              {memberOptions(eventForm.assignees || []).map(m => {
                 const isSelected = (eventForm.assignees || []).includes(m);
                 return (
                   <button key={m} onClick={() => {
@@ -11671,7 +11698,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           </div>
           <Field label="👤 担当者">
             <select style={inp} value={quickEditJiageForm.assignee} onChange={e => setQuickEditJiageForm(p => ({ ...p, assignee: e.target.value }))}>
-              {MEMBERS.map(m => <option key={m}>{m}</option>)}
+              {memberOptions(quickEditJiageForm.assignee).map(m => <option key={m}>{m}</option>)}
             </select>
           </Field>
           <Field label="エリア">
@@ -11753,7 +11780,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           )}
           <Field label="👤 担当者">
             <select style={inp} value={quickEditOwnerForm.assignee} onChange={e => setQuickEditOwnerForm(p => ({ ...p, assignee: e.target.value }))}>
-              {MEMBERS.map(m => <option key={m}>{m}</option>)}
+              {memberOptions(quickEditOwnerForm.assignee).map(m => <option key={m}>{m}</option>)}
             </select>
           </Field>
           <Field label="📊 ステータス">
@@ -11794,7 +11821,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
           <Field label="👤 担当者">
             <select style={inp} value={quickEditForm.assignee} onChange={e => setQuickEditForm(p => ({ ...p, assignee: e.target.value }))}>
-              {MEMBERS.map(m => <option key={m}>{m}</option>)}
+              {memberOptions(quickEditForm.assignee).map(m => <option key={m}>{m}</option>)}
             </select>
           </Field>
           <Field label="物件名">
@@ -12531,7 +12558,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
         <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}><NavIcon name="user" size={12} /> 表示する担当者{filterMember === "__ALL__" ? "（全員）" : ""}</div>
         <select style={{ ...inp, marginBottom: 0 }} value={filterMember} onChange={e => setFilterMember(e.target.value)}>
           <option value="__ALL__">全メンバー</option>
-          {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+          {memberOptions(filterMember).map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       </div>
       <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>
@@ -13004,7 +13031,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
             </>
           )}>
           <Field label="物件名 *"><input style={inp} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="〇〇市〇〇" /></Field>
-          <Field label="担当者"><select style={inp} value={form.assignee} onChange={e => setForm(p => ({ ...p, assignee: e.target.value }))}>{MEMBERS.map(mm => <option key={mm}>{mm}</option>)}</select></Field>
+          <Field label="担当者"><select style={inp} value={form.assignee} onChange={e => setForm(p => ({ ...p, assignee: e.target.value }))}>{memberOptions(form.assignee).map(mm => <option key={mm}>{mm}</option>)}</select></Field>
           <Field label="売主"><input style={inp} value={form.seller} onChange={e => setForm(p => ({ ...p, seller: e.target.value }))} /></Field>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="媒介の種類"><select style={inp} value={form.mediationType} onChange={e => setForm(p => ({ ...p, mediationType: e.target.value }))}>{MEDIATION_TYPES.map(t => <option key={t}>{t}</option>)}</select></Field>
@@ -14234,7 +14261,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
           onChange={e => setFilterMember(e.target.value)}
         >
           <option value="__ALL__">全メンバー</option>
-          {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+          {memberOptions(filterMember).map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       </div>
       {/* 🆕 ステータスフィルター（折りたたみ式） */}
@@ -14917,7 +14944,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
               <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
             </>
-          )}>          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+          )}>          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{memberOptions(form.assignee).map(m => <option key={m}>{m}</option>)}</select></Field>
           <Field label="物件名"><input style={inp} value={form.name} onChange={f("name")} placeholder="川越市木野目" /></Field>
           <Field label="ステータス">
             <select style={inp} value={form.status} onChange={f("status")}>
@@ -15881,8 +15908,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   const memberGoals = data.memberGoals || {};
 
   const getGoal = (member, item) => {
-    // 🆕 v9.406.1: 地上げ専任の人は業者側の項目に目標を持たない（既定値も出さない）
-    if (isJiageOnlyMember(member) && !goalItemsForMember(member).includes(item)) return 0;
+    // 🆕 v9.406.1 / v9.410: 専任の人は反対側の項目に目標を持たない（既定値も出さない）
+    if (memberFocusGroup(member) && !goalItemsForMember(member).includes(item)) return 0;
     // 🆕 v9.410: 合計項目（回った先・見込み計）は、まだ入れ直していなければ
     //   これまでカウンター単位で入れていた目標を足して引き継ぐ（入力し直しの手間を無くす）
     const def = jiageGoalDef(item);
@@ -16061,7 +16088,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
 
   // 月次集計
   const monthlyData = useMemo(() => {
-    return MEMBERS.map(m => {
+    return activeMembers().map(m => {   // 🆕 v9.412: 退職者は出さない
       const entries = data.approaches.filter(a => a.member === m && a.date.startsWith(selectedYM));
       const totals = {};
       APPROACH_ITEMS.forEach(item => {
@@ -16505,7 +16532,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
           onChange={e => { setCasesMember(e.target.value); setCasesExpanded(null); }}
         >
           <option value="__ALL__">全メンバー（管理者ビュー）</option>
-          {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+          {memberOptions(casesMember).map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       </div>
 
@@ -17048,7 +17075,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
             <Field label={<><NavIcon name="user" size={15} /> 担当者{!isAdmin && <span style={{ color: C.muted, fontSize: 10, marginLeft: 4 }}>（管理者以外は自分のみ入力可）</span>}</>}>
               <select style={inp} value={selectedMember} onChange={e => setSelectedMember(e.target.value)}>
-                {MEMBERS.map(m => {
+                {memberOptions(selectedMember).map(m => {
                   const editable = isAdmin || m === currentUser;
                   return <option key={m} value={m}>{m}{!editable ? " 👁" : ""}</option>;
                 })}
@@ -17918,7 +17945,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                 {/* メンバー選択 */}
                 <div style={{ fontSize: 11, color: C.muted, marginBottom: 4, fontWeight: 700 }}><NavIcon name="user" size={12} /> メンバー</div>
                 <div style={{ display: "flex", gap: 4, marginBottom: 12, overflowX: "auto", paddingBottom: 4 }}>
-                  {MEMBERS.map(member => {
+                  {memberOptions(dailyChartMember).map(member => {
                     const active = dailyChartMember === member;
                     return (
                       <button key={member} onClick={() => setDailyChartMember(member)} style={{
@@ -18034,6 +18061,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                           {/* 🆕 v9.409: 地上げ専任は「回った先／見込み／仕入／新規地上／ポスティング」の5つで見る */}
                           {(isJiageOnlyMember(dailyChartMember)
                             ? JIAGE_GOAL_DEFS.map(d => ({ item: d.key, name: goalItemLabel(d.key, true), val: jiageGoalTotal(totals, d), goal: getGoal(dailyChartMember, d.key) }))
+                            : isAgentOnlyMember(dailyChartMember)   /* 🆕 v9.410: 業者専任は業者の項目だけで見る */
+                            ? goalItemsForMember(dailyChartMember).map(item => ({ item, name: approachItemLabel(item), val: totals[item], goal: getGoal(dailyChartMember, item) }))
                             : visibleItems.map(item => ({ item, name: approachItemLabel(item), val: totals[item], goal: goals[item] }))
                           ).map(({ item, name, val, goal }) => {
                             const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
@@ -18181,7 +18210,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
               : <span style={{ color: C.muted }}><NavIcon name="user" size={15} /> 一般モード：自分（<span style={{ color: C.text, fontWeight: 700 }}>{currentUser || "未設定"}</span>）の目標のみ編集できます</span>
             }
           </div>
-          {MEMBERS.filter(m => casesMember === "__ALL__" || m === casesMember).map(m => {
+          {activeMembers().filter(m => casesMember === "__ALL__" || m === casesMember).map(m => {
             const isMe = m === currentUser;
             const canEditGoal = isAdmin || isMe;
             return (
@@ -18196,6 +18225,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     <MemberTag name={m} />
                     {isMe && <Tag label="自分" color={C.accent} />}
                     {isJiageOnlyMember(m) && <Tag label="🗺️ 地上げ専任" color="#8b5cf6" />}
+                    {isAgentOnlyMember(m) && <Tag label="🏢 業者専任" color="#f59e0b" />}
                   </div>
                   {canEditGoal ? (
                     <button style={{ ...btnStyle(), padding: "8px 14px", fontSize: 13 }} onClick={() => openGoalEdit(m)}>目標を編集</button>
@@ -18203,15 +18233,16 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     <span style={{ color: C.muted, fontSize: 11, padding: "8px 12px", background: C.inset, borderRadius: 8 }}><NavIcon name="eye" size={12} /> 閲覧のみ</span>
                   )}
                 </div>
-                {/* 🆕 v9.406.1: 地上げ専任の人は地上げの項目だけ。業者タブでは「目標なし」と伝える */}
-                {isJiageOnlyMember(m) && salesSubTab !== "jiage" ? (
+                {/* 🆕 v9.406.1 / v9.410: 専任の人は自分の側の項目だけ。反対側のタブでは「目標なし」と伝える */}
+                {memberFocusGroup(m) && salesSubTab !== memberFocusGroup(m) ? (
                   <div style={{ background: C.inset, borderRadius: 8, padding: "10px 12px", color: C.muted, fontSize: 12, lineHeight: 1.6 }}>
-                    🗺️ 地上げ専任のため、業者の目標は置いていません。<br />
-                    目標は「🗺️ 地上げ」タブで確認・編集できます。
+                    {isJiageOnlyMember(m)
+                      ? <>🗺️ 地上げ専任のため、業者の目標は置いていません。<br />目標は「🗺️ 地上げ」タブで確認・編集できます。</>
+                      : <>🏢 業者専任のため、地上げの目標は置いていません。<br />目標は「🏢 業者」タブで確認・編集できます。</>}
                   </div>
                 ) : (
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                    {(isJiageOnlyMember(m) ? goalItemsForMember(m) : visibleItems).map(item => (
+                    {(memberFocusGroup(m) ? goalItemsForMember(m) : visibleItems).map(item => (
                       <div key={item} style={{ display: "flex", justifyContent: "space-between", background: C.inset, borderRadius: 8, padding: "6px 10px" }}>
                         <span style={{ color: C.muted, fontSize: 12 }}>{goalItemLabel(item)}</span>
                         <span style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>{getGoal(m, item)}</span>
@@ -18230,9 +18261,12 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
         <BottomSheet title={`${goalEditMember} の月間目標設定`} onClose={() => setShowGoalEdit(false)}>
           <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>
             各項目の月間目標値を入力してください
-            {/* 🆕 v9.406.1: 地上げ専任の人は地上げの項目だけ出す */}
+            {/* 🆕 v9.406.1 / v9.410: 専任の人は自分の側の項目だけ出す */}
             {isJiageOnlyMember(goalEditMember) && (
               <div style={{ marginTop: 6, color: "#8b5cf6", fontWeight: 700, fontSize: 12 }}>🗺️ 地上げ専任のため、結果につながる5つだけにしています</div>
+            )}
+            {isAgentOnlyMember(goalEditMember) && (
+              <div style={{ marginTop: 6, color: "#f59e0b", fontWeight: 700, fontSize: 12 }}>🏢 業者専任のため、業者の項目だけにしています</div>
             )}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -18280,7 +18314,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
             </Field>
             <Field label="👥 担当者">
               <select style={inp} value={editingJiage.assignee || ""} onChange={e => setEditingJiage({ ...editingJiage, assignee: e.target.value })}>
-                {MEMBERS.map(m => <option key={m}>{m}</option>)}
+                {memberOptions(editingJiage.assignee || "").map(m => <option key={m}>{m}</option>)}
               </select>
             </Field>
           </div>
@@ -18291,7 +18325,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
           {/* 🆕 v9.176: 次回訪問の同行者（複数可）。カレンダー予定にも担当として反映 */}
           <Field label="🤝 同行者（任意・複数可）">
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {MEMBERS.filter(m => m !== editingJiage.assignee).map(m => {
+              {memberOptions(editingJiage.assignee).filter(m => m !== editingJiage.assignee).map(m => {
                 const on = (editingJiage.nextVisitWith || []).includes(m);
                 return <button key={m} type="button" onClick={() => setEditingJiage(p => { const cur = p.nextVisitWith || []; return { ...p, nextVisitWith: on ? cur.filter(x => x !== m) : [...cur, m] }; })} style={{ background: on ? C.accent : C.inset, color: on ? "#fff" : C.text, border: `1.5px solid ${on ? C.accent : C.borderDim}`, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{on ? "✓ " : ""}{m}</button>;
               })}
@@ -18343,7 +18377,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
             </Field>
             <Field label="👥 担当者">
               <select style={inp} value={editingOwner.assignee || ""} onChange={e => setEditingOwner({ ...editingOwner, assignee: e.target.value })}>
-                {MEMBERS.map(m => <option key={m}>{m}</option>)}
+                {memberOptions(editingOwner.assignee || "").map(m => <option key={m}>{m}</option>)}
               </select>
             </Field>
           </div>
@@ -18384,7 +18418,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                 </Field>
                 <Field label="👥 担当者">
                   <select style={inp} value={editingStock.assignee || ""} onChange={e => setEditingStock({ ...editingStock, assignee: e.target.value })}>
-                    {MEMBERS.map(m => <option key={m}>{m}</option>)}
+                    {memberOptions(editingStock.assignee || "").map(m => <option key={m}>{m}</option>)}
                   </select>
                 </Field>
                 <Field label="📅 仕入日">
@@ -23855,7 +23889,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     <div style={{ marginTop: 6, marginBottom: 4 }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}><NavIcon name="users" size={12} /> 表示メンバー</div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                        {MEMBERS.filter(m => !m.includes("・")).map(m => {
+                        {activeMembers().filter(m => !m.includes("・")).map(m => {
                           const active = trackVisibleMembers.includes(m);
                           const memberColor = MEMBER_COLORS[m] || C.muted;
                           const hasData = ((data && data.tracks && data.tracks[m]) || []).length > 0;
@@ -23872,7 +23906,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             }}>{active ? "✓ " : ""}{m === currentUser ? `自分(${m})` : m}</button>
                           );
                         })}
-                        <button onClick={() => setTrackVisibleMembers(MEMBERS.filter(m => !m.includes("・")))} style={{
+                        <button onClick={() => setTrackVisibleMembers(activeMembers().filter(m => !m.includes("・")))} style={{
                           padding: "3px 8px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
                           background: "transparent", color: C.muted, border: `1px dashed ${C.borderDim}`,
                         }}>全員ON</button>
@@ -25431,7 +25465,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}><NavIcon name="user" size={12} /> 表示する担当者{filterMember === "__ALL__" ? "（全員）" : ""}</div>
             <select style={{ ...inp, marginBottom: 0 }} value={filterMember} onChange={e => setFilterMember(e.target.value)}>
               <option value="__ALL__">全メンバー</option>
-              {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+              {memberOptions(filterMember).map(m => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>
           {sortedFiltered.map(item => {
@@ -25629,7 +25663,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             <select style={inp}
               value={pinForm.assignee}
               onChange={e => setPinForm(p => ({ ...p, assignee: e.target.value }))}>
-              {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+              {memberOptions(pinForm.assignee).map(m => <option key={m} value={m}>{m}</option>)}
             </select>
           </Field>
           <Field label="📝 メモ（任意）">
@@ -26375,7 +26409,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           {selected.item.type === "jiage" && (
             <Field label="🤝 同行者（任意・複数可）">
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {MEMBERS.filter(m => m !== selected.item.assignee).map(m => {
+                {memberOptions(selected.item.assignee).filter(m => m !== selected.item.assignee).map(m => {
                   const on = (selected.item.nextWith || []).includes(m);
                   return <button key={m} type="button" onClick={() => updateNextWith(selected.item, m)} style={{ background: on ? C.accent : C.inset, color: on ? "#fff" : C.text, border: `1.5px solid ${on ? C.accent : C.borderDim}`, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{on ? "✓ " : ""}{m}</button>;
                 })}
@@ -26401,7 +26435,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 <Field label="日付"><input type="date" style={inp} value={histForm.date} onChange={e => setHistForm(h => ({ ...h, date: e.target.value }))} /></Field>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   <Field label="方法"><select style={inp} value={histForm.method} onChange={e => setHistForm(h => ({ ...h, method: e.target.value }))}>{["手紙", "電話", "訪問", "その他"].map(m => <option key={m}>{m}</option>)}</select></Field>
-                  <Field label="担当"><select style={inp} value={histForm.member} onChange={e => setHistForm(h => ({ ...h, member: e.target.value }))}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+                  <Field label="担当"><select style={inp} value={histForm.member} onChange={e => setHistForm(h => ({ ...h, member: e.target.value }))}>{memberOptions(histForm.member).map(m => <option key={m}>{m}</option>)}</select></Field>
                 </div>
                 <Field label="内容・結果"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={histForm.note} onChange={e => setHistForm(h => ({ ...h, note: e.target.value }))} placeholder="電話にて対応。売却検討中とのこと。" /></Field>
                 <button style={{ ...btnStyle(), width: "100%" }} onClick={addHistory}>履歴を追加する</button>
@@ -27400,7 +27434,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           <Field label={addType === "jiage" ? "所有者名" : "所有者名"}><input style={inp} value={addType === "jiage" ? form.owner || "" : form.ownerName || ""} onChange={e => setForm(p => ({ ...p, [addType === "jiage" ? "owner" : "ownerName"]: e.target.value }))} /></Field>
           <Field label="所有者住所"><input style={inp} value={addType === "jiage" ? form.ownerAddr || "" : form.ownerAddress || ""} onChange={e => setForm(p => ({ ...p, [addType === "jiage" ? "ownerAddr" : "ownerAddress"]: e.target.value }))} placeholder="謄本記載の住所" /></Field>
           {addType === "owner" && <Field label="連絡先"><input style={inp} value={form.ownerContact || ""} onChange={f("ownerContact")} /></Field>}
-          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{memberOptions(form.assignee).map(m => <option key={m}>{m}</option>)}</select></Field>
           {addType === "jiage" ? (
             <>
               <Field label="エリア"><select style={inp} value={form.area || ""} onChange={f("area")}><option value="">選択</option>{JIAGE_AREAS.map(a => <option key={a}>{a}</option>)}</select></Field>
@@ -27757,7 +27791,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             </Field>
             <Field label="👤 担当者">
               <select style={inp} value={visitForm.assignee || ""} onChange={e => setVisitForm({ ...visitForm, assignee: e.target.value })}>
-                {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
+                {memberOptions(visitForm.assignee || "").map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             </Field>
           </div>
@@ -27827,7 +27861,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           {/* 🆕 v9.13: 同行者選択（最大2人・自分以外から選択） */}
           <Field label="👥 同行者（最大2人・任意）">
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              {MEMBERS.filter(m => !m.includes("・") && m !== (visitForm.assignee || "")).map(m => {
+              {memberOptions(visitForm.assignee).filter(m => !m.includes("・") && m !== (visitForm.assignee || "")).map(m => {
                 const selected = Array.isArray(visitForm.withMembers) && visitForm.withMembers.includes(m);
                 const memberColor = MEMBER_COLORS[m] || C.muted;
                 const reachedMax = Array.isArray(visitForm.withMembers) && visitForm.withMembers.length >= 2 && !selected;
@@ -27973,7 +28007,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             {/* デフォルト担当者 */}
             <Field label="担当者列が空の場合のデフォルト">
               <select style={inp} value={importPreview.defaultAssignee} onChange={e => setImportPreview(p => ({ ...p, defaultAssignee: e.target.value }))}>
-                {MEMBERS.map(m => <option key={m}>{m}</option>)}
+                {memberOptions(importPreview.defaultAssignee).map(m => <option key={m}>{m}</option>)}
               </select>
             </Field>
 
@@ -35176,7 +35210,7 @@ function YakushoPage({ data, setData, onBack }) {
       ))}
       {showAdd && (
         <BottomSheet title="役所調査シート" onClose={() => { setShowAdd(false); setEditItem(null); }}>
-          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{memberOptions(form.assignee).map(m => <option key={m}>{m}</option>)}</select></Field>
           <Field label="調査日"><input type="date" style={inp} value={form.surveyDate} onChange={f("surveyDate")} /></Field>
           <Field label="物件住所"><input style={inp} value={form.address} onChange={f("address")} placeholder="埼玉県熊谷市〇〇" /></Field>
           <Field label="再建築">
@@ -35478,7 +35512,7 @@ function SekisanForm({ initial, onSave, onClose, onTransfer, canEditThis = true,
                 ><NavIcon name="edit" size={15} /> 変更</button>
               </div>
             ) : (
-              <select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select>
+              <select style={inp} value={form.assignee} onChange={f("assignee")}>{memberOptions(form.assignee).map(m => <option key={m}>{m}</option>)}</select>
             )}
           </Field>
 
