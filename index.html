@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.404-team-visibility";
+const APP_VERSION = "2026-08-29-v9.405-sekisan-scope";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2732,7 +2732,10 @@ function getNotifyMembers(data) {
 //   ・アプリ起動時 or 日付が変わったタイミングで1日1回プッシュ通知する
 function computeMyDailyAlerts(data, member, todayStr) {
   if (!member || !data) return null;
-  const isMine = (assignee) => assignee === member;
+  // 🆕 v9.405: 2人1組のペアは相手の案件も自分ごととして拾う
+  const _mates = editTeammatesOf(member);
+  _mates.add(member);
+  const isMine = (assignee) => Array.from(_mates).some(m => isAssignedTo([assignee], m));
   const overdueJiage = (data.jiage || []).filter(j =>
     j.assignee && isMine(j.assignee) &&
     j.nextVisit && j.nextVisit < todayStr &&
@@ -13872,10 +13875,10 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
       {/* 🆕 v8.93: 決済日未入力アラート（売上反映漏れ防止） */}
       {(() => {
-        const needSellDate = (data.stocks || []).filter(s =>
+        const needSellDate = myStocks.filter(s =>
           s.status === "売契完了" && (!s.sellDate || s.sellDate === "")
         );
-        const needBuyDate = (data.stocks || []).filter(s =>
+        const needBuyDate = myStocks.filter(s =>
           s.status === "仕契完了" && (!s.buyDate || s.buyDate === "")
         );
         if (needSellDate.length === 0 && needBuyDate.length === 0) return null;
@@ -14620,7 +14623,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                   onChange={e => setImportTargetStockId(e.target.value ? Number(e.target.value) : null)}
                   style={{ ...inp, fontSize: 12 }}>
                   <option value="">-- 物件を選択 --</option>
-                  {(data.stocks || []).filter(s => s.status !== "売決完了").map(s => (
+                  {myStocks.filter(s => s.status !== "売決完了").map(s => (
                     <option key={s.id} value={s.id}>{s.name} ({s.assignee} / {s.status})</option>
                   ))}
                 </select>
@@ -16074,10 +16077,11 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   const viewingsFunnel = useMemo(() => {
     const ym = casesMonth;
     const allViewings = [];
-    (data.stocks || []).forEach(s => {
+    // 🆕 v9.405: 見える範囲（自分＋ペアの担当）に揃える
+    visibleToUser(data.stocks, currentUser).forEach(s => {
       (s.viewings || []).forEach(v => allViewings.push({ ...v, _parentAssignee: s.assignee, _parentSold: s.status === "売決完了" }));
     });
-    (data.mediations || []).forEach(m => {
+    visibleToUser(data.mediations, currentUser).forEach(m => {
       (m.viewings || []).forEach(v => allViewings.push({ ...v, _parentAssignee: m.assignee, _parentSold: m.status === "決済完了" }));
     });
     let scoped = allViewings.filter(v => (v.date || "").startsWith(ym));
@@ -35659,12 +35663,17 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
   const JCOLOR = { "熱い": C.danger, "検討中": C.warn, "仕入検討": C.accent, "仕入": C.success, "見送り": "#334155" };
   const JEMOJI = { "熱い": "🔥", "検討中": "🟡", "仕入検討": "📝", "仕入": "🏠", "見送り": "❌" };
 
-  const filtered = useMemo(() => data.sekisan.filter(s => {
+  // 🆕 v9.405: 下田・比嘉以外は自分（＋ペア）の担当分だけ。件数バッジも一覧も同じ範囲にする。
+  const mySekisan = useMemo(
+    () => visibleToUser(data.sekisan, getCurrentUser()),
+    [data.sekisan]);
+
+  const filtered = useMemo(() => mySekisan.filter(s => {
     if (effectiveMember !== "すべて" && s.assignee !== effectiveMember) return false;
     if (filterJudgment !== "すべて" && s.judgment !== filterJudgment) return false;
     if (search && !(s.address || "").includes(search)) return false;
     return true;
-  }), [data.sekisan, effectiveMember, filterJudgment, search]);
+  }), [mySekisan, effectiveMember, filterJudgment, search]);
 
   const handleSave = form => {
     const item = { ...form, id: editItem?.id || Date.now() };
@@ -35915,7 +35924,7 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
       )}
       {embedded && (
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: C.warn }}><NavIcon name="calc" size={14} /> 仕入検討積算表（{effectiveMember === "すべて" ? (data.sekisan?.length || 0) : (data.sekisan || []).filter(s => s.assignee === effectiveMember).length}件）</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.warn }}><NavIcon name="calc" size={14} /> 仕入検討積算表（{effectiveMember === "すべて" ? mySekisan.length : mySekisan.filter(s => s.assignee === effectiveMember).length}件）</div>
           <div style={{ flex: 1 }} />
           <button style={{ ...btnStyle(), padding: "6px 12px", fontSize: 12 }} onClick={() => { setEditItem(null); setShowForm(true); }}>＋ 追加</button>
         </div>
@@ -35932,8 +35941,8 @@ function SekisanPage({ data, setData, onBack, embedded = false, defaultAssignee 
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10, background: C.panelBg, padding: 4, borderRadius: 10, border: `1px solid ${C.borderDim}` }}>
         {["仕入", "仕入検討", "熱い", "検討中", "見送り", "すべて"].map(j => {
           const count = j === "すべて" 
-            ? data.sekisan.filter(s => effectiveMember === "すべて" || s.assignee === effectiveMember).length
-            : data.sekisan.filter(s => (effectiveMember === "すべて" || s.assignee === effectiveMember) && s.judgment === j).length;
+            ? mySekisan.filter(s => effectiveMember === "すべて" || s.assignee === effectiveMember).length
+            : mySekisan.filter(s => (effectiveMember === "すべて" || s.assignee === effectiveMember) && s.judgment === j).length;
           const active = filterJudgment === j;
           const jcolor = JCOLOR[j] || C.accent;
           return (
