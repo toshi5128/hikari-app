@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.401-money-mask";
+const APP_VERSION = "2026-08-29-v9.402-own-scope";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -506,6 +506,13 @@ const MONEY_VIEWERS = ["下田", "比嘉"];
 //   1件ずつは小さく見えても、一覧で足すと会社全体の利益が出てしまうため。
 //   売却価格は売り出し情報なのでそのまま見せる。
 const MONEY_HIDDEN = "非表示";
+// 🆕 v9.402: 下田・比嘉 以外は、在庫・仲介・売却決済を「自分の担当分」だけにする。
+//   物件の担当は「比嘉・下田」のように連名のことがあるので expandAssignee 経由で判定する。
+function visibleToUser(items, user, key = "assignee") {
+  if (canViewMoney(user)) return items || [];
+  if (!user) return [];
+  return (items || []).filter(it => it && isAssignedTo([it[key]], user));
+}
 function moneyMan(canMoney, yen) {
   return canMoney ? Math.round((Number(yen) || 0) / 10000) + "万" : MONEY_HIDDEN;
 }
@@ -775,16 +782,18 @@ function viewingLastTouch(v) {
   const d = new Date(s + (s.length === 10 ? "T00:00:00" : ""));
   return isNaN(d.getTime()) ? Number.MAX_SAFE_INTEGER : d.getTime();
 }
-function collectPendingViewings(data) {
+function collectPendingViewings(data, user) {
   const out = [];
-  (data.stocks || []).forEach(s => {
+  // 🆕 v9.402: 在庫・仲介を自分の担当分だけにしたので、かけ直しリストも同じ範囲に揃える
+  //   （見えない物件へ「飛ぶ」と開けないため）
+  visibleToUser(data.stocks, user).forEach(s => {
     if (!s || s.status === "売決完了") return;
     (s.viewings || []).forEach((v, idx) => {
       if (!v || v.handled) return;
       out.push({ parentType: "stock", parentId: s.id, parentName: s.name || "(無題)", assignee: s.assignee || "", idx, v });
     });
   });
-  (data.mediations || []).forEach(m => {
+  visibleToUser(data.mediations, user).forEach(m => {
     if (!m || m.status === "決済完了") return;
     (m.viewings || []).forEach((v, idx) => {
       if (!v || v.handled) return;
@@ -799,7 +808,7 @@ function collectPendingViewings(data) {
 
 function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
   const [onlyMine, setOnlyMine] = useState(false);
-  const all = collectPendingViewings(data);
+  const all = collectPendingViewings(data, currentUser);
   const rows = onlyMine ? all.filter(r => r.assignee === currentUser) : all;
 
   const applyAttempt = (row, kind) => {
@@ -11814,6 +11823,10 @@ function DupWarnBanner({ info, onClose }) {
 function MediationView({ data, setData, dealType, setDealType }) {
   // 🆕 v9.401: 仲介手数料（会社の売上）は下田・比嘉だけ
   const canMoneyMed = canViewMoney(getCurrentUser());
+  // 🆕 v9.402: 仲介案件も、下田・比嘉 以外は自分の担当分だけ
+  const visibleMediations = useMemo(
+    () => visibleToUser(data.mediations, getCurrentUser()),
+    [data.mediations, canMoneyMed]);
   const currentUser = getCurrentUser();
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const [search, setSearch] = useState("");
@@ -11856,7 +11869,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
     return () => clearTimeout(t);
   }, [dupBanner]);
 
-  const mediations = data.mediations || [];
+  const mediations = visibleMediations;   // 🆕 v9.402: 自分の担当分だけ（下田・比嘉は全件）
   // 🆕 v9.72: 決済完了の件数（アーカイブ）
   const archivedCount = mediations.filter(m => m.status === "決済完了").length;
   const filtered = useMemo(() => mediations.filter(m => {
@@ -12278,7 +12291,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
       </div>
       {/* 🆕 v9.375: 物件をまたいだ「今日かける反響」への入口 */}
       {(() => {
-        const n = collectPendingViewings(data).length;
+        const n = collectPendingViewings(data, getCurrentUser()).length;
         return (
           <button onClick={() => setShowCallSheet(true)} style={{
             width: "100%", marginBottom: 10, padding: "13px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit",
@@ -13299,12 +13312,17 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     setForm(p => ({ ...p, photos: (p.photos || []).filter((_, i) => i !== idx) }));
   };
 
+  // 🆕 v9.402: 下田・比嘉 以外は自分の担当物件だけ
+  const myStocks = useMemo(
+    () => visibleToUser(data.stocks, getCurrentUser()),
+    [data.stocks, canMoney]);
+
   // viewMode別の件数
   const counts = useMemo(() => ({
-    active: data.stocks.filter(s => s.status !== "売決完了").length,
-    completed: data.stocks.filter(s => s.status === "売決完了").length,
-    all: data.stocks.length,
-  }), [data.stocks]);
+    active: myStocks.filter(s => s.status !== "売決完了").length,
+    completed: myStocks.filter(s => s.status === "売決完了").length,
+    all: myStocks.length,
+  }), [myStocks]);
 
   // 🆕 v8.83: ステータス順ソート用の優先度マップ
   //   販売中 → 売契系 → リフォーム → 登記 → 仕入 の順でグループ表示
@@ -13317,7 +13335,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const _statusOrderMap = {};
   STATUS_SORT_ORDER.forEach((s, i) => { _statusOrderMap[s] = i; });
   const filtered = useMemo(() => {
-    const arr = data.stocks.filter(s => {
+    const arr = myStocks.filter(s => {
       // viewMode（現在の在庫 / 決済完了 / 全て）
       if (viewMode === "active" && s.status === "売決完了") return false;
       if (viewMode === "completed" && s.status !== "売決完了") return false;
@@ -13334,7 +13352,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       // 同ステータス内は updatedAt 降順（最近更新優先）
       return (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0);
     });
-  }, [data.stocks, filterStatuses, filterMember, search, viewMode]);
+  }, [myStocks, filterStatuses, filterMember, search, viewMode]);
 
   // 💬 反響コメント投稿
   const handlePostViewingComment = (stockId, viewingIdx) => {
@@ -13932,7 +13950,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 
       {/* 🆕 v9.375: 物件をまたいだ「今日かける反響」への入口 */}
       {(() => {
-        const n = collectPendingViewings(data).length;
+        const n = collectPendingViewings(data, getCurrentUser()).length;
         return (
           <button onClick={() => setShowCallSheet(true)} style={{
             width: "100%", marginBottom: 10, padding: "13px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit",
@@ -15976,8 +15994,10 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
 
   // ===== 案件タブ用の集計 =====
   const filterByMember = (items, key = "assignee") => {
-    if (casesMember === "__ALL__") return items;
-    return items.filter(it => isAssignedTo([it[key]], casesMember));
+    // 🆕 v9.402: 下田・比嘉 以外は「全員」を選んでも自分の担当分しか出さない
+    const base = visibleToUser(items, currentUser, key);
+    if (casesMember === "__ALL__") return base;
+    return base.filter(it => isAssignedTo([it[key]], casesMember));
   };
 
   const pipeline = useMemo(() => {
