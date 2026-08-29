@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.392-notarget-safe";
+const APP_VERSION = "2026-08-29-v9.393-result-status-link";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1764,7 +1764,24 @@ function migrateNextActionToResultV9388(d) {
 //   （例:「所有者と面談、もう既に売却してしまった」「連絡先交換、机上査定」）。
 //   機械的に変換すると本物の面談を壊すので、下田さんが確認した訪問記録IDだけを直す。
 const V9391_FIX_VISIT_IDS = [
-  // ここに「実際には会えていなかった」訪問記録の id を入れる（確認済みのものだけ）
+  // 2026-08-29 下田さん確認。「本人が出て実際に会話した」形跡がない記録だけを対象外へ。
+  1780665874969, // 06-05 深谷市宿根512-1（メモなし・ピンメモ「空家ではない」）
+  1781156569250, // 06-11 熊谷市月見町1-34「空家ではなかった」
+  1781317621364, // 06-13 熊谷市籠原南3-263「空家ではない」
+  1783143005740, // 07-04 熊谷市新堀157-11「2回出たが会社名を伝えたらすぐ切られた」
+  1786424825008, // 08-11 東松山市大字市ノ川124-2「表札がない…住んでる気配もない」
+  1786436160355, // 08-11 坂戸市西坂戸3-1255-42「住んでなさそう」
+  1786523712965, // 08-12 東松山市大字上野本1840-9（別人が応対・所有者には会えず）
+  1787030745671, // 08-18 坂戸市泉町3-14-1「全空」
+  1787031269936, // 08-18 坂戸市元町3730-1「空家にしている感じ」
+  1787032207600, // 08-18 坂戸市元町1127-4（メモなし）
+  1787032697312, // 08-18 坂戸市本町960-3「住んでなさそう」
+  1787033310753, // 08-18 坂戸市元町9-29「場所不明」
+  1787904977261, // 08-28 坂戸市大字片柳1986-10（メモなし）
+  1787976612846, // 08-29 鶴ヶ島市富士見5-5-1（メモなし）
+  1787979703188, // 08-29 東松山市白山台13-15「空家じゃなかった」
+  1787982124849, // 08-29 坂戸市大字浅羽1397-9「いない、引っ越した？」
+  1787987532799, // 08-29 鶴ヶ島市大字中新田1623-14「住んでない」
 ];
 function migrateHomeToNotargetV9391(d) {
   if (!d || typeof d !== "object") return d;
@@ -17686,12 +17703,17 @@ function isBasicStageStatus(s) {
   return !s || s === "未訪問" || s === "初訪" || s === "再訪" || s === "訪問済";
 }
 
+// 🆕 v9.393: 「その1回の出来事」ではなく「その家の状態が決まる」結果。
+//   これを押した時だけ、ステータスも同じ判定に合わせる（入力を1か所にする）。
+const VISIT_JUDGMENT_STATUS = { rejected: "訪問禁止", notarget: "対象外" };
+
 // 訪問結果の定義
 const VISIT_RESULTS = [
   { key: "home",      label: "🤝 面談",     short: "面談",     color: "#10b981", autoStatus: "初訪" },
   { key: "ignore",    label: "🙈 居留守",   short: "居留守",   color: "#f59e0b", autoStatus: "初訪" },
   { key: "absent",    label: "🚪 不在",     short: "不在",     color: "#94a3b8", autoStatus: "初訪" },
-  { key: "rejected",  label: "🚷 訪問禁止", short: "訪問禁止", color: "#ef4444", autoStatus: "初訪" },
+  // 🆕 v9.393: 「来るな」と言われた＝その家の状態が決まる。ステータスも訪問禁止にする
+  { key: "rejected",  label: "🚷 訪問禁止", short: "訪問禁止", color: "#ef4444", autoStatus: "訪問禁止" },
   // 🆕 v9.391: 「行ったら住んでいた・建物がなかった」＝物件として成立しない。
   //   受け皿が無かったため、消去法で 🤝面談 が選ばれ面談数が水増しされていた。
   { key: "notarget",  label: "🏚 対象外だった", short: "対象外", color: "#78716c", autoStatus: "対象外" },
@@ -20056,7 +20078,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     if (!visitRecordTarget || !visitForm) return;
     // 🆕 v9.372: 訪問記録からも訪問禁止にできるので、ここでも「言われた言葉」を必須にする（§4.3）
     const _banReason = String(visitForm.banReason || "").trim();
-    if (visitForm.status === "訪問禁止" && !_banReason) {
+    if ((visitForm.status === "訪問禁止" || visitForm.result === "rejected") && !_banReason) {
       alert("⛔ 訪問禁止にするには、言われた言葉の記入が必要です。");
       return;
     }
@@ -20084,7 +20106,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       // 🆕 v9.391: 対象外は「物件として成立しない」判定であって営業活動ではない。実績に足さない。
       if (finalStatus && finalStatus !== "対象外" && ATTACK_STATUSES.includes(finalStatus)) items.push(_statusToCounter[finalStatus] || finalStatus);
       if (posted) items.push("ポスティング");
-      return items;
+      // 🆕 v9.393: 訪問禁止は結果とステータスの両方から積まれるので重複を落とす
+      return Array.from(new Set(items));
     };
     // 🆕 v9.109: 同行者にも加算する「訪問行動系」項目。
     //   KPI/成果系（見込み・中長期見込・見込無し・交渉中・媒介・仕入）は本人(メイン担当)のみ。
@@ -26440,6 +26463,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             <NavIcon name="barchart" size={13} /> 訪問結果
             <span style={{ color: "#ef4444", fontSize: 11, fontWeight: 800, marginLeft: 6 }}>必須</span>
           </div>
+          <div style={{ fontSize: 10, color: C.muted, marginBottom: 6, lineHeight: 1.5 }}>
+            その日<b style={{ color: C.text }}>何が起きたか</b>を選びます。
+            🚷訪問禁止 と 🏚対象外だった を押すと、下のステータスも自動でそろいます。
+          </div>
           {/* 🆕 v9.390: 未選択のまま保存されないよう、選ぶまで促す */}
           {!visitForm.result && (
             <div style={{ fontSize: 11, color: "#ef4444", fontWeight: 700, marginBottom: 6 }}>
@@ -26450,7 +26477,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             {VISIT_RESULTS.map(r => {
               const active = visitForm.result === r.key;
               return (
-                <button key={r.key} onClick={() => setVisitForm({ ...visitForm, result: r.key })} style={{
+                <button key={r.key} onClick={() => setVisitForm({
+                  ...visitForm,
+                  result: r.key,
+                  // 🆕 v9.393: 「この家はこうなった」が決まる結果は、ステータスも一緒に入れる。
+                  //   （面談・不在・居留守は訪問の出来事にすぎないので、ステータスは触らない）
+                  status: VISIT_JUDGMENT_STATUS[r.key] || visitForm.status,
+                })} style={{
                   padding: "11px 10px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700,
                   background: active ? r.color : "transparent",
                   color: active ? "#fff" : r.color,
@@ -26505,6 +26538,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           {/* 🆕 ステータス（フェーズ）＋ 担当者 */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="📊 ステータス（フェーズ）">
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, lineHeight: 1.5 }}>この家が<b style={{ color: C.text }}>今どうなっているか</b></div>
               <select style={inp} value={visitForm.status || ""} onChange={e => setVisitForm({ ...visitForm, status: e.target.value })}>
                 {attackStatusOptions(visitForm.status).map(st => <option key={st} value={st}>{jiageStatusLabel(st)}</option>)}
               </select>
