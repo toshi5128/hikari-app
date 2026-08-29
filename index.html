@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.391-visit-notarget";
+const APP_VERSION = "2026-08-29-v9.392-notarget-safe";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1759,17 +1759,24 @@ function migrateNextActionToResultV9388(d) {
 //   ステータスが対象外のピンに残った result:"home" を "notarget" に付け替える。
 //   （会えていないのに面談として数えられ、面談数が水増しされていた）
 //   1回だけ実行。以降は本当に面談してから対象外にした記録を書き換えないよう、フラグで止める。
+// ⚠️ 一括変換はしない。「ステータス対象外 × 結果=面談」の中身を実際に読むと、
+//   大半は "会って話した結果、物件として対象外だと分かった" 正しい記録だった
+//   （例:「所有者と面談、もう既に売却してしまった」「連絡先交換、机上査定」）。
+//   機械的に変換すると本物の面談を壊すので、下田さんが確認した訪問記録IDだけを直す。
+const V9391_FIX_VISIT_IDS = [
+  // ここに「実際には会えていなかった」訪問記録の id を入れる（確認済みのものだけ）
+];
 function migrateHomeToNotargetV9391(d) {
   if (!d || typeof d !== "object") return d;
-  let n = 0, pins = 0;
+  const ids = new Set(V9391_FIX_VISIT_IDS.map(String));
+  if (ids.size === 0) return d;
+  let n = 0;
   const jiage = (d.jiage || []).map(j => {
-    if (!j || j.status !== "対象外") return j;
     const log = Array.isArray(j.visitLog) ? j.visitLog : [];
-    if (!log.some(v => v && v.result === "home")) return j;
-    pins++;
+    if (!log.some(v => v && v.result === "home" && ids.has(String(v.id)))) return j;
     const now = Date.now();
     const nl = log.map(v => {
-      if (!v || v.result !== "home") return v;
+      if (!v || v.result !== "home" || !ids.has(String(v.id))) return v;
       n++;
       return { ...v, result: "notarget", bumpedStatus: "対象外", updatedAt: now };
     });
@@ -1781,7 +1788,7 @@ function migrateHomeToNotargetV9391(d) {
     };
   });
   if (!n) return d;
-  console.log(`[v9.391] 対象外ピンの「面談」${n}件（${pins}ピン）を「対象外だった」に直しました`);
+  console.log(`[v9.391] 会えていなかった記録 ${n}件 を「対象外だった」に直しました`);
   return { ...d, jiage, migrations: { ...(d.migrations || {}), v9391_home_to_notarget: Date.now() } };
 }
 
