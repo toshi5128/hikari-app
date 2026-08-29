@@ -8262,7 +8262,7 @@ function StatusTag({ status }) {
 }
 function MemberTag({ name }) { return <Tag label={name} color={MEMBER_COLORS[name] || C.muted} />; }
 
-function BottomSheet({ title, onClose, children }) {
+function BottomSheet({ title, onClose, children, footer }) {
   // 🆕 v8.131: マウント直後の誤クリック誤発火を防ぐガード（300ms）
   const mountedAtRef = React.useRef(Date.now());
   const safeClose = (ev) => {
@@ -8274,7 +8274,7 @@ function BottomSheet({ title, onClose, children }) {
   };
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 400, display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={safeClose}>
-      <div style={{ background: C.cardBg, borderRadius: "20px 20px 0 0", maxHeight: "92vh", overflowY: "auto", padding: "0 0 40px" }} onClick={e => e.stopPropagation()}>
+      <div style={{ background: C.cardBg, borderRadius: "20px 20px 0 0", maxHeight: "92vh", overflowY: "auto", padding: footer ? 0 : "0 0 40px" }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 4px" }}>
           <div style={{ width: 36, height: 4, background: C.borderDim, borderRadius: 2 }} />
         </div>
@@ -8291,6 +8291,17 @@ function BottomSheet({ title, onClose, children }) {
           }}><NavIcon name="x" size={15} /></button>
         </div>
         <div style={{ padding: "0 20px" }}>{children}</div>
+        {/* 🆕 v9.396: 長い編集フォームで「保存 / キャンセル」を探して延々スクロールしないで済むよう、
+            操作ボタンをシートの下端に貼り付ける（このスクロール枠の中で sticky）。 */}
+        {footer && (
+          <div style={{
+            position: "sticky", bottom: 0, zIndex: 5,
+            display: "flex", gap: 10,
+            padding: "12px 20px calc(12px + env(safe-area-inset-bottom, 0px))",
+            background: C.cardBg, borderTop: `1px solid ${C.borderDim}`,
+            boxShadow: `0 -8px 16px ${isLightMode ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.55)"}`,
+          }}>{footer}</div>
+        )}
       </div>
     </div>
   );
@@ -12477,7 +12488,15 @@ function MediationView({ data, setData, dealType, setDealType }) {
         </BottomSheet>
       )}
       {showForm && (
-        <BottomSheet title={editItem ? (canEdit(editItem) ? "仲介案件を編集" : `👁 仲介案件詳細（${editItem.assignee}さん担当）`) : "仲介案件を追加"} onClose={() => { setShowForm(false); setEditItem(null); }}>
+        <BottomSheet title={editItem ? (canEdit(editItem) ? "仲介案件を編集" : `👁 仲介案件詳細（${editItem.assignee}さん担当）`) : "仲介案件を追加"} onClose={() => { setShowForm(false); setEditItem(null); }}
+          footer={editItem && !canEdit(editItem) ? (
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowForm(false); setEditItem(null); }}>閉じる</button>
+          ) : (
+            <>
+              <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowForm(false); setEditItem(null); }}>キャンセル</button>
+              <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
+            </>
+          )}>
           <Field label="物件名 *"><input style={inp} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="〇〇市〇〇" /></Field>
           <Field label="担当者"><select style={inp} value={form.assignee} onChange={e => setForm(p => ({ ...p, assignee: e.target.value }))}>{MEMBERS.map(mm => <option key={mm}>{mm}</option>)}</select></Field>
           <Field label="売主"><input style={inp} value={form.seller} onChange={e => setForm(p => ({ ...p, seller: e.target.value }))} /></Field>
@@ -12878,22 +12897,6 @@ function MediationView({ data, setData, dealType, setDealType }) {
             })()}
           </div>
           <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={e => setForm(p => ({ ...p, memo: e.target.value }))} /></Field>
-          <div style={{
-            display: "flex", gap: 10,
-            position: "sticky", bottom: 0, zIndex: 5,
-            margin: "8px -20px 0", padding: "12px 20px",
-            background: C.cardBg, borderTop: `1px solid ${C.borderDim}`,
-            boxShadow: `0 -8px 16px ${isLightMode ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.55)"}`,
-          }}>
-            {editItem && !canEdit(editItem) ? (
-              <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowForm(false); setEditItem(null); }}>閉じる</button>
-            ) : (
-              <>
-                <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowForm(false); setEditItem(null); }}>キャンセル</button>
-                <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
-              </>
-            )}
-          </div>
         </BottomSheet>
       )}
     </div>
@@ -14352,7 +14355,15 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         </BottomSheet>
       )}
       {showAdd && (
-        <BottomSheet title={editItem ? (canEdit(editItem) ? "物件編集" : `👁 物件詳細（${editItem.assignee}さん担当・閲覧のみ）`) : "新規物件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}>          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
+        <BottomSheet title={editItem ? (canEdit(editItem) ? "物件編集" : `👁 物件詳細（${editItem.assignee}さん担当・閲覧のみ）`) : "新規物件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}
+          footer={editItem && !canEdit(editItem) ? (
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>閉じる</button>
+          ) : (
+            <>
+              <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
+              <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
+            </>
+          )}>          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{MEMBERS.map(m => <option key={m}>{m}</option>)}</select></Field>
           <Field label="物件名"><input style={inp} value={form.name} onChange={f("name")} placeholder="川越市木野目" /></Field>
           <Field label="ステータス">
             <select style={inp} value={form.status} onChange={f("status")}>
@@ -14807,25 +14818,6 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               ※ 自動で800px・JPEG圧縮されて保存されます（1枚あたり約50KB）
             </div>
           </Field>
-          <div style={{
-            display: "flex", gap: 10,
-            position: "sticky", bottom: 0, zIndex: 5,
-            margin: "8px -20px 0", padding: "12px 20px",
-            background: C.cardBg, borderTop: `1px solid ${C.borderDim}`,
-            boxShadow: `0 -8px 16px ${isLightMode ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.55)"}`,
-          }}>
-            {editItem && !canEdit(editItem) ? (
-              <button
-                style={{ ...btnStyle("ghost"), flex: 1 }}
-                onClick={() => { setShowAdd(false); setEditItem(null); }}
-              >閉じる</button>
-            ) : (
-              <>
-                <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
-                <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
-              </>
-            )}
-          </div>
         </BottomSheet>
       )}
 
@@ -18089,7 +18081,7 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
   const list = (Array.isArray(members) ? members : []).map(jiageFamilyNormalize);
   const [form, setForm] = useState(null); // { editId, name, relation, age, memo, isOwner, isKey, deceased } | null
   const PURPLE = "#a855f7", GOLD = "#f59e0b", KEYC = "#0ea5e9", METC = "#22c55e";
-  const LINE = C.borderDim;
+  const LINE = PURPLE + "66"; // 🆕 家系図の線。C.borderDim だと薄すぎて段のつながりが見えない
 
   const newId = () => "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const metCount = list.filter(m => m.met).length;
@@ -18149,7 +18141,7 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
   })).filter(r => r.people.length > 0);
 
   const PersonCard = (m, showStub) => {
-    const accent = m.isOwner ? GOLD : (m.isKey ? KEYC : (m.met ? METC : LINE));
+    const accent = m.isOwner ? GOLD : (m.isKey ? KEYC : (m.met ? METC : C.border));
     return (
       <div key={m.id} style={{ width: 86 }}>
         {showStub && (
@@ -18178,7 +18170,7 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
             width: "100%", marginTop: 3, borderRadius: 8, cursor: "pointer", fontFamily: "inherit",
             padding: "3px 0", fontSize: 9.5, fontWeight: 800,
             background: m.met ? METC : "transparent", color: m.met ? "#fff" : C.muted,
-            border: `1px solid ${m.met ? METC : LINE}`,
+            border: `1px solid ${m.met ? METC : C.muted + "66"}`,
           }}>{m.met ? "🤝 面談済" : "🤝 面談"}</button>
       </div>
     );
@@ -18273,7 +18265,7 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
           <div style={{ display: "flex", gap: 6 }}>
             {form.editId && (
               <button type="button" onClick={() => removeOne(form.editId)}
-                style={{ background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger, borderRadius: 8, padding: "7px 10px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="trash" size={12} /></button>
+                style={{ background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="trash" size={12} /> 削除</button>
             )}
             <button type="button" onClick={() => setForm(null)} style={{ ...btnStyle("ghost"), flex: 1, padding: "7px", fontSize: 12 }}>キャンセル</button>
             <button type="button" onClick={saveForm} style={{ ...btnStyle(), flex: 2, padding: "7px", fontSize: 12, background: PURPLE, borderColor: PURPLE }}>{form.editId ? "更新" : "追加"}</button>
