@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-30-v9.412-agent-only-goals";
+const APP_VERSION = "2026-08-30-v9.413-count-detail";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2279,6 +2279,95 @@ function countDoorVisitsByDay(jiage) {
     });
   });
   return out;
+}
+
+// 🆕 v9.413: カウンターの数字を押した時に「どこの誰か」を出すための明細。
+//   数字だけ見ても「今月の仕入2件って何と何？」が分からなかったため、
+//   数字→元になった物件・訪問記録へ必ずたどれるようにする。
+const COUNT_DETAIL_PARTS = { "回った先": ["初訪", "地上再訪"], "見込み計": ["見込み", "中長期見込"] };
+const KPI_ITEM_TO_STATUS = { "見込み候補": "見込み候補", "見込み": "見込み", "中長期見込": "中長期見込", "見込無し": "見込無し", "交渉中": "交渉中", "媒介": "媒介", "地上仕入": "仕入" };
+const VISIT_ITEM_TO_RESULT = { "面談": "home", "居留守": "ignore", "地上不在": "absent", "訪問禁止": "rejected", "対象外": "notarget" };
+function countDetailParts(item) { return COUNT_DETAIL_PARTS[item] || [item]; }
+// 明細を出せる項目か（業者の手入力カウンターは元になる記録が無いので出せない）
+function countDetailSupported(item) {
+  return countDetailParts(item).every(p =>
+    DERIVED_VISIT_ITEM_SET.has(p) || p === "ポスティング" || p === "新規地上" || !!KPI_ITEM_TO_STATUS[p]);
+}
+function _msToDateStr(ms) {
+  const n = Number(ms) || 0;
+  if (!n) return "";
+  const d = new Date(n);
+  if (isNaN(d.getTime())) return "";
+  const z = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`;
+}
+// ステータスが変わった日（項目別の更新時刻→無ければ更新日→作成日）
+function jiageStatusDateStr(j) {
+  if (!j) return "";
+  const ms = j._fieldUpdatedAt && j._fieldUpdatedAt.status;
+  return _msToDateStr(ms) || _msToDateStr(j.updatedAt) || _msToDateStr(j.createdAt) || String(j.date || "");
+}
+// item（カウンター名 or 目標の合計キー）の中身を、期間・担当で拾って返す
+function countDetailRows({ jiage, item, member, from, to }) {
+  const parts = countDetailParts(item);
+  const inRange = (d) => !!d && d >= from && d <= to;
+  const mine = (v, j) => {
+    const who = (v && v.recordedBy) || (j && j.assignee) || "";
+    const withM = (v && Array.isArray(v.withMembers)) ? v.withMembers : [];
+    if (who === member) return "主";
+    if (withM.includes(member)) return "同行";
+    return null;
+  };
+  const rows = [];
+  (Array.isArray(jiage) ? jiage : []).forEach(j => {
+    if (!j) return;
+    const base = { id: j.id, address: j.address || "(住所なし)", owner: j.owner || "", status: j.status || "" };
+    const log = Array.isArray(j.visitLog) ? j.visitLog : [];
+    const door = log.filter(v => v && DOOR_RESULT_KEYS.has(v.result)).slice()
+      .sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))
+        || String(a.time || "").localeCompare(String(b.time || "")));
+    parts.forEach(part => {
+      if (DERIVED_VISIT_ITEM_SET.has(part)) {
+        door.forEach((v, i) => {
+          if (!inRange(v.date)) return;
+          const role = mine(v, j);
+          if (!role) return;
+          const isFirst = i === 0;
+          const ok = part === "初訪" ? isFirst : part === "地上再訪" ? !isFirst : VISIT_ITEM_TO_RESULT[part] === v.result;
+          if (!ok) return;
+          const rd = VISIT_RESULTS.find(r => r.key === v.result);
+          rows.push({ ...base, date: v.date, time: v.time || "", role,
+            note: (rd ? rd.short : "") + (isFirst ? "・初めて" : "・再訪"), memo: v.memo || "" });
+        });
+      } else if (part === "ポスティング") {
+        log.forEach(v => {
+          if (!v || !v.posted || !inRange(v.date)) return;
+          const role = mine(v, j);
+          if (!role) return;
+          rows.push({ ...base, date: v.date, time: v.time || "", role, note: "投函", memo: v.memo || "" });
+        });
+      } else if (part === "新規地上") {
+        const d = String(j.date || "") || _msToDateStr(j.createdAt);
+        if (inRange(d) && j.assignee === member) rows.push({ ...base, date: d, time: "", role: "主", note: "地図にピンを立てた", memo: "" });
+      } else if (KPI_ITEM_TO_STATUS[part]) {
+        const st = KPI_ITEM_TO_STATUS[part];
+        let hit = null;
+        log.forEach(v => {
+          if (!v || v.bumpedStatus !== st || !inRange(v.date)) return;
+          const role = mine(v, j);
+          if (!role) return;
+          if (!hit || String(v.date) > String(hit.date)) hit = { date: v.date, time: v.time || "", role, memo: v.memo || "" };
+        });
+        if (!hit && j.status === st && j.assignee === member) {
+          const d = jiageStatusDateStr(j);
+          if (inRange(d)) hit = { date: d, time: "", role: "主", memo: "" };
+        }
+        if (hit) rows.push({ ...base, date: hit.date, time: hit.time, role: hit.role, note: st + "になった", memo: hit.memo });
+      }
+    });
+  });
+  rows.sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.time).localeCompare(String(b.time)));
+  return rows;
 }
 
 // 🆕 v9.407: 上の数え方に合わせて approaches のカウンターを直す（毎回・自己修復）。
@@ -8907,12 +8996,74 @@ function JiageStatusHelp({ onClose }) {
   );
 }
 
+// 🆕 v9.413: 数字を押した時に出る「内訳」シート。どこの誰かが分かるようにする。
+function CountDetailSheet({ item, label, member, from, to, count, jiage, onClose, onOpenPin }) {
+  const supported = countDetailSupported(item);
+  const rows = supported ? countDetailRows({ jiage, item, member, from, to }) : [];
+  const period = from === to
+    ? String(from).slice(5).replace("-", "/")
+    : `${String(from).slice(5).replace("-", "/")}〜${String(to).slice(5).replace("-", "/")}`;
+  const diff = (typeof count === "number") && count !== rows.length;
+  return (
+    <BottomSheet title={`🔎 ${label} の内訳`} onClose={onClose}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <span style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 999, padding: "2px 10px", fontSize: 11, fontWeight: 700, color: C.text }}>{member}</span>
+        <span style={{ fontSize: 11, color: C.muted }}>{period}</span>
+        <span style={{ marginLeft: "auto", fontSize: 12, color: C.text, fontWeight: 800 }}>該当 {rows.length} 件</span>
+      </div>
+      {!supported ? (
+        <div style={{ background: C.inset, borderRadius: 10, padding: 14, fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
+          この項目は<b style={{ color: C.text }}>手で数えているカウンター</b>なので、元になる記録がありません。<br />
+          （地上げの項目は訪問記録・ピンから明細が出ます）
+        </div>
+      ) : rows.length === 0 ? (
+        <div style={{ background: C.inset, borderRadius: 10, padding: 14, fontSize: 12, color: C.muted, textAlign: "center" }}>
+          該当する記録が見つかりませんでした
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 380, overflowY: "auto" }}>
+          {rows.map((r, i) => (
+            <div key={i} onClick={() => onOpenPin && r.id != null && onOpenPin(r.id)}
+              style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 10px", cursor: onOpenPin ? "pointer" : "default" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "center", marginBottom: 3 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <NavIcon name="home" size={14} /> {r.address}
+                </span>
+                <span style={{ flexShrink: 0, fontSize: 10, color: C.muted }}>{String(r.date || "").slice(5).replace("-", "/")}{r.time ? " " + r.time : ""}</span>
+              </div>
+              <div style={{ fontSize: 10, color: C.muted, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {r.owner && <span><NavIcon name="user" size={12} /> {r.owner}</span>}
+                {r.note && <span style={{ color: C.accent, fontWeight: 700 }}>{r.note}</span>}
+                {r.role === "同行" && <span style={{ color: "#7c3aed", fontWeight: 700 }}>👥 同行</span>}
+                {r.status && <span style={{ color: JIAGE_STATUS_COLORS[r.status] || C.muted, fontWeight: 700 }}>今: {r.status}</span>}
+              </div>
+              {r.memo && <div style={{ fontSize: 10, color: C.muted, marginTop: 3, lineHeight: 1.4, background: C.cardBg, borderRadius: 4, padding: "3px 6px" }}>{String(r.memo).slice(0, 60)}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+      {supported && diff && (
+        <div style={{ marginTop: 10, fontSize: 10, color: C.muted, lineHeight: 1.6 }}>
+          ※ カウンターの数字は <b style={{ color: C.text }}>{count}</b>。同じ家で何度も記録した場合や、手で直した分があると件数とずれます。
+        </div>
+      )}
+      {rows.length > 0 && onOpenPin && (
+        <div style={{ marginTop: 10, fontSize: 10, color: C.muted, textAlign: "center" }}>タップでその物件を開きます</div>
+      )}
+      <button onClick={onClose} style={{ ...btnStyle(), width: "100%", marginTop: 12 }}>閉じる</button>
+    </BottomSheet>
+  );
+}
+
 // 🆕 v9.376: 活動カウンターの「何件中何件」を一目で分かるようにする内訳カード
 //   ・地上げは訪問記録1件につき結果が必ず1つ自動加算されるので、割合が正確に出せる
 //   ・業者は手入力カウンターなので、残りを「会えた（目安）」として控えめに出す
-function ActivityBreakdown({ values, group, periodLabel, weekly, weekGoals, weekRange, onEditWeekGoals }) {
+function ActivityBreakdown({ values, group, periodLabel, weekly, weekGoals, weekRange, onEditWeekGoals, onPickItem }) {
   const n = (k) => Number((values || {})[k]) || 0;
   const isJiage = group === "jiage";
+  // 🆕 v9.413: 数字を押したら「どこの誰か」を出す（明細を出せる項目だけ）
+  const pick = (key, label) => (onPickItem && key && countDetailSupported(key)) ? (() => onPickItem(key, label || approachItemLabel(key))) : null;
+  const pickStyle = (on) => on ? { cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 } : null;
 
   const outcomes = isJiage
     ? [
@@ -8963,7 +9114,7 @@ function ActivityBreakdown({ values, group, periodLabel, weekly, weekGoals, week
       {/* 回った数 */}
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, color: C.muted, fontWeight: 700 }}>{periodLabel ? periodLabel + " " : ""}回った先</span>
-        <span style={{ fontSize: 30, fontWeight: 800, color: C.text, lineHeight: 1 }}>{visits}</span>
+        <span onClick={pick("回った先", "回った先")} style={{ fontSize: 30, fontWeight: 800, color: C.text, lineHeight: 1, ...(pickStyle(!!pick("回った先")) || {}) }}>{visits}</span>
         <span style={{ fontSize: 13, color: C.muted, fontWeight: 700 }}>軒</span>
         {isJiage && (n("初訪") > 0 || n("地上再訪") > 0) && (
           <span style={{ fontSize: 11, color: C.muted }}>（初めて {n("初訪")} ／ 再訪 {n("地上再訪")}）</span>
@@ -8985,11 +9136,11 @@ function ActivityBreakdown({ values, group, periodLabel, weekly, weekGoals, week
       {/* 何件中何件 */}
       <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
         {bars.map(b => (
-          <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+          <div key={b.key} onClick={pick(b.key, b.label)} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, ...(pick(b.key) ? { cursor: "pointer" } : {}) }}>
             <span style={{ width: 10, height: 10, borderRadius: 3, background: b.color, flexShrink: 0 }} />
             <span style={{ color: C.text, fontWeight: 700, minWidth: 92 }}>{b.label}</span>
             <span style={{ color: C.muted }}>{visits}件中</span>
-            <span style={{ color: b.color, fontWeight: 800, fontSize: 15 }}>{b.count}</span>
+            <span style={{ color: b.color, fontWeight: 800, fontSize: 15, ...(pickStyle(!!pick(b.key, b.label)) || {}) }}>{b.count}</span>
             <span style={{ color: C.muted }}>件</span>
             <span style={{ marginLeft: "auto", color: b.color, fontWeight: 800 }}>{pct(b.count, visits)}%</span>
           </div>
@@ -9007,18 +9158,19 @@ function ActivityBreakdown({ values, group, periodLabel, weekly, weekGoals, week
           {wins.map(([k, c]) => {
             const v = n(k);
             return (
-              <span key={k} style={{
+              <span key={k} onClick={v > 0 ? pick(k) : null} style={{
                 background: v > 0 ? c + "22" : "transparent", color: v > 0 ? c : C.muted,
                 border: `1px solid ${v > 0 ? c + "66" : C.borderDim}`,
                 padding: "3px 9px", borderRadius: 999, fontSize: 11, fontWeight: v > 0 ? 800 : 500,
+                cursor: (v > 0 && pick(k)) ? "pointer" : "default",
               }}>{approachItemLabel(k)} {v}</span>
             );
           })}
           {isJiage && n("ポスティング") > 0 && (
-            <span style={{ background: "#0ea5e922", color: "#0ea5e9", border: "1px solid #0ea5e966", padding: "3px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>ポスティング {n("ポスティング")}</span>
+            <span onClick={pick("ポスティング", "ポスティング")} style={{ background: "#0ea5e922", color: "#0ea5e9", border: "1px solid #0ea5e966", padding: "3px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800, cursor: pick("ポスティング") ? "pointer" : "default" }}>ポスティング {n("ポスティング")}</span>
           )}
           {isJiage && n("見込無し") > 0 && (
-            <span style={{ background: C.inset, color: C.muted, border: `1px solid ${C.borderDim}`, padding: "3px 9px", borderRadius: 999, fontSize: 11 }}>見込無し {n("見込無し")}</span>
+            <span onClick={pick("見込無し", "見込無し")} style={{ background: C.inset, color: C.muted, border: `1px solid ${C.borderDim}`, padding: "3px 9px", borderRadius: 999, fontSize: 11, cursor: pick("見込無し") ? "pointer" : "default" }}>見込無し {n("見込無し")}</span>
           )}
         </div>
       </div>
@@ -15928,6 +16080,17 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     return out;
   };
   const [weekGoalEdit, setWeekGoalEdit] = useState(null);   // {member, form:{}}
+  // 🆕 v9.413: 数字を押した時の「内訳」シート { item, member, from, to, label, count }
+  const [countDetail, setCountDetail] = useState(null);
+  const monthRangeOf = (ym) => {
+    const [y, m] = String(ym).split("-").map(Number);
+    const last = new Date(y, m, 0).getDate();
+    return { from: `${ym}-01`, to: `${ym}-${String(last).padStart(2, "0")}` };
+  };
+  const openCountDetail = (item, member, from, to, count, label) => {
+    if (!item || !from || !to) return;
+    setCountDetail({ item, member, from, to, label: label || goalItemLabel(item), count });
+  };
 
   // 日次入力の既存データ
   const existing = useMemo(() =>
@@ -17232,6 +17395,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
 
           {/* 🆕 v9.376: この日の「何件中何件」内訳 */}
           <ActivityBreakdown
+            onPickItem={(it, lbl) => openCountDetail(it, selectedMember, selectedDate, selectedDate, Number((shownValues || {})[it]) || undefined, lbl)}
             values={shownValues}
             group={salesSubTab}
             periodLabel={selectedDate === today ? "今日" : selectedDate}
@@ -17960,7 +18124,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                 </div>
 
                 {/* 🆕 v9.376: 今月の「何件中何件」内訳（表を読む前に結論が分かるように） */}
-                <ActivityBreakdown values={totals} group={salesSubTab} periodLabel={`${Number(selectedYM.split("-")[1])}月`} />
+                <ActivityBreakdown values={totals} group={salesSubTab} periodLabel={`${Number(selectedYM.split("-")[1])}月`}
+                  onPickItem={(it, lbl) => { const r = monthRangeOf(selectedYM); openCountDetail(it, dailyChartMember, r.from, r.to, Number(totals[it]) || undefined, lbl); }} />
 
                 {/* ===== 集計テーブル（常時表示） ===== */}
                 <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", background: C.panelBg, borderRadius: 10, border: `1px solid ${C.borderDim}`, marginBottom: 10 }}>
@@ -17983,11 +18148,16 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                         <td style={{ padding: "8px 10px", color: "#fff", fontWeight: 800, fontSize: 12, position: "sticky", left: 0, background: C.accentBg, borderRight: `1px solid ${C.borderDim}` }}>
                           合計
                         </td>
-                        {visibleItems.map(item => (
-                          <td key={item} style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontWeight: 800, fontSize: 13 }}>
-                            {totals[item] || ""}
-                          </td>
-                        ))}
+                        {visibleItems.map(item => {
+                          // 🆕 v9.413: 合計の数字を押すと「どこの誰か」の明細を出す
+                          const canOpen = (totals[item] || 0) > 0 && countDetailSupported(item);
+                          return (
+                            <td key={item} onClick={canOpen ? (() => { const r = monthRangeOf(selectedYM); openCountDetail(item, dailyChartMember, r.from, r.to, totals[item]); }) : null}
+                              style={{ padding: "8px 4px", textAlign: "center", color: "#fff", fontWeight: 800, fontSize: 13, cursor: canOpen ? "pointer" : "default", textDecoration: canOpen ? "underline" : "none", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}>
+                              {totals[item] || ""}
+                            </td>
+                          );
+                        })}
                       </tr>
                       {/* 一日平均 */}
                       <tr style={{ background: C.panelBg, borderTop: `1px solid ${C.borderDim}` }}>
@@ -18076,10 +18246,14 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                             else if (realPct >= 40) { color = "#fb923c"; label = "半ば"; emoji = "🟠"; }
                             else { color = C.danger; label = "要追い込み"; emoji = "🔴"; }
 
+                            // 🆕 v9.413: 押すと「どこの誰か」の明細を出す
+                            const canOpen = val > 0 && countDetailSupported(item);
                             return (
-                              <div key={item} style={{ background: C.inset, borderRadius: 8, padding: "8px 10px" }}>
+                              <div key={item}
+                                onClick={canOpen ? (() => { const r = monthRangeOf(selectedYM); openCountDetail(item, dailyChartMember, r.from, r.to, val); }) : null}
+                                style={{ background: C.inset, borderRadius: 8, padding: "8px 10px", cursor: canOpen ? "pointer" : "default" }}>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
-                                  <span style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{name}</span>
+                                  <span style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{name}{canOpen ? " 🔎" : ""}</span>
                                   <span style={{ color, fontWeight: 800, fontSize: 13 }}>
                                     {val}{goal > 0 ? <span style={{ color: C.muted, fontWeight: 400 }}>/{goal}</span> : ""}
                                   </span>
@@ -18153,11 +18327,17 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                               </td>
                               {visibleItems.map(item => {
                                 const v = Number(r.values[item]) || 0;
+                                // 🆕 v9.413: その日その項目の数字を押すと明細が出る
+                                const canOpen = v > 0 && countDetailSupported(item);
                                 return (
-                                  <td key={item} style={{
-                                    padding: "6px 4px", textAlign: "center", color: v > 0 ? C.text : "#334155",
-                                    fontWeight: v > 0 ? 700 : 400, fontSize: 12,
-                                  }}>
+                                  <td key={item}
+                                    onClick={canOpen ? (() => openCountDetail(item, dailyChartMember, r.date, r.date, v)) : null}
+                                    style={{
+                                      padding: "6px 4px", textAlign: "center", color: v > 0 ? C.text : "#334155",
+                                      fontWeight: v > 0 ? 700 : 400, fontSize: 12,
+                                      cursor: canOpen ? "pointer" : "default",
+                                      textDecoration: canOpen ? "underline" : "none", textDecorationStyle: "dotted", textUnderlineOffset: 3,
+                                    }}>
                                     {v > 0 ? v : ""}
                                   </td>
                                 );
@@ -18474,6 +18654,21 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
           </BottomSheet>
         );
       })()}
+
+      {/* 🆕 v9.413: 数字→「どこの誰か」の内訳シート */}
+      {countDetail && (
+        <CountDetailSheet
+          item={countDetail.item}
+          label={countDetail.label}
+          member={countDetail.member}
+          from={countDetail.from}
+          to={countDetail.to}
+          count={countDetail.count}
+          jiage={data.jiage}
+          onClose={() => setCountDetail(null)}
+          onOpenPin={(id) => { setCountDetail(null); if (onOpenJiageDetail) onOpenJiageDetail(id); }}
+        />
+      )}
     </div>
   );
 }
