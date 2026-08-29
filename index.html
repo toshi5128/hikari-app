@@ -16764,21 +16764,30 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                   //   - result マッピング: home=面談, ignore=居留守, absent=地上不在, rejected=訪問禁止
                   //   - status マッピング: 初訪/再訪/見込み/中長期見込/見込無し/交渉中/媒介/仕入 など
                   //   - posted=true → ポスティング
+                  // 🆕 v9.398: カウンターと同じルールで数える。
+                  //   旧はピンの「今の」ステータスで判定していたため、会って見込みに進んだ記録が
+                  //   初訪の一覧から抜け、カウンター13に対して一覧6件のように食い違っていた。
                   const RESULT_TO_ITEM = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止" };
-                  const STATUS_TO_ITEM = { "再訪": "地上再訪", "仕入": "地上仕入" };
-                  const matchesItem = (v, parentStatus) => {
-                    // ポスティング
+                  const matchesItem = (v, parentStatus, isFirstVisit) => {
                     if (item === "ポスティング" && v.posted) return true;
-                    // 訪問結果
                     if (RESULT_TO_ITEM[v.result] === item) return true;
-                    // ステータス(保存時の status と一致するもの)
-                    // 注意: visitLog のエントリ自体には status は持たない設計のため、
-                    //   親 jiage/owner の現在 status からは近似しかできない（自動加算は記録時点）
-                    //   そのため、 status系項目（初訪/再訪/...）の表示は「同じ日に当該メンバーが記録した」エントリで近似する
-                    const parentS = parentStatus || "";
-                    if (parentS && (STATUS_TO_ITEM[parentS] || parentS) === item) return true;
-                    return false;
+                    // 回った軒数（その家の1件目かどうかで決まる＝加算側と同じ判定）
+                    if (item === "初訪") return !!isFirstVisit;
+                    if (item === "地上再訪") return !isFirstVisit;
+                    // 成果は「記録した時点のステータス」を優先（無い古い記録は今のステータスで代用）
+                    const st = v.bumpedStatus || parentStatus || "";
+                    return !!(st && KPI_STATUS_COUNTERS[st] === item);
                   };
+                  // その家の訪問記録を日時順に並べ、1件目かどうかを引けるようにする
+                  const firstVisitIds = new Set();
+                  const collectFirst = (list) => (list || []).forEach(p => {
+                    const log = (Array.isArray(p.visitLog) ? p.visitLog : []).filter(Boolean).slice()
+                      .sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))
+                        || String(a.time || "").localeCompare(String(b.time || "")));
+                    if (log[0] && log[0].id != null) firstVisitIds.add(String(log[0].id));
+                  });
+                  collectFirst(data.jiage);
+                  collectFirst(data.owners);
                   const matchedRows = [];
                   (data.jiage || []).forEach(j => {
                     (j.visitLog || []).forEach(v => {
@@ -16787,7 +16796,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                       const isRecorder = v.recordedBy === selectedMember;
                       const isCompanion = Array.isArray(v.withMembers) && v.withMembers.includes(selectedMember);
                       if (!isRecorder && !isCompanion) return;
-                      if (!matchesItem(v, j.status)) return;
+                      if (!matchesItem(v, j.status, firstVisitIds.has(String(v.id)))) return;
                       matchedRows.push({ type: "jiage", item: j, visit: v, role: isRecorder ? "主" : "同行" });
                     });
                   });
@@ -16797,7 +16806,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                       const isRecorder = v.recordedBy === selectedMember;
                       const isCompanion = Array.isArray(v.withMembers) && v.withMembers.includes(selectedMember);
                       if (!isRecorder && !isCompanion) return;
-                      if (!matchesItem(v, o.status)) return;
+                      if (!matchesItem(v, o.status, firstVisitIds.has(String(v.id)))) return;
                       matchedRows.push({ type: "owner", item: o, visit: v, role: isRecorder ? "主" : "同行" });
                     });
                   });
@@ -17966,6 +17975,14 @@ function isBasicStageStatus(s) {
 // 🆕 v9.393: 「その1回の出来事」ではなく「その家の状態が決まる」結果。
 //   これを押した時だけ、ステータスも同じ判定に合わせる（入力を1か所にする）。
 const VISIT_JUDGMENT_STATUS = { rejected: "訪問禁止", notarget: "対象外" };
+
+// 🆕 v9.398: ステータスから立てる成果カウンター。集計と「該当する訪問記録」の一覧で
+//   同じ定義を使う（別々に持つと件数が食い違う）。初訪/再訪/対象外/訪問禁止はここに含めない。
+const KPI_STATUS_COUNTERS = {
+  "見込み": "見込み", "中長期見込": "中長期見込", "見込無し": "見込無し",
+  "交渉中": "交渉中", "媒介": "媒介", "仕入": "地上仕入",
+  "リフォーム請負": "リフォーム請負", "失注": "失注",
+};
 
 // 訪問結果の定義
 const VISIT_RESULTS = [
@@ -20596,11 +20613,6 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     //       分母として使えず「17軒回ったのに初訪7」のような数になっていた。
     //   新: その家が初めてなら 初訪、2回目以降なら 地上再訪 を必ず +1。
     //       これで 初訪+再訪 = 面談+不在+居留守+訪問禁止+対象外 が成り立ち、面談率が出せる。
-    const KPI_STATUS_COUNTERS = {
-      "見込み": "見込み", "中長期見込": "中長期見込", "見込無し": "見込無し",
-      "交渉中": "交渉中", "媒介": "媒介", "仕入": "地上仕入",
-      "リフォーム請負": "リフォーム請負", "失注": "失注",
-    };
     const computeBumpItems = (result, finalStatus, posted, isFirstVisit) => {
       const items = [];
       const _resultToItem = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止" };
