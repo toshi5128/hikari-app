@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.394-viewing-yaritori-in-edit";
+const APP_VERSION = "2026-08-29-v9.396-edit-sheet-sticky-save";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1899,6 +1899,42 @@ function migrateHomeToNotargetV9391(d) {
   if (!n) return d;
   console.log(`[v9.391] 会えていなかった記録 ${n}件 を「対象外だった」に直しました`);
   return { ...d, jiage, migrations: { ...(d.migrations || {}), v9391_home_to_notarget: Date.now() } };
+}
+
+// 🆕 v9.394→v9.395: 行動管理の「面談」カウンターは保存時に +1 された値がそのまま残るため、
+//   訪問記録を「対象外だった」に直しても数が減らない（訪問記録9件なのに面談13、の食い違い）。
+//   v9.391で直した17件ぶんを、日付×担当で引き算する。1回だけ。
+const V9395_MENDAN_FIX = [
+  { date: "2026-06-05", member: "谷津", n: 1 },
+  { date: "2026-06-11", member: "谷津", n: 1 },
+  { date: "2026-06-13", member: "谷津", n: 1 },
+  { date: "2026-07-04", member: "谷津", n: 1 },
+  { date: "2026-08-11", member: "下田", n: 2 },
+  { date: "2026-08-12", member: "下田", n: 1 },
+  { date: "2026-08-18", member: "下田", n: 3 },
+  { date: "2026-08-18", member: "長島", n: 2 },
+  { date: "2026-08-28", member: "長島", n: 1 },
+  { date: "2026-08-29", member: "下田", n: 4 },
+];
+function migrateMendanCounterV9395(d) {
+  if (!d || typeof d !== "object") return d;
+  let fixed = 0;
+  const rest = new Map(V9395_MENDAN_FIX.map(f => [f.date + "|" + f.member, f.n]));
+  const approaches = (d.approaches || []).map(a => {
+    if (!a) return a;
+    const key = (a.date || "") + "|" + (a.member || "");
+    const want = rest.get(key);
+    if (!want) return a;
+    const cur = Number((a.values || {})["面談"]) || 0;
+    if (cur <= 0) return a;
+    const sub = Math.min(cur, want);
+    rest.set(key, want - sub);
+    fixed += sub;
+    return { ...a, values: { ...(a.values || {}), ["面談"]: cur - sub }, updatedAt: Date.now() };
+  });
+  if (!fixed) return d;
+  console.log(`[v9.395] 行動管理の面談カウンターを ${fixed}件ぶん減らしました（対象外に直した記録の取り消し）`);
+  return { ...d, approaches, migrations: { ...(d.migrations || {}), v9395_mendan_counter: Date.now() } };
 }
 
 function migrateClearHanroSamplesV9367(d) {
@@ -5612,6 +5648,13 @@ function MainApp({ onLock, onSwitchUser }) {
   useEffect(() => {
     if (!data) return;
     if (migrateViewingLabelsV9386(data) !== data) setData(d => migrateViewingLabelsV9386(d));
+  }, [data]);
+
+  // 🆕 v9.395: 行動管理の面談カウンターを、対象外に直した17件ぶん減らす（1回きり）
+  useEffect(() => {
+    if (!data) return;
+    if (data.migrations && data.migrations.v9395_mendan_counter) return;
+    if (migrateMendanCounterV9395(data) !== data) setData(d => migrateMendanCounterV9395(d));
   }, [data]);
 
   // 🆕 v9.391: 対象外ピンの「面談」を「対象外だった」へ（1回きり）
@@ -12835,7 +12878,13 @@ function MediationView({ data, setData, dealType, setDealType }) {
             })()}
           </div>
           <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={e => setForm(p => ({ ...p, memo: e.target.value }))} /></Field>
-          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <div style={{
+            display: "flex", gap: 10,
+            position: "sticky", bottom: 0, zIndex: 5,
+            margin: "8px -20px 0", padding: "12px 20px",
+            background: C.cardBg, borderTop: `1px solid ${C.borderDim}`,
+            boxShadow: `0 -8px 16px ${isLightMode ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.55)"}`,
+          }}>
             {editItem && !canEdit(editItem) ? (
               <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowForm(false); setEditItem(null); }}>閉じる</button>
             ) : (
@@ -14758,7 +14807,13 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               ※ 自動で800px・JPEG圧縮されて保存されます（1枚あたり約50KB）
             </div>
           </Field>
-          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <div style={{
+            display: "flex", gap: 10,
+            position: "sticky", bottom: 0, zIndex: 5,
+            margin: "8px -20px 0", padding: "12px 20px",
+            background: C.cardBg, borderTop: `1px solid ${C.borderDim}`,
+            boxShadow: `0 -8px 16px ${isLightMode ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.55)"}`,
+          }}>
             {editItem && !canEdit(editItem) ? (
               <button
                 style={{ ...btnStyle("ghost"), flex: 1 }}
@@ -17653,8 +17708,37 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
 
 // Excelから取り込んだ地上げデータ（エリア別）
 const JIAGE_AREAS = ["熊谷", "行田", "深谷", "東松山", "本庄", "秩父", "上里", "小川", "滑川", "鴻巣", "寄居"];
-// 🆕 地上げ：家族構成の続柄（この順でグループ表示される）
-const JIAGE_FAMILY_RELATIONS = ["名義人本人", "配偶者", "長男", "次男", "三男", "長女", "次女", "子", "父", "母", "兄", "弟", "姉", "妹", "孫", "その他"];
+// 🆕 地上げ：家族構成の続柄
+// 🆕 v9.395: 続柄を「世代」でまとめ、家系図（親世代→本人世代→子世代→孫世代）として
+//   上下に段組みできるようにした。続柄をここに足すだけで、家系図の段にも選択肢にも
+//   同時に反映される（表を二重管理しない）。
+//   ※ 旧データの続柄（名義人本人/配偶者/長男…/孫/その他）は全てこの表に含めてあるので
+//     並べ替えても既存の家族メンバーは消えない。未知の続柄は「その他」段に落ちる。
+const JIAGE_FAMILY_GENS = [
+  { key: "parent", label: "親世代",   relations: ["父", "母", "義父", "義母", "叔父", "叔母"] },
+  { key: "self",   label: "本人世代", relations: ["名義人本人", "配偶者", "兄", "姉", "弟", "妹", "義兄", "義姉"] },
+  { key: "child",  label: "子世代",   relations: ["長男", "次男", "三男", "長女", "次女", "子", "嫁", "婿"] },
+  { key: "grand",  label: "孫世代",   relations: ["孫", "ひ孫"] },
+  { key: "other",  label: "その他",   relations: ["甥", "姪", "いとこ", "内縁", "その他"] },
+];
+const JIAGE_FAMILY_RELATIONS = JIAGE_FAMILY_GENS.reduce((a, g) => a.concat(g.relations), []);
+const JIAGE_REL_GEN = (() => {
+  const m = {};
+  JIAGE_FAMILY_GENS.forEach(g => g.relations.forEach(r => { m[r] = g.key; }));
+  return m;
+})();
+function jiageFamilyGenOf(relation) { return JIAGE_REL_GEN[relation] || "other"; }
+// 家系図で1人しか立てられない印（名義人・決定権者）
+const JIAGE_FAMILY_SOLO_FLAGS = ["isOwner", "isKey"];
+// 家族メンバー1件の既定形。古いデータ（name/relation/memoだけ）に足りない項目を埋める。
+function jiageFamilyNormalize(m) {
+  return {
+    id: m.id, name: m.name || "", relation: m.relation || "その他", memo: m.memo || "",
+    age: m.age == null ? "" : String(m.age),
+    isOwner: !!m.isOwner, isKey: !!m.isKey, deceased: !!m.deceased,
+    met: !!m.met, metAt: m.metAt || "", metBy: m.metBy || "",
+  };
+}
 
 // 🗺️ ジオコーディング：住所→緯度経度（国土地理院API・日本特化・無料）
 // 🆕 v9.276: 海外在住オーナーの住所。国土地理院APIに掛けると番地部分が国内の無関係な地名に
@@ -17992,6 +18076,225 @@ function inferAreaFromAddress(address) {
   // 上里町は児玉郡上里町なので別途判定
   if (s.includes("上里町")) return "上里";
   return "";
+}
+
+// 🆕 v9.395: 家族構成を「家系図」で表示・編集する。
+//   ・これまでは名前と続柄を並べるだけのリストで、誰が鍵を握っているのか一目で分からず
+//     現場でほぼ使われていなかった。世代の段で並べ、印を付けられるようにして実戦向けにする。
+//   ・カードを押す → 名前・年齢・続柄・メモを入力（＋👑名義人／🔑決定権者／🕯故人の印）
+//   ・カード下の「面談」ボタン → ワンタップで「この人と面談した」を日付・担当者つきで記録
+//   ・データの置き場所は今まで通り jiage[].family。増えたのは age / isOwner / isKey /
+//     met / metAt / metBy / deceased の各項目だけで、既存メンバーはそのまま表示できる。
+function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
+  const list = (Array.isArray(members) ? members : []).map(jiageFamilyNormalize);
+  const [form, setForm] = useState(null); // { editId, name, relation, age, memo, isOwner, isKey, deceased } | null
+  const PURPLE = "#a855f7", GOLD = "#f59e0b", KEYC = "#0ea5e9", METC = "#22c55e";
+  const LINE = C.borderDim;
+
+  const newId = () => "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const metCount = list.filter(m => m.met).length;
+
+  // 🤝 面談トグル（押した瞬間に確定・日付と担当者を刻む）
+  const toggleMet = (m) => {
+    onChange(list.map(x => x.id !== m.id ? x
+      : (m.met ? { ...x, met: false, metAt: "", metBy: "" }
+               : { ...x, met: true, metAt: today, metBy: currentUser || "" })));
+  };
+  const quickAdd = (relation, extra) => {
+    onChange([...list, jiageFamilyNormalize({ id: newId(), relation, ...(extra || {}) })]);
+  };
+  const saveForm = () => {
+    if (!form) return;
+    const base = {
+      name: (form.name || "").trim(),
+      relation: form.relation || "その他",
+      age: String(form.age || "").replace(/[^0-9]/g, "").slice(0, 3),
+      memo: form.memo || "",
+      isOwner: !!form.isOwner, isKey: !!form.isKey, deceased: !!form.deceased,
+    };
+    let next = form.editId
+      ? list.map(m => m.id === form.editId ? { ...m, ...base } : m)
+      : [...list, jiageFamilyNormalize({ id: newId(), ...base })];
+    // 👑名義人・🔑決定権者は1人だけ。立てた人以外からは外す。
+    const meId = form.editId || next[next.length - 1].id;
+    JIAGE_FAMILY_SOLO_FLAGS.forEach(f => {
+      if (base[f]) next = next.map(m => m.id === meId ? m : { ...m, [f]: false });
+    });
+    onChange(next);
+    setForm(null);
+  };
+  const removeOne = (id) => {
+    if (!window.confirm("この家族メンバーを削除しますか？")) return;
+    onChange(list.filter(m => m.id !== id));
+    setForm(f => (f && f.editId === id) ? null : f);
+  };
+
+  const badge = (color, text) => (
+    <span style={{ background: color + "22", color, border: `1px solid ${color}66`, borderRadius: 6, fontSize: 8, fontWeight: 800, padding: "0 3px", lineHeight: "13px" }}>{text}</span>
+  );
+  const chip = (label, on, color, onClick) => (
+    <button type="button" onClick={onClick} style={{
+      background: on ? color : "transparent", color: on ? "#fff" : color,
+      border: `1.5px solid ${color}${on ? "" : "66"}`, borderRadius: 14,
+      padding: "4px 9px", fontSize: 11, fontWeight: on ? 800 : 600,
+      cursor: "pointer", fontFamily: "inherit",
+    }}>{on ? "✓ " : ""}{label}</button>
+  );
+
+  // 世代ごとの段に振り分け（段内は続柄の定義順）
+  const rows = JIAGE_FAMILY_GENS.map(g => ({
+    key: g.key, label: g.label,
+    people: list.filter(m => jiageFamilyGenOf(m.relation) === g.key)
+      .sort((a, b) => JIAGE_FAMILY_RELATIONS.indexOf(a.relation) - JIAGE_FAMILY_RELATIONS.indexOf(b.relation)),
+  })).filter(r => r.people.length > 0);
+
+  const PersonCard = (m, showStub) => {
+    const accent = m.isOwner ? GOLD : (m.isKey ? KEYC : (m.met ? METC : LINE));
+    return (
+      <div key={m.id} style={{ width: 86 }}>
+        {showStub && (
+          <div style={{ height: 10, display: "flex", justifyContent: "center" }}>
+            <div style={{ width: 2, height: "100%", background: LINE }} />
+          </div>
+        )}
+        <div onClick={() => setForm({ editId: m.id, name: m.name, relation: m.relation, age: m.age, memo: m.memo, isOwner: m.isOwner, isKey: m.isKey, deceased: m.deceased })}
+          style={{
+            background: C.cardBg, border: `2px ${m.deceased ? "dashed" : "solid"} ${accent}`,
+            borderRadius: 12, padding: "5px 3px 4px", cursor: "pointer", textAlign: "center",
+            opacity: m.deceased ? 0.6 : 1,
+          }}>
+          {m.name ? <div style={{ fontSize: 9, color: PURPLE, fontWeight: 700, lineHeight: 1.2 }}>{m.relation}</div> : null}
+          <div style={{ fontSize: m.name ? 12 : 13, fontWeight: 800, color: C.text, lineHeight: 1.25, wordBreak: "break-all" }}>{m.name || m.relation}</div>
+          <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.3, minHeight: 13 }}>{m.age ? m.age + "歳" : ""}</div>
+          <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: 2, minHeight: 14 }}>
+            {m.isOwner && badge(GOLD, "👑名義")}
+            {m.isKey && badge(KEYC, "🔑決定")}
+            {m.deceased && badge(C.muted, "🕯故")}
+          </div>
+        </div>
+        <button type="button" onClick={(e) => { e.stopPropagation(); toggleMet(m); }}
+          title={m.met ? `${m.metAt || ""} ${m.metBy || ""} が面談` : "この人と面談したら押す"}
+          style={{
+            width: "100%", marginTop: 3, borderRadius: 8, cursor: "pointer", fontFamily: "inherit",
+            padding: "3px 0", fontSize: 9.5, fontWeight: 800,
+            background: m.met ? METC : "transparent", color: m.met ? "#fff" : C.muted,
+            border: `1px solid ${m.met ? METC : LINE}`,
+          }}>{m.met ? "🤝 面談済" : "🤝 面談"}</button>
+      </div>
+    );
+  };
+
+  const QUICK = ["父", "母", "名義人本人", "配偶者", "長男", "長女", "次男", "次女", "兄", "姉"];
+
+  return (
+    <div style={{ background: PURPLE + "11", border: `1px solid ${PURPLE}44`, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: PURPLE }}>
+          <NavIcon name="users" size={13} /> 家系図（{list.length}人{list.length > 0 ? `・面談済 ${metCount}人` : ""}）
+        </span>
+        {!form && (
+          <button type="button" onClick={() => setForm({ editId: null, name: "", relation: "名義人本人", age: "", memo: "", isOwner: false, isKey: false, deceased: false })}
+            style={{ background: PURPLE + "22", border: `1.5px solid ${PURPLE}`, color: PURPLE, borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}>＋ 人を追加</button>
+        )}
+      </div>
+      <div style={{ fontSize: 10, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
+        名義人の一存で売却が決まらないことが多いので、家族の並びと「誰が決めるのか」を残す欄です。
+        カードを押すと年齢・メモを入力、下の🤝を押すと面談した相手として記録されます。
+      </div>
+
+      {/* まだ誰も居ないとき：謄本の所有者名から名義人を1タップで置く */}
+      {list.length === 0 && !form && (
+        <div style={{ textAlign: "center", padding: "4px 0 8px" }}>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>まだ登録なし</div>
+          {ownerName ? (
+            <button type="button" onClick={() => quickAdd("名義人本人", { name: ownerName, isOwner: true })}
+              style={{ background: GOLD + "22", border: `1.5px solid ${GOLD}`, color: GOLD, borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontWeight: 800, fontFamily: "inherit" }}>
+              👑 名義人「{ownerName}」から始める
+            </button>
+          ) : null}
+        </div>
+      )}
+
+      {/* 家系図本体 */}
+      {rows.map((r, ri) => (
+        <div key={r.key}>
+          {ri > 0 && (
+            <div style={{ position: "relative", height: 16 }}>
+              <div style={{ position: "absolute", left: "50%", top: 0, width: 2, height: 10, marginLeft: -1, background: LINE }} />
+              <div style={{ position: "absolute", left: "12%", right: "12%", top: 10, height: 2, background: LINE }} />
+            </div>
+          )}
+          <div style={{ fontSize: 9, color: C.muted, fontWeight: 700, marginBottom: 2 }}>{r.label}</div>
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6 }}>
+            {r.people.map(m => PersonCard(m, ri > 0))}
+          </div>
+        </div>
+      ))}
+
+      {/* かんたん追加（名前は後からでOK） */}
+      {!form && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px dashed ${LINE}` }}>
+          <div style={{ fontSize: 9, color: C.muted, fontWeight: 700, marginBottom: 4 }}>かんたん追加（名前は後から入れられます）</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {QUICK.map(r => (
+              <button key={r} type="button" onClick={() => quickAdd(r)}
+                style={{ background: "transparent", border: `1px solid ${PURPLE}55`, color: PURPLE, borderRadius: 12, padding: "3px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>＋{r}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 入力フォーム */}
+      {form && (
+        <div style={{ background: C.cardBg, border: `1.5px solid ${PURPLE}`, borderRadius: 8, padding: 10, marginTop: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: PURPLE, marginBottom: 6 }}>{form.editId ? "この人の情報" : "人を追加"}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.8fr", gap: 6, marginBottom: 6 }}>
+            <input style={{ ...inp, marginBottom: 0 }} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="名前" />
+            <select style={{ ...inp, marginBottom: 0 }} value={form.relation} onChange={e => setForm(p => ({ ...p, relation: e.target.value }))}>
+              {JIAGE_FAMILY_GENS.map(g => (
+                <optgroup key={g.key} label={g.label}>
+                  {g.relations.map(r => <option key={r} value={r}>{r}</option>)}
+                </optgroup>
+              ))}
+            </select>
+            <input style={{ ...inp, marginBottom: 0 }} type="tel" inputMode="numeric" value={form.age}
+              onChange={e => setForm(p => ({ ...p, age: e.target.value.replace(/[^0-9]/g, "").slice(0, 3) }))} placeholder="年齢" />
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 6 }}>
+            {chip("👑 名義人", form.isOwner, GOLD, () => setForm(p => ({ ...p, isOwner: !p.isOwner })))}
+            {chip("🔑 決定権者", form.isKey, KEYC, () => setForm(p => ({ ...p, isKey: !p.isKey })))}
+            {chip("🕯 故人", form.deceased, C.muted, () => setForm(p => ({ ...p, deceased: !p.deceased })))}
+          </div>
+          <div style={{ fontSize: 9, color: C.muted, marginBottom: 6, lineHeight: 1.5 }}>
+            👑名義人＝登記上の持ち主／🔑決定権者＝実際に売る売らないを決める人。どちらも1人だけ立てられます。
+          </div>
+          <textarea style={{ ...inp, height: 50, resize: "vertical", marginBottom: 6 }} value={form.memo}
+            onChange={e => setForm(p => ({ ...p, memo: e.target.value }))} placeholder="この人の状況・売却への姿勢など" />
+          <div style={{ display: "flex", gap: 6 }}>
+            {form.editId && (
+              <button type="button" onClick={() => removeOne(form.editId)}
+                style={{ background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger, borderRadius: 8, padding: "7px 10px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="trash" size={12} /></button>
+            )}
+            <button type="button" onClick={() => setForm(null)} style={{ ...btnStyle("ghost"), flex: 1, padding: "7px", fontSize: 12 }}>キャンセル</button>
+            <button type="button" onClick={saveForm} style={{ ...btnStyle(), flex: 2, padding: "7px", fontSize: 12, background: PURPLE, borderColor: PURPLE }}>{form.editId ? "更新" : "追加"}</button>
+          </div>
+        </div>
+      )}
+
+      {/* メモが入っている人だけ、家系図の下に一覧で見せる */}
+      {list.filter(m => m.memo || m.met).length > 0 && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px dashed ${LINE}` }}>
+          {list.filter(m => m.memo || m.met).map(m => (
+            <div key={m.id} style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.6, marginBottom: 3 }}>
+              <b style={{ color: C.text }}>{m.name || m.relation}</b>
+              {m.met ? <span style={{ color: METC, fontWeight: 700 }}>　🤝{m.metAt}{m.metBy ? `・${m.metBy}` : ""}</span> : null}
+              {m.memo ? <span style={{ whiteSpace: "pre-wrap" }}>　{m.memo}</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPage }) {
@@ -18535,7 +18838,6 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [visitRecordTarget, setVisitRecordTarget] = useState(null); // 記録対象のitem
   const [visitForm, setVisitForm] = useState(null); // { date, time, result, signs, intensityLevel, memo }
   // 🆕 家族構成の追加・編集フォーム
-  const [familyForm, setFamilyForm] = useState(null); // { editId, name, relation, memo } | null
   // 🆕 v8.95: 現地ピン機能
   const [placementMode, setPlacementMode] = useState(false); // 地図タップ待機モード
   const [currentLoc, setCurrentLoc] = useState(null); // {lat, lng, accuracy}
@@ -20054,45 +20356,23 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   };
 
   // 訪問記録モーダルを開く
-  // 🆕 家族構成：追加・更新・削除（対象は訪問記録モーダルのjiage）
-  const familyJiageId = () => visitRecordTarget && (visitRecordTarget.rawId || visitRecordTarget.id);
-  const saveFamilyMember = () => {
-    if (!familyForm || !familyForm.name.trim()) { alert("名前を入力してください"); return; }
-    const jid = familyJiageId();
+  // 🆕 家族構成（家系図）の書き込み口。対象は訪問記録モーダルで開いている jiage。
+  //   ・家系図側は「次の family 配列」を丸ごと返すだけにして、保存経路をここ1本に絞る。
+  //   ・他端末とのマージで負けないよう updatedAt / _fieldUpdatedAt.family を必ず刻む。
+  const setJiageFamily = (nextFamily) => {
+    const jid = visitRecordTarget && (visitRecordTarget.rawId || visitRecordTarget.id);
     if (jid == null) return;
-    const member = {
-      id: familyForm.editId || ("f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
-      name: familyForm.name.trim(),
-      relation: familyForm.relation || "その他",
-      memo: familyForm.memo || "",
-    };
+    const now = Date.now();
     setData(d => ({
       ...d,
-      jiage: (d.jiage || []).map(j => {
-        if (j.id !== jid) return j;
-        const fam = j.family || [];
-        const nextFam = familyForm.editId
-          ? fam.map(m => m.id === familyForm.editId ? member : m)
-          : [...fam, member];
-        return { ...j, family: nextFam };
-      }),
-    }));
-    setFamilyForm(null);
-  };
-  const deleteFamilyMember = (memberId) => {
-    if (!window.confirm("この家族メンバーを削除しますか？")) return;
-    const jid = familyJiageId();
-    if (jid == null) return;
-    setData(d => ({
-      ...d,
-      jiage: (d.jiage || []).map(j => j.id === jid ? { ...j, family: (j.family || []).filter(m => m.id !== memberId) } : j),
+      jiage: (d.jiage || []).map(j => j.id !== jid ? j
+        : { ...j, family: nextFamily, updatedAt: now, _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), family: now } }),
     }));
   };
   const openVisitRecord = (item) => {
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     setVisitRecordTarget(item);
-    setFamilyForm(null);
     setVisitForm({
       date: today,
       time,
@@ -20125,7 +20405,6 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v8.47: 訪問履歴を編集
   const openEditVisit = (item, visit) => {
     setVisitRecordTarget(item);
-    setFamilyForm(null);
     setVisitForm({
       date: visit.date || today,
       time: visit.time || "",
@@ -26779,59 +27058,18 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               placeholder={visitForm.result === "ignore" ? "車のナンバー、生活音、灯りの位置など" : visitForm.result === "home" ? "話せた内容、対応者など" : "次回の作戦"} />
           </Field>
 
-          {/* 🆕 👪 家族構成 */}
+          {/* 🆕 v9.395: 👪 家系図 */}
           {(() => {
             const famJ = (data.jiage || []).find(j => j.id === (visitRecordTarget.rawId || visitRecordTarget.id));
-            const familyList = (famJ && famJ.family) || [];
-            const sorted = [...familyList].sort((a, b) => {
-              const ia = JIAGE_FAMILY_RELATIONS.indexOf(a.relation); const ib = JIAGE_FAMILY_RELATIONS.indexOf(b.relation);
-              return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-            });
             return (
-              <div style={{ background: "#a855f711", border: `1px solid #a855f744`, borderRadius: 10, padding: 12, marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#a855f7" }}><NavIcon name="users" size={13} /> 家族構成（{familyList.length}人）</span>
-                  {!familyForm && (
-                    <button onClick={() => setFamilyForm({ editId: null, name: "", relation: JIAGE_FAMILY_RELATIONS[0], memo: "" })}
-                      style={{ background: "#a855f722", border: `1.5px solid #a855f7`, color: "#a855f7", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}>＋ 家族を追加</button>
-                  )}
-                </div>
-                <div style={{ fontSize: 10, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>名義人の一存で売却が決まらないことも多いので、関係者を記録しておく欄です</div>
-                {familyList.length === 0 && !familyForm && (
-                  <div style={{ fontSize: 11, color: C.muted, textAlign: "center", padding: "6px 0" }}>まだ登録なし</div>
-                )}
-                {sorted.map(m => (
-                  <div key={m.id} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 10px", marginBottom: 5 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                      <span style={{ background: "#a855f733", color: "#a855f7", padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700 }}>{m.relation}</span>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{m.name}</span>
-                      <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                        <button onClick={() => setFamilyForm({ editId: m.id, name: m.name, relation: m.relation, memo: m.memo || "" })}
-                          style={{ background: "transparent", border: `1px solid ${C.muted}33`, color: C.muted, borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="edit" size={12} /></button>
-                        <button onClick={() => deleteFamilyMember(m.id)}
-                          style={{ background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger, borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="trash" size={12} /></button>
-                      </div>
-                    </div>
-                    {m.memo && <div style={{ fontSize: 11, color: C.muted, marginTop: 4, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{m.memo}</div>}
-                  </div>
-                ))}
-                {familyForm && (
-                  <div style={{ background: C.cardBg, border: `1.5px solid #a855f7`, borderRadius: 8, padding: 10, marginTop: 6 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: "#a855f7", marginBottom: 6 }}>{familyForm.editId ? "家族を編集" : "家族を追加"}</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 6 }}>
-                      <input style={{ ...inp, marginBottom: 0 }} value={familyForm.name} onChange={e => setFamilyForm(p => ({ ...p, name: e.target.value }))} placeholder="名前" />
-                      <select style={{ ...inp, marginBottom: 0 }} value={familyForm.relation} onChange={e => setFamilyForm(p => ({ ...p, relation: e.target.value }))}>
-                        {JIAGE_FAMILY_RELATIONS.map(r => <option key={r} value={r}>{r}</option>)}
-                      </select>
-                    </div>
-                    <textarea style={{ ...inp, height: 50, resize: "vertical", marginBottom: 6 }} value={familyForm.memo} onChange={e => setFamilyForm(p => ({ ...p, memo: e.target.value }))} placeholder="この人の状況・売却への姿勢など" />
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button onClick={() => setFamilyForm(null)} style={{ ...btnStyle("ghost"), flex: 1, padding: "7px", fontSize: 12 }}>キャンセル</button>
-                      <button onClick={saveFamilyMember} style={{ ...btnStyle(), flex: 2, padding: "7px", fontSize: 12, background: "#a855f7", borderColor: "#a855f7" }}>{familyForm.editId ? "更新" : "追加"}</button>
-                    </div>
-                  </div>
-                )}
-              </div>
+              <JiageFamilyTree
+                key={(visitRecordTarget.rawId || visitRecordTarget.id) + ""}
+                members={(famJ && famJ.family) || []}
+                ownerName={String((famJ && (famJ.owner || famJ.ownerName)) || "").trim()}
+                currentUser={visitForm.assignee || currentUser || ""}
+                today={today}
+                onChange={setJiageFamily}
+              />
             );
           })()}
 
