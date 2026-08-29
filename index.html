@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.390-visit-result-required";
+const APP_VERSION = "2026-08-29-v9.391-visit-notarget";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1753,6 +1753,36 @@ function migrateNextActionToResultV9388(d) {
   if (!n) return d;
   console.log(`[v9.388] 次回アクション ${n}件 を結果に移しました`);
   return { ...d, stocks, mediations, migrations: { ...(d.migrations || {}), v9388_nextaction_to_result: Date.now() } };
+}
+
+// 🆕 v9.391: 「面談」の既定値が原因で生まれた誤記録を直す。
+//   ステータスが対象外のピンに残った result:"home" を "notarget" に付け替える。
+//   （会えていないのに面談として数えられ、面談数が水増しされていた）
+//   1回だけ実行。以降は本当に面談してから対象外にした記録を書き換えないよう、フラグで止める。
+function migrateHomeToNotargetV9391(d) {
+  if (!d || typeof d !== "object") return d;
+  let n = 0, pins = 0;
+  const jiage = (d.jiage || []).map(j => {
+    if (!j || j.status !== "対象外") return j;
+    const log = Array.isArray(j.visitLog) ? j.visitLog : [];
+    if (!log.some(v => v && v.result === "home")) return j;
+    pins++;
+    const now = Date.now();
+    const nl = log.map(v => {
+      if (!v || v.result !== "home") return v;
+      n++;
+      return { ...v, result: "notarget", bumpedStatus: "対象外", updatedAt: now };
+    });
+    return {
+      ...j,
+      visitLog: nl,
+      _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), visitLog: now },
+      updatedAt: now,
+    };
+  });
+  if (!n) return d;
+  console.log(`[v9.391] 対象外ピンの「面談」${n}件（${pins}ピン）を「対象外だった」に直しました`);
+  return { ...d, jiage, migrations: { ...(d.migrations || {}), v9391_home_to_notarget: Date.now() } };
 }
 
 function migrateClearHanroSamplesV9367(d) {
@@ -5468,6 +5498,13 @@ function MainApp({ onLock, onSwitchUser }) {
     if (migrateViewingLabelsV9386(data) !== data) setData(d => migrateViewingLabelsV9386(d));
   }, [data]);
 
+  // 🆕 v9.391: 対象外ピンの「面談」を「対象外だった」へ（1回きり）
+  useEffect(() => {
+    if (!data) return;
+    if (data.migrations && data.migrations.v9391_home_to_notarget) return;
+    if (migrateHomeToNotargetV9391(data) !== data) setData(d => migrateHomeToNotargetV9391(d));
+  }, [data]);
+
   // 🆕 v9.388: 次回アクション → 結果（1回きり。フラグが巻き戻っても再実行して直る）
   useEffect(() => {
     if (!data) return;
@@ -6905,7 +6942,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       //   （訪問記録を保存して「初訪/再訪/見込み/...」になったら、 そのstatus を表示）
       const _isOnsite = !!(_r && _r.coordsManual);  // ← 変数名維持（3561行で使用中）
       // 🆕 v9.68: ラベルにも最新の訪問結果（不在/居留守/訪問禁止）を反映
-      const _RESULT_LABEL = { absent: "🚪 不在", ignore: "🙈 居留守", rejected: "🚷 訪問禁止" };
+      const _RESULT_LABEL = { absent: "🚪 不在", ignore: "🙈 居留守", rejected: "🚷 訪問禁止", notarget: "🏚 対象外だった" };
       const _latestResLabel = (() => {
         const log = (_r && _r.visitLog) || [];
         for (let i = log.length - 1; i >= 0; i--) { if (log[i] && log[i].result) return log[i].result; }
@@ -17648,6 +17685,9 @@ const VISIT_RESULTS = [
   { key: "ignore",    label: "🙈 居留守",   short: "居留守",   color: "#f59e0b", autoStatus: "初訪" },
   { key: "absent",    label: "🚪 不在",     short: "不在",     color: "#94a3b8", autoStatus: "初訪" },
   { key: "rejected",  label: "🚷 訪問禁止", short: "訪問禁止", color: "#ef4444", autoStatus: "初訪" },
+  // 🆕 v9.391: 「行ったら住んでいた・建物がなかった」＝物件として成立しない。
+  //   受け皿が無かったため、消去法で 🤝面談 が選ばれ面談数が水増しされていた。
+  { key: "notarget",  label: "🏚 対象外だった", short: "対象外", color: "#78716c", autoStatus: "対象外" },
   // 🆕 v9.269: 訪問以外の接触（電話・メッセージでのやり取り）。autoStatus:null＝ステータスは変えない
   { key: "phone",     label: "📞 電話",     short: "電話",     color: "#3b82f6", autoStatus: null },
   { key: "message",   label: "💬 メッセージ", short: "メッセージ", color: "#8b5cf6", autoStatus: null },
@@ -20034,7 +20074,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       const _resultToItem = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止" };
       const _statusToCounter = { "再訪": "地上再訪", "仕入": "地上仕入" };
       if (_resultToItem[result]) items.push(_resultToItem[result]);
-      if (finalStatus && ATTACK_STATUSES.includes(finalStatus)) items.push(_statusToCounter[finalStatus] || finalStatus);
+      // 🆕 v9.391: 対象外は「物件として成立しない」判定であって営業活動ではない。実績に足さない。
+      if (finalStatus && finalStatus !== "対象外" && ATTACK_STATUSES.includes(finalStatus)) items.push(_statusToCounter[finalStatus] || finalStatus);
       if (posted) items.push("ポスティング");
       return items;
     };
