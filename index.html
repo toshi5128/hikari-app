@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.393-result-status-link";
+const APP_VERSION = "2026-08-29-v9.394-viewing-yaritori-in-edit";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -889,6 +889,98 @@ function ViewingNote({ text }) {
         </button>
       )}
     </div>
+  );
+}
+
+// 🆕 v9.394: 反響の「編集」画面にも やり取り を置く。
+//   ・メモ(v.note) は反響メールの本文が自動で入るので、電話で聞いた内容を書き足す場所が無かった。
+//   ・書き先は一覧の 💬やり取り と同じ v.comments。保存すれば詳細を開かずに一覧のボタンで追える。
+//   ・投稿は form の下書きに入るだけ＝「保存する」を押すまで確定しない（他の項目と同じ動き）。
+function ViewingCommentsEditor({ comments, currentUser, onChange }) {
+  const list = comments || [];
+  const [text, setText] = useState("");
+  const [editId, setEditId] = useState(null);
+  const [editText, setEditText] = useState("");
+  const post = () => {
+    const t = text.trim();
+    if (!t) return;
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    onChange([...list, {
+      id: Date.now(), member: currentUser, text: t,
+      createdAt: new Date().toISOString(), updatedAt: Date.now(),
+    }]);
+    setText("");
+  };
+  const saveEdit = (id) => {
+    const t = editText.trim();
+    if (!t) { alert("内容が空です"); return; }
+    onChange(list.map(c => c.id === id ? { ...c, text: t, editedAt: new Date().toISOString(), updatedAt: Date.now() } : c));
+    setEditId(null); setEditText("");
+  };
+  const removeOne = (id) => {
+    if (!window.confirm("このやり取りを削除しますか？")) return;
+    onChange(list.filter(c => c.id !== id));
+    if (editId === id) { setEditId(null); setEditText(""); }
+  };
+  return (
+    <Field label={`💬 やり取り（${list.length}件）`}>
+      <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 10px" }}>
+        {list.length === 0 ? (
+          <div style={{ fontSize: 11, color: C.muted, textAlign: "center", padding: "4px 0" }}>まだやり取りなし</div>
+        ) : list.map(c => (
+          <div key={c.id} style={{
+            background: C.cardBg, borderLeft: `3px solid ${MEMBER_COLORS[c.member] || C.muted}`,
+            borderRadius: 4, padding: "6px 8px", marginBottom: 4,
+          }}>
+            <div style={{ display: "flex", gap: 5, alignItems: "center", marginBottom: 2 }}>
+              <MemberTag name={c.member} />
+              <span style={{ fontSize: 9, color: C.muted, marginLeft: "auto" }}>
+                {new Date(c.createdAt).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                {c.editedAt && <span style={{ marginLeft: 3 }}>(編集済)</span>}
+              </span>
+            </div>
+            {editId === c.id ? (
+              <>
+                <textarea value={editText} onChange={e => setEditText(e.target.value)}
+                  style={{ ...inp, height: 60, resize: "vertical", marginBottom: 4, fontSize: 13 }} />
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button onClick={() => saveEdit(c.id)} style={{ ...btnStyle(), flex: 1, padding: "6px", fontSize: 11 }}><NavIcon name="save" size={12} /> 確定</button>
+                  <button onClick={() => { setEditId(null); setEditText(""); }} style={{ ...btnStyle("ghost"), flex: 1, padding: "6px", fontSize: 11 }}>キャンセル</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5, whiteSpace: "pre-wrap", marginBottom: c.member === currentUser ? 3 : 0 }}>{c.text}</div>
+                {c.member === currentUser && (
+                  <div style={{ display: "flex", gap: 3, justifyContent: "flex-end" }}>
+                    <button onClick={() => { setEditId(c.id); setEditText(c.text); }} style={{
+                      background: "transparent", border: `1px solid ${C.muted}33`, color: C.muted,
+                      borderRadius: 3, padding: "1px 6px", fontSize: 9, cursor: "pointer", fontFamily: "inherit",
+                    }}><NavIcon name="edit" size={15} /></button>
+                    <button onClick={() => removeOne(c.id)} style={{
+                      background: "transparent", border: `1px solid ${C.danger}55`, color: C.danger,
+                      borderRadius: 3, padding: "1px 6px", fontSize: 9, cursor: "pointer", fontFamily: "inherit",
+                    }}><NavIcon name="trash" size={15} /></button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        ))}
+        {/* 入力欄（電話しながら書く前提で少し高め） */}
+        <div style={{ display: "flex", gap: 5, marginTop: 6 }}>
+          <textarea value={text} onChange={e => setText(e.target.value)}
+            placeholder={currentUser ? `${currentUser}として記入（電話で聞いた内容・次の約束など）` : "ログインしてください"}
+            style={{ ...inp, flex: 1, height: 64, resize: "vertical", fontSize: 13, padding: "8px 10px" }} />
+          <button onClick={post} disabled={!text.trim() || !currentUser}
+            style={{ ...btnStyle(), padding: "8px 12px", fontSize: 12, flexShrink: 0, alignSelf: "stretch",
+              opacity: (!text.trim() || !currentUser) ? 0.5 : 1 }}>追加</button>
+        </div>
+        <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+          ※「追加」→ 下の「保存する」で確定します。反響一覧の「💬 やり取り」からも同じ内容が見られます。
+        </div>
+      </div>
+    </Field>
   );
 }
 
@@ -12729,6 +12821,12 @@ function MediationView({ data, setData, dealType, setDealType }) {
                       <Field label="📝 メモ">
                         <textarea style={{ ...inp, height: 70, resize: "vertical" }} value={v.note || ""} onChange={e => updateV("note", e.target.value)} placeholder="10:00 単独内見・駅から徒歩同行など" />
                       </Field>
+
+                      {/* 🆕 v9.394: やり取り（一覧の 💬やり取り と同じ場所に貯まる） */}
+                      <ViewingCommentsEditor
+                        comments={v.comments}
+                        currentUser={currentUser}
+                        onChange={next => updateV("comments", next)} />
                     </div>
                   )}
                 </div>
@@ -14615,6 +14713,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                       <Field label="📝 メモ">
                         <textarea style={{ ...inp, height: 70, resize: "vertical" }} value={v.note || ""} onChange={e => updateV("note", e.target.value)} placeholder="10:00 単独内見・駅から徒歩同行など" />
                       </Field>
+
+                      {/* 🆕 v9.394: やり取り（一覧の 💬やり取り と同じ場所に貯まる） */}
+                      <ViewingCommentsEditor
+                        comments={v.comments}
+                        currentUser={currentUser}
+                        onChange={next => updateV("comments", next)} />
                     </div>
                   )}
                 </div>
