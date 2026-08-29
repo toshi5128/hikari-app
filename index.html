@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.396-edit-sheet-sticky-save";
+const APP_VERSION = "2026-08-29-v9.397-family-card-delete";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -18160,6 +18160,8 @@ function inferAreaFromAddress(address) {
 function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
   const list = (Array.isArray(members) ? members : []).map(jiageFamilyNormalize);
   const [form, setForm] = useState(null); // { editId, name, relation, age, memo, isOwner, isKey, deceased } | null
+  // 🆕 v9.397: 直前に消した1人を覚えておき「元に戻す」を出す。確認ダイアログの代わりの安全網。
+  const [undo, setUndo] = useState(null); // { member, index } | null
   const PURPLE = "#a855f7", GOLD = "#f59e0b", KEYC = "#0ea5e9", METC = "#22c55e";
   const LINE = PURPLE + "66"; // 🆕 家系図の線。C.borderDim だと薄すぎて段のつながりが見えない
 
@@ -18173,6 +18175,7 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
                : { ...x, met: true, metAt: today, metBy: currentUser || "" })));
   };
   const quickAdd = (relation, extra) => {
+    setUndo(null);
     onChange([...list, jiageFamilyNormalize({ id: newId(), relation, ...(extra || {}) })]);
   };
   const saveForm = () => {
@@ -18192,13 +18195,25 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
     JIAGE_FAMILY_SOLO_FLAGS.forEach(f => {
       if (base[f]) next = next.map(m => m.id === meId ? m : { ...m, [f]: false });
     });
+    setUndo(null);
     onChange(next);
     setForm(null);
   };
+  // 🆕 v9.397: 消すたびに確認ダイアログを出すと、現場で枠だけ先に置いた人を整理するのが重い。
+  //   ダイアログはやめて「すぐ消える＋元に戻せる」にした（押し間違いは1タップで戻せる）。
   const removeOne = (id) => {
-    if (!window.confirm("この家族メンバーを削除しますか？")) return;
+    const idx = list.findIndex(m => m.id === id);
+    if (idx < 0) return;
+    setUndo({ member: list[idx], index: idx });
     onChange(list.filter(m => m.id !== id));
     setForm(f => (f && f.editId === id) ? null : f);
+  };
+  const undoRemove = () => {
+    if (!undo) return;
+    const next = list.slice();
+    next.splice(Math.min(undo.index, next.length), 0, undo.member);
+    onChange(next);
+    setUndo(null);
   };
 
   const badge = (color, text) => (
@@ -18231,10 +18246,19 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
         )}
         <div onClick={() => setForm({ editId: m.id, name: m.name, relation: m.relation, age: m.age, memo: m.memo, isOwner: m.isOwner, isKey: m.isKey, deceased: m.deceased })}
           style={{
+            position: "relative",
             background: C.cardBg, border: `2px ${m.deceased ? "dashed" : "solid"} ${accent}`,
             borderRadius: 12, padding: "5px 3px 4px", cursor: "pointer", textAlign: "center",
             opacity: m.deceased ? 0.6 : 1,
           }}>
+          {/* 🆕 v9.397: カードの右上から直接消せる。押し間違えても下の「元に戻す」で戻せる。 */}
+          <button type="button" aria-label="この人を消す" onClick={(e) => { e.stopPropagation(); removeOne(m.id); }}
+            style={{
+              position: "absolute", top: -8, right: -8, width: 20, height: 20, padding: 0,
+              borderRadius: "50%", cursor: "pointer", fontFamily: "inherit",
+              fontSize: 12, lineHeight: "18px", fontWeight: 800,
+              background: C.cardBg, color: C.muted, border: `1px solid ${C.border}`,
+            }}>×</button>
           {m.name ? <div style={{ fontSize: 9, color: PURPLE, fontWeight: 700, lineHeight: 1.2 }}>{m.relation}</div> : null}
           <div style={{ fontSize: m.name ? 12 : 13, fontWeight: 800, color: C.text, lineHeight: 1.25, wordBreak: "break-all" }}>{m.name || m.relation}</div>
           <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.3, minHeight: 13 }}>{m.age ? m.age + "歳" : ""}</div>
@@ -18302,6 +18326,20 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
           </div>
         </div>
       ))}
+
+      {/* 🆕 v9.397: 直前に消した1人を戻す帯 */}
+      {undo && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, marginTop: 8,
+          background: C.warnBg, border: `1px solid ${C.warn}55`, borderRadius: 8, padding: "6px 8px",
+        }}>
+          <span style={{ fontSize: 11, color: C.text, flex: 1 }}>
+            🗑 <b>{undo.member.name || undo.member.relation}</b> を消しました
+          </span>
+          <button type="button" onClick={undoRemove}
+            style={{ background: "transparent", border: `1.5px solid ${C.warn}`, color: C.warn, borderRadius: 8, padding: "4px 10px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>元に戻す</button>
+        </div>
+      )}
 
       {/* かんたん追加（名前は後からでOK） */}
       {!form && (
