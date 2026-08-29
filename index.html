@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.406-hankyo-split";
+const APP_VERSION = "2026-08-29-v9.406.1-jiage-only-goals";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -498,6 +498,12 @@ const RETIRED_MEMBERS = ["長島"];
 function isRetiredMember(name) { return RETIRED_MEMBERS.includes(String(name || "").trim()); }
 // ログインや担当切替で選べるメンバー（退職者を除く）
 function activeMembers() { return MEMBERS.filter(m => !isRetiredMember(m)); }
+
+// 🆕 v9.406.1: 地上げ専任のメンバー（業者回りをしない人）。営業タブの目標を地上げの項目だけにする。
+//   ・入退社や担当替えは、この配列を書き換えるだけで切り替わる。
+//   ・過去に入れた業者側の目標値は消さない（表示と保存の対象から外れるだけ）。
+const JIAGE_ONLY_MEMBERS = ["下田", "谷津"];
+function isJiageOnlyMember(name) { return JIAGE_ONLY_MEMBERS.includes(String(name || "").trim()); }
 
 // 🆕 v9.379: 会社全体のお金の数字（年間売上・利益・目標達成率・月別グラフ・メンバー別ランキング）を見られる人。
 //   ・1件ごとの仕入/売却/利益は今まで通り全員見える。ここで隠すのは「会社の全体像」だけ。
@@ -1466,6 +1472,12 @@ const JIAGE_COUNTER_SECTIONS = [
 const APPROACH_GROUP_KEYS = ["agent", "jiage"];
 function approachGroupItems(key) {
   return (APPROACH_GROUPS[key] && APPROACH_GROUPS[key].items) || APPROACH_ITEMS;
+}
+// 🆕 v9.406.1: そのメンバーの目標に出す項目。地上げ専任なら地上げの項目だけにする。
+//   （相手次第で決まる数字＝NON_GOAL_ITEMS は今まで通り除く）
+function goalItemsForMember(member) {
+  const items = isJiageOnlyMember(member) ? approachGroupItems("jiage") : APPROACH_ITEMS;
+  return items.filter(item => !NON_GOAL_ITEMS.has(item));
 }
 
 // 🆕 v9.274: 訪問記録モーダルを通さずにステータスをKPI段階(見込み等)へ変えた時も、行動管理カウンターに+1する共通処理。
@@ -15674,8 +15686,11 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   // 目標値はdataに保存（memberGoals: { "たっくん": { 訪問: 600, ... } }）
   const memberGoals = data.memberGoals || {};
 
-  const getGoal = (member, item) =>
-    memberGoals[member]?.[item] ?? APPROACH_TARGETS[item] ?? 0;
+  const getGoal = (member, item) => {
+    // 🆕 v9.406.1: 地上げ専任の人は業者側の項目に目標を持たない（既定値も出さない）
+    if (isJiageOnlyMember(member) && !goalItemsForMember(member).includes(item)) return 0;
+    return memberGoals[member]?.[item] ?? APPROACH_TARGETS[item] ?? 0;
+  };
 
   // 🆕 v9.399: 週の目標（担当ごと）。未設定なら既定値を使う。
   const weeklyGoalsAll = data.weeklyGoals || {};
@@ -16009,7 +16024,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     }
     setGoalEditMember(member);
     const current = {};
-    APPROACH_GOAL_ITEMS.forEach(item => { current[item] = String(getGoal(member, item)); });
+    goalItemsForMember(member).forEach(item => { current[item] = String(getGoal(member, item)); });   // 🆕 v9.406.1
     setGoalForm(current);
     setShowGoalEdit(true);
   };
@@ -16021,8 +16036,10 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
       setShowGoalEdit(false);
       return;
     }
+    // 🆕 v9.406.1: 画面に出していない項目（地上げ専任の人の業者項目）は 0 にして残さない
+    const shown = goalItemsForMember(goalEditMember);
     const updated = {};
-    APPROACH_GOAL_ITEMS.forEach(item => { updated[item] = Number(goalForm[item]) || 0; });
+    APPROACH_GOAL_ITEMS.forEach(item => { updated[item] = shown.includes(item) ? (Number(goalForm[item]) || 0) : 0; });
     setData(d => ({ ...d, memberGoals: { ...(d.memberGoals || {}), [goalEditMember]: updated } }));
 
     // 🆕 下田・比嘉 + 目標対象者に通知（送信者除外）
@@ -17259,7 +17276,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                 空欄または0なら未設定扱いになります。
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                {APPROACH_GOAL_ITEMS.map(item => (
+                {goalItemsForMember(selectedMember).map(item => (   /* 🆕 v9.406.1 */
                   <Field key={item} label={`🎯 ${approachItemLabel(item)}`}>
                     <input
                       type="text" inputMode="numeric"
@@ -17915,6 +17932,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <MemberTag name={m} />
                     {isMe && <Tag label="自分" color={C.accent} />}
+                    {isJiageOnlyMember(m) && <Tag label="🗺️ 地上げ専任" color="#8b5cf6" />}
                   </div>
                   {canEditGoal ? (
                     <button style={{ ...btnStyle(), padding: "8px 14px", fontSize: 13 }} onClick={() => openGoalEdit(m)}>目標を編集</button>
@@ -17922,14 +17940,22 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     <span style={{ color: C.muted, fontSize: 11, padding: "8px 12px", background: C.inset, borderRadius: 8 }}><NavIcon name="eye" size={12} /> 閲覧のみ</span>
                   )}
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                  {visibleItems.map(item => (
-                    <div key={item} style={{ display: "flex", justifyContent: "space-between", background: C.inset, borderRadius: 8, padding: "6px 10px" }}>
-                      <span style={{ color: C.muted, fontSize: 12 }}>{approachItemLabel(item)}</span>
-                      <span style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>{getGoal(m, item)}</span>
-                    </div>
-                  ))}
-                </div>
+                {/* 🆕 v9.406.1: 地上げ専任の人は地上げの項目だけ。業者タブでは「目標なし」と伝える */}
+                {isJiageOnlyMember(m) && salesSubTab !== "jiage" ? (
+                  <div style={{ background: C.inset, borderRadius: 8, padding: "10px 12px", color: C.muted, fontSize: 12, lineHeight: 1.6 }}>
+                    🗺️ 地上げ専任のため、業者の目標は置いていません。<br />
+                    目標は「🗺️ 地上げ」タブで確認・編集できます。
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                    {(isJiageOnlyMember(m) ? goalItemsForMember(m) : visibleItems).map(item => (
+                      <div key={item} style={{ display: "flex", justifyContent: "space-between", background: C.inset, borderRadius: 8, padding: "6px 10px" }}>
+                        <span style={{ color: C.muted, fontSize: 12 }}>{approachItemLabel(item)}</span>
+                        <span style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>{getGoal(m, item)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -17939,9 +17965,15 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
       {/* 目標編集ボトムシート */}
       {showGoalEdit && (
         <BottomSheet title={`${goalEditMember} の月間目標設定`} onClose={() => setShowGoalEdit(false)}>
-          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>各項目の月間目標値を入力してください</div>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>
+            各項目の月間目標値を入力してください
+            {/* 🆕 v9.406.1: 地上げ専任の人は地上げの項目だけ出す */}
+            {isJiageOnlyMember(goalEditMember) && (
+              <div style={{ marginTop: 6, color: "#8b5cf6", fontWeight: 700, fontSize: 12 }}>🗺️ 地上げ専任のため、地上げの項目だけ表示しています</div>
+            )}
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {APPROACH_GOAL_ITEMS.map(item => (
+            {goalItemsForMember(goalEditMember).map(item => (
               <Field key={item} label={approachItemLabel(item)}>
                 <input
                   type="text" inputMode="numeric"
