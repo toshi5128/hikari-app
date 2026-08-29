@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.405-sekisan-scope";
+const APP_VERSION = "2026-08-29-v9.406-hankyo-split";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -808,8 +808,13 @@ function collectPendingViewings(data, user) {
 
 function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
   const [onlyMine, setOnlyMine] = useState(false);
+  // 🆕 v9.406: 「まだ誰も触っていない(🔴未対応)」と「かけたが留守(📵不在留守電)」は掛け方が違う。分けて出せるようにする。
+  const [stateFilter, setStateFilter] = useState("all"); // "all" | "未対応" | "不在留守電"
   const all = collectPendingViewings(data, currentUser);
-  const rows = onlyMine ? all.filter(r => r.assignee === currentUser) : all;
+  const base = onlyMine ? all.filter(r => r.assignee === currentUser) : all;
+  const stateCounts = { "未対応": 0, "不在留守電": 0 };
+  base.forEach(r => { const k = viewingHandledKey(r.v); if (k in stateCounts) stateCounts[k]++; });
+  const rows = stateFilter === "all" ? base : base.filter(r => viewingHandledKey(r.v) === stateFilter);
 
   const applyAttempt = (row, kind) => {
     if (!currentUser) { alert("先にログインしてください"); return; }
@@ -839,9 +844,29 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
         ))}
       </div>
 
+      {/* 🆕 v9.406: 🔴未対応 / 📵不在・留守電 の切り替え（件数つき） */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[
+          ["all", `すべて ${base.length}`, C.accent],
+          ["未対応", `🔴未対応 ${stateCounts["未対応"]}`, "#ef4444"],
+          ["不在留守電", `📵不在・留守電 ${stateCounts["不在留守電"]}`, "#f59e0b"],
+        ].map(([val, label, col]) => {
+          const active = stateFilter === val;
+          return (
+            <button key={val} onClick={() => setStateFilter(val)} style={{
+              flex: 1, padding: "9px 4px", borderRadius: 10, cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 800,
+              background: active ? col : col + "14", color: active ? "#fff" : col,
+              border: `1.5px solid ${active ? col : col + "66"}`,
+            }}>{label}</button>
+          );
+        })}
+      </div>
+
       {rows.length === 0 && (
         <div style={{ background: "#10b98114", border: `1.5px solid #10b98155`, borderRadius: 12, padding: 24, textAlign: "center", color: C.text, fontSize: 14, fontWeight: 700 }}>
-          ✅ かけ直しの要る反響はありません
+          {stateFilter === "未対応" ? "✅ まだ誰も触っていない反響はありません"
+            : stateFilter === "不在留守電" ? "✅ かけ直し待ち（不在・留守電）はありません"
+            : "✅ かけ直しの要る反響はありません"}
         </div>
       )}
 
@@ -13215,6 +13240,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [viewingSearchByStock, setViewingSearchByStock] = useState({});
   // 🆕 v9.370: 反響を全件表示するか（既定は5件だけ）
   const [viewingShowAllByStock, setViewingShowAllByStock] = useState({});
+  // 🆕 v9.406: 物件一覧そのものを「🔴未対応の反響がある物件 / 📵不在の反響がある物件」で絞る
+  const [stockViewingState, setStockViewingState] = useState("all"); // "all" | "未対応" | "不在留守電"
   // 🆕 v9.375: 「今日かける反響」シート
   const [showCallSheet, setShowCallSheet] = useState(false);
   // 🆕 反響ごとのコメント欄の開閉（viewing 単位）
@@ -13250,6 +13277,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         setFilterStatuses([]);
         setFilterMember("__ALL__");
         setSearch("");
+        setStockViewingState("all");   // 🆕 v9.406: 反響の絞り込みも解除
         // ハイライト
         setHighlightId(targetId);
 
@@ -13333,7 +13361,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   ];
   const _statusOrderMap = {};
   STATUS_SORT_ORDER.forEach((s, i) => { _statusOrderMap[s] = i; });
-  const filtered = useMemo(() => {
+  const filteredBase = useMemo(() => {
     const arr = myStocks.filter(s => {
       // viewMode（現在の在庫 / 決済完了 / 全て）
       if (viewMode === "active" && s.status === "売決完了") return false;
@@ -13352,6 +13380,24 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       return (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0);
     });
   }, [myStocks, filterStatuses, filterMember, search, viewMode]);
+
+  // 🆕 v9.406: 反響の状態で物件を絞る（件数は「物件の数」）
+  //   ・🔴未対応＝まだ一度も当たっていない反響が残っている物件
+  //   ・📵不在留守電＝かけたが繋がらず、かけ直しが要る反響が残っている物件
+  const stockViewingCounts = useMemo(() => {
+    const c = { "未対応": 0, "不在留守電": 0 };
+    filteredBase.forEach(s => {
+      const vs = s.viewings || [];
+      if (vs.some(v => viewingHandledKey(v) === "未対応")) c["未対応"]++;
+      if (vs.some(v => viewingHandledKey(v) === "不在留守電")) c["不在留守電"]++;
+    });
+    return c;
+  }, [filteredBase]);
+  const filtered = useMemo(() => (
+    stockViewingState === "all"
+      ? filteredBase
+      : filteredBase.filter(s => (s.viewings || []).some(v => viewingHandledKey(v) === stockViewingState))
+  ), [filteredBase, stockViewingState]);
 
   // 💬 反響コメント投稿
   const handlePostViewingComment = (stockId, viewingIdx) => {
@@ -13961,6 +14007,25 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
           </button>
         );
       })()}
+      {/* 🆕 v9.406: 在庫一覧を反響の状態で絞る（🔴未対応がある物件 / 📵不在がある物件） */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        {[
+          ["all", `すべて ${filteredBase.length}`, C.accent],
+          ["未対応", `🔴未対応あり ${stockViewingCounts["未対応"]}`, "#ef4444"],
+          ["不在留守電", `📵不在あり ${stockViewingCounts["不在留守電"]}`, "#f59e0b"],
+        ].map(([val, label, col]) => {
+          const active = stockViewingState === val;
+          const dim = val !== "all" && !stockViewingCounts[val];
+          return (
+            <button key={val} onClick={() => setStockViewingState(active ? "all" : val)} disabled={dim} style={{
+              flex: 1, padding: "9px 4px", borderRadius: 10, cursor: dim ? "not-allowed" : "pointer",
+              fontSize: 11, fontFamily: "inherit", fontWeight: 800, opacity: dim ? 0.35 : 1,
+              background: active ? col : col + "14", color: active ? "#fff" : col,
+              border: `1.5px solid ${active ? col : col + "66"}`,
+            }}>{label}</button>
+          );
+        })}
+      </div>
       <SearchBar value={search} onChange={setSearch} placeholder="物件名・担当者で検索..." />
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}><NavIcon name="user" size={12} /> 表示する担当者{filterMember === "__ALL__" ? "（全員）" : ""}</div>
@@ -14555,6 +14620,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               setShowCallSheet(false);
               if (row.parentType === "stock") {
                 setDealType("stock");
+                setStockViewingState("all");   // 🆕 v9.406: 絞り込み中でも飛び先が隠れないように
                 setViewingsExpandedByStock({ [row.parentId]: true });
                 scrollToCard(`stock-item-${row.parentId}`);
               } else {
