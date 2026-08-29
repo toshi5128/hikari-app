@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.402-own-scope";
+const APP_VERSION = "2026-08-29-v9.403-own-money-visible";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -502,19 +502,15 @@ function activeMembers() { return MEMBERS.filter(m => !isRetiredMember(m)); }
 // 🆕 v9.379: 会社全体のお金の数字（年間売上・利益・目標達成率・月別グラフ・メンバー別ランキング）を見られる人。
 //   ・1件ごとの仕入/売却/利益は今まで通り全員見える。ここで隠すのは「会社の全体像」だけ。
 const MONEY_VIEWERS = ["下田", "比嘉"];
-// 🆕 v9.401: 会社の儲けが分かる数字（仕入原価・利益）は一覧に出さない。
-//   1件ずつは小さく見えても、一覧で足すと会社全体の利益が出てしまうため。
-//   売却価格は売り出し情報なのでそのまま見せる。
-const MONEY_HIDDEN = "非表示";
+// 🆕 v9.403: 金額のマスクはやめた。v9.402 で一覧そのものが「自分の担当分だけ」に
+//   なったため、そこに出る仕入・利益は本人の案件の数字であり隠す意味がない。
+//   会社全体の数字（ダッシュボード）は canViewMoney で従来どおり下田・比嘉のみ。
 // 🆕 v9.402: 下田・比嘉 以外は、在庫・仲介・売却決済を「自分の担当分」だけにする。
 //   物件の担当は「比嘉・下田」のように連名のことがあるので expandAssignee 経由で判定する。
 function visibleToUser(items, user, key = "assignee") {
   if (canViewMoney(user)) return items || [];
   if (!user) return [];
   return (items || []).filter(it => it && isAssignedTo([it[key]], user));
-}
-function moneyMan(canMoney, yen) {
-  return canMoney ? Math.round((Number(yen) || 0) / 10000) + "万" : MONEY_HIDDEN;
 }
 function canViewMoney(user) {
   const parts = expandAssignee(String(user || "").trim()); // 「比嘉・下田」のような連名も分解して判定
@@ -11821,12 +11817,10 @@ function DupWarnBanner({ info, onClose }) {
 }
 // ===================== 仲介案件ビュー（在庫タブ内・仕入案件と切替）=====================
 function MediationView({ data, setData, dealType, setDealType }) {
-  // 🆕 v9.401: 仲介手数料（会社の売上）は下田・比嘉だけ
-  const canMoneyMed = canViewMoney(getCurrentUser());
   // 🆕 v9.402: 仲介案件も、下田・比嘉 以外は自分の担当分だけ
   const visibleMediations = useMemo(
     () => visibleToUser(data.mediations, getCurrentUser()),
-    [data.mediations, canMoneyMed]);
+    [data.mediations]);
   const currentUser = getCurrentUser();
   const canEdit = (item) => canEditItem(item, currentUser, getAdminMembers(data));
   const [search, setSearch] = useState("");
@@ -12351,7 +12345,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
           <div style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 6 }}>{m.name}</div>
           {m.seller && <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>売主: {m.seller}</div>}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
-            {[["売出価格", m.listPrice ? (m.listPrice / 10000).toFixed(0) + "万" : "—", C.text], ["成約価格", m.closePrice ? (m.closePrice / 10000).toFixed(0) + "万" : "—", C.accent], ["仲介手数料", canMoneyMed ? (m.brokerFee ? (m.brokerFee / 10000).toFixed(0) + "万" : "—") : MONEY_HIDDEN, canMoneyMed ? C.success : C.muted]].map(([l, v, c]) => (
+            {[["売出価格", m.listPrice ? (m.listPrice / 10000).toFixed(0) + "万" : "—", C.text], ["成約価格", m.closePrice ? (m.closePrice / 10000).toFixed(0) + "万" : "—", C.accent], ["仲介手数料", m.brokerFee ? (m.brokerFee / 10000).toFixed(0) + "万" : "—", C.success]].map(([l, v, c]) => (
               <div key={l} style={{ background: C.inset, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
                 <div style={{ color: C.muted, fontSize: 10 }}>{l}</div>
                 <div style={{ color: c, fontWeight: 700, fontSize: 15 }}>{v}</div>
@@ -13187,8 +13181,6 @@ function MediationView({ data, setData, dealType, setDealType }) {
 }
 
 function StockPage({ data, setData, pendingNav, onConsumeNav }) {
-  // 🆕 v9.401: 仕入原価と利益は下田・比嘉だけ（一覧で足すと会社の利益が分かるため）
-  const canMoney = canViewMoney(getCurrentUser());
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
@@ -13315,7 +13307,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   // 🆕 v9.402: 下田・比嘉 以外は自分の担当物件だけ
   const myStocks = useMemo(
     () => visibleToUser(data.stocks, getCurrentUser()),
-    [data.stocks, canMoney]);
+    [data.stocks]);
 
   // viewMode別の件数
   const counts = useMemo(() => ({
@@ -14086,7 +14078,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               </div>
             )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
-              {[["仕入", canMoney ? (s.buyCost / 10000).toFixed(0) + "万" : MONEY_HIDDEN, canMoney ? C.text : C.muted], ["売却", (s.sellPrice / 10000).toFixed(0) + "万", C.text], ["利益", canMoney ? (profit / 10000).toFixed(0) + "万" : MONEY_HIDDEN, canMoney ? (profit > 0 ? C.success : C.danger) : C.muted]].map(([l, v, c]) => (
+              {[["仕入", (s.buyCost / 10000).toFixed(0) + "万", C.text], ["売却", (s.sellPrice / 10000).toFixed(0) + "万", C.text], ["利益", (profit / 10000).toFixed(0) + "万", profit > 0 ? C.success : C.danger]].map(([l, v, c]) => (
                 <div key={l} style={{ background: C.inset, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
                   <div style={{ color: C.muted, fontSize: 10 }}>{l}</div>
                   <div style={{ color: c, fontWeight: 700, fontSize: 15 }}>{v}</div>
@@ -15508,7 +15500,6 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
-  const canMoney = canViewMoney(currentUser); // 🆕 v9.379: 会社全体のお金の数字を見られるか（下田・比嘉のみ）
 
   const [tab, setTab] = useState("cases"); // "cases" | "input" | "monthly" | "goals"
   // 🆕 v8.36: 業者 / 地上げ サブタブ
@@ -16220,7 +16211,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                 sub: `🔥熱い${pipeline.sekisanHot.length} / 🟡検討中${pipeline.sekisanCheck.length}`,
                 items: pipeline.sekisanActive,
                 type: "sekisan",
-                renderItem: (s) => ({ title: s.address || "住所未設定", sub: `${s.judgment}${s.buyPrice ? " · 仕入想定" + moneyMan(canMoney, s.buyPrice) : ""}`, badge: s.assignee, raw: s }) },
+                renderItem: (s) => ({ title: s.address || "住所未設定", sub: `${s.judgment} · 仕入想定${s.buyPrice ? Math.round(Number(s.buyPrice)/10000)+"万" : "未"}`, badge: s.assignee, raw: s }) },
               { key: "stocks", icon: "🏠", label: "仕入在庫", count: pipeline.stocksActive.length, color: C.success,
                 sub: "リフォーム中・売却準備など", items: pipeline.stocksActive,
                 type: "stock",
@@ -16232,7 +16223,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
               { key: "completed", icon: "✅", label: "売却決済", count: pipeline.stocksCompleted.length, color: C.muted,
                 sub: `${pipeline.selectedYear}年実績`, items: pipeline.stocksCompleted,
                 type: "stock",
-                renderItem: (s) => ({ title: s.name, sub: `${canMoney ? "利益" + moneyMan(canMoney, (s.sellPrice||0)-(s.buyCost||0)) + " · " : ""}${s.sellDate}`, badge: s.assignee, raw: s }) },
+                renderItem: (s) => ({ title: s.name, sub: `利益${Math.round(((s.sellPrice||0)-(s.buyCost||0))/10000)}万 · ${s.sellDate}`, badge: s.assignee, raw: s }) },
             ].map(stage => {
               const isExpanded = casesExpanded === stage.key;
               return (
@@ -16438,18 +16429,18 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                 purchase: { items: weekActivity.newPurchase, color: C.accent, icon: "🏠", title: "仕入決済",
                   render: (s) => ({
                     title: s.name || "(無題)",
-                    sub: `${s.status}${canMoney ? " · 仕入" + Math.round((s.buyCost||0)/10000) + "万" : ""} · 想定売却${Math.round((s.sellPrice||0)/10000)}万`,
+                    sub: `${s.status} · 仕入${Math.round((s.buyCost||0)/10000)}万 · 想定売却${Math.round((s.sellPrice||0)/10000)}万`,
                     date: s.buyDate,
                     badge: s.assignee,
-                    stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo, canMoney },
+                    stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo },
                   })},
                 buyContract: { items: weekActivity.newBuyContract, color: "#a855f7", icon: "📝", title: "仕入契約",
                   render: (s) => ({
                     title: s.name || "(無題)",
-                    sub: `${s.status}${canMoney ? " · 仕入" + Math.round((s.buyCost||0)/10000) + "万" : ""} · 仕入契約日 ${s.buyContractDate}`,
+                    sub: `${s.status} · 仕入${Math.round((s.buyCost||0)/10000)}万 · 仕入契約日 ${s.buyContractDate}`,
                     date: s.buyContractDate,
                     badge: s.assignee,
-                    stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo, canMoney },
+                    stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo },
                   })},
                 sellContract: { items: weekActivity.newSellContract, color: C.accent, icon: "📋", title: "売却契約",
                   render: (s) => ({
@@ -16457,7 +16448,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     sub: `${s.status} · 売却${Math.round((s.sellPrice||0)/10000)}万 · 売却契約日 ${s.sellContractDate}`,
                     date: s.sellContractDate,
                     badge: s.assignee,
-                    stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo, canMoney },
+                    stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo },
                   })},
                 kentou: { items: weekActivity.currentKentou, color: C.accent, icon: "📝", title: "現在「仕入検討」",
                   render: (s) => {
@@ -16471,9 +16462,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     const profitMan = Math.round(profitYen / 10000);
                     return {
                       title: s.address || "(住所未設定)",
-                      sub: canMoney
-                        ? `仕入想定${buyMan}万 · 売却想定${sellMan}万${profitMan ? " · 利益" + profitMan + "万" : ""}`
-                        : `売却想定${sellMan}万`,
+                      sub: `仕入想定${buyMan}万 · 売却想定${sellMan}万${profitMan ? " · 利益" + profitMan + "万" : ""}`,
                       date: s.createdAt,
                       badge: s.assignee,
                       sekisanDetail: { buyMan, sellMan, profitMan, totalCostMan: Math.round(totalCostYen/10000), expensesMan: Math.round(expensesYen/10000), memo: s.memo, judgmentMemo: s.judgmentMemo, layout: s.layout, landArea: s.landArea, buildingArea: s.buildingArea, age: s.age, structure: s.structure, stationDist: s.stationDist },
@@ -16485,11 +16474,11 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     const profit = (s.sellPrice || 0) - (s.buyCost || 0);
                     return {
                       title: s.name || "(無題)",
-                      sub: `売却${Math.round((s.sellPrice||0)/10000)}万${canMoney ? " · 利益" + Math.round(profit/10000) + "万" : ""}`,
+                      sub: `売却${Math.round((s.sellPrice||0)/10000)}万 · 利益${Math.round(profit/10000)}万`,
                       date: s.sellDate,
                       badge: s.assignee,
-                      highlight: (canMoney && profit > 0) ? `+${Math.round(profit/10000)}万` : null,
-                      stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo, profitMan: Math.round(profit/10000), canMoney },
+                      highlight: profit > 0 ? `+${Math.round(profit/10000)}万` : null,
+                      stockDetail: { buyMan: Math.round((s.buyCost||0)/10000), sellMan: Math.round((s.sellPrice||0)/10000), status: s.status, memo: s.memo, profitMan: Math.round(profit/10000) },
                     };
                   }},
                 hot: { items: weekActivity.currentHot, color: C.danger, icon: "🔥", title: "現在「熱い」",
@@ -16504,9 +16493,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                     const profitMan = Math.round(profitYen / 10000);
                     return {
                       title: s.address || "(住所未設定)",
-                      sub: canMoney
-                        ? `仕入想定${buyMan}万 · 売却想定${sellMan}万${profitMan ? " · 利益" + profitMan + "万" : ""}`
-                        : `売却想定${sellMan}万`,
+                      sub: `仕入想定${buyMan}万 · 売却想定${sellMan}万${profitMan ? " · 利益" + profitMan + "万" : ""}`,
                       date: s.createdAt,
                       badge: s.assignee,
                       sekisanDetail: { buyMan, sellMan, profitMan, totalCostMan: Math.round(totalCostYen/10000), expensesMan: Math.round(expensesYen/10000), memo: s.memo, judgmentMemo: s.judgmentMemo, layout: s.layout, landArea: s.landArea, buildingArea: s.buildingArea, age: s.age, structure: s.structure, stationDist: s.stationDist },
@@ -16541,13 +16528,13 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, paddingBottom: 8, borderBottom: `1px solid ${cfg.color}22` }}>
                     <span style={{ fontSize: 16 }}>{cfg.icon}</span>
                     <span style={{ color: cfg.color, fontSize: 12, fontWeight: 700 }}>{cfg.title} 詳細（{sortedItems.length}件）</span>
-                    {/* 🆕 v9.379: 会社の合計金額は下田・比嘉のみ */}
-                    {totalProfit !== null && canMoney && (
+                    {/* 🆕 v9.403: 一覧が自分の担当分だけになったので、その合計は本人に見せる */}
+                    {totalProfit !== null && (
                       <span style={{ marginLeft: "auto", fontSize: 11, color: C.muted }}>
                         合計売上 <span style={{ color: C.warn, fontWeight: 700 }}>{Math.round(totalSell/10000)}万</span> / 利益 <span style={{ color: C.success, fontWeight: 700 }}>{Math.round(totalProfit/10000)}万</span>
                       </span>
                     )}
-                    {totalBuy !== null && canMoney && (
+                    {totalBuy !== null && (
                       <span style={{ marginLeft: "auto", fontSize: 11, color: C.muted }}>
                         合計仕入 <span style={{ color: C.accent, fontWeight: 700 }}>{Math.round(totalBuy/10000)}万</span>
                       </span>
@@ -16579,9 +16566,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, fontSize: 10, marginBottom: 6 }}>
                                 <div>
                                   <div style={{ color: C.muted, fontSize: 9 }}>仕入</div>
-                                  <div style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>
-                                    {canMoney ? <>{r.sekisanDetail.buyMan}<span style={{ fontSize: 9, marginLeft: 1 }}>万</span></> : <span style={{ color: C.muted, fontSize: 11 }}>{MONEY_HIDDEN}</span>}
-                                  </div>
+                                  <div style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>{r.sekisanDetail.buyMan}<span style={{ fontSize: 9, marginLeft: 1 }}>万</span></div>
                                 </div>
                                 <div>
                                   <div style={{ color: C.muted, fontSize: 9 }}>売却想定</div>
@@ -16589,9 +16574,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                                 </div>
                                 <div>
                                   <div style={{ color: C.muted, fontSize: 9 }}>想定利益</div>
-                                  <div style={{ color: r.sekisanDetail.profitMan > 0 ? C.success : C.danger, fontWeight: 800, fontSize: 13 }}>
-                                    {canMoney ? <>{r.sekisanDetail.profitMan > 0 ? "+" : ""}{r.sekisanDetail.profitMan}<span style={{ fontSize: 9, marginLeft: 1 }}>万</span></> : <span style={{ color: C.muted, fontSize: 11 }}>{MONEY_HIDDEN}</span>}
-                                  </div>
+                                  <div style={{ color: r.sekisanDetail.profitMan > 0 ? C.success : C.danger, fontWeight: 800, fontSize: 13 }}>{r.sekisanDetail.profitMan > 0 ? "+" : ""}{r.sekisanDetail.profitMan}<span style={{ fontSize: 9, marginLeft: 1 }}>万</span></div>
                                 </div>
                               </div>
                               {(r.sekisanDetail.layout || r.sekisanDetail.landArea || r.sekisanDetail.buildingArea || r.sekisanDetail.age) && (
