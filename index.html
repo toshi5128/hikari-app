@@ -1937,6 +1937,79 @@ function migrateMendanCounterV9395(d) {
   return { ...d, approaches, migrations: { ...(d.migrations || {}), v9395_mendan_counter: Date.now() } };
 }
 
+// 🆕 v9.396: 過去の「初訪 / 地上再訪」を訪問記録から数え直す。
+//   旧ルールで貯まった数は「回った軒数」になっていないため、そのままでは面談率が出せない。
+//   ・訪問記録がある（日付×担当）だけを書き換える
+//   ・訪問記録が1件も無い日は手入力の可能性があるので触らない
+//   ・架電・ポスティング・新規地上など他の項目には一切触れない
+function migrateVisitCountersV9396(d) {
+  if (!d || typeof d !== "object") return d;
+  // (日付|担当) → [初回, 再訪]
+  const calc = new Map();
+  (d.jiage || []).forEach(j => {
+    const log = (Array.isArray(j.visitLog) ? j.visitLog : [])
+      .slice()
+      .sort((a, b) => String((a && a.date) || "").localeCompare(String((b && b.date) || ""))
+        || String((a && a.time) || "").localeCompare(String((b && b.time) || "")));
+    log.forEach((v, i) => {
+      if (!v) return;
+      const date = v.date || "";
+      const who = v.recordedBy || j.assignee || "";
+      if (!date || !who) return;
+      const key = date + "|" + who;
+      const cur = calc.get(key) || [0, 0];
+      cur[i === 0 ? 0 : 1] += 1;
+      calc.set(key, cur);
+      // 同行者にも回った軒数を付ける
+      (Array.isArray(v.withMembers) ? v.withMembers : []).forEach(m => {
+        if (!m || m === who) return;
+        const k2 = date + "|" + m;
+        const c2 = calc.get(k2) || [0, 0];
+        c2[i === 0 ? 0 : 1] += 1;
+        calc.set(k2, c2);
+      });
+    });
+  });
+  if (calc.size === 0) return d;
+
+  const now = Date.now();
+  let changed = 0;
+  const seen = new Set();
+  const approaches = (d.approaches || []).map(a => {
+    if (!a) return a;
+    const key = (a.date || "") + "|" + (a.member || "");
+    const c = calc.get(key);
+    if (!c) return a;                       // 訪問記録が無い日は触らない
+    if (seen.has(key)) return a;            // 同じ日に複数エントリがある場合は先頭だけ
+    seen.add(key);
+    const v = a.values || {};
+    if ((Number(v["初訪"]) || 0) === c[0] && (Number(v["地上再訪"]) || 0) === c[1]) return a;
+    changed++;
+    return { ...a, values: { ...v, ["初訪"]: c[0], ["地上再訪"]: c[1] }, updatedAt: now };
+  });
+
+  // カウンター行がまだ無い（日付×担当）は作る
+  const added = [];
+  let seq = 0;
+  calc.forEach((c, key) => {
+    if (seen.has(key)) return;
+    const idx = key.indexOf("|");
+    const date = key.slice(0, idx), member = key.slice(idx + 1);
+    added.push({
+      id: now + (seq++), member, date,
+      values: { ["初訪"]: c[0], ["地上再訪"]: c[1] },
+      memo: "", mailDelivery: 0, area: "", dailyGoals: {}, comments: [],
+    });
+  });
+  if (!changed && added.length === 0) return d;
+  console.log(`[v9.396] 初訪/再訪を訪問記録から数え直しました（修正 ${changed}日ぶん / 新規 ${added.length}日ぶん）`);
+  return {
+    ...d,
+    approaches: [...approaches, ...added],
+    migrations: { ...(d.migrations || {}), v9396_visit_counters: now },
+  };
+}
+
 function migrateClearHanroSamplesV9367(d) {
   if (!d || typeof d !== "object") return d;
   const ids = new Set(V9367_SAMPLE_HANRO_IDS.map(String));
@@ -5648,6 +5721,13 @@ function MainApp({ onLock, onSwitchUser }) {
   useEffect(() => {
     if (!data) return;
     if (migrateViewingLabelsV9386(data) !== data) setData(d => migrateViewingLabelsV9386(d));
+  }, [data]);
+
+  // 🆕 v9.396: 初訪/再訪を訪問記録から数え直す（1回きり）
+  useEffect(() => {
+    if (!data) return;
+    if (data.migrations && data.migrations.v9396_visit_counters) return;
+    if (migrateVisitCountersV9396(data) !== data) setData(d => migrateVisitCountersV9396(d));
   }, [data]);
 
   // 🆕 v9.395: 行動管理の面談カウンターを、対象外に直した17件ぶん減らす（1回きり）
@@ -20473,15 +20553,26 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const newStatus = resDef ? resDef.autoStatus : null;
     const _finalStatus = visitForm.status || newStatus;
     // 訪問記録1件から +1 されるカウンター項目（result / status / posted から算出）
-    const computeBumpItems = (result, finalStatus, posted) => {
+    // 🆕 v9.396: 「初訪 / 再訪」は回った軒数（結果を問わない）。
+    //   旧: 保存後のステータスが初訪で終わった記録だけ → 会って見込みになった分が抜け、
+    //       分母として使えず「17軒回ったのに初訪7」のような数になっていた。
+    //   新: その家が初めてなら 初訪、2回目以降なら 地上再訪 を必ず +1。
+    //       これで 初訪+再訪 = 面談+不在+居留守+訪問禁止+対象外 が成り立ち、面談率が出せる。
+    const KPI_STATUS_COUNTERS = {
+      "見込み": "見込み", "中長期見込": "中長期見込", "見込無し": "見込無し",
+      "交渉中": "交渉中", "媒介": "媒介", "仕入": "地上仕入",
+      "リフォーム請負": "リフォーム請負", "失注": "失注",
+    };
+    const computeBumpItems = (result, finalStatus, posted, isFirstVisit) => {
       const items = [];
       const _resultToItem = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止" };
-      const _statusToCounter = { "再訪": "地上再訪", "仕入": "地上仕入" };
+      // 回った軒数（必ず1つ立つ）
+      items.push(isFirstVisit ? "初訪" : "地上再訪");
+      // 訪問の結果
       if (_resultToItem[result]) items.push(_resultToItem[result]);
-      // 🆕 v9.391: 対象外は「物件として成立しない」判定であって営業活動ではない。実績に足さない。
-      if (finalStatus && finalStatus !== "対象外" && ATTACK_STATUSES.includes(finalStatus)) items.push(_statusToCounter[finalStatus] || finalStatus);
+      // 成果（見込み・媒介など）。初訪/再訪/対象外/訪問禁止 はここでは積まない
+      if (finalStatus && KPI_STATUS_COUNTERS[finalStatus]) items.push(KPI_STATUS_COUNTERS[finalStatus]);
       if (posted) items.push("ポスティング");
-      // 🆕 v9.393: 訪問禁止は結果とステータスの両方から積まれるので重複を落とす
       return Array.from(new Set(items));
     };
     // 🆕 v9.109: 同行者にも加算する「訪問行動系」項目。
@@ -20546,7 +20637,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
             let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
             // 🆕 v9.109: 同行統合で参加した本人(myName)に「訪問行動系」だけ加算（地上げのみ・KPIは加算しない）
             if (targetType === "jiage" && myName) {
-              const compItems = computeBumpItems(other.result, other.bumpedStatus, other.posted).filter(it => COMPANION_ITEMS.has(it));
+              const _oLog = (visitRecordTarget.raw && visitRecordTarget.raw.visitLog) || visitRecordTarget.visitLog || [];
+              const _oFirst = _oLog.length > 0 && _oLog[0] && _oLog[0].id === other.id;
+              const compItems = computeBumpItems(other.result, other.bumpedStatus, other.posted, _oFirst).filter(it => COMPANION_ITEMS.has(it));
               if (compItems.length) {
                 const todayStr = new Date().toISOString().split("T")[0];
                 compItems.forEach((ci, i) => {
@@ -20628,7 +20721,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
         const target = d.jiage.find(j => j.id === targetId);
         const bumpMember = visitForm.assignee || (target && target.assignee) || getCurrentUser() || "";
         // 🆕 v9.109: 加算項目を共通関数で算出（result / status / posted）
-        const bumpItems = computeBumpItems(visitForm.result, _finalStatus, visitForm.posted);
+        const _isFirstVisit = !((target && Array.isArray(target.visitLog) ? target.visitLog : []).length);
+        const bumpItems = computeBumpItems(visitForm.result, _finalStatus, visitForm.posted, _isFirstVisit);
         let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
         const todayStr = new Date().toISOString().split("T")[0];
         const _bumpFor = (member, items) => {
