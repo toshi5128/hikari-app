@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.388-result-unified";
+const APP_VERSION = "2026-08-29-v9.389-route-pick-detail";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6492,6 +6492,40 @@ const _compactTracks = (tracksObj, opts) => {
 };
 
 // 🗺️ Leafletマップコンポーネント
+// 🆕 v9.389: 訪問先を「住所だけ」で選ばせない。吹き出しに出す中身をここで組み立てる。
+//   ・所有者名（共有者ありも）／担当／ステータス／前回の訪問結果と回数／メモ
+function _hkEsc(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function routeStopTitleHtml(s) {
+  if (!s) return "(無住所)";
+  return _hkEsc(String(s.name || "(無住所)").slice(0, 40));
+}
+function routeStopTooltip(s) {
+  if (!s) return "";
+  const who = s.owner ? ` / ${String(s.owner).slice(0, 14)}` : "";
+  return `${String(s.name || "")}${who}（タップで詳細）`;
+}
+function routeStopDetailHtml(s) {
+  if (!s) return "";
+  const chip = (bg, txt) => `<span style="display:inline-block;background:${bg};color:#fff;padding:1px 7px;border-radius:9px;font-size:10px;font-weight:800;margin:0 4px 3px 0;">${_hkEsc(txt)}</span>`;
+  const rows = [];
+  if (s.owner) {
+    rows.push(`<div style="font-size:12px;color:#0f172a;font-weight:700;">👤 ${_hkEsc(String(s.owner).slice(0, 30))}${s.shared ? ' <span style="color:#ef4444;font-size:10px;font-weight:800;">👥共有</span>' : ""}</div>`);
+  } else {
+    rows.push(`<div style="font-size:11px;color:#94a3b8;">👤 所有者未取得</div>`);
+  }
+  const chips = [];
+  if (s.status) chips.push(chip("#0ea5e9", s.status));
+  if (s.resultLabel) chips.push(chip("#f59e0b", `前回 ${s.resultLabel}${s.visits > 1 ? ` ${s.visits}回目` : ""}${s.lastVisitDate ? ` ${String(s.lastVisitDate).slice(5)}` : ""}`));
+  else if (!s.visits) chips.push(chip("#94a3b8", "未訪問"));
+  if (s.assignee) chips.push(chip("#64748b", s.assignee));
+  if (chips.length) rows.push(`<div style="margin-top:3px;">${chips.join("")}</div>`);
+  if (s.memo) rows.push(`<div style="font-size:10px;color:#64748b;margin-top:2px;line-height:1.4;">📝 ${_hkEsc(s.memo)}</div>`);
+  return rows.join("");
+}
+
 function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
@@ -7069,8 +7103,27 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       pickPins.forEach(p => {
         if (selSet.has(String(p.id))) return;
         const mk = L.marker([p.lat, p.lng], { icon: L.divIcon({ html: `<div style="background:#0ea5e9;border:2px solid #fff;border-radius:50%;width:18px;height:18px;box-shadow:0 1px 4px rgba(0,0,0,.5);"></div>`, className: "", iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 400 });
-        mk.on("click", () => { if (onRoutePickToggle) onRoutePickToggle(p.id); });
-        mk.bindTooltip(`${(p.name || "")}（タップで選択）`);
+        // 🆕 v9.389: 住所だけで押させない。誰の家か・前回どうだったかを見せてから選ばせる。
+        mk.bindPopup(
+          `<div style="font-family:'Noto Sans JP',sans-serif;min-width:190px;">`
+          + `<div style="font-weight:800;font-size:13px;margin-bottom:4px;">${routeStopTitleHtml(p)}</div>`
+          + routeStopDetailHtml(p)
+          + `<button class="hk-pick-add" style="display:block;width:100%;margin-top:7px;background:#22c55e;color:#fff;border:none;padding:9px;border-radius:7px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;">➕ ルートに入れる</button>`
+          + `<button class="hk-pick-detail" style="display:block;width:100%;margin-top:5px;background:#3b82f6;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">📋 詳細を開く</button>`
+          + `</div>`,
+          { autoClose: true, closeOnClick: false }
+        );
+        mk.on("popupopen", (e) => {
+          setTimeout(() => {
+            const node = e.popup && e.popup._contentNode;
+            if (!node) return;
+            const ab = node.querySelector(".hk-pick-add");
+            if (ab) ab.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRoutePickToggle) onRoutePickToggle(p.id); };
+            const db = node.querySelector(".hk-pick-detail");
+            if (db) db.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRouteStopOpen) onRouteStopOpen(p.id); };
+          }, 10);
+        });
+        mk.bindTooltip(routeStopTooltip(p));
         mk.addTo(grp);
       });
     }
@@ -7091,7 +7144,9 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const rmBtn = `<button class="hk-route-rm" style="display:block;width:100%;background:#ef4444;color:#fff;border:none;padding:7px;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;">➖ ルートから外す</button>`;
       mk.bindPopup(
         `<div style="font-family:'Noto Sans JP',sans-serif;min-width:170px;">`
-        + `<div style="font-weight:800;font-size:13px;margin-bottom:6px;">${i + 1}. ${(s.name || "(無住所)").slice(0, 40)}</div>`
+        + `<div style="font-weight:800;font-size:13px;margin-bottom:4px;">${i + 1}. ${routeStopTitleHtml(s)}</div>`
+        + routeStopDetailHtml(s)
+        + `<div style="height:6px;"></div>`
         + `<button class="hk-route-log" style="display:block;width:100%;margin-bottom:5px;background:#22c55e;color:#fff;border:none;padding:8px;border-radius:7px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;">📍 訪問結果を記録する</button>`
         + endBtn + rmBtn
         + `</div>`,
@@ -22172,10 +22227,29 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
 
             // 🆕 v9.51: 訪問ルート提案 — 表示中ピンを停留所候補に
             // 🆕 v9.372: 訪問禁止の家はルート候補から必ず外す（地図には出るが「行き先」にはしない）
+            // 🆕 v9.389: 住所だけでは「誰の家か」が分からず、行き先を選べなかった。
+            //   候補ピンに所有者・ステータス・訪問履歴を持たせて、見てから選べるようにする。
             const routeAllStops = itemsWithCoord.filter(i => i.status !== "訪問禁止").map(i => {
               const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
               const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
-              return { id: (i.id != null ? i.id : i.rawId), lat, lng, name: i.address || i.ownerName || "(無住所)" };
+              const raw = i.raw || {};
+              const vlog = Array.isArray(raw.visitLog) ? raw.visitLog : [];
+              const last = vlog.length ? vlog[vlog.length - 1] : null;
+              const resKey = latestVisitResultKey(raw);
+              const resDef = resKey ? VISIT_RESULTS.find(r => r.key === resKey) : null;
+              const ownerStr = String(i.ownerName || raw.owner || "");
+              return {
+                id: (i.id != null ? i.id : i.rawId), lat, lng,
+                name: i.address || i.ownerName || "(無住所)",
+                owner: ownerStr,
+                assignee: i.assignee || raw.assignee || "",
+                status: i.status || "",
+                resultLabel: resDef ? resDef.short : "",
+                visits: vlog.length,
+                lastVisitDate: (last && (last.date || last.at)) ? String(last.date || last.at).slice(0, 10) : "",
+                shared: ownerStr.includes("・") || String(raw.memo || "").includes("【共有者あり】"),
+                memo: String(raw.memo || "").replace(/\s+/g, " ").trim().slice(0, 50),
+              };
             }).filter(s => typeof s.lat === "number" && typeof s.lng === "number");
             const routeRecompute = (count, endId) => {
               if (!currentLoc) { alert("⚠️ 現在地がまだ取れていません。位置情報を許可してください。"); return; }
@@ -23434,7 +23508,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               <div style={{ padding: "10px 16px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12, borderBottom: `1px solid ${C.borderDim}` }}>
                                 <span style={{ color: C.muted, fontWeight: 700 }}>選択中: <b style={{ color: "#22c55e" }}>{route.pickIds.length}</b> 件</span>
                                 <button onClick={routeClearPick} style={{ background: C.inset, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>選択クリア</button>
-                                <span style={{ color: C.muted, fontSize: 11 }}>地図のピンをタップで追加／解除</span>
+                                <span style={{ color: C.muted, fontSize: 11 }}>地図の点をタップ → 中身を見て「➕ルートに入れる」</span>
                               </div>
                             )}
                             {/* サマリー */}
@@ -23472,8 +23546,20 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                       <div style={{ fontSize: 13, fontWeight: 700, color: isDone ? C.muted : C.text, textDecoration: isDone ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                         {s.name} {isNext && <span style={{ fontSize: 10, color: "#fb7185", fontWeight: 800 }}>← 次はここ！</span>}
                                       </div>
+                                      {/* 🆕 v9.389: 住所の下に「誰か・どんな状態か」を出す */}
+                                      <div style={{ fontSize: 11, color: C.muted, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 1 }}>
+                                        {s.owner
+                                          ? <span style={{ color: isDone ? C.muted : C.text, fontWeight: 700 }}>👤 {String(s.owner).slice(0, 16)}{s.shared ? <span style={{ color: "#ef4444", fontWeight: 800 }}> 👥共有</span> : null}</span>
+                                          : <span style={{ color: C.muted }}>👤 所有者未取得</span>}
+                                        {s.status && <span style={{ background: "#0ea5e922", color: "#0ea5e9", padding: "0 6px", borderRadius: 8, fontWeight: 800, fontSize: 10 }}>{s.status}</span>}
+                                        {s.resultLabel
+                                          ? <span style={{ background: "#f59e0b22", color: "#f59e0b", padding: "0 6px", borderRadius: 8, fontWeight: 800, fontSize: 10 }}>前回 {s.resultLabel}{s.visits > 1 ? ` ${s.visits}回目` : ""}{s.lastVisitDate ? ` ${String(s.lastVisitDate).slice(5)}` : ""}</span>
+                                          : <span style={{ color: C.muted, fontSize: 10 }}>未訪問</span>}
+                                      </div>
+                                      {s.memo && <div style={{ fontSize: 10, color: C.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>📝 {s.memo}</div>}
                                       <div style={{ fontSize: 11, color: C.muted }}>前から {routeFmtDist(d)} ・ 車で約{legMin}分{isEnd ? " ・ 🟠終点" : ""}</div>
                                     </div>
+                                    <button onClick={() => routeOnStopOpen(s.id)} style={{ flex: "none", background: "transparent", color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 7px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>📋</button>
                                     <button onClick={() => routeOpenGmaps(s.lat, s.lng)} style={{ flex: "none", background: C.accentBg, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>▶ ナビ</button>
                                   </div>
                                 );
