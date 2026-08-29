@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.408-hankyo-count-truth";
+const APP_VERSION = "2026-08-29-v9.409-jiage-goal4";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1473,9 +1473,33 @@ const APPROACH_GROUP_KEYS = ["agent", "jiage"];
 function approachGroupItems(key) {
   return (APPROACH_GROUPS[key] && APPROACH_GROUPS[key].items) || APPROACH_ITEMS;
 }
-// 🆕 v9.406.1: そのメンバーの目標に出す項目。地上げ専任なら地上げの項目だけにする。
-//   （相手次第で決まる数字＝NON_GOAL_ITEMS は今まで通り除く）
+// 🆕 v9.409: 地上げの目標はこの5つだけ。結果につながる数だけを追う（下田さんの指示）。
+//   ・カウンターは今まで通り全部残る。目標を置く対象をこの5つに絞るだけ。
+//   ・「回った先」「見込み計」は複数カウンターの合計。他はカウンターと同じキー。
+const JIAGE_GOAL_DEFS = [
+  { key: "回った先",   label: "🚪 回った先", hint: "初訪＋再訪",       parts: ["初訪", "地上再訪"] },
+  { key: "見込み計",   label: "🌱 見込み",   hint: "見込み＋中長期見込", parts: ["見込み", "中長期見込"] },
+  { key: "地上仕入",   label: "💰 仕入",     hint: "",                 parts: ["地上仕入"] },
+  { key: "新規地上",   label: "✨ 新規地上", hint: "地図に立てたピン",   parts: ["新規地上"] },
+  { key: "ポスティング", label: "📬 ポスティング", hint: "",             parts: ["ポスティング"] },
+];
+function jiageGoalDef(key) { return JIAGE_GOAL_DEFS.find(d => d.key === key) || null; }
+// 目標欄に出す名前（地上げの5項目は専用の名前、それ以外は今まで通り）
+function goalItemLabel(item, withHint) {
+  const d = jiageGoalDef(item);
+  if (!d) return approachItemLabel(item);
+  return d.label + (withHint && d.hint ? `（${d.hint}）` : "");
+}
+// その月の実績（複数カウンターの合計）
+function jiageGoalTotal(values, def) {
+  return (def.parts || []).reduce((a, k) => a + (Number((values || {})[k]) || 0), 0);
+}
+// 🆕 v9.406.1→v9.409: そのメンバーの「目標を置く項目」。地上げ専任なら上の5つ。
 function goalItemsForMember(member) {
+  return isJiageOnlyMember(member) ? JIAGE_GOAL_DEFS.map(d => d.key) : APPROACH_GOAL_ITEMS;
+}
+// カウンター単位で目標を置く画面（今日の目標）は、カウンターのキーのまま扱う
+function counterGoalItemsForMember(member) {
   const items = isJiageOnlyMember(member) ? approachGroupItems("jiage") : APPROACH_ITEMS;
   return items.filter(item => !NON_GOAL_ITEMS.has(item));
 }
@@ -16254,15 +16278,17 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     const shown = goalItemsForMember(goalEditMember);
     const updated = {};
     APPROACH_GOAL_ITEMS.forEach(item => { updated[item] = shown.includes(item) ? (Number(goalForm[item]) || 0) : 0; });
+    // 🆕 v9.409: 「回った先」「見込み計」のような合計項目も保存する
+    shown.forEach(item => { if (!(item in updated)) updated[item] = Number(goalForm[item]) || 0; });
     setData(d => ({ ...d, memberGoals: { ...(d.memberGoals || {}), [goalEditMember]: updated } }));
 
     // 🆕 下田・比嘉 + 目標対象者に通知（送信者除外）
     const me = currentUser || "";
     const targets = getNotifyTargets(data, me, { member: goalEditMember }); // 目標対象者も含める
     if (targets.length > 0) {
-      const goalSummary = APPROACH_ITEMS
+      const goalSummary = goalItemsForMember(goalEditMember)   // 🆕 v9.409
         .filter(item => Number(goalForm[item]) > 0)
-        .map(item => `${approachItemLabel(item)}: ${goalForm[item]}件`)
+        .map(item => `${goalItemLabel(item)}: ${goalForm[item]}件`)
         .slice(0, 3)
         .join(" / ");
       sendPushNotification(
@@ -17502,7 +17528,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                 空欄または0なら未設定扱いになります。
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                {goalItemsForMember(selectedMember).map(item => (   /* 🆕 v9.406.1 */
+                {counterGoalItemsForMember(selectedMember).map(item => (   /* 🆕 v9.409: ここはカウンター単位 */
                   <Field key={item} label={`🎯 ${approachItemLabel(item)}`}>
                     <input
                       type="text" inputMode="numeric"
@@ -17996,9 +18022,11 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                       <div style={{ background: C.panelBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
                         <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, fontWeight: 700 }}><NavIcon name="target" size={12} /> 達成度（月間目標との対比）</div>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                          {visibleItems.map(item => {
-                            const val = totals[item];
-                            const goal = goals[item];
+                          {/* 🆕 v9.409: 地上げ専任は「回った先／見込み／仕入／新規地上／ポスティング」の5つで見る */}
+                          {(isJiageOnlyMember(dailyChartMember)
+                            ? JIAGE_GOAL_DEFS.map(d => ({ item: d.key, name: goalItemLabel(d.key, true), val: jiageGoalTotal(totals, d), goal: getGoal(dailyChartMember, d.key) }))
+                            : visibleItems.map(item => ({ item, name: approachItemLabel(item), val: totals[item], goal: goals[item] }))
+                          ).map(({ item, name, val, goal }) => {
                             const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
                             const realPct = goal > 0 ? val / goal * 100 : 0;
                             const noGoal = goal === 0;
@@ -18013,7 +18041,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                             return (
                               <div key={item} style={{ background: C.inset, borderRadius: 8, padding: "8px 10px" }}>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
-                                  <span style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{approachItemLabel(item)}</span>
+                                  <span style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{name}</span>
                                   <span style={{ color, fontWeight: 800, fontSize: 13 }}>
                                     {val}{goal > 0 ? <span style={{ color: C.muted, fontWeight: 400 }}>/{goal}</span> : ""}
                                   </span>
@@ -18176,7 +18204,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                     {(isJiageOnlyMember(m) ? goalItemsForMember(m) : visibleItems).map(item => (
                       <div key={item} style={{ display: "flex", justifyContent: "space-between", background: C.inset, borderRadius: 8, padding: "6px 10px" }}>
-                        <span style={{ color: C.muted, fontSize: 12 }}>{approachItemLabel(item)}</span>
+                        <span style={{ color: C.muted, fontSize: 12 }}>{goalItemLabel(item)}</span>
                         <span style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>{getGoal(m, item)}</span>
                       </div>
                     ))}
@@ -18195,12 +18223,12 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
             各項目の月間目標値を入力してください
             {/* 🆕 v9.406.1: 地上げ専任の人は地上げの項目だけ出す */}
             {isJiageOnlyMember(goalEditMember) && (
-              <div style={{ marginTop: 6, color: "#8b5cf6", fontWeight: 700, fontSize: 12 }}>🗺️ 地上げ専任のため、地上げの項目だけ表示しています</div>
+              <div style={{ marginTop: 6, color: "#8b5cf6", fontWeight: 700, fontSize: 12 }}>🗺️ 地上げ専任のため、結果につながる5つだけにしています</div>
             )}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {goalItemsForMember(goalEditMember).map(item => (
-              <Field key={item} label={approachItemLabel(item)}>
+              <Field key={item} label={goalItemLabel(item, true)}>
                 <input
                   type="text" inputMode="numeric"
                   style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none" }}
