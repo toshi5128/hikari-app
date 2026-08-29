@@ -1337,18 +1337,59 @@ const AUTO_BUMPED_ITEMS = new Set([
   "面談", "居留守", "地上不在", "訪問禁止", "ポスティング",
   "未訪問", "初訪", "地上再訪", "見込み候補", "見込み", "中長期見込", "見込無し",
   "交渉中", "媒介", "地上仕入",
+  "対象外",   // 🆕 v9.399: 訪問結果から自動加算
 ]);
 function isAutoBumpedItem(item) {
   return AUTO_BUMPED_ITEMS.has(item);
 }
 // 🆕 目標対象外の項目（KPIには入れない、振り返り用 - エリア・曜日傾向分析）
-const NON_GOAL_ITEMS = new Set(["不在", "断り", "閉店", "休み", "居留守", "訪問禁止", "未訪問", "見込無し"]);
+// 🆕 v9.399: 相手次第で決まる数字（会えた/不在/対象外など）は目標を持たせない。
+//   自分で決められる行動（回った先・架電・ポスティング等）だけを目標の対象にする。
+const NON_GOAL_ITEMS = new Set(["不在", "断り", "閉店", "休み", "居留守", "訪問禁止", "未訪問", "見込無し", "対象外", "地上不在", "面談"]);
 const APPROACH_GOAL_ITEMS = APPROACH_ITEMS.filter(item => !NON_GOAL_ITEMS.has(item));
 
 // 🆕 v8.36: 業者活動 / 地上げ活動 で営業カウンターを分けて表示する設定
 //   ・agent  … 業者寄りの一般営業（訪問・架電・査定など）
 //   ・jiage  … 地上げ活動に特化した項目（訪問記録から自動連動）
 //   ・「不在」「断り」「休み」は両方の活動で発生するので両グループに出す
+// 🆕 v9.399: 週の目標。毎朝「今日の目標」を入れる運用は続かなかった
+//   （5月66日→6月55日→7月23日→8月0日）。週に一度決めれば、あとは自動で進捗が出る。
+//   ・回った先 … 初訪+地上再訪（自分の足で決まる数）
+//   ・他は自分でコントロールできる行動だけ
+const WEEKLY_GOAL_ITEMS = ["回った先", "新規地上", "架電", "ポスティング"];
+const WEEKLY_GOAL_DEFAULTS = { "回った先": 100, "新規地上": 50, "架電": 20, "ポスティング": 20 };
+const WEEKLY_GOAL_LABEL = { "回った先": "🚪 回った先", "新規地上": "✨ 新規地上", "架電": "📞 架電", "ポスティング": "📬 ポスティング" };
+
+// その日を含む週（月曜はじまり）の開始日・終了日を返す
+function weekRangeOf(dateStr) {
+  const d = new Date(String(dateStr || "") + "T00:00:00");
+  if (isNaN(d.getTime())) return null;
+  const dow = (d.getDay() + 6) % 7;           // 月=0 … 日=6
+  const start = new Date(d); start.setDate(d.getDate() - dow);
+  const end = new Date(start); end.setDate(start.getDate() + 6);
+  const f = (x) => x.toISOString().split("T")[0];
+  return { start: f(start), end: f(end) };
+}
+
+// 週の実績を合計する（回った先 = 初訪 + 地上再訪）
+function weeklyTotalsOf(approaches, member, dateStr) {
+  const r = weekRangeOf(dateStr);
+  const out = {};
+  WEEKLY_GOAL_ITEMS.forEach(k => { out[k] = 0; });
+  if (!r) return out;
+  (approaches || []).forEach(a => {
+    if (!a || a.member !== member) return;
+    const d = a.date || "";
+    if (d < r.start || d > r.end) return;
+    const v = a.values || {};
+    out["回った先"] += (Number(v["初訪"]) || 0) + (Number(v["地上再訪"]) || 0);
+    out["新規地上"] += Number(v["新規地上"]) || 0;
+    out["架電"] += Number(v["架電"]) || 0;
+    out["ポスティング"] += Number(v["ポスティング"]) || 0;
+  });
+  return out;
+}
+
 const APPROACH_GROUPS = {
   agent: {
     label: "業者",
@@ -1371,6 +1412,15 @@ const APPROACH_GROUPS = {
     items: ["初訪", "地上再訪", "面談", "地上不在", "居留守", "訪問禁止", "対象外", "ポスティング", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "地上仕入", "新規地上"],
   },
 };
+// 🆕 v9.399: 性質の違う数字が一列に並んでいて「足していいのか」が分からなかった。
+//   ① 回った先（分母）② 訪問の結果（内訳・足すと①になる）③ 成果 ④ 自分で数える
+const JIAGE_COUNTER_SECTIONS = [
+  { title: "🚪 回った先", desc: "訪問記録を付けた軒数。下の「訪問の結果」を足すとこの数になります", items: ["初訪", "地上再訪"] },
+  { title: "📋 訪問の結果", desc: "相手次第で決まる数字なので目標は置きません", items: ["面談", "地上不在", "居留守", "訪問禁止", "対象外"] },
+  { title: "🌱 そこから生まれた成果", desc: "", items: ["見込み候補", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "地上仕入"] },
+  { title: "✍️ 自分で数える活動", desc: "タップで＋1 / 長押しで連射", items: ["新規地上", "ポスティング"] },
+];
+
 const APPROACH_GROUP_KEYS = ["agent", "jiage"];
 function approachGroupItems(key) {
   return (APPROACH_GROUPS[key] && APPROACH_GROUPS[key].items) || APPROACH_ITEMS;
@@ -2020,6 +2070,66 @@ function migrateVisitCountersV9396(d) {
     approaches: [...approaches, ...added],
     migrations: { ...(d.migrations || {}), v9396_visit_counters: now },
   };
+}
+
+// 🆕 v9.399: 訪問結果のカウンター（会えた/不在/居留守/門前払い/対象外）を訪問記録から数え直す。
+//   ・「対象外」は今回から訪問結果として数えるようになったので、過去分を入れ直す必要がある
+//   ・初訪/再訪 と足し算が必ず合う状態にする（回った先 = 結果の合計）
+//   ・訪問記録がある日×担当だけ書き換え、記録が無い日は手入力の可能性があるので触らない
+//   ・架電/ポスティング/新規地上/見込み等には触れない
+function migrateResultCountersV9399(d) {
+  if (!d || typeof d !== "object") return d;
+  const RES = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止", notarget: "対象外" };
+  const KEYS = ["面談", "居留守", "地上不在", "訪問禁止", "対象外", "初訪", "地上再訪"];
+  const calc = new Map();   // "日付|担当" → {面談:n, ...}
+  const add = (date, who, key) => {
+    if (!date || !who || !key) return;
+    const k = date + "|" + who;
+    const cur = calc.get(k) || {};
+    cur[key] = (cur[key] || 0) + 1;
+    calc.set(k, cur);
+  };
+  (d.jiage || []).forEach(j => {
+    // 玄関先まで行った記録だけを日時順に並べる（電話・メッセージは軒数に数えない）
+    const log = (Array.isArray(j.visitLog) ? j.visitLog : [])
+      .filter(v => v && DOOR_RESULT_KEYS.has(v.result)).slice()
+      .sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))
+        || String(a.time || "").localeCompare(String(b.time || "")));
+    log.forEach((v, i) => {
+      const key = RES[v.result];
+      const who = v.recordedBy || j.assignee || "";
+      const members = [who, ...(Array.isArray(v.withMembers) ? v.withMembers : []).filter(m => m && m !== who)];
+      members.forEach(m => {
+        if (key) add(v.date, m, key);
+        add(v.date, m, i === 0 ? "初訪" : "地上再訪");
+      });
+    });
+  });
+  if (calc.size === 0) return d;
+
+  const now = Date.now();
+  let changed = 0;
+  const seen = new Set();
+  const approaches = (d.approaches || []).map(a => {
+    if (!a) return a;
+    const k = (a.date || "") + "|" + (a.member || "");
+    const c = calc.get(k);
+    if (!c || seen.has(k)) return a;
+    seen.add(k);
+    const v = a.values || {};
+    let diff = false;
+    const nv = { ...v };
+    KEYS.forEach(key => {
+      const want = c[key] || 0;
+      if ((Number(v[key]) || 0) !== want) { nv[key] = want; diff = true; }
+    });
+    if (!diff) return a;
+    changed++;
+    return { ...a, values: nv, updatedAt: now };
+  });
+  if (!changed) return d;
+  console.log(`[v9.399] 回った先と訪問結果のカウンターを訪問記録から数え直しました（${changed}日ぶん）`);
+  return { ...d, approaches, migrations: { ...(d.migrations || {}), v9399_result_counters: now } };
 }
 
 function migrateClearHanroSamplesV9367(d) {
@@ -5736,6 +5846,13 @@ function MainApp({ onLock, onSwitchUser }) {
     if (migrateViewingLabelsV9386(data) !== data) setData(d => migrateViewingLabelsV9386(d));
   }, [data]);
 
+  // 🆕 v9.399: 訪問結果のカウンターを訪問記録から数え直す（1回きり）
+  useEffect(() => {
+    if (!data) return;
+    if (data.migrations && data.migrations.v9399_result_counters) return;
+    if (migrateResultCountersV9399(data) !== data) setData(d => migrateResultCountersV9399(d));
+  }, [data]);
+
   // 🆕 v9.396: 初訪/再訪を訪問記録から数え直す（1回きり）
   useEffect(() => {
     if (!data) return;
@@ -8524,7 +8641,7 @@ function JiageStatusHelp({ onClose }) {
 // 🆕 v9.376: 活動カウンターの「何件中何件」を一目で分かるようにする内訳カード
 //   ・地上げは訪問記録1件につき結果が必ず1つ自動加算されるので、割合が正確に出せる
 //   ・業者は手入力カウンターなので、残りを「会えた（目安）」として控えめに出す
-function ActivityBreakdown({ values, group, periodLabel }) {
+function ActivityBreakdown({ values, group, periodLabel, weekly, weekGoals, weekRange, onEditWeekGoals }) {
   const n = (k) => Number((values || {})[k]) || 0;
   const isJiage = group === "jiage";
 
@@ -8534,6 +8651,7 @@ function ActivityBreakdown({ values, group, periodLabel }) {
         { key: "地上不在", label: "不在", color: "#92400e" },
         { key: "居留守", label: "居留守", color: "#b45309" },
         { key: "訪問禁止", label: "門前払い", color: "#7f1d1d" },
+        { key: "対象外", label: "対象外", color: "#78716c" },
       ]
     : [
         { key: "不在", label: "不在", color: "#92400e" },
@@ -8543,8 +8661,10 @@ function ActivityBreakdown({ values, group, periodLabel }) {
       ];
 
   // 回った総数
+  // 🆕 v9.399: 回った先＝初訪+再訪。これが分母で、下の内訳の合計と一致する。
+  //   （古い記録では一致しないことがあるので、大きい方を採って割合が100%を超えないようにする）
   const visits = isJiage
-    ? outcomes.reduce((a, o) => a + n(o.key), 0)
+    ? Math.max(n("初訪") + n("地上再訪"), outcomes.reduce((a, o) => a + n(o.key), 0))
     : n("訪問") + n("業者初訪");
   // 業者は「訪問 − 不在・断り・休み・閉店」を会えた数の目安として先頭に足す
   const bars = isJiage
@@ -8575,9 +8695,12 @@ function ActivityBreakdown({ values, group, periodLabel }) {
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, color: C.muted, fontWeight: 700 }}>{periodLabel ? periodLabel + " " : ""}回った先</span>
         <span style={{ fontSize: 30, fontWeight: 800, color: C.text, lineHeight: 1 }}>{visits}</span>
-        <span style={{ fontSize: 13, color: C.muted, fontWeight: 700 }}>件</span>
+        <span style={{ fontSize: 13, color: C.muted, fontWeight: 700 }}>軒</span>
         {isJiage && (n("初訪") > 0 || n("地上再訪") > 0) && (
-          <span style={{ marginLeft: "auto", fontSize: 11, color: C.muted }}>初回 {n("初訪")} / 再訪 {n("地上再訪")}</span>
+          <span style={{ fontSize: 11, color: C.muted }}>（初めて {n("初訪")} ／ 再訪 {n("地上再訪")}）</span>
+        )}
+        {isJiage && visits > 0 && (
+          <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 800, color: "#10b981" }}>会えた率 {pct(n("面談"), visits)}%</span>
         )}
       </div>
 
@@ -8634,6 +8757,48 @@ function ActivityBreakdown({ values, group, periodLabel }) {
       {!isJiage && (
         <div style={{ fontSize: 10, color: C.muted, marginTop: 8, lineHeight: 1.6 }}>
           ※ 業者は手入力のカウンターなので「会えた」は差し引きの目安です（名刺は1訪問で複数枚取れることがあります）
+        </div>
+      )}
+
+      {/* 🆕 v9.399: 今週の進み具合（毎日の目標入力をやめ、週に一度決めるだけにした） */}
+      {weekly && (
+        <div style={{ borderTop: `1px solid ${C.borderDim}`, marginTop: 12, paddingTop: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted, fontWeight: 800 }}>
+              今週の進み具合{weekRange ? `（${weekRange.start.slice(5).replace("-", "/")}〜${weekRange.end.slice(5).replace("-", "/")}）` : ""}
+            </span>
+            {onEditWeekGoals && (
+              <button onClick={onEditWeekGoals} style={{
+                marginLeft: "auto", background: "transparent", border: `1px solid ${C.borderDim}`, color: C.muted,
+                borderRadius: 999, padding: "2px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              }}>目標を決める</button>
+            )}
+          </div>
+          <div style={{ display: "grid", gap: 7 }}>
+            {WEEKLY_GOAL_ITEMS.map(k => {
+              const done = Number(weekly[k]) || 0;
+              const goal = Number((weekGoals || {})[k]) || 0;
+              if (goal <= 0 && done <= 0) return null;
+              const p = goal > 0 ? Math.min(done / goal * 100, 100) : 0;
+              const hit = goal > 0 && done >= goal;
+              const col = hit ? "#f59e0b" : p >= 70 ? "#10b981" : p >= 30 ? "#0ea5e9" : "#64748b";
+              return (
+                <div key={k}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11, marginBottom: 2 }}>
+                    <span style={{ color: C.text, fontWeight: 700 }}>{WEEKLY_GOAL_LABEL[k] || k}</span>
+                    <span style={{ color: col, fontWeight: 800, fontSize: 13 }}>{done}</span>
+                    {goal > 0 && <span style={{ color: C.muted }}>/ {goal}</span>}
+                    <span style={{ marginLeft: "auto", color: col, fontWeight: 800 }}>
+                      {goal > 0 ? (hit ? `🏆 達成 +${done - goal}` : `あと ${goal - done}`) : "目標なし"}
+                    </span>
+                  </div>
+                  <div style={{ background: C.inset, borderRadius: 4, height: 6, overflow: "hidden", border: `1px solid ${C.borderDim}` }}>
+                    <div style={{ width: p + "%", height: "100%", background: col, transition: "width 0.4s" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
@@ -15418,6 +15583,16 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   const getGoal = (member, item) =>
     memberGoals[member]?.[item] ?? APPROACH_TARGETS[item] ?? 0;
 
+  // 🆕 v9.399: 週の目標（担当ごと）。未設定なら既定値を使う。
+  const weeklyGoalsAll = data.weeklyGoals || {};
+  const weekGoalsFor = (member) => {
+    const g = weeklyGoalsAll[member] || {};
+    const out = {};
+    WEEKLY_GOAL_ITEMS.forEach(k => { out[k] = (g[k] != null ? Number(g[k]) : WEEKLY_GOAL_DEFAULTS[k]) || 0; });
+    return out;
+  };
+  const [weekGoalEdit, setWeekGoalEdit] = useState(null);   // {member, form:{}}
+
   // 日次入力の既存データ
   const existing = useMemo(() =>
     data.approaches.find(a => a.member === selectedMember && a.date === selectedDate),
@@ -16666,7 +16841,20 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
           </div>
 
           {/* 🆕 v9.376: この日の「何件中何件」内訳 */}
-          <ActivityBreakdown values={inputValues} group={salesSubTab} periodLabel={selectedDate === today ? "今日" : selectedDate} />
+          <ActivityBreakdown
+            values={inputValues}
+            group={salesSubTab}
+            periodLabel={selectedDate === today ? "今日" : selectedDate}
+            weekly={salesSubTab === "jiage" ? weeklyTotalsOf(data.approaches, selectedMember, selectedDate) : null}
+            weekGoals={weekGoalsFor(selectedMember)}
+            weekRange={weekRangeOf(selectedDate)}
+            onEditWeekGoals={() => {
+              const cur = weekGoalsFor(selectedMember);
+              const form = {};
+              WEEKLY_GOAL_ITEMS.forEach(k => { form[k] = String(cur[k] || ""); });
+              setWeekGoalEdit({ member: selectedMember, form });
+            }}
+          />
 
           {/* カウンター項目（2列コンパクトレイアウト） */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -16674,7 +16862,31 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
             <div style={{ fontSize: 10, color: C.muted }}>タップで＋1 / 長押しで連射</div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(155px, 1fr))", gap: 6, marginBottom: 14 }}>
-            {visibleItems.map(item => {
+            {/* 🆕 v9.399: 地上げは「回った先 / 結果 / 成果 / 自分で数える」の見出しを挟んで並べる。
+                性質の違う数字が一列に並んでいて、足していいのか分からなかったため。 */}
+            {(salesSubTab === "jiage" ? (() => {
+              const shown = new Set();
+              const rows = [];
+              JIAGE_COUNTER_SECTIONS.forEach(sec => {
+                const items = sec.items.filter(it => visibleItems.includes(it));
+                if (!items.length) return;
+                items.forEach(it => shown.add(it));
+                rows.push({ header: sec });
+                items.forEach(it => rows.push({ item: it }));
+              });
+              visibleItems.filter(it => !shown.has(it)).forEach(it => rows.push({ item: it }));
+              return rows;
+            })() : visibleItems.map(it => ({ item: it }))).map((row, ri) => {
+              if (row.header) {
+                return (
+                  <div key={"h-" + row.header.title} style={{ gridColumn: "1 / -1", marginTop: ri === 0 ? 0 : 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: C.text }}>{row.header.title}</div>
+                    {row.header.desc && <div style={{ fontSize: 10, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{row.header.desc}</div>}
+                  </div>
+                );
+              }
+              const item = row.item;
+              return ((item) => {
               const goal = Number(dailyGoals[item]) || 0;
               const val = Number(inputValues[item]) || 0;
               const pct = goal > 0 ? Math.min(val / goal * 100, 100) : 0;
@@ -16737,8 +16949,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                         style={{ background: overAchieved ? "linear-gradient(135deg, #FCD34D, #F59E0B)" : C.success + "22", border: overAchieved ? "1px solid #F59E0B" : `1px solid ${C.success}`, color: overAchieved ? "#451A03" : C.success, borderRadius: 6, width: 32, height: 32, cursor: "pointer", fontSize: 16, fontWeight: 800, fontFamily: "inherit", userSelect: "none", touchAction: "manipulation", padding: 0 }}>＋</button>
                     </div>
                   )}
-                  {/* 3段目：プログレスバー＋あと◯件 */}
-                  {goal > 0 && (
+                  {/* 3段目：プログレスバー＋あと◯件（自動で増える項目には出さない＝v9.399） */}
+                  {goal > 0 && !isAutoBumpedItem(item) && (
                     <div>
                       <div style={{ background: C.panelBg, borderRadius: 4, height: 6, overflow: "hidden", border: `1px solid ${C.borderDim}` }}>
                         <div style={{ width: pct + "%", height: "100%", background: overAchieved ? "linear-gradient(90deg, #FCD34D, #F59E0B)" : color, transition: "width 0.4s" }} />
@@ -16750,8 +16962,42 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                   )}
                 </div>
               );
+              })(item);
             })}
           </div>
+
+          {/* 🆕 v9.399: 週の目標を決めるシート（毎日入れる運用をやめた代わり） */}
+          {weekGoalEdit && (
+            <BottomSheet title={`🎯 ${weekGoalEdit.member} の週の目標`} onClose={() => setWeekGoalEdit(null)}>
+              <div style={{ color: C.muted, fontSize: 12, marginBottom: 14, lineHeight: 1.7 }}>
+                一度決めれば、あとは毎日自動で進み具合が出ます。<br />
+                <b style={{ color: C.text }}>回った先</b>＝その週に訪問記録を付けた軒数（初めて＋再訪）です。
+              </div>
+              <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+                {WEEKLY_GOAL_ITEMS.map(k => (
+                  <div key={k} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: C.text }}>{WEEKLY_GOAL_LABEL[k] || k}</span>
+                    <input
+                      type="number" inputMode="numeric" min="0"
+                      value={weekGoalEdit.form[k]}
+                      onChange={e => setWeekGoalEdit(p => ({ ...p, form: { ...p.form, [k]: e.target.value } }))}
+                      style={{ ...inp, width: 110, textAlign: "right" }} />
+                    <span style={{ fontSize: 12, color: C.muted }}>件/週</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setWeekGoalEdit(null)} style={{ ...btnStyle("ghost"), flex: 1 }}>やめる</button>
+                <button onClick={() => {
+                  const m = weekGoalEdit.member;
+                  const next = {};
+                  WEEKLY_GOAL_ITEMS.forEach(k => { next[k] = Math.max(0, Math.floor(Number(weekGoalEdit.form[k]) || 0)); });
+                  setData(d => ({ ...d, weeklyGoals: { ...(d.weeklyGoals || {}), [m]: next } }));
+                  setWeekGoalEdit(null);
+                }} style={{ ...btnStyle(), flex: 1 }}>保存</button>
+              </div>
+            </BottomSheet>
+          )}
 
           {/* 🆕 v8.48: 自動カウンターの手動編集 BottomSheet */}
           {manualEditAuto && (() => {
@@ -16799,7 +17045,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
                   // その家の訪問記録を日時順に並べ、1件目かどうかを引けるようにする
                   const firstVisitIds = new Set();
                   const collectFirst = (list) => (list || []).forEach(p => {
-                    const log = (Array.isArray(p.visitLog) ? p.visitLog : []).filter(Boolean).slice()
+                    const log = (Array.isArray(p.visitLog) ? p.visitLog : [])
+                      .filter(v => v && DOOR_RESULT_KEYS.has(v.result)).slice()
                       .sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))
                         || String(a.time || "").localeCompare(String(b.time || "")));
                     if (log[0] && log[0].id != null) firstVisitIds.add(String(log[0].id));
@@ -18002,6 +18249,10 @@ const KPI_STATUS_COUNTERS = {
   "交渉中": "交渉中", "媒介": "媒介", "仕入": "地上仕入",
   "リフォーム請負": "リフォーム請負", "失注": "失注",
 };
+
+// 🆕 v9.399: 玄関先まで行った訪問だけ（📞電話・💬メッセージは家に行っていないので除く）。
+//   「回った先」の分母と、結果の内訳を必ず一致させるための共通定義。
+const DOOR_RESULT_KEYS = new Set(["home", "ignore", "absent", "rejected", "notarget"]);
 
 // 訪問結果の定義
 const VISIT_RESULTS = [
@@ -20635,8 +20886,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const computeBumpItems = (result, finalStatus, posted, isFirstVisit) => {
       const items = [];
       const _resultToItem = { home: "面談", ignore: "居留守", absent: "地上不在", rejected: "訪問禁止", notarget: "対象外" };
-      // 回った軒数（必ず1つ立つ）
-      items.push(isFirstVisit ? "初訪" : "地上再訪");
+      // 回った軒数（玄関先まで行った時だけ。電話・メッセージは含めない）
+      if (DOOR_RESULT_KEYS.has(result)) items.push(isFirstVisit ? "初訪" : "地上再訪");
       // 訪問の結果
       if (_resultToItem[result]) items.push(_resultToItem[result]);
       // 成果（見込み・媒介など）。初訪/再訪/対象外/訪問禁止 はここでは積まない
@@ -20790,7 +21041,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
         const target = d.jiage.find(j => j.id === targetId);
         const bumpMember = visitForm.assignee || (target && target.assignee) || getCurrentUser() || "";
         // 🆕 v9.109: 加算項目を共通関数で算出（result / status / posted）
-        const _isFirstVisit = !((target && Array.isArray(target.visitLog) ? target.visitLog : []).length);
+        const _isFirstVisit = !((target && Array.isArray(target.visitLog) ? target.visitLog : [])
+          .filter(v => v && DOOR_RESULT_KEYS.has(v.result)).length);
         const bumpItems = computeBumpItems(visitForm.result, _finalStatus, visitForm.posted, _isFirstVisit);
         let appr = Array.isArray(d.approaches) ? [...d.approaches] : [];
         const todayStr = new Date().toISOString().split("T")[0];
