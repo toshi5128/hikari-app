@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-29-v9.389-route-pick-detail";
+const APP_VERSION = "2026-08-29-v9.390-visit-result-required";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6541,6 +6541,9 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   const markersRef = React.useRef([]);
   // 🆕 v9.295: マーカークラスタ用レイヤー（プラグイン未ロード時は null ＝従来どおり個別に map へ addTo）
   const clusterGroupRef = React.useRef(null);
+  // 🆕 v9.390: ピンごとの色・絵文字を id で引ける表。
+  //   ルート選択モードの候補マーカーを「一律の水色」ではなく、実際の状態色で描くために使う。
+  const pinStyleRef = React.useRef(new Map());
   // 🆕 v8.95: 現在地マーカー＋誤差サークル
   const currentLocMarkerRef = React.useRef(null);
   const currentLocCircleRef = React.useRef(null);
@@ -6885,6 +6888,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         ${isNewTohon ? `<div style="position:absolute;top:-7px;left:-9px;background:#0ea5e9;color:#fff;font-size:8px;padding:0 3px;height:13px;border-radius:7px;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;font-weight:800;letter-spacing:0.2px;">NEW</div>` : ""}
         ${addrChkBadgeHtml}
       </div>`;
+      // 🆕 v9.390: ルート選択モードの候補マーカーが状態色を使えるように控える
+      try { pinStyleRef.current.set(String(it.id != null ? it.id : it.rawId), { color, emoji: emojiForPin }); } catch (e) {}
       const icon = L.divIcon({
         className: "hikari-pin",
         html: `<div style="position:relative;width:${outerSize}px;height:${outerSize}px;">${haloHtml}${innerPinHtml}${todayBadgeHtml}</div>`,
@@ -7102,7 +7107,22 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const selSet = new Set(stops.map(s => String(s.id)));
       pickPins.forEach(p => {
         if (selSet.has(String(p.id))) return;
-        const mk = L.marker([p.lat, p.lng], { icon: L.divIcon({ html: `<div style="background:#0ea5e9;border:2px solid #fff;border-radius:50%;width:18px;height:18px;box-shadow:0 1px 4px rgba(0,0,0,.5);"></div>`, className: "", iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 400 });
+        // 🆕 v9.390: 一律の水色だと「初訪なのか・訪問禁止なのか・不在だったのか」が隠れて見えなくなる。
+        //   実際のピンと同じ色・絵文字で描き、まわりの水色の輪だけで「ルートに選べる候補」を示す。
+        const st = pinStyleRef.current.get(String(p.id)) || {};
+        const pc = st.color || "#0ea5e9";
+        const pe = st.emoji || "";
+        const mk = L.marker([p.lat, p.lng], {
+          icon: L.divIcon({
+            html: `<div style="position:relative;width:26px;height:26px;">`
+              + `<div style="position:absolute;inset:0;border-radius:50%;border:2px dashed #06b6d4;box-sizing:border-box;"></div>`
+              + `<div style="position:absolute;top:3px;left:3px;width:20px;height:20px;background:${pc};border:2px solid #fff;border-radius:50%;box-sizing:border-box;box-shadow:0 1px 4px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:11px;line-height:1;">`
+              + `<span style="filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white);">${pe}</span></div>`
+              + `</div>`,
+            className: "", iconSize: [26, 26], iconAnchor: [13, 13],
+          }),
+          zIndexOffset: 400,
+        });
         // 🆕 v9.389: 住所だけで押させない。誰の家か・前回どうだったかを見せてから選ばせる。
         mk.bindPopup(
           `<div style="font-family:'Noto Sans JP',sans-serif;min-width:190px;">`
@@ -7134,8 +7154,16 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       else if (i === targetIndex) { cls += " next"; }
       else if (i === stops.length - 1 && endId != null && endId !== "") { cls += " end"; }
       const sz = (i === targetIndex) ? 34 : 24, anc = sz / 2;
+      // 🆕 v9.390: 番号で塗りつぶすと状態が見えないので、状態色の輪を外側に足す
+      const nst = pinStyleRef.current.get(String(s.id)) || {};
+      const ringHtml = nst.color
+        ? `<div style="position:absolute;inset:-4px;border-radius:50%;border:3px solid ${nst.color};box-shadow:0 0 0 1px rgba(255,255,255,.9);pointer-events:none;"></div>`
+        : "";
       const mk = L.marker([s.lat, s.lng], {
-        icon: L.divIcon({ html: `<div class="${cls}">${label}</div>`, className: "", iconSize: [sz, sz], iconAnchor: [anc, anc] }),
+        icon: L.divIcon({
+          html: `<div style="position:relative;width:${sz}px;height:${sz}px;">${ringHtml}<div class="${cls}">${label}</div></div>`,
+          className: "", iconSize: [sz, sz], iconAnchor: [anc, anc],
+        }),
         zIndexOffset: (i === targetIndex) ? 1000 : 500,
       });
       // 🆕 v9.64: 番号ピンはタップ→ポップアップ。どちらのモードでも「➖ルートから外す」で直接外せる。
@@ -19895,7 +19923,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     setVisitForm({
       date: today,
       time,
-      result: "home",
+      result: "",   // 🆕 v9.390: 既定なし。選ばないと保存できない（面談の誤記録を止める）
       signs: [],
       intensityLevel: "mid",
       memo: "",
@@ -19983,6 +20011,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const _banReason = String(visitForm.banReason || "").trim();
     if (visitForm.status === "訪問禁止" && !_banReason) {
       alert("⛔ 訪問禁止にするには、言われた言葉の記入が必要です。");
+      return;
+    }
+    // 🆕 v9.390: 訪問結果は必ず選ばせる（既定値をなくしたので未選択で来ることがある）
+    if (!visitForm.result) {
+      alert("訪問結果を選んでください。\n（会えたのか・不在だったのか等が空のままだと、面談数などの集計が狂います）");
       return;
     }
     const isEdit = !!visitForm.editingId;
@@ -26355,7 +26388,16 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           )}
 
           {/* 訪問結果（面談・居留守・不在・訪問禁止・電話・メッセージ） */}
-          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 6 }}><NavIcon name="barchart" size={13} /> 訪問結果</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 6 }}>
+            <NavIcon name="barchart" size={13} /> 訪問結果
+            <span style={{ color: "#ef4444", fontSize: 11, fontWeight: 800, marginLeft: 6 }}>必須</span>
+          </div>
+          {/* 🆕 v9.390: 未選択のまま保存されないよう、選ぶまで促す */}
+          {!visitForm.result && (
+            <div style={{ fontSize: 11, color: "#ef4444", fontWeight: 700, marginBottom: 6 }}>
+              どれか1つ選んでください（実際に会えたのか、不在だったのか）
+            </div>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 12 }}>
             {VISIT_RESULTS.map(r => {
               const active = visitForm.result === r.key;
