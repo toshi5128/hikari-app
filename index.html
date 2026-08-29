@@ -971,7 +971,7 @@ function ViewingCommentsEditor({ comments, currentUser, onChange }) {
         <div style={{ display: "flex", gap: 5, marginTop: 6 }}>
           <textarea value={text} onChange={e => setText(e.target.value)}
             placeholder={currentUser ? `${currentUser}として記入（電話で聞いた内容・次の約束など）` : "ログインしてください"}
-            style={{ ...inp, flex: 1, height: 64, resize: "vertical", fontSize: 13, padding: "8px 10px" }} />
+            style={{ ...inp, flex: 1, minWidth: 0, width: "auto", height: 64, resize: "vertical", fontSize: 13, padding: "8px 10px" }} />
           <button onClick={post} disabled={!text.trim() || !currentUser}
             style={{ ...btnStyle(), padding: "8px 12px", fontSize: 12, flexShrink: 0, alignSelf: "stretch",
               opacity: (!text.trim() || !currentUser) ? 0.5 : 1 }}>追加</button>
@@ -20290,7 +20290,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
               approaches: appr,
               [arr]: (d[arr] || []).map(x => {
                 if (x.id !== targetId) return x;
-                return { ...x, visitLog: (x.visitLog || []).map(v => v.id === other.id ? mergedEntry : v) };
+                const _now = Date.now();
+                return {
+                  ...x,
+                  visitLog: (x.visitLog || []).map(v => v.id === other.id ? mergedEntry : v),
+                  _fieldUpdatedAt: { ...(x._fieldUpdatedAt || {}), visitLog: _now },
+                  updatedAt: _now,
+                };
               }),
             };
           });
@@ -20383,12 +20389,21 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
               bannedBy: visitForm.assignee || getCurrentUser() || "",
               memo: [j.memo, `【訪問禁止 ${new Date().toISOString().slice(0, 10)} ${visitForm.assignee || getCurrentUser() || ""}】${_banReason}`].filter(Boolean).join("\n"),
             } : {};
+            // 🆕 v9.394: 変更した項目に時刻を刻む。
+            //   これが無いと、古い status を持ったままの他端末と同期した時に負けて
+            //   地図の色（訪問禁止・対象外）が元に戻ることがある。
+            const _now = Date.now();
+            const _fua = { ...(j._fieldUpdatedAt || {}), visitLog: _now, status: _now };
+            if (visitForm.assignee) _fua.assignee = _now;
+            Object.keys(_ban).forEach(k => { _fua[k] = _now; });
             return {
               ...j,
               visitLog: [...(j.visitLog || []), newEntry],
               status: _st,
               assignee: visitForm.assignee || j.assignee,
               ..._ban,
+              _fieldUpdatedAt: _fua,
+              updatedAt: _now,
             };
           }),
         };
