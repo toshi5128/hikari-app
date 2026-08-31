@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-30-v9.413-count-detail";
+const APP_VERSION = "2026-08-31-v9.414-route-optimize";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -19871,7 +19871,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   //   route = { open, count, endId, stops:[{id,lat,lng,name}], targetIndex, road:{coords,duration}|null }
   // 🆕 v9.91: ルートを localStorage に保存し、更新/リロードしても継続できるように
   const ROUTE_STATE_KEY = "hikari_route_state";
-  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, lasso: null };
+  // 🆕 v9.414: optimize=true なら「スタート(現在地)→…→ゴール」の効率順に自動で並べ替える
+  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, lasso: null, optimize: true };
   const [route, setRoute] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(ROUTE_STATE_KEY) || "null");
@@ -23798,13 +23799,32 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               setRouteFitKey(Date.now());
             };
             // 🆕 v9.63→v9.64.1: 選択モード — 選んだピンだけでルートを作る
-            const routeBuildFromPick = (ids, startMinimized) => {
+            const routeBuildFromPick = (ids, startMinimized, opts) => {
               if (!currentLoc) { alert("⚠️ 現在地がまだ取れていません。位置情報を許可してください。"); return; }
-              // 🆕 v9.64.1: 選んだ順番のままルート化（近い順に並べ替えない＝1,2,3,4…と増える）
-              const stops = ids.map(id => routeAllStops.find(s => String(s.id) === String(id))).filter(Boolean);
+              const o = opts || {};
+              const picked = ids.map(id => routeAllStops.find(s => String(s.id) === String(id))).filter(Boolean);
+              // 🆕 v9.414: ゴールに選んだ家が選択から外れたらゴールも解除する
+              let endId = (o.endId !== undefined) ? o.endId : (route.endId || "");
+              if (endId && !picked.some(s => String(s.id) === String(endId))) endId = "";
+              const optimize = (o.optimize !== undefined) ? o.optimize : (route.optimize !== false);
+              // 🆕 v9.414: 「効率よく回る順」に並べ替える（現在地スタート・ゴール固定・最近傍法＋2-opt）。
+              //   旧v9.64.1は選んだ順のままだったので、あっち行ってこっち行ってになっていた。
+              //   並べ替えを切れば今まで通り「選んだ順」。
+              //   ★もう回り終えた家は動かさない。まだ行っていない分だけを、今いる場所から並べ替える。
+              const doneIds = (route.mode === "pick" && route.targetIndex > 0)
+                ? route.stops.slice(0, route.targetIndex).map(s => String(s.id)).filter(id => ids.some(x => String(x) === id))
+                : [];
+              const doneStops = doneIds.map(id => picked.find(s => String(s.id) === id)).filter(Boolean);
+              const restStops = picked.filter(s => !doneIds.includes(String(s.id)));
+              const last = doneStops.length ? doneStops[doneStops.length - 1] : null;
+              const startPt = last ? { lat: last.lat, lng: last.lng } : { lat: currentLoc.lat, lng: currentLoc.lng };
+              const orderedRest = (optimize && restStops.length > 1)
+                ? routeBuildOrder(startPt, restStops, 999, endId)
+                : restStops;
+              const stops = [...doneStops, ...orderedRest];
               routeRoadKeyRef.current = "";
               // 🆕 v9.64.1: 既定で折りたたみ（地図を広く見る）。startMinimized 未指定なら現在の状態を維持
-              setRoute(prev => ({ ...prev, open: true, minimized: (startMinimized != null ? startMinimized : prev.minimized), mode: "pick", pickIds: ids, endId: "", stops, targetIndex: 0, road: null }));
+              setRoute(prev => ({ ...prev, open: true, minimized: (startMinimized != null ? startMinimized : prev.minimized), mode: "pick", pickIds: stops.map(s => s.id), endId, optimize, stops, targetIndex: doneStops.length, road: null }));
               setRouteSel([]); setRouteCelebrate(false);
               // 選択中は地図を自動で動かさない（押した位置で止めておく）→ fitBounds しない
             };
@@ -23812,7 +23832,16 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const exists = route.pickIds.some(x => String(x) === String(id));
               routeBuildFromPick(exists ? route.pickIds.filter(x => String(x) !== String(id)) : [...route.pickIds, id]);
             };
-            const routeClearPick = () => routeBuildFromPick([]);
+            const routeClearPick = () => routeBuildFromPick([], undefined, { endId: "" });
+            // 🆕 v9.414: 今の並びを効率順にし直す（以後も選ぶたびに自動で並べ替える）
+            const routeOptimizeNow = () => routeBuildFromPick(route.pickIds, undefined, { optimize: true });
+            // 🆕 v9.414: 並べ替えのオン/オフ（オフ＝選んだ順のまま）
+            const routeToggleOptimize = () => routeBuildFromPick(route.pickIds, undefined, { optimize: !(route.optimize !== false) });
+            // 🆕 v9.414: その家を🏁ゴール（最後に行く家）にする／もう一度押すと解除
+            const routeSetGoal = (id) => {
+              const same = String(route.endId || "") === String(id);
+              routeBuildFromPick(route.pickIds, undefined, { endId: same ? "" : id, optimize: true });
+            };
             // 🆕 v9.100: なぞって囲む — 地図でなぞった囲み（ポリゴン）の中のピンでルートを作る
             const _pointInPoly = (pt, poly) => {
               let inside = false;
@@ -25044,6 +25073,19 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               <div style={{ padding: "10px 16px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12, borderBottom: `1px solid ${C.borderDim}` }}>
                                 <span style={{ color: C.muted, fontWeight: 700 }}>選択中: <b style={{ color: "#22c55e" }}>{route.pickIds.length}</b> 件</span>
                                 <button onClick={routeClearPick} style={{ background: C.inset, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>選択クリア</button>
+                                {/* 🆕 v9.414: 回る順番の最適化（スタート＝現在地／ゴール＝🏁で指定） */}
+                                <button onClick={routeToggleOptimize} title="オンにすると、選ぶたびに効率よく回れる順に並べ替えます"
+                                  style={{ background: (route.optimize !== false) ? "#22c55e" : C.inset, color: (route.optimize !== false) ? "#fff" : C.muted, border: `1.5px solid ${(route.optimize !== false) ? "#22c55e" : C.borderDim}`, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                                  {(route.optimize !== false) ? "🔀 効率順：オン" : "🔀 効率順：オフ"}
+                                </button>
+                                {(route.optimize !== false) && route.pickIds.length > 1 && (
+                                  <button onClick={routeOptimizeNow} style={{ background: C.inset, color: C.text, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>並べ直す</button>
+                                )}
+                                <span style={{ color: C.muted, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                  🏁 ゴール:
+                                  <b style={{ color: "#f59e0b" }}>{route.endId ? ((route.stops.find(s => String(s.id) === String(route.endId)) || {}).name || "選択中").slice(0, 12) : "未指定（一覧の🏁で決める）"}</b>
+                                  {route.endId && <button onClick={() => routeSetGoal(route.endId)} style={{ background: "#f59e0b", border: "none", color: "#fff", width: 20, height: 20, borderRadius: "50%", fontSize: 13, fontWeight: 900, cursor: "pointer", lineHeight: 1 }}>×</button>}
+                                </span>
                                 <span style={{ color: C.muted, fontSize: 11 }}>地図の点をタップ → 中身を見て「➕ルートに入れる」</span>
                               </div>
                             )}
@@ -25095,6 +25137,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                       {s.memo && <div style={{ fontSize: 10, color: C.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>📝 {s.memo}</div>}
                                       <div style={{ fontSize: 11, color: C.muted }}>前から {routeFmtDist(d)} ・ 車で約{legMin}分{isEnd ? " ・ 🟠終点" : ""}</div>
                                     </div>
+                                    {/* 🆕 v9.414: この家を「最後に行く家」にする（押すと効率順に並べ直す） */}
+                                    {route.mode === "pick" && (
+                                      <button onClick={() => routeSetGoal(s.id)} title="ここを🏁ゴール(最後に行く家)にする"
+                                        style={{ flex: "none", background: String(route.endId || "") === String(s.id) ? "#f59e0b" : "transparent", color: String(route.endId || "") === String(s.id) ? "#fff" : C.muted, border: `1px solid ${String(route.endId || "") === String(s.id) ? "#f59e0b" : C.borderDim}`, borderRadius: 8, padding: "6px 7px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>🏁</button>
+                                    )}
                                     <button onClick={() => routeOnStopOpen(s.id)} style={{ flex: "none", background: "transparent", color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 7px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>📋</button>
                                     <button onClick={() => routeOpenGmaps(s.lat, s.lng)} style={{ flex: "none", background: C.accentBg, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>▶ ナビ</button>
                                   </div>
