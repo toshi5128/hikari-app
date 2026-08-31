@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-31-v9.414-route-optimize";
+const APP_VERSION = "2026-08-31-v9.415-keep-retired-history";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -498,6 +498,18 @@ const RETIRED_MEMBERS = ["長島"];
 function isRetiredMember(name) { return RETIRED_MEMBERS.includes(String(name || "").trim()); }
 // ログインや担当切替で選べるメンバー（退職者を除く）
 function activeMembers() { return MEMBERS.filter(m => !isRetiredMember(m)); }
+// 🆕 v9.415: 過去の記録を見る画面では、退職した人も「その記録が残っている限り」出す。
+//   ・これから使う画面（ログイン・目標設定・通知・パスワード）は活動中の人だけ＝activeMembers()
+//   ・過去を見る画面（探索ルート・月次集計）はこちら。辞めた人の実績を消さないための分岐。
+function membersWithHistory(namesWithData) {
+  const base = activeMembers();
+  const extra = [];
+  (namesWithData || []).forEach(n => {
+    const name = String(n || "").trim();
+    if (name && MEMBERS.includes(name) && !base.includes(name) && !extra.includes(name)) extra.push(name);
+  });
+  return [...base, ...extra];
+}
 // 🆕 v9.410: 担当者の選択肢（退職者は出さない）。
 //   ・ただし既にその退職者が担当になっている古いデータでは、その人だけ選択肢に残す。
 //     （残さないと選択欄が空欄に見えたり、担当が付け替わったように見えてしまうため）
@@ -16251,7 +16263,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
 
   // 月次集計
   const monthlyData = useMemo(() => {
-    return activeMembers().map(m => {   // 🆕 v9.412: 退職者は出さない
+    // 🆕 v9.412: 退職者は出さない / 🆕 v9.415: ただしその月に記録が残っている人は出す（過去の実績を消さない）
+    return membersWithHistory(data.approaches.filter(a => a && String(a.date || "").startsWith(selectedYM)).map(a => a.member)).map(m => {
       const entries = data.approaches.filter(a => a.member === m && a.date.startsWith(selectedYM));
       const totals = {};
       APPROACH_ITEMS.forEach(item => {
@@ -24113,7 +24126,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     <div style={{ marginTop: 6, marginBottom: 4 }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}><NavIcon name="users" size={12} /> 表示メンバー</div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                        {activeMembers().filter(m => !m.includes("・")).map(m => {
+                        {/* 🆕 v9.415: 退職した人も、探索ルートが残っていれば出す（過去の記録を消さない） */}
+                        {membersWithHistory(Object.keys((data && data.tracks) || {}).filter(m => (((data.tracks || {})[m]) || []).length > 0)).filter(m => !m.includes("・")).map(m => {
                           const active = trackVisibleMembers.includes(m);
                           const memberColor = MEMBER_COLORS[m] || C.muted;
                           const hasData = ((data && data.tracks && data.tracks[m]) || []).length > 0;
@@ -24130,7 +24144,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             }}>{active ? "✓ " : ""}{m === currentUser ? `自分(${m})` : m}</button>
                           );
                         })}
-                        <button onClick={() => setTrackVisibleMembers(activeMembers().filter(m => !m.includes("・")))} style={{
+                        <button onClick={() => setTrackVisibleMembers(membersWithHistory(Object.keys((data && data.tracks) || {}).filter(m => (((data.tracks || {})[m]) || []).length > 0)).filter(m => !m.includes("・")))} style={{
                           padding: "3px 8px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
                           background: "transparent", color: C.muted, border: `1px dashed ${C.borderDim}`,
                         }}>全員ON</button>
