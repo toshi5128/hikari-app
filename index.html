@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-08-31-v9.415-keep-retired-history";
+const APP_VERSION = "2026-09-01-v9.416-dm-successor";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -28735,10 +28735,16 @@ const DM_AGENTS = {
   "長島": { reading: "ながしま", mobile: "０８０－２２６９－７６８８", title: "", email: "nag@hikarifudosan.com" },
   "下田": { reading: "しもだ", mobile: "０８０－７８３１－７７７３", title: "宅地建物取引士", email: "shimoda@hikari-fudosan.com" }, // ※下田のみハイフン有ドメインで正
 };
+// 🆕 v9.416: 退職した担当のDMは、引き継いだ人の名前・携帯で出す。
+//   ・辞めた人の携帯・メールを載せたDMが届くと、お客様の連絡先が宙に浮く（比嘉さんの準備中に発覚）
+//   ・ピンの担当者（history）は書き換えない。差出人だけ差し替える。
+const RETIRED_DM_SUCCESSOR = { "長島": "谷津" };
+const DM_SUCCESSOR_DEFAULT = "下田";
 function dmAgentFor(assignee) {
   const key = String(assignee || "").trim();
   const found = Object.keys(DM_AGENTS).find(k => key === k || key.indexOf(k) >= 0);
-  const k = found || "比嘉"; // 未設定・不明の担当は既定（比嘉）
+  let k = found || "比嘉"; // 未設定・不明の担当は既定（比嘉）
+  if (isRetiredMember(k)) k = RETIRED_DM_SUCCESSOR[k] || DM_SUCCESSOR_DEFAULT;
   const a = DM_AGENTS[k];
   return { name: k, reading: a.reading, mobile: a.mobile, email: a.email || DM_FROM.mail, person: (a.title ? a.title + "　" : "") + k + "（" + a.reading + "）" };
 }
@@ -31384,7 +31390,7 @@ function DMPage({ data, setData, onBack }) {
                   {j._shared && <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: "#7c3aed", color: "#fff" }}><NavIcon name="users" size={12} /> 共有{j._shareTotal ? `(${j._shareTotal}名)` : ""}</span>}
                   {(() => { const pf = dmPrefOf(mailAddr(j), j.ownerZip); return pf && pf !== "埼玉県" ? <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 5, padding: "1px 7px", marginLeft: 4, background: "#0891b2", color: "#fff" }}><NavIcon name="mail" size={12} /> {pf}</span> : null; })()}
                 </div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}><NavIcon name="warning" size={12} /> 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 担当 {j.assignee || "—"}{j._shared && <span style={{ color: "#a78bfa", fontWeight: 700 }}>／<NavIcon name="users" size={12} /> この物件は共有名義（一人ずつ個別に送付）</span>}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／<NavIcon name="users" size={12} /> この所有者は他に{oc}件</span>}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{mailAddr(j) ? `〒${j.ownerZip || "—"} ${mailAddr(j)}` : <span style={{ color: "#f43f5e", fontWeight: 700 }}><NavIcon name="warning" size={12} /> 送付先住所が未登録</span>}<br />対象物件: {propAddr(j) || "—"} ・ {j.area || "—"} ・ 差出人 {dmAgentFor(j.assignee).name}{j._shared && <span style={{ color: "#a78bfa", fontWeight: 700 }}>／<NavIcon name="users" size={12} /> この物件は共有名義（一人ずつ個別に送付）</span>}{oc > 0 && <span style={{ color: "#fbbf24", fontWeight: 700 }}>／<NavIcon name="users" size={12} /> この所有者は他に{oc}件</span>}</div>
                 {j._mismatch && <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5, color: "#fbbf24", fontWeight: 700 }}><NavIcon name="warning" size={12} /> 共有：氏名{j._mismatch.n}・住所{j._mismatch.a}・〒{j._mismatch.z} で数が合わず、一人ずつに分けられません。<b><NavIcon name="edit" size={12} /> 共有を編集</b>で1行ずつ揃えると分かれます。</div>}
                 {!j._mismatch && risk.length > 0 && <div style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5, color: "#fbbf24", fontWeight: 700 }}><NavIcon name="warning" size={12} /> 配達注意：{risk.join("・")}</div>}
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
@@ -34426,7 +34432,8 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     return { priceOK, hit: priceOK };
   };
 
-  const sender = OFFER_SENDERS.find(s => s.key === senderKey) || OFFER_SENDERS[0];
+  const _senders = OFFER_SENDERS.filter(s => !isRetiredMember(s.short));   // 🆕 v9.416: 退職者は除く
+  const sender = _senders.find(s => s.key === senderKey) || _senders[0] || OFFER_SENDERS[0];
   const ctx = { propName, priceText: offerPriceText(priceMan), docUrl, docLimit, docPass, memo, senderShort: sender.short };
   const allTemplates = useMemo(() => [...OFFER_PRESETS, ...((data.offerTemplates || []).map(t => ({ ...t, key: "u" + t.id, user: true })))], [data.offerTemplates]);
   const applyTpl = (t) => { setTplKey(t.key); setSubject(t.subject); setBody(t.body); };
@@ -34718,7 +34725,8 @@ function OfferPage({ data, setData, onBack, currentUser }) {
 
         <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>誰の名前で送りますか</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
-          {OFFER_SENDERS.map(s => (
+          {/* 🆕 v9.416: 退職した人は差出人に出さない */}
+          {OFFER_SENDERS.filter(s => !isRetiredMember(s.short)).map(s => (
             <button key={s.key} onClick={() => setSenderKey(s.key)} style={{ padding: "9px 14px", borderRadius: 999, border: `2px solid ${senderKey === s.key ? C.accent : C.borderDim}`, background: senderKey === s.key ? C.accentBg : C.cardBg, color: C.text, fontSize: 13, fontWeight: senderKey === s.key ? 800 : 500, cursor: "pointer", fontFamily: "inherit" }}>{s.short}</button>
           ))}
         </div>
