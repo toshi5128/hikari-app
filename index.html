@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-01-v9.416-dm-successor";
+const APP_VERSION = "2026-09-07-v9.417-visitedit-status";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -20759,7 +20759,10 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       const rawStatus = get("status");
       let status = "未訪問";
       if (rawStatus) {
-        const found = ATTACK_STATUSES.find(s => rawStatus.includes(s) || s.includes(rawStatus));
+        // 🆕 v9.417: まず完全一致で探す。部分一致だけだと「見込み」が
+        //   （配列で先に並ぶ）「見込み候補」に吸われて別のステータスで取り込まれてしまう。
+        const found = ATTACK_STATUSES.find(s => s === rawStatus)
+          || ATTACK_STATUSES.find(s => rawStatus.includes(s) || s.includes(rawStatus));
         if (found) status = found;
         else if (rawStatus.includes("訪問") && !rawStatus.includes("未")) status = "訪問済";
         else if (rawStatus.includes("不在")) status = "不在";
@@ -21635,24 +21638,62 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       }
     }
     // 🆕 v8.47: 編集モードはエントリの更新だけ。カウンター加算や親ステータス変更はしない。
+    // 🆕 v9.417: ただし「ステータス（フェーズ）」だけは反映する。
+    //   v8.47以降、訪問記録を“編集”してステータスを変えても visitLog しか書き換えず、
+    //   ピン本体の status を無視していたため、地図の色も一覧も変わらなかった（下田さん報告 2026-09-07）。
+    //   カウンターは bumpJiageStatusEdit が prev→new で変化した時だけ +1 するので二重計上にはならない。
     if (isEdit) {
       const targetType = visitRecordTarget.type;
       const targetId = visitRecordTarget.rawId || visitRecordTarget.id;
+      const _tRaw = (visitRecordTarget && visitRecordTarget.raw) || {};
+      const _prevStForEdit = String(_tRaw.status || visitRecordTarget.status || "");
+      const _editSt = String(visitForm.status || "");
+      let _applySt = !!_editSt && _editSt !== _prevStForEdit;
+      // 訪問禁止の解除は統括部長のみ（STATUS-SPEC-v1 §6）。詳細画面のプルダウンと同じ扱いにする。
+      if (_applySt && _prevStForEdit === "訪問禁止" && _editSt !== "訪問禁止" && !canUnban(data, currentUser)) {
+        alert(`⛔ 訪問禁止の解除は${(data.adminMember || "下田")}さんだけができます。\n\n訪問記録は保存しますが、ステータスは訪問禁止のままにします。`);
+        _applySt = false;
+      }
       setData(d => {
         if (targetType === "jiage") {
-          return {
+          let _bumpMember = "";
+          const next = {
             ...d,
             jiage: (d.jiage || []).map(j => {
               if (j.id !== targetId) return j;
-              return { ...j, visitLog: (j.visitLog || []).map(v => v.id === newEntry.id ? newEntry : v) };
+              _bumpMember = visitForm.assignee || j.assignee || "";
+              const _now = Date.now();
+              const _fua = { ...(j._fieldUpdatedAt || {}), visitLog: _now };
+              if (_applySt) _fua.status = _now;
+              // 訪問禁止に変えた時は、言われた言葉・記録者・日時を必ず残す（新規記録と同じ扱い）
+              const _ban = (_applySt && _editSt === "訪問禁止" && _banReason) ? {
+                banReason: _banReason,
+                bannedAt: new Date().toISOString(),
+                bannedBy: visitForm.assignee || getCurrentUser() || "",
+                memo: [j.memo, `【訪問禁止 ${new Date().toISOString().slice(0, 10)} ${visitForm.assignee || getCurrentUser() || ""}】${_banReason}`].filter(Boolean).join("\n"),
+              } : {};
+              Object.keys(_ban).forEach(k => { _fua[k] = _now; });
+              return {
+                ...j,
+                visitLog: (j.visitLog || []).map(v => v.id === newEntry.id ? newEntry : v),
+                ...(_applySt ? { status: _editSt } : {}),
+                ..._ban,
+                _fieldUpdatedAt: _fua,
+                updatedAt: _now,
+              };
             }),
           };
+          return _applySt ? bumpJiageStatusEdit(next, _prevStForEdit, _editSt, _bumpMember) : next;
         } else {
           return {
             ...d,
             owners: (d.owners || []).map(o => {
               if (o.id !== targetId) return o;
-              return { ...o, visitLog: (o.visitLog || []).map(v => v.id === newEntry.id ? newEntry : v) };
+              return {
+                ...o,
+                visitLog: (o.visitLog || []).map(v => v.id === newEntry.id ? newEntry : v),
+                ...(_applySt ? { status: _editSt } : {}),
+              };
             }),
           };
         }
@@ -21660,7 +21701,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       setSelected(s => {
         if (!s) return s;
         const newLog = (s.item.raw?.visitLog || []).map(v => v.id === newEntry.id ? newEntry : v);
-        return { ...s, item: { ...s.item, raw: { ...s.item.raw, visitLog: newLog } } };
+        const _st = _applySt ? _editSt : s.item.status;
+        return { ...s, item: { ...s.item, status: _st, raw: { ...s.item.raw, visitLog: newLog, status: _st } } };
       });
       setVisitRecordTarget(null);
       setVisitForm(null);
