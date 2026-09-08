@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-08-v9.418-area-kitamoto";
+const APP_VERSION = "2026-09-08-v9.419-sv-scan-layer";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3827,6 +3827,20 @@ function _mergeJiageWithCards(prevState, cards) {
   return out;
 }
 
+// 🆕 v9.419: ストリートビューで確認した範囲（面）。1件=1行 svscan::<id>。
+//   👣探索ルート（実際に歩いたGPS）とは別物なので、tracks には混ぜない。
+//   行動管理・月次の数字にも一切入れない（現場の実績を薄めないため）。
+async function loadSvScanRows() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.svscan::*&select=id,data`, {
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+    });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return (rows || []).map(r => (r && r.data && r.data.item) ? r.data.item : null).filter(Boolean);
+  } catch (e) { return null; }
+}
+
 // Supabaseにデータを保存
 async function saveToSupabase(data, retries = 3) {
   // 🆕 バージョン情報を含める（自動更新通知用）
@@ -7302,7 +7316,7 @@ function routeStopDetailHtml(s) {
   return rows.join("");
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -7442,6 +7456,33 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       try { window.__hikariLivePolyline__ = null; } catch (e) {}
     };
   }, [liveRecording]);
+
+  // 🆕 v9.419: ストリートビューで確認済みの範囲を「面」でうっすら塗る（線にすると足跡と絡んで読めない）
+  const svLayerRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (svLayerRef.current) { try { map.removeLayer(svLayerRef.current); } catch (e) {} svLayerRef.current = null; }
+    const scans = Array.isArray(svScans) ? svScans : [];
+    if (!scans.length) return;
+    const grp = L.layerGroup();
+    scans.forEach(sc => {
+      const dLat = Number(sc && sc.dLat) || 0.0009;
+      const dLon = Number(sc && sc.dLon) || 0.0011;
+      ((sc && sc.cells) || []).forEach(c => {
+        if (!Array.isArray(c) || c.length < 2) return;
+        const la = Number(c[0]), lo = Number(c[1]);
+        if (!isFinite(la) || !isFinite(lo)) return;
+        L.rectangle([[la, lo], [la + dLat, lo + dLon]], {
+          color: "#a855f7", weight: 0, fillColor: "#a855f7", fillOpacity: 0.20, interactive: false,
+        }).addTo(grp);
+      });
+    });
+    grp.addTo(map);
+    try { grp.bringToBack(); } catch (e) {}
+    svLayerRef.current = grp;
+    return () => { try { map.removeLayer(grp); } catch (e) {} };
+  }, [svScans]);
 
   // マーカー更新
   React.useEffect(() => {
@@ -19416,6 +19457,14 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [routeGapMin, setRouteGapMin] = useState(0);
   // 🆕 v9.8: メンバー別表示ON/OFF（デフォルトは自分のみ）
   const [trackVisibleMembers, setTrackVisibleMembers] = useState(() => currentUser ? [currentUser] : []);
+  // 🆕 v9.419: ストリートビューで確認した範囲（面）。足跡とは別レイヤーで切替できる。
+  const [svScans, setSvScans] = useState([]);
+  const [showSvScan, setShowSvScan] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    loadSvScanRows().then(rows => { if (alive && rows) setSvScans(rows); });
+    return () => { alive = false; };
+  }, []);
   React.useEffect(() => {
     // currentUser が後から取れた場合に追従
     if (currentUser && trackVisibleMembers.length === 0) {
@@ -24200,6 +24249,26 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         }}>全解除</button>
                       </div>
                     </div>
+                    {/* 🆕 v9.419: ストリートビューで見た範囲（面）の表示切替 */}
+                    <div style={{ marginTop: 6, marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>🖥 ストリートビューで見た範囲</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                        <button onClick={() => setShowSvScan(v => !v)} style={{
+                          padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                          background: showSvScan ? "#a855f7" : "transparent",
+                          color: showSvScan ? "#fff" : "#a855f7",
+                          border: "1.5px solid #a855f7", fontWeight: showSvScan ? 700 : 400,
+                        }}>{showSvScan ? "✓ 表示中" : "表示する"}</button>
+                        <span style={{ fontSize: 10, color: C.muted }}>
+                          {svScans.length
+                            ? `${svScans.reduce((a, sc) => a + (((sc && sc.cells) || []).length), 0)}マス／${svScans.reduce((a, sc) => a + (Number(sc && sc.count) || 0), 0)}棟`
+                            : "まだありません"}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.5 }}>
+                        紫の面＝写真で確認済みの範囲。<NavIcon name="users" size={10} /> 足跡（実際に歩いた記録）とは別で、行動管理の数字には入りません。
+                      </div>
+                    </div>
                     {/* 🆕 v9.8: 期間フィルタ拡張 */}
                     <div style={{ marginBottom: 4 }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}><NavIcon name="calendar" size={12} /> 期間</div>
@@ -25023,6 +25092,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         return mine.filter(p => p && typeof p.lat === "number" && (p.ts || 0) >= todayTs);
                       })()}
                       tracks={trackRecording ? recordingPastTracks : displayTracks}
+                      svScans={showSvScan ? svScans : null}
                       routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick" || route.mode === "lasso") ? {
                         start: { lat: currentLoc.lat, lng: currentLoc.lng },
                         stops: route.stops,
