@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.428-only-star";
+const APP_VERSION = "2026-09-12-v9.429-tap-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7363,7 +7363,7 @@ const TAKUCHI_PERIODS = [
 const TAKUCHI_ORDER = ["H3-H9", "S62-H3", "S51-62"];   // 古い年代ほど手前に描く
 const TAKUCHI_ZOOM_AREA = 12;    // これ以上寄せたら実際の形（100mマス）に切り替え
 const TAKUCHI_PAD = 3;           // 約300m以内にピンがあれば「もう行った場所」
-const TAKUCHI_CAP = 6000;        // 1画面に作る図形の上限（超えると地図が重くなる）
+const TAKUCHI_CAP = 9000;        // 1画面に作る図形の上限。ここで打ち切ると「押しても反応しない面」ができるので余裕をとる
 
 // 日本測地系 → 世界測地系（国内で約1m精度の近似式）
 function _tkyToJgd(lat, lon) {
@@ -7804,13 +7804,23 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         + `</div></div>`;
     };
 
-    const draw = () => {
+    // 🆕 v9.429: ポップアップを開くと autoPan で地図がわずかに動き、その moveend が再描画を呼んで
+    //   「開いたばかりのポップアップごと作り直す」＝押しても消える／反応しない、が起きていた。
+    //   ポップアップが開いている間は描き直さず、閉じてから必要なら描き直す。
+    let popupOpen = false, pendingDraw = false, lastView = null;
+    const draw = (force) => {
       const data = takuchiDataRef.current;
       if (!alive || !data) return;
-      grp.clearLayers();
+      if (popupOpen && !force) { pendingDraw = true; return; }
       const z = map.getZoom();
       const bb = map.getBounds().pad(0.2);
       const s = bb.getSouth(), w = bb.getWest(), n = bb.getNorth(), e = bb.getEast();
+      // すでに描いてある範囲の内側に収まっているだけの移動なら、作り直さない（指が触れた瞬間に
+      // 図形が入れ替わって押せなくなるのを防ぐ）
+      if (!force && lastView && lastView.z === z
+          && s >= lastView.s && n <= lastView.n && w >= lastView.w && e <= lastView.e) return;
+      lastView = { z, s, w, n, e };
+      grp.clearLayers();
       // 引きの画面で全部出すと県が塗りつぶされて読めないので、大きいものから段階的に出す
       const area = z >= TAKUCHI_ZOOM_AREA;
       const minHa = z <= 9 ? 8 : (z === 10 ? 5 : (z === 11 ? 3 : 1));
@@ -7873,10 +7883,15 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     };
 
     // 連続して動かしたときに描き直しが積み上がらないよう、少し待ってから1回だけ
-    const queue = () => { if (timer) clearTimeout(timer); timer = setTimeout(draw, 140); };
+    const queue = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => draw(false), 140); };
+    const onPopupClose = () => {
+      popupOpen = false;
+      if (pendingDraw) { pendingDraw = false; queue(); }
+    };
 
     // ポップアップの判定ボタンを押したら、その場で保存して地図に反映する
     const onPopupOpen = (ev) => {
+      popupOpen = true;
       const el = ev.popup && ev.popup.getElement ? ev.popup.getElement() : null;
       const src = ev.popup && ev.popup._source;
       if (!el || !src || !src._tkCl) return;
@@ -7904,6 +7919,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       });
     };
     map.on("popupopen", onPopupOpen);
+    map.on("popupclose", onPopupClose);
 
     grp.addTo(map);
     takuchiLayerRef.current = grp;
@@ -7911,13 +7927,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     map.on("moveend", queue);
 
     (takuchiDataRef.current ? Promise.resolve(takuchiDataRef.current) : loadTakuchi())
-      .then(d => { if (!alive) return; takuchiDataRef.current = d; draw(); })
+      .then(d => { if (!alive) return; takuchiDataRef.current = d; draw(true); })
       .catch(e => { console.warn("宅地化データの読み込みに失敗", e); });
 
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
-      try { map.off("zoomend", queue); map.off("moveend", queue); map.off("popupopen", onPopupOpen); } catch (e) {}
+      try { map.off("zoomend", queue); map.off("moveend", queue); map.off("popupopen", onPopupOpen); map.off("popupclose", onPopupClose); } catch (e) {}
       drop();
     };
   }, [tkShow, tkOnlyNew, tkHideDone, tkOnlyStar, tkMarksVer, takuchiPinSig]);
