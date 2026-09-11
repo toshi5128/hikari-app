@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.432-data-split";
+const APP_VERSION = "2026-09-12-v9.433-hit-area";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7870,22 +7870,29 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         // 🆕 v9.431: 判定は「街ひとつ」単位。ただし年代の色分けは残したいので、
         //   ひとつの街の中で年代ごとに1枚ずつ多角形を描く（最大3枚）。押せば同じ判定が付く。
         if (area) {
+          // 🆕 v9.433: 飛び飛びの四角そのものを狙わせると、すき間ばかり押してしまって反応しない。
+          //   一帯を覆う「透明な当たり判定」を1枚敷き、色の四角は見た目だけにする。
+          const hit = L.rectangle([[cl.bbox[0], cl.bbox[1]], [cl.bbox[2], cl.bbox[3]]], {
+            renderer, stroke: false, fill: true, fillOpacity: 0, interactive: true,
+          });
+          hit._tkCl = cl; hit._tkMeta = topMeta; hit._tkT = t;
+          hit.addTo(grp);
           for (let pi = 2; pi >= 0; pi--) {          // 古い年代ほど後から＝手前に描く
             const cells = cl.byP[pi];
             if (!cells || !cells.length) continue;
             const meta = TAKUCHI_PERIODS[pi];
             const sh = L.polygon(cells.map(c => [[[c[0], c[1]], [c[0], c[3]], [c[2], c[3]], [c[2], c[1]]]]), {
-              renderer, ...styleOf({ color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
-                                     fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55 }, meta.color),
+              renderer, interactive: false,
+              ...styleOf({ color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
+                           fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55 }, meta.color),
             });
-            sh._tkCl = cl; sh._tkMeta = topMeta; sh._tkT = t;
             sh.addTo(grp);
           }
         } else {
           const base = { color: t ? "#ffffff" : "#7f1d1d", weight: t ? 1 : 1.6,
                          fillColor: topMeta.color, fillOpacity: t ? 0.28 : 0.85 };
           const sh = L.circleMarker([(cl.bbox[0] + cl.bbox[2]) / 2, (cl.bbox[1] + cl.bbox[3]) / 2], {
-            renderer, radius: Math.min(14, 3 + Math.sqrt(cl.ha) * 1.9),
+            renderer, radius: Math.min(16, 8 + Math.sqrt(cl.ha) * 1.5),
             opacity: md ? 0.95 : (t ? 0.55 : 0.9), ...styleOf(base, topMeta.color),
           });
           sh._tkCl = cl; sh._tkMeta = topMeta; sh._tkT = t;
