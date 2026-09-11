@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.421-takuchi-nendai";
+const APP_VERSION = "2026-09-12-v9.422-takuchi-streetview";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7542,7 +7542,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     return () => { try { map.removeLayer(grp); } catch (e) {} };
   }, [svScans]);
 
-  // 🆕 v9.421: 宅地化した年代（🏠物件住所モードのときだけ出す。所有者の自宅にピンを打つモードでは無意味なので）
+  // 🆕 v9.421→v9.422: 宅地化した年代（🏠物件住所モードのときだけ出す。所有者の自宅にピンを打つモードでは無意味なので）
   const takuchiLayerRef = React.useRef(null);
   const takuchiDataRef = React.useRef(null);
   const tkShow = !!(takuchi && takuchi.show) && pinTarget === "address";
@@ -7591,13 +7591,22 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       return t;
     };
 
-    const popupOf = (cl, meta, t) =>
-      `<div style="font-size:12px;line-height:1.6;">`
-      + `<b>${_hkEsc(cl.city)}</b><br>${meta.name}（${meta.era}）<br>`
-      + `このかたまり ${cl.ha}ha（約${(cl.ha * 30).toLocaleString()}区画）<br>`
-      + (t ? `<span style="color:#64748b;">すでにピンがある場所</span>`
-           : `<b style="color:#b91c1c;">🚩 まだ行っていない</b>`)
-      + `</div>`;
+    // 🆕 v9.422: タップした場所をそのままストリートビューで開けるようにする
+    //   viewpoint は「その地点に一番近いパノラマ」を探してくれるので、道路上でなくても開ける
+    const popupOf = (cl, meta, t, lat, lng) => {
+      const ll = `${lat.toFixed(6)},${lng.toFixed(6)}`;
+      const pano = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${ll}`;
+      const air = `https://www.google.com/maps/search/?api=1&query=${ll}`;
+      return `<div style="font-size:12px;line-height:1.6;min-width:186px;">`
+        + `<b>${_hkEsc(cl.city)}</b><br>${meta.name}（${meta.era}）<br>`
+        + `このかたまり ${cl.ha}ha（約${(cl.ha * 30).toLocaleString()}区画）<br>`
+        + (t ? `<span style="color:#64748b;">すでにピンがある場所</span>`
+             : `<b style="color:#b91c1c;">🚩 まだ行っていない</b>`)
+        + `<div style="display:flex;gap:6px;margin-top:7px;">`
+        + `<a href="${pano}" target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:6px 8px;border-radius:8px;background:#1a73e8;color:#fff;text-decoration:none;font-size:11px;font-weight:700;">👁 ストリートビュー</a>`
+        + `<a href="${air}" target="_blank" rel="noopener noreferrer" style="padding:6px 8px;border-radius:8px;background:#f1f5f9;color:#334155;text-decoration:none;font-size:11px;font-weight:700;border:1px solid #cbd5e1;">🗺 地図</a>`
+        + `</div></div>`;
+    };
 
     const draw = () => {
       const data = takuchiDataRef.current;
@@ -7617,23 +7626,26 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           if (cl.bbox[0] > n || cl.bbox[2] < s || cl.bbox[1] > e || cl.bbox[3] < w) return;
           const t = isTouched(cl);
           if (tkOnlyNew && t) return;
-          const html = popupOf(cl, meta, t);
           if (area) {
+            // 寄っているときは、押した100mマスそのものの中心をストリートビューの狙い先にする
             for (let i = 0; i < cl.cells.length; i++) {
               if (drawn >= TAKUCHI_CAP) break;
               const c = cl.cells[i];
               L.rectangle([[c[0], c[1]], [c[2], c[3]]], {
                 renderer, color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
                 fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55,
-              }).bindPopup(html).addTo(grp);
+              }).bindPopup(popupOf(cl, meta, t, (c[0] + c[2]) / 2, (c[1] + c[3]) / 2),
+                           { autoPan: true, closeButton: true }).addTo(grp);
               drawn++;
             }
           } else {
-            L.circleMarker([(cl.bbox[0] + cl.bbox[2]) / 2, (cl.bbox[1] + cl.bbox[3]) / 2], {
+            const clat = (cl.bbox[0] + cl.bbox[2]) / 2, clng = (cl.bbox[1] + cl.bbox[3]) / 2;
+            L.circleMarker([clat, clng], {
               renderer, radius: Math.min(14, 3 + Math.sqrt(cl.ha) * 1.9),
               color: t ? "#ffffff" : "#7f1d1d", weight: t ? 1 : 1.6, opacity: t ? 0.55 : 0.9,
               fillColor: meta.color, fillOpacity: t ? 0.28 : 0.85,
-            }).bindPopup(html).addTo(grp);
+            }).bindPopup(popupOf(cl, meta, t, clat, clng),
+                         { autoPan: true, closeButton: true }).addTo(grp);
             drawn++;
           }
         });
