@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-08-v9.420-area-kawagoe";
+const APP_VERSION = "2026-09-12-v9.421-takuchi-nendai";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7316,7 +7316,65 @@ function routeStopDetailHtml(s) {
   return rows.join("");
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
+// 🆕 v9.421: 宅地化した年代（昭和後半〜平成初期に農地・山林から住宅地になった場所）
+//   国土交通省の土地利用細分メッシュ(100m)を年次で引き算したもの。takuchi-nendai.json に同梱。
+//   団地は一斉入居＝一斉に高齢化するので、相続・空き家が面で出る場所の先読みに使う。
+const TAKUCHI_PERIODS = [
+  { k: "S51-62", name: "昭和後半",       era: "1976→1987年", color: "#e0603a" },
+  { k: "S62-H3", name: "昭和末〜バブル", era: "1987→1991年", color: "#d99a2b" },
+  { k: "H3-H9",  name: "平成初期",       era: "1991→1997年", color: "#1f9b95" },
+];
+const TAKUCHI_ORDER = ["H3-H9", "S62-H3", "S51-62"];   // 古い年代ほど手前に描く
+const TAKUCHI_ZOOM_AREA = 12;    // これ以上寄せたら実際の形（100mマス）に切り替え
+const TAKUCHI_PAD = 3;           // 約300m以内にピンがあれば「もう行った場所」
+const TAKUCHI_CAP = 6000;        // 1画面に作る図形の上限（超えると地図が重くなる）
+
+// 日本測地系 → 世界測地系（国内で約1m精度の近似式）
+function _tkyToJgd(lat, lon) {
+  return [lat - 0.00010695 * lat + 0.000017464 * lon + 0.0046017,
+          lon - 0.000046038 * lat - 0.000083043 * lon + 0.010040];
+}
+function _jgdToTky(lat, lon) {
+  const a = _tkyToJgd(lat, lon);
+  return [lat - (a[0] - lat), lon - (a[1] - lon)];
+}
+function _takuchiPinCell(lat, lng) {
+  const t = _jgdToTky(lat, lng);
+  return [Math.floor(t[0] * 1200), Math.floor((t[1] - 100) * 800)];
+}
+
+let _takuchiPromise = null;
+function loadTakuchi() {
+  if (_takuchiPromise) return _takuchiPromise;
+  _takuchiPromise = fetch("takuchi-nendai.json")
+    .then(r => { if (!r.ok) throw new Error("takuchi " + r.status); return r.json(); })
+    .then(raw => {
+      const out = {};
+      TAKUCHI_PERIODS.forEach(p => {
+        out[p.k] = (raw.periods[p.k] || []).map(rec => {
+          const r0 = rec[1], c0 = rec[2], offs = rec[3];
+          let s = 99, w = 999, n = -99, e = -999;
+          const cells = offs.map(o => {
+            const r = r0 + o[0], c = c0 + o[1];
+            const a = _tkyToJgd(r / 1200, 100 + c / 800);
+            const b = _tkyToJgd((r + 1) / 1200, 100 + (c + 1) / 800);
+            if (a[0] < s) s = a[0];
+            if (b[0] > n) n = b[0];
+            if (a[1] < w) w = a[1];
+            if (b[1] > e) e = b[1];
+            return [a[0], a[1], b[0], b[1]];
+          });
+          return { city: raw.cities[rec[0]] || "", ha: offs.length, cells,
+                   grid: offs.map(o => [r0 + o[0], c0 + o[1]]), bbox: [s, w, n, e] };
+        });
+      });
+      return out;
+    })
+    .catch(e => { _takuchiPromise = null; throw e; });
+  return _takuchiPromise;
+}
+
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -7483,6 +7541,125 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     svLayerRef.current = grp;
     return () => { try { map.removeLayer(grp); } catch (e) {} };
   }, [svScans]);
+
+  // 🆕 v9.421: 宅地化した年代（🏠物件住所モードのときだけ出す。所有者の自宅にピンを打つモードでは無意味なので）
+  const takuchiLayerRef = React.useRef(null);
+  const takuchiDataRef = React.useRef(null);
+  const tkShow = !!(takuchi && takuchi.show) && pinTarget === "address";
+  const tkOnlyNew = !!(takuchi && takuchi.onlyNew);
+
+  // 自分のピンが落ちている100mマス（ここから約300m以内なら「もう行った場所」とみなす）
+  const takuchiPinCells = React.useMemo(() => {
+    const s = new Set();
+    (items || []).forEach(it => {
+      const la = Number(it && it.lat), lo = Number(it && it.lng);
+      if (!isFinite(la) || !isFinite(lo)) return;
+      const rc = _takuchiPinCell(la, lo);
+      s.add(rc[0] + ":" + rc[1]);
+    });
+    return s;
+  }, [items]);
+
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    const drop = () => {
+      if (takuchiLayerRef.current) {
+        try { map.removeLayer(takuchiLayerRef.current); } catch (e) {}
+        takuchiLayerRef.current = null;
+      }
+    };
+    if (!tkShow) { drop(); return; }
+
+    let alive = true, timer = null;
+    const grp = L.layerGroup();
+    const renderer = L.canvas({ padding: 0.2 });
+    const touchedCache = new Map();      // ピンが変わるたびに作り直す（古い判定を引きずらない）
+
+    const isTouched = (cl) => {
+      if (touchedCache.has(cl)) return touchedCache.get(cl);
+      let t = 0;
+      for (let i = 0; i < cl.grid.length && !t; i++) {
+        const g = cl.grid[i];
+        for (let dr = -TAKUCHI_PAD; dr <= TAKUCHI_PAD && !t; dr++) {
+          for (let dc = -TAKUCHI_PAD; dc <= TAKUCHI_PAD; dc++) {
+            if (takuchiPinCells.has((g[0] + dr) + ":" + (g[1] + dc))) { t = 1; break; }
+          }
+        }
+      }
+      touchedCache.set(cl, t);
+      return t;
+    };
+
+    const popupOf = (cl, meta, t) =>
+      `<div style="font-size:12px;line-height:1.6;">`
+      + `<b>${_hkEsc(cl.city)}</b><br>${meta.name}（${meta.era}）<br>`
+      + `このかたまり ${cl.ha}ha（約${(cl.ha * 30).toLocaleString()}区画）<br>`
+      + (t ? `<span style="color:#64748b;">すでにピンがある場所</span>`
+           : `<b style="color:#b91c1c;">🚩 まだ行っていない</b>`)
+      + `</div>`;
+
+    const draw = () => {
+      const data = takuchiDataRef.current;
+      if (!alive || !data) return;
+      grp.clearLayers();
+      const z = map.getZoom();
+      const bb = map.getBounds().pad(0.2);
+      const s = bb.getSouth(), w = bb.getWest(), n = bb.getNorth(), e = bb.getEast();
+      // 引きの画面で全部出すと県が塗りつぶされて読めないので、大きいものから段階的に出す
+      const area = z >= TAKUCHI_ZOOM_AREA;
+      const minHa = z <= 9 ? 8 : (z === 10 ? 5 : (z === 11 ? 3 : 1));
+      let drawn = 0;
+      TAKUCHI_ORDER.forEach(key => {
+        const meta = TAKUCHI_PERIODS.filter(x => x.k === key)[0];
+        (data[key] || []).forEach(cl => {
+          if (cl.ha < minHa || drawn >= TAKUCHI_CAP) return;
+          if (cl.bbox[0] > n || cl.bbox[2] < s || cl.bbox[1] > e || cl.bbox[3] < w) return;
+          const t = isTouched(cl);
+          if (tkOnlyNew && t) return;
+          const html = popupOf(cl, meta, t);
+          if (area) {
+            for (let i = 0; i < cl.cells.length; i++) {
+              if (drawn >= TAKUCHI_CAP) break;
+              const c = cl.cells[i];
+              L.rectangle([[c[0], c[1]], [c[2], c[3]]], {
+                renderer, color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
+                fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55,
+              }).bindPopup(html).addTo(grp);
+              drawn++;
+            }
+          } else {
+            L.circleMarker([(cl.bbox[0] + cl.bbox[2]) / 2, (cl.bbox[1] + cl.bbox[3]) / 2], {
+              renderer, radius: Math.min(14, 3 + Math.sqrt(cl.ha) * 1.9),
+              color: t ? "#ffffff" : "#7f1d1d", weight: t ? 1 : 1.6, opacity: t ? 0.55 : 0.9,
+              fillColor: meta.color, fillOpacity: t ? 0.28 : 0.85,
+            }).bindPopup(html).addTo(grp);
+            drawn++;
+          }
+        });
+      });
+      try { grp.bringToBack(); } catch (e) {}
+    };
+
+    // 連続して動かしたときに描き直しが積み上がらないよう、少し待ってから1回だけ
+    const queue = () => { if (timer) clearTimeout(timer); timer = setTimeout(draw, 140); };
+
+    grp.addTo(map);
+    takuchiLayerRef.current = grp;
+    map.on("zoomend", queue);
+    map.on("moveend", queue);
+
+    (takuchiDataRef.current ? Promise.resolve(takuchiDataRef.current) : loadTakuchi())
+      .then(d => { if (!alive) return; takuchiDataRef.current = d; draw(); })
+      .catch(e => { console.warn("宅地化データの読み込みに失敗", e); });
+
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+      try { map.off("zoomend", queue); map.off("moveend", queue); } catch (e) {}
+      drop();
+    };
+  }, [tkShow, tkOnlyNew, takuchiPinCells]);
 
   // マーカー更新
   React.useEffect(() => {
@@ -19460,6 +19637,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.419: ストリートビューで確認した範囲（面）。足跡とは別レイヤーで切替できる。
   const [svScans, setSvScans] = useState([]);
   const [showSvScan, setShowSvScan] = useState(true);
+  // 🆕 v9.421: 宅地化した年代レイヤー（🏠物件住所モードのときだけ使う）
+  const [showTakuchi, setShowTakuchi] = useState(false);
+  const [takuchiOnlyNew, setTakuchiOnlyNew] = useState(false);
   useEffect(() => {
     let alive = true;
     loadSvScanRows().then(rows => { if (alive && rows) setSvScans(rows); });
@@ -24269,6 +24449,45 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         紫の面＝写真で確認済みの範囲。<NavIcon name="users" size={10} /> 足跡（実際に歩いた記録）とは別で、行動管理の数字には入りません。
                       </div>
                     </div>
+                    {/* 🆕 v9.421: 宅地化した年代（🏠物件住所のときだけ。所有者の自宅にピンを打つモードでは意味がない） */}
+                    {mapPinTarget === "address" && (
+                      <div style={{ marginTop: 6, marginBottom: 4 }}>
+                        <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>🏘 宅地化した年代（分譲住宅団地）</div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                          <button onClick={() => setShowTakuchi(v => !v)} style={{
+                            padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                            background: showTakuchi ? "#e0603a" : "transparent",
+                            color: showTakuchi ? "#fff" : "#e0603a",
+                            border: "1.5px solid #e0603a", fontWeight: showTakuchi ? 700 : 400,
+                          }}>{showTakuchi ? "✓ 表示中" : "表示する"}</button>
+                          {showTakuchi && (
+                            <button onClick={() => setTakuchiOnlyNew(v => !v)} style={{
+                              padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                              background: takuchiOnlyNew ? "#b91c1c" : "transparent",
+                              color: takuchiOnlyNew ? "#fff" : "#b91c1c",
+                              border: "1.5px solid #b91c1c", fontWeight: takuchiOnlyNew ? 700 : 400,
+                            }}>{takuchiOnlyNew ? "🚩 未踏だけ表示中" : "🚩 まだ行っていない団地だけ"}</button>
+                          )}
+                        </div>
+                        {showTakuchi && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 5 }}>
+                            {[
+                              { c: "#e0603a", l: "昭和後半 1976→1987" },
+                              { c: "#d99a2b", l: "昭和末 1987→1991" },
+                              { c: "#1f9b95", l: "平成初期 1991→1997" },
+                            ].map(x => (
+                              <span key={x.l} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: C.muted }}>
+                                <span style={{ width: 9, height: 9, borderRadius: 2, background: x.c, display: "inline-block" }} />{x.l}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.5 }}>
+                          その時期に農地・山林から住宅地になった場所（100mマス）。団地は一斉入居なので一斉に高齢化します。
+                          <b>濃い面＝まだ行っていない</b>／うすい面＝すでにピンがある場所。引きの画面では大きい団地だけ、寄せると小さい分譲地も出ます。
+                        </div>
+                      </div>
+                    )}
                     {/* 🆕 v9.8: 期間フィルタ拡張 */}
                     <div style={{ marginBottom: 4 }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}><NavIcon name="calendar" size={12} /> 期間</div>
@@ -25093,6 +25312,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       })()}
                       tracks={trackRecording ? recordingPastTracks : displayTracks}
                       svScans={showSvScan ? svScans : null}
+                      takuchi={{ show: showTakuchi, onlyNew: takuchiOnlyNew }}
                       routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick" || route.mode === "lasso") ? {
                         start: { lat: currentLoc.lat, lng: currentLoc.lng },
                         stops: route.stops,
