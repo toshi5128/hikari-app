@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.422-takuchi-streetview";
+const APP_VERSION = "2026-09-12-v9.423-takuchi-streetview";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7549,15 +7549,20 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   const tkOnlyNew = !!(takuchi && takuchi.onlyNew);
 
   // 自分のピンが落ちている100mマス（ここから約300m以内なら「もう行った場所」とみなす）
-  const takuchiPinCells = React.useMemo(() => {
-    const s = new Set();
+  // 🆕 v9.423: items は親の再描画のたびに作り直される配列なので、そのまま依存に置くと
+  //   GPS更新などの度にレイヤーを丸ごと作り直して地図が固まる。中身が変わった時だけ動くよう
+  //   「短い文字列の指紋」を依存にして、配列本体は ref で参照する。
+  const takuchiItemsRef = React.useRef(items);
+  takuchiItemsRef.current = items;
+  const takuchiPinSig = React.useMemo(() => {
+    let h = 0, n = 0;
     (items || []).forEach(it => {
       const la = Number(it && it.lat), lo = Number(it && it.lng);
       if (!isFinite(la) || !isFinite(lo)) return;
-      const rc = _takuchiPinCell(la, lo);
-      s.add(rc[0] + ":" + rc[1]);
+      n++;
+      h = (h * 31 + Math.round(la * 1e4) + Math.round(lo * 1e4)) | 0;
     });
-    return s;
+    return n + ":" + h;
   }, [items]);
 
   React.useEffect(() => {
@@ -7575,6 +7580,14 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     const grp = L.layerGroup();
     const renderer = L.canvas({ padding: 0.2 });
     const touchedCache = new Map();      // ピンが変わるたびに作り直す（古い判定を引きずらない）
+
+    const takuchiPinCells = new Set();
+    (takuchiItemsRef.current || []).forEach(it => {
+      const la = Number(it && it.lat), lo = Number(it && it.lng);
+      if (!isFinite(la) || !isFinite(lo)) return;
+      const rc = _takuchiPinCell(la, lo);
+      takuchiPinCells.add(rc[0] + ":" + rc[1]);
+    });
 
     const isTouched = (cl) => {
       if (touchedCache.has(cl)) return touchedCache.get(cl);
@@ -7671,7 +7684,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       try { map.off("zoomend", queue); map.off("moveend", queue); } catch (e) {}
       drop();
     };
-  }, [tkShow, tkOnlyNew, takuchiPinCells]);
+  }, [tkShow, tkOnlyNew, takuchiPinSig]);
 
   // マーカー更新
   React.useEffect(() => {
