@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.429-tap-fix";
+const APP_VERSION = "2026-09-12-v9.430-tap-perf";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7363,7 +7363,7 @@ const TAKUCHI_PERIODS = [
 const TAKUCHI_ORDER = ["H3-H9", "S62-H3", "S51-62"];   // 古い年代ほど手前に描く
 const TAKUCHI_ZOOM_AREA = 12;    // これ以上寄せたら実際の形（100mマス）に切り替え
 const TAKUCHI_PAD = 3;           // 約300m以内にピンがあれば「もう行った場所」
-const TAKUCHI_CAP = 9000;        // 1画面に作る図形の上限。ここで打ち切ると「押しても反応しない面」ができるので余裕をとる
+const TAKUCHI_CAP = 2500;        // 1画面に作る図形（＝かたまり）の上限
 
 // 日本測地系 → 世界測地系（国内で約1m精度の近似式）
 function _tkyToJgd(lat, lon) {
@@ -7717,7 +7717,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     if (!tkShow) { drop(); return; }
 
     let alive = true, timer = null;
-    const grp = L.layerGroup();
+    const grp = L.featureGroup();
     const renderer = L.canvas({ padding: 0.2 });
     const touchedCache = new Map();      // ピンが変わるたびに作り直す（古い判定を引きずらない）
 
@@ -7850,33 +7850,27 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
             if (mk.v === "later") return { color: md.color, weight: 0.6, fillColor: md.color,   fillOpacity: 0.12 };
             return { color: md.color, weight: 0.6, fillColor: md.color, fillOpacity: 0.10 };   // out
           };
+          // 🆕 v9.430: 1マスごとに図形＋ポップアップを作ると、1画面で数千個になり
+          //   描画のたびにメインスレッドが約1秒止まる＝その間のタップが全部捨てられていた。
+          //   かたまり1つ＝図形1つ（複数マスは1枚の多角形）にまとめ、ポップアップは
+          //   押された時だけ1個作る。
+          let sh;
           if (area) {
-            // 寄っているときは、押した100mマスそのものの中心をストリートビューの狙い先にする
-            for (let i = 0; i < cl.cells.length; i++) {
-              if (drawn >= TAKUCHI_CAP) break;
-              const c = cl.cells[i];
-              const sh = L.rectangle([[c[0], c[1]], [c[2], c[3]]], {
-                renderer, ...styleOf({ color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
-                                       fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55 }),
-              }).bindPopup(popupOf(cl, meta, t, (c[0] + c[2]) / 2, (c[1] + c[3]) / 2),
-                           { autoPan: true, closeButton: true });
-              sh._tkCl = cl;
-              sh.addTo(grp);
-              drawn++;
-            }
+            sh = L.polygon(cl.cells.map(c => [[[c[0], c[1]], [c[0], c[3]], [c[2], c[3]], [c[2], c[1]]]]), {
+              renderer, ...styleOf({ color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
+                                     fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55 }),
+            });
           } else {
-            const clat = (cl.bbox[0] + cl.bbox[2]) / 2, clng = (cl.bbox[1] + cl.bbox[3]) / 2;
             const base = { color: t ? "#ffffff" : "#7f1d1d", weight: t ? 1 : 1.6,
                            fillColor: meta.color, fillOpacity: t ? 0.28 : 0.85 };
-            const sh = L.circleMarker([clat, clng], {
+            sh = L.circleMarker([(cl.bbox[0] + cl.bbox[2]) / 2, (cl.bbox[1] + cl.bbox[3]) / 2], {
               renderer, radius: Math.min(14, 3 + Math.sqrt(cl.ha) * 1.9),
               opacity: md ? 0.95 : (t ? 0.55 : 0.9), ...styleOf(base),
-            }).bindPopup(popupOf(cl, meta, t, clat, clng),
-                         { autoPan: true, closeButton: true });
-            sh._tkCl = cl;
-            sh.addTo(grp);
-            drawn++;
+            });
           }
+          sh._tkCl = cl; sh._tkMeta = meta; sh._tkT = t;
+          sh.addTo(grp);
+          drawn++;
         });
       });
       try { grp.bringToBack(); } catch (e) {}
@@ -7893,9 +7887,9 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     const onPopupOpen = (ev) => {
       popupOpen = true;
       const el = ev.popup && ev.popup.getElement ? ev.popup.getElement() : null;
-      const src = ev.popup && ev.popup._source;
-      if (!el || !src || !src._tkCl) return;
-      const cl = src._tkCl;
+      const cl = (ev.popup && (ev.popup._tkCl
+                || (ev.popup._source && ev.popup._source._tkCl))) || null;
+      if (!el || !cl) return;
       el.querySelectorAll("[data-tkll]").forEach(a => {
         a.addEventListener("click", () => {
           const ll = String(a.getAttribute("data-tkll") || "").split(",").map(Number);
@@ -7918,6 +7912,18 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         };
       });
     };
+    // 押された時にだけポップアップを1個作る（押した地点をそのままストリートビューの狙い先にする）
+    const onShapeClick = (ev) => {
+      const l = ev.layer;
+      if (!l || !l._tkCl || !ev.latlng) return;
+      const pp = L.popup({ autoPan: true, closeButton: true })
+        .setLatLng(ev.latlng)
+        .setContent(popupOf(l._tkCl, l._tkMeta, l._tkT, ev.latlng.lat, ev.latlng.lng));
+      pp._tkCl = l._tkCl;
+      pp.openOn(map);
+    };
+    grp.on("click", onShapeClick);
+
     map.on("popupopen", onPopupOpen);
     map.on("popupclose", onPopupClose);
 
