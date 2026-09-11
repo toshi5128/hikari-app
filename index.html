@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.433-hit-area";
+const APP_VERSION = "2026-09-12-v9.434-track-time";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -20225,6 +20225,54 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     }
     return total;
   }, [visibleTracks, currentUser]);
+  // 🆕 v9.434: 探索時間。GPSの点にはもともと時刻が入っているので、新しく記録するものは無い。
+  //   点と点の間が5分を超えたら「いったん止めていた」とみなして数えない＝実際に動いていた時間だけ出る。
+  //   記録を止め忘れて昼食をとっても、その分は自動で除かれる。
+  const TRACK_GAP_MS = 5 * 60 * 1000;
+  const trackSessionsOf = (pts) => {
+    const a = (pts || []).filter(p => p && p.ts).sort((x, y) => x.ts - y.ts);
+    const out = [];
+    let cur = null;
+    for (let i = 0; i < a.length; i++) {
+      if (!cur) { cur = { from: a[i].ts, to: a[i].ts, ms: 0 }; continue; }
+      const gap = a[i].ts - cur.to;
+      if (gap > TRACK_GAP_MS) { out.push(cur); cur = { from: a[i].ts, to: a[i].ts, ms: 0 }; }
+      else { cur.ms += gap; cur.to = a[i].ts; }
+    }
+    if (cur) out.push(cur);
+    return out.filter(x => x.ms > 0 || out.length === 1);
+  };
+  const fmtDur = (ms) => {
+    const mi = Math.max(0, Math.round(ms / 60000));
+    return mi >= 60 ? `${Math.floor(mi / 60)}時間${mi % 60 ? (mi % 60) + "分" : ""}` : `${mi}分`;
+  };
+  const myTrackTime = React.useMemo(() => {
+    const ss = trackSessionsOf(visibleTracks[currentUser] || []);
+    return { ms: ss.reduce((a, x) => a + x.ms, 0), n: ss.length,
+             from: ss.length ? ss[0].from : 0, to: ss.length ? ss[ss.length - 1].to : 0 };
+  }, [visibleTracks, currentUser]);
+  const allTrackTime = React.useMemo(() => {
+    let ms = 0;
+    Object.values(visibleTracks).forEach(pts => {
+      trackSessionsOf(pts).forEach(x => { ms += x.ms; });
+    });
+    return ms;
+  }, [visibleTracks]);
+  // 記録中は経過時間を見せる（15秒ごと更新。毎秒だと画面全体の描き直しが増えて重くなる）
+  const [trackTick, setTrackTick] = useState(0);
+  useEffect(() => {
+    if (!trackRecording) return;
+    const id = setInterval(() => setTrackTick(t => t + 1), 15000);
+    return () => clearInterval(id);
+  }, [trackRecording]);
+  const liveElapsedMs = React.useMemo(() => {
+    if (!trackRecording) return 0;
+    const ss = trackSessionsOf(visibleTracks[currentUser] || []);
+    if (!ss.length) return 0;
+    const last = ss[ss.length - 1];
+    return Math.max(last.ms, Date.now() - last.from);
+  }, [trackRecording, trackTick, visibleTracks, currentUser]);
+
   // 🆕 通知タップでハイライトする ID
   const [highlightJiageId, setHighlightJiageId] = useState(null);
   const [highlightOwnerId, setHighlightOwnerId] = useState(null);
@@ -24925,8 +24973,26 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       return (
                         <div style={{ fontSize: 10, color: C.text, lineHeight: 1.5, padding: "4px 0", borderTop: `1px dashed ${C.borderDim}`, marginTop: 4 }}>
                           {/* 🆕 v9.9: 点数表示を削除、距離だけ */}
-                          <div><NavIcon name="activity" size={15} /> 自分の距離: <b style={{ color: trackRecording ? "#3b82f6" : C.text }}>{formatKm(myDistanceMeters)}</b></div>
-                          <div><NavIcon name="users" size={15} /> 表示中の総距離: <b>{formatKm(trackDistanceMeters)}</b></div>
+                          <div><NavIcon name="activity" size={15} /> 自分の距離: <b style={{ color: trackRecording ? "#3b82f6" : C.text }}>{formatKm(myDistanceMeters)}</b>
+                            <span style={{ color: C.muted }}>／ 探索時間 </span>
+                            <b style={{ color: trackRecording ? "#3b82f6" : C.text }}>{fmtDur(myTrackTime.ms)}</b>
+                            {myTrackTime.n > 1 && <span style={{ color: C.muted, fontSize: 11 }}>（{myTrackTime.n}回に分けて）</span>}
+                          </div>
+                          {trackRecording && (
+                            <div style={{ color: "#3b82f6", fontWeight: 700 }}>
+                              ⏱ この回の経過: {fmtDur(liveElapsedMs)}
+                              <span style={{ fontWeight: 400, fontSize: 11, color: C.muted }}>　※止めるまで数え続けます</span>
+                            </div>
+                          )}
+                          {myTrackTime.ms > 0 && myDistanceMeters > 0 && (
+                            <div style={{ color: C.muted, fontSize: 11 }}>
+                              ペース: 1時間あたり {formatKm(myDistanceMeters / (myTrackTime.ms / 3600000))}
+                              {myTrackTime.from ? `　${new Date(myTrackTime.from).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})}〜${new Date(myTrackTime.to).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})}` : ""}
+                            </div>
+                          )}
+                          <div><NavIcon name="users" size={15} /> 表示中の総距離: <b>{formatKm(trackDistanceMeters)}</b>
+                            <span style={{ color: C.muted }}>／ 総時間 </span><b>{fmtDur(allTrackTime)}</b>
+                          </div>
                           <div style={{ color: gpsOk ? C.success : C.danger, fontWeight: 700 }}>
                             <NavIcon name="navigation" size={15} /> GPS: {gpsOk ? `OK (±${Math.round(currentLoc.accuracy || 0)}m)` : "未取得"}
                           </div>
