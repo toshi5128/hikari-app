@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.425-danchi-mark";
+const APP_VERSION = "2026-09-12-v9.426-map-resume";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3858,7 +3858,7 @@ async function loadDanchiMarkRows() {
     const map = {};
     (rows || []).forEach(r => {
       const it = r && r.data && r.data.item;
-      if (!it || !Array.isArray(it.cells) || !it.v) return;
+      if (!it || !Array.isArray(it.cells) || (!it.v && !it.seenAt)) return;
       it.cells.forEach(c => { map[c] = it; });
     });
     return map;
@@ -7421,7 +7421,7 @@ function loadTakuchi() {
   return _takuchiPromise;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -7456,6 +7456,32 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     // 🆕 v8.140: 標準のズームコントロール(+/-)を左下に配置（地図上部の検索バーと重ならないように）
     const map = L.map(mapRef.current, { zoomControl: false }).setView([36.05, 139.4], 9);
     L.control.zoom({ position: "bottomleft" }).addTo(map);
+    // 🆕 v9.426: 見ていた場所を覚えておく。ストリートビューや他アプリから戻ってきた時に、
+    //   地図が県全体に戻ってしまって「あれ、どこ見てたんだっけ」となるのを防ぐ。
+    //   12時間以内に見ていた位置だけ復元する（翌日以降は従来どおり全ピンに合わせる）。
+    if (rememberViewKey) {
+      try {
+        const sv = JSON.parse(localStorage.getItem("hikari_map_view_" + rememberViewKey) || "null");
+        if (sv && isFinite(sv.lat) && isFinite(sv.lng) && isFinite(sv.z)
+            && Date.now() - (sv.ts || 0) < 12 * 3600 * 1000) {
+          map.setView([sv.lat, sv.lng], sv.z);
+          hasInitializedBoundsRef.current = true;   // 全ピンへの自動フィットは行わない
+        }
+      } catch (e) {}
+      let vt = null;
+      const remember = () => {
+        if (vt) clearTimeout(vt);
+        vt = setTimeout(() => {
+          try {
+            const c = map.getCenter();
+            localStorage.setItem("hikari_map_view_" + rememberViewKey,
+              JSON.stringify({ lat: c.lat, lng: c.lng, z: map.getZoom(), ts: Date.now() }));
+          } catch (e) {}
+        }, 500);
+      };
+      map.on("moveend", remember);
+      map.on("zoomend", remember);
+    }
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap",
       maxZoom: 19,
@@ -7600,6 +7626,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   tkMarksRef.current = (takuchi && takuchi.marks) || {};
   const tkOnMarkRef = React.useRef(null);
   tkOnMarkRef.current = takuchi && takuchi.onMark;
+  const tkOnSeenRef = React.useRef(null);
+  tkOnSeenRef.current = takuchi && takuchi.onSeen;
 
   // 自分のピンが落ちている100mマス（ここから約300m以内なら「もう行った場所」とみなす）
   // 🆕 v9.423: items は親の再描画のたびに作り直される配列なので、そのまま依存に置くと
@@ -7683,6 +7711,14 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           + (m.memo ? `<div style="font-size:11px;color:#334155;margin-top:2px;">${_hkEsc(m.memo)}</div>` : "")
           + `</div>`
         : "";
+      // 判定まではしていないが、ストリートビューで一度見た場所（＝二度見防止）
+      const seenWhen = m && m.seenAt
+        ? new Date(m.seenAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) : "";
+      const seenBox = (m && m.seenAt && !d)
+        ? `<div style="margin-top:6px;padding:5px 8px;border-radius:7px;background:#f1f5f9;border:1px dashed #94a3b8;font-size:11px;color:#475569;">`
+          + `👁 ${_hkEsc(m.seenBy || "")}が ${seenWhen} にストリートビューで確認済み`
+          + `</div>`
+        : "";
       const btn = (k) => {
         const x = DANCHI_MARKS[k];
         const on = m && m.v === k;
@@ -7695,9 +7731,9 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         + `このかたまり ${cl.ha}ha（約${(cl.ha * 30).toLocaleString()}区画）<br>`
         + (t ? `<span style="color:#64748b;">すでにピンがある場所</span>`
              : `<b style="color:#b91c1c;">🚩 まだ行っていない</b>`)
-        + markBox
+        + markBox + seenBox
         + `<div style="display:flex;gap:6px;margin-top:7px;">`
-        + `<a href="${pano}" target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:6px 8px;border-radius:8px;background:#1a73e8;color:#fff;text-decoration:none;font-size:11px;font-weight:700;">👁 ストリートビュー</a>`
+        + `<a href="${pano}" data-tkpano target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:6px 8px;border-radius:8px;background:#1a73e8;color:#fff;text-decoration:none;font-size:11px;font-weight:700;">👁 ストリートビュー</a>`
         + `<a href="${air}" target="_blank" rel="noopener noreferrer" style="padding:6px 8px;border-radius:8px;background:#f1f5f9;color:#334155;text-decoration:none;font-size:11px;font-weight:700;border:1px solid #cbd5e1;">🗺 地図</a>`
         + `</div>`
         + `<div style="margin-top:8px;padding-top:7px;border-top:1px solid #e2e8f0;">`
@@ -7732,7 +7768,11 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           if (tkHideDone && mk && (mk.v === "later" || mk.v === "out")) return;
           const md = mk && DANCHI_MARKS[mk.v];
           const styleOf = (base) => {
-            if (!md) return base;
+            if (!md) {
+              return (mk && mk.seenAt)
+                ? { ...base, color: "#64748b", weight: 1.2, dashArray: "3,3" }
+                : base;
+            }
             if (mk.v === "star")  return { color: md.color, weight: 2,   fillColor: meta.color, fillOpacity: 0.7 };
             if (mk.v === "ok")    return { color: md.color, weight: 1,   fillColor: meta.color, fillOpacity: 0.35 };
             if (mk.v === "later") return { color: md.color, weight: 0.6, fillColor: md.color,   fillOpacity: 0.12 };
@@ -7779,6 +7819,11 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const src = ev.popup && ev.popup._source;
       if (!el || !src || !src._tkCl) return;
       const cl = src._tkCl;
+      const pano = el.querySelector("[data-tkpano]");
+      if (pano) pano.addEventListener("click", () => {
+        const fn = tkOnSeenRef.current;
+        if (fn) fn(cl.codes);
+      }, { once: true });
       el.querySelectorAll("[data-tkmark]").forEach(b => {
         b.onclick = () => {
           const memoEl = el.querySelector("[data-tkmemo]");
@@ -19800,17 +19845,40 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   }, [showTakuchi]);
   const markDanchi = React.useCallback(async (codes, value, memo) => {
     if (!Array.isArray(codes) || !codes.length) return;
+    const prevMark = danchiMarks[codes[0]] || null;
     const item = { id: codes[0], cells: codes, v: value || "",
                    memo: String(memo || "").slice(0, 120),
-                   by: currentUser || "", at: Date.now() };
+                   by: currentUser || "", at: Date.now(),
+                   seenAt: (prevMark && prevMark.seenAt) || 0,
+                   seenBy: (prevMark && prevMark.seenBy) || "" };
     setDanchiMarks(prev => {
       const next = { ...prev };
-      codes.forEach(c => { if (value) next[c] = item; else delete next[c]; });
+      codes.forEach(c => {
+        if (value || item.seenAt) next[c] = item; else delete next[c];
+      });
       return next;
     });
     setDanchiMarksVer(v => v + 1);
     const ok = await saveDanchiMarkRow(item);
     if (!ok) alert("⚠️ 判定の保存に失敗しました（通信が戻ったらもう一度押してください）");
+  }, [currentUser, danchiMarks]);
+
+  // 🆕 v9.426: ストリートビューを開いた時点で「見た」印だけ自動で残す。
+  //   判定まで決めなくても、次に開いたとき「9/12 に自分が見た」と分かるので二度見が消える。
+  const markDanchiSeen = React.useCallback(async (codes) => {
+    if (!Array.isArray(codes) || !codes.length) return;
+    setDanchiMarks(prev => {
+      const cur = prev[codes[0]] || null;
+      const item = { id: codes[0], cells: codes,
+                     v: (cur && cur.v) || "", memo: (cur && cur.memo) || "",
+                     by: (cur && cur.by) || "", at: (cur && cur.at) || 0,
+                     seenAt: Date.now(), seenBy: currentUser || "" };
+      saveDanchiMarkRow(item);
+      const next = { ...prev };
+      codes.forEach(c => { next[c] = item; });
+      return next;
+    });
+    setDanchiMarksVer(v => v + 1);
   }, [currentUser]);
   useEffect(() => {
     let alive = true;
@@ -25497,7 +25565,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       tracks={trackRecording ? recordingPastTracks : displayTracks}
                       svScans={showSvScan ? svScans : null}
                       takuchi={{ show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
-                                 marks: danchiMarks, marksVer: danchiMarksVer, onMark: markDanchi }}
+                                 marks: danchiMarks, marksVer: danchiMarksVer, onMark: markDanchi,
+                                 onSeen: markDanchiSeen }}
+                      rememberViewKey="jiage"
                       routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick" || route.mode === "lasso") ? {
                         start: { lat: currentLoc.lat, lng: currentLoc.lng },
                         stops: route.stops,
