@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.427-lastlook-pin";
+const APP_VERSION = "2026-09-12-v9.428-only-star";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7621,6 +7621,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   const tkShow = !!(takuchi && takuchi.show) && pinTarget === "address";
   const tkOnlyNew = !!(takuchi && takuchi.onlyNew);
   const tkHideDone = !!(takuchi && takuchi.hideDone);
+  const tkOnlyStar = !!(takuchi && takuchi.onlyStar);
   const tkMarksVer = (takuchi && takuchi.marksVer) || 0;
   const tkMarksRef = React.useRef({});
   tkMarksRef.current = (takuchi && takuchi.marks) || {};
@@ -7817,11 +7818,14 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       TAKUCHI_ORDER.forEach(key => {
         const meta = TAKUCHI_PERIODS.filter(x => x.k === key)[0];
         (data[key] || []).forEach(cl => {
-          if (cl.ha < minHa || drawn >= TAKUCHI_CAP) return;
+          if (drawn >= TAKUCHI_CAP) return;
+          // ⭐有望だけの時は件数が少ないので、引きの画面でも大きさで間引かず全部出す
+          if (!tkOnlyStar && cl.ha < minHa) return;
           if (cl.bbox[0] > n || cl.bbox[2] < s || cl.bbox[1] > e || cl.bbox[3] < w) return;
           const t = isTouched(cl);
           if (tkOnlyNew && t) return;
           const mk = markOf(cl);
+          if (tkOnlyStar && !(mk && mk.v === "star")) return;
           // 「後回し・対象外」は一度判断が済んでいる。隠せば“まだ考えていない場所”だけが残る
           if (tkHideDone && mk && (mk.v === "later" || mk.v === "out")) return;
           const md = mk && DANCHI_MARKS[mk.v];
@@ -7916,7 +7920,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       try { map.off("zoomend", queue); map.off("moveend", queue); map.off("popupopen", onPopupOpen); } catch (e) {}
       drop();
     };
-  }, [tkShow, tkOnlyNew, tkHideDone, tkMarksVer, takuchiPinSig]);
+  }, [tkShow, tkOnlyNew, tkHideDone, tkOnlyStar, tkMarksVer, takuchiPinSig]);
 
   // マーカー更新
   React.useEffect(() => {
@@ -19905,12 +19909,14 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [takuchiOnlyNew, setTakuchiOnlyNew] = useState(!!_tkUI.onlyNew);
   // 🆕 v9.425: 団地ごとの判定（⭐有望/✓確認済/⬇後回し/✕対象外）。全員共有・クラウド保存。
   const [takuchiHideDone, setTakuchiHideDone] = useState(!!_tkUI.hideDone);
+  const [takuchiOnlyStar, setTakuchiOnlyStar] = useState(!!_tkUI.onlyStar);
   React.useEffect(() => {
     try {
       localStorage.setItem(TAKUCHI_UI_KEY, JSON.stringify({
-        show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone }));
+        show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
+        onlyStar: takuchiOnlyStar }));
     } catch (e) {}
-  }, [showTakuchi, takuchiOnlyNew, takuchiHideDone]);
+  }, [showTakuchi, takuchiOnlyNew, takuchiHideDone, takuchiOnlyStar]);
   const [danchiMarks, setDanchiMarks] = useState({});
   const [danchiMarksVer, setDanchiMarksVer] = useState(0);
   React.useEffect(() => {
@@ -24779,6 +24785,14 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             border: "1.5px solid #e0603a", fontWeight: showTakuchi ? 700 : 400,
                           }}>{showTakuchi ? "✓ 表示中" : "表示する"}</button>
                           {showTakuchi && (
+                            <button onClick={() => setTakuchiOnlyStar(v => !v)} style={{
+                              padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                              background: takuchiOnlyStar ? "#eab308" : "transparent",
+                              color: takuchiOnlyStar ? "#fff" : "#a16207",
+                              border: "1.5px solid #eab308", fontWeight: takuchiOnlyStar ? 700 : 400,
+                            }}>{takuchiOnlyStar ? "⭐ 有望だけ表示中" : "⭐ 有望だけ"}</button>
+                          )}
+                          {showTakuchi && (
                             <button onClick={() => setTakuchiOnlyNew(v => !v)} style={{
                               padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
                               background: takuchiOnlyNew ? "#b91c1c" : "transparent",
@@ -24815,6 +24829,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           <b>濃い面＝まだ行っていない</b>／うすい面＝すでにピンがある場所。引きの画面では大きい団地だけ、寄せると小さい分譲地も出ます。
                           <br />面をタップすると <b>⭐有望 / ✓確認済 / ⬇後回し / ✕対象外</b> を理由つきで残せます（全員に共有）。
                           一度判定すれば次に開いた時にその判断が出るので、同じ場所を見直す手間が消えます。
+                          <br /><b>⭐有望だけ</b>を押すと、有望と判定した団地だけが残ります（大きさに関係なく全部出ます＝回る先のリスト）。
                         </div>
                       </div>
                     )}
@@ -25643,6 +25658,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       tracks={trackRecording ? recordingPastTracks : displayTracks}
                       svScans={showSvScan ? svScans : null}
                       takuchi={{ show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
+                                 onlyStar: takuchiOnlyStar,
                                  marks: danchiMarks, marksVer: danchiMarksVer, onMark: markDanchi,
                                  onSeen: markDanchiSeen }}
                       rememberViewKey="jiage"
