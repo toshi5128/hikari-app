@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.424-takuchi-kodate";
+const APP_VERSION = "2026-09-12-v9.425-danchi-mark";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3841,6 +3841,40 @@ async function loadSvScanRows() {
   } catch (e) { return null; }
 }
 
+// 🆕 v9.425: 宅地化レイヤーの「団地ごとの判定」。1件=1行 danchi::<代表マス番号>。
+//   判定は100mマスの番号（＝地面に打った杭）に結びつける。元データを作り直しても迷子にならない。
+//   全員共有：誰がいつ判定したかも残すので、別の人が同じ場所を見直す無駄が消える。
+const DANCHI_MARKS = {
+  star:  { label: "有望",   icon: "⭐", color: "#eab308" },
+  ok:    { label: "確認済", icon: "✓",  color: "#64748b" },
+  later: { label: "後回し", icon: "⬇",  color: "#0ea5e9" },
+  out:   { label: "対象外", icon: "✕",  color: "#94a3b8" },
+};
+async function loadDanchiMarkRows() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.danchi::*&select=id,data`, { headers: _TRACK_HEADERS });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    const map = {};
+    (rows || []).forEach(r => {
+      const it = r && r.data && r.data.item;
+      if (!it || !Array.isArray(it.cells) || !it.v) return;
+      it.cells.forEach(c => { map[c] = it; });
+    });
+    return map;
+  } catch (e) { return null; }
+}
+async function saveDanchiMarkRow(item) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data`, {
+      method: "POST",
+      headers: { ..._TRACK_HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([{ id: `danchi::${item.id}`, data: { v: 1, item }, updated_at: new Date().toISOString() }]),
+    });
+    return res.ok;
+  } catch (e) { return false; }
+}
+
 // Supabaseにデータを保存
 async function saveToSupabase(data, retries = 3) {
   // 🆕 バージョン情報を含める（自動更新通知用）
@@ -7344,6 +7378,16 @@ function _takuchiPinCell(lat, lng) {
   const t = _jgdToTky(lat, lng);
   return [Math.floor(t[0] * 1200), Math.floor((t[1] - 100) * 800)];
 }
+// 100mマスの通し番号（10桁）。判定を結びつける「杭」に使う。
+function _takuchiCellCode(row, col) {
+  const p = Math.floor(row / 800), r1 = row % 800;
+  const q = Math.floor(r1 / 100), r2 = r1 % 100;
+  const r = Math.floor(r2 / 10), s = r2 % 10;
+  const u = Math.floor(col / 800), c1 = col % 800;
+  const v = Math.floor(c1 / 100), c2 = c1 % 100;
+  const w = Math.floor(c2 / 10), t = c2 % 10;
+  return String(p).padStart(2, "0") + String(u).padStart(2, "0") + q + v + r + w + s + t;
+}
 
 let _takuchiPromise = null;
 function loadTakuchi() {
@@ -7366,8 +7410,9 @@ function loadTakuchi() {
             if (b[1] > e) e = b[1];
             return [a[0], a[1], b[0], b[1]];
           });
-          return { city: raw.cities[rec[0]] || "", ha: offs.length, cells,
-                   grid: offs.map(o => [r0 + o[0], c0 + o[1]]), bbox: [s, w, n, e] };
+          const grid = offs.map(o => [r0 + o[0], c0 + o[1]]);
+          return { city: raw.cities[rec[0]] || "", ha: offs.length, cells, grid,
+                   codes: grid.map(g => _takuchiCellCode(g[0], g[1])), bbox: [s, w, n, e] };
         });
       });
       return out;
@@ -7549,6 +7594,12 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   const takuchiDataRef = React.useRef(null);
   const tkShow = !!(takuchi && takuchi.show) && pinTarget === "address";
   const tkOnlyNew = !!(takuchi && takuchi.onlyNew);
+  const tkHideDone = !!(takuchi && takuchi.hideDone);
+  const tkMarksVer = (takuchi && takuchi.marksVer) || 0;
+  const tkMarksRef = React.useRef({});
+  tkMarksRef.current = (takuchi && takuchi.marks) || {};
+  const tkOnMarkRef = React.useRef(null);
+  tkOnMarkRef.current = takuchi && takuchi.onMark;
 
   // 自分のピンが落ちている100mマス（ここから約300m以内なら「もう行った場所」とみなす）
   // 🆕 v9.423: items は親の再描画のたびに作り直される配列なので、そのまま依存に置くと
@@ -7608,18 +7659,53 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
 
     // 🆕 v9.422: タップした場所をそのままストリートビューで開けるようにする
     //   viewpoint は「その地点に一番近いパノラマ」を探してくれるので、道路上でなくても開ける
+    const markOf = (cl) => {
+      const mk = tkMarksRef.current || {};
+      for (let i = 0; i < cl.codes.length; i++) {
+        const m = mk[cl.codes[i]];
+        if (m && m.v) return m;
+      }
+      return null;
+    };
+
     const popupOf = (cl, meta, t, lat, lng) => {
       const ll = `${lat.toFixed(6)},${lng.toFixed(6)}`;
       const pano = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${ll}`;
       const air = `https://www.google.com/maps/search/?api=1&query=${ll}`;
-      return `<div style="font-size:12px;line-height:1.6;min-width:186px;">`
+      const m = markOf(cl);
+      const d = m && DANCHI_MARKS[m.v];
+      const when = m && m.at ? new Date(m.at).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) : "";
+      // 前に自分（や誰か）が下した判断を、まず最初に見せる。これが「前も見たな」の無駄を消す。
+      const markBox = d
+        ? `<div style="margin-top:6px;padding:6px 8px;border-radius:7px;background:${d.color}1a;border:1px solid ${d.color};">`
+          + `<b style="color:${d.color};font-size:12px;">${d.icon} ${d.label}</b>`
+          + `<span style="color:#64748b;font-size:10px;"> ${_hkEsc(m.by || "")}${when ? " ・" + when : ""}</span>`
+          + (m.memo ? `<div style="font-size:11px;color:#334155;margin-top:2px;">${_hkEsc(m.memo)}</div>` : "")
+          + `</div>`
+        : "";
+      const btn = (k) => {
+        const x = DANCHI_MARKS[k];
+        const on = m && m.v === k;
+        return `<button type="button" data-tkmark="${k}" style="flex:1;padding:5px 2px;border-radius:7px;cursor:pointer;`
+          + `font-family:inherit;font-size:10px;font-weight:700;border:1.5px solid ${x.color};`
+          + `background:${on ? x.color : "#fff"};color:${on ? "#fff" : x.color};">${x.icon}<br>${x.label}</button>`;
+      };
+      return `<div style="font-size:12px;line-height:1.6;min-width:210px;">`
         + `<b>${_hkEsc(cl.city)}</b><br>${meta.name}（${meta.era}）<br>`
         + `このかたまり ${cl.ha}ha（約${(cl.ha * 30).toLocaleString()}区画）<br>`
         + (t ? `<span style="color:#64748b;">すでにピンがある場所</span>`
              : `<b style="color:#b91c1c;">🚩 まだ行っていない</b>`)
+        + markBox
         + `<div style="display:flex;gap:6px;margin-top:7px;">`
         + `<a href="${pano}" target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:6px 8px;border-radius:8px;background:#1a73e8;color:#fff;text-decoration:none;font-size:11px;font-weight:700;">👁 ストリートビュー</a>`
         + `<a href="${air}" target="_blank" rel="noopener noreferrer" style="padding:6px 8px;border-radius:8px;background:#f1f5f9;color:#334155;text-decoration:none;font-size:11px;font-weight:700;border:1px solid #cbd5e1;">🗺 地図</a>`
+        + `</div>`
+        + `<div style="margin-top:8px;padding-top:7px;border-top:1px solid #e2e8f0;">`
+        + `<div style="font-size:10px;color:#64748b;margin-bottom:4px;font-weight:700;">ここの判定を残す（全員に共有されます）</div>`
+        + `<div style="display:flex;gap:4px;">${btn("star")}${btn("ok")}${btn("later")}${btn("out")}</div>`
+        + `<input data-tkmemo type="text" placeholder="理由を一言（例：西側が工場）" value="${_hkEsc((m && m.memo) || "")}" `
+        + `style="width:100%;margin-top:5px;padding:5px 7px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;font-size:11px;box-sizing:border-box;">`
+        + (m ? `<button type="button" data-tkmark="" style="width:100%;margin-top:4px;padding:4px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:10px;background:#fff;color:#94a3b8;border:1px dashed #cbd5e1;">判定を取り消す</button>` : "")
         + `</div></div>`;
     };
 
@@ -7641,26 +7727,42 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           if (cl.bbox[0] > n || cl.bbox[2] < s || cl.bbox[1] > e || cl.bbox[3] < w) return;
           const t = isTouched(cl);
           if (tkOnlyNew && t) return;
+          const mk = markOf(cl);
+          // 「後回し・対象外」は一度判断が済んでいる。隠せば“まだ考えていない場所”だけが残る
+          if (tkHideDone && mk && (mk.v === "later" || mk.v === "out")) return;
+          const md = mk && DANCHI_MARKS[mk.v];
+          const styleOf = (base) => {
+            if (!md) return base;
+            if (mk.v === "star")  return { color: md.color, weight: 2,   fillColor: meta.color, fillOpacity: 0.7 };
+            if (mk.v === "ok")    return { color: md.color, weight: 1,   fillColor: meta.color, fillOpacity: 0.35 };
+            if (mk.v === "later") return { color: md.color, weight: 0.6, fillColor: md.color,   fillOpacity: 0.12 };
+            return { color: md.color, weight: 0.6, fillColor: md.color, fillOpacity: 0.10 };   // out
+          };
           if (area) {
             // 寄っているときは、押した100mマスそのものの中心をストリートビューの狙い先にする
             for (let i = 0; i < cl.cells.length; i++) {
               if (drawn >= TAKUCHI_CAP) break;
               const c = cl.cells[i];
-              L.rectangle([[c[0], c[1]], [c[2], c[3]]], {
-                renderer, color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
-                fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55,
+              const sh = L.rectangle([[c[0], c[1]], [c[2], c[3]]], {
+                renderer, ...styleOf({ color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
+                                       fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55 }),
               }).bindPopup(popupOf(cl, meta, t, (c[0] + c[2]) / 2, (c[1] + c[3]) / 2),
-                           { autoPan: true, closeButton: true }).addTo(grp);
+                           { autoPan: true, closeButton: true });
+              sh._tkCl = cl;
+              sh.addTo(grp);
               drawn++;
             }
           } else {
             const clat = (cl.bbox[0] + cl.bbox[2]) / 2, clng = (cl.bbox[1] + cl.bbox[3]) / 2;
-            L.circleMarker([clat, clng], {
+            const base = { color: t ? "#ffffff" : "#7f1d1d", weight: t ? 1 : 1.6,
+                           fillColor: meta.color, fillOpacity: t ? 0.28 : 0.85 };
+            const sh = L.circleMarker([clat, clng], {
               renderer, radius: Math.min(14, 3 + Math.sqrt(cl.ha) * 1.9),
-              color: t ? "#ffffff" : "#7f1d1d", weight: t ? 1 : 1.6, opacity: t ? 0.55 : 0.9,
-              fillColor: meta.color, fillOpacity: t ? 0.28 : 0.85,
+              opacity: md ? 0.95 : (t ? 0.55 : 0.9), ...styleOf(base),
             }).bindPopup(popupOf(cl, meta, t, clat, clng),
-                         { autoPan: true, closeButton: true }).addTo(grp);
+                         { autoPan: true, closeButton: true });
+            sh._tkCl = cl;
+            sh.addTo(grp);
             drawn++;
           }
         });
@@ -7670,6 +7772,23 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
 
     // 連続して動かしたときに描き直しが積み上がらないよう、少し待ってから1回だけ
     const queue = () => { if (timer) clearTimeout(timer); timer = setTimeout(draw, 140); };
+
+    // ポップアップの判定ボタンを押したら、その場で保存して地図に反映する
+    const onPopupOpen = (ev) => {
+      const el = ev.popup && ev.popup.getElement ? ev.popup.getElement() : null;
+      const src = ev.popup && ev.popup._source;
+      if (!el || !src || !src._tkCl) return;
+      const cl = src._tkCl;
+      el.querySelectorAll("[data-tkmark]").forEach(b => {
+        b.onclick = () => {
+          const memoEl = el.querySelector("[data-tkmemo]");
+          const fn = tkOnMarkRef.current;
+          if (fn) fn(cl.codes, b.getAttribute("data-tkmark"), memoEl ? memoEl.value : "");
+          try { map.closePopup(); } catch (e) {}
+        };
+      });
+    };
+    map.on("popupopen", onPopupOpen);
 
     grp.addTo(map);
     takuchiLayerRef.current = grp;
@@ -7683,10 +7802,10 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
-      try { map.off("zoomend", queue); map.off("moveend", queue); } catch (e) {}
+      try { map.off("zoomend", queue); map.off("moveend", queue); map.off("popupopen", onPopupOpen); } catch (e) {}
       drop();
     };
-  }, [tkShow, tkOnlyNew, takuchiPinSig]);
+  }, [tkShow, tkOnlyNew, tkHideDone, tkMarksVer, takuchiPinSig]);
 
   // マーカー更新
   React.useEffect(() => {
@@ -19667,6 +19786,32 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.421: 宅地化した年代レイヤー（🏠物件住所モードのときだけ使う）
   const [showTakuchi, setShowTakuchi] = useState(false);
   const [takuchiOnlyNew, setTakuchiOnlyNew] = useState(false);
+  // 🆕 v9.425: 団地ごとの判定（⭐有望/✓確認済/⬇後回し/✕対象外）。全員共有・クラウド保存。
+  const [takuchiHideDone, setTakuchiHideDone] = useState(false);
+  const [danchiMarks, setDanchiMarks] = useState({});
+  const [danchiMarksVer, setDanchiMarksVer] = useState(0);
+  React.useEffect(() => {
+    if (!showTakuchi) return;
+    let alive = true;
+    loadDanchiMarkRows().then(m => {
+      if (alive && m) { setDanchiMarks(m); setDanchiMarksVer(v => v + 1); }
+    });
+    return () => { alive = false; };
+  }, [showTakuchi]);
+  const markDanchi = React.useCallback(async (codes, value, memo) => {
+    if (!Array.isArray(codes) || !codes.length) return;
+    const item = { id: codes[0], cells: codes, v: value || "",
+                   memo: String(memo || "").slice(0, 120),
+                   by: currentUser || "", at: Date.now() };
+    setDanchiMarks(prev => {
+      const next = { ...prev };
+      codes.forEach(c => { if (value) next[c] = item; else delete next[c]; });
+      return next;
+    });
+    setDanchiMarksVer(v => v + 1);
+    const ok = await saveDanchiMarkRow(item);
+    if (!ok) alert("⚠️ 判定の保存に失敗しました（通信が戻ったらもう一度押してください）");
+  }, [currentUser]);
   useEffect(() => {
     let alive = true;
     loadSvScanRows().then(rows => { if (alive && rows) setSvScans(rows); });
@@ -24495,6 +24640,14 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               border: "1.5px solid #b91c1c", fontWeight: takuchiOnlyNew ? 700 : 400,
                             }}>{takuchiOnlyNew ? "🚩 未踏だけ表示中" : "🚩 まだ行っていない団地だけ"}</button>
                           )}
+                          {showTakuchi && (
+                            <button onClick={() => setTakuchiHideDone(v => !v)} style={{
+                              padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                              background: takuchiHideDone ? "#0ea5e9" : "transparent",
+                              color: takuchiHideDone ? "#fff" : "#0ea5e9",
+                              border: "1.5px solid #0ea5e9", fontWeight: takuchiHideDone ? 700 : 400,
+                            }}>{takuchiHideDone ? "⬇ 判定済みを隠し中" : "⬇ 後回し・対象外を隠す"}</button>
+                          )}
                         </div>
                         {showTakuchi && (
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 5 }}>
@@ -24514,6 +24667,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           <b>工場・マンション・集合団地・公共施設は除いてあります</b>（2016年の航空写真で戸建が建っているマスだけ）。
                           団地は一斉入居なので一斉に高齢化します。
                           <b>濃い面＝まだ行っていない</b>／うすい面＝すでにピンがある場所。引きの画面では大きい団地だけ、寄せると小さい分譲地も出ます。
+                          <br />面をタップすると <b>⭐有望 / ✓確認済 / ⬇後回し / ✕対象外</b> を理由つきで残せます（全員に共有）。
+                          一度判定すれば次に開いた時にその判断が出るので、同じ場所を見直す手間が消えます。
                         </div>
                       </div>
                     )}
@@ -25341,7 +25496,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       })()}
                       tracks={trackRecording ? recordingPastTracks : displayTracks}
                       svScans={showSvScan ? svScans : null}
-                      takuchi={{ show: showTakuchi, onlyNew: takuchiOnlyNew }}
+                      takuchi={{ show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
+                                 marks: danchiMarks, marksVer: danchiMarksVer, onMark: markDanchi }}
                       routeOverlay={route.open && currentLoc && (route.stops.length > 0 || route.mode === "pick" || route.mode === "lasso") ? {
                         start: { lat: currentLoc.lat, lng: currentLoc.lng },
                         stops: route.stops,
