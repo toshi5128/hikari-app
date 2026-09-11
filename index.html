@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.426-map-resume";
+const APP_VERSION = "2026-09-12-v9.427-lastlook-pin";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7629,6 +7629,64 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   const tkOnSeenRef = React.useRef(null);
   tkOnSeenRef.current = takuchi && takuchi.onSeen;
 
+  // 🆕 v9.427: 「いま見に行った場所」に旗を立てる。
+  //   Googleマップやストリートビューを開いて戻ってきた時、団地が並んでいるとどれを見たのか
+  //   分からなくなる。見に行った瞬間に旗を刺しておけば、戻った瞬間に一目で分かる。
+  const LASTLOOK_KEY = "hikari_takuchi_lastlook";
+  const [lastLook, setLastLook] = React.useState(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(LASTLOOK_KEY) || "null");
+      return (v && isFinite(v.lat) && isFinite(v.lng) && Date.now() - (v.at || 0) < 24 * 3600 * 1000) ? v : null;
+    } catch (e) { return null; }
+  });
+  const rememberLook = React.useCallback((info) => {
+    try { localStorage.setItem(LASTLOOK_KEY, JSON.stringify(info)); } catch (e) {}
+    setLastLook(info);
+  }, []);
+  const clearLook = React.useCallback(() => {
+    try { localStorage.removeItem(LASTLOOK_KEY); } catch (e) {}
+    setLastLook(null);
+  }, []);
+  React.useEffect(() => { window.__hikariClearLastLook__ = clearLook; }, [clearLook]);
+
+  const lookMarkerRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (lookMarkerRef.current) {
+      try { map.removeLayer(lookMarkerRef.current); } catch (e) {}
+      lookMarkerRef.current = null;
+    }
+    if (!lastLook) return;
+    const when = new Date(lastLook.at).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+    const mk = L.marker([lastLook.lat, lastLook.lng], {
+      zIndexOffset: 20000,
+      icon: L.divIcon({
+        className: "",
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
+        html: `<div style="position:relative;">`
+          + `<div style="position:absolute;left:-13px;top:-34px;font-size:26px;line-height:1;`
+          + `filter:drop-shadow(0 2px 3px rgba(0,0,0,.45));">📍</div>`
+          + `<div style="position:absolute;left:14px;top:-30px;white-space:nowrap;background:#b91c1c;`
+          + `color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;`
+          + `box-shadow:0 1px 4px rgba(0,0,0,.3);">さっき見た場所</div></div>`,
+      }),
+    });
+    mk.bindPopup(
+      `<div style="font-size:12px;line-height:1.6;min-width:170px;">`
+      + `<b>📍 さっき見に行った場所</b><br>`
+      + `${_hkEsc(lastLook.city || "")} ${lastLook.ha ? lastLook.ha + "ha" : ""}<br>`
+      + `<span style="color:#64748b;font-size:11px;">${_hkEsc(lastLook.label || "")} ・ ${when} に開いた</span>`
+      + `<button type="button" onclick="window.__hikariClearLastLook__&&window.__hikariClearLastLook__()" `
+      + `style="width:100%;margin-top:7px;padding:5px;border-radius:7px;cursor:pointer;font-family:inherit;`
+      + `font-size:11px;background:#fff;color:#64748b;border:1px solid #cbd5e1;">この旗を消す</button></div>`
+    );
+    mk.addTo(map);
+    lookMarkerRef.current = mk;
+    return () => { try { map.removeLayer(mk); } catch (e) {} };
+  }, [lastLook]);
+
   // 自分のピンが落ちている100mマス（ここから約300m以内なら「もう行った場所」とみなす）
   // 🆕 v9.423: items は親の再描画のたびに作り直される配列なので、そのまま依存に置くと
   //   GPS更新などの度にレイヤーを丸ごと作り直して地図が固まる。中身が変わった時だけ動くよう
@@ -7733,8 +7791,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
              : `<b style="color:#b91c1c;">🚩 まだ行っていない</b>`)
         + markBox + seenBox
         + `<div style="display:flex;gap:6px;margin-top:7px;">`
-        + `<a href="${pano}" data-tkpano target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:6px 8px;border-radius:8px;background:#1a73e8;color:#fff;text-decoration:none;font-size:11px;font-weight:700;">👁 ストリートビュー</a>`
-        + `<a href="${air}" target="_blank" rel="noopener noreferrer" style="padding:6px 8px;border-radius:8px;background:#f1f5f9;color:#334155;text-decoration:none;font-size:11px;font-weight:700;border:1px solid #cbd5e1;">🗺 地図</a>`
+        + `<a href="${pano}" data-tkpano data-tkll="${ll}" data-tklabel="${_hkEsc(meta.name + "（" + meta.era + "）")}" target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:6px 8px;border-radius:8px;background:#1a73e8;color:#fff;text-decoration:none;font-size:11px;font-weight:700;">👁 ストリートビュー</a>`
+        + `<a href="${air}" data-tkmap data-tkll="${ll}" data-tklabel="${_hkEsc(meta.name + "（" + meta.era + "）")}" target="_blank" rel="noopener noreferrer" style="padding:6px 8px;border-radius:8px;background:#f1f5f9;color:#334155;text-decoration:none;font-size:11px;font-weight:700;border:1px solid #cbd5e1;">🗺 地図</a>`
         + `</div>`
         + `<div style="margin-top:8px;padding-top:7px;border-top:1px solid #e2e8f0;">`
         + `<div style="font-size:10px;color:#64748b;margin-bottom:4px;font-weight:700;">ここの判定を残す（全員に共有されます）</div>`
@@ -7819,11 +7877,19 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const src = ev.popup && ev.popup._source;
       if (!el || !src || !src._tkCl) return;
       const cl = src._tkCl;
-      const pano = el.querySelector("[data-tkpano]");
-      if (pano) pano.addEventListener("click", () => {
-        const fn = tkOnSeenRef.current;
-        if (fn) fn(cl.codes);
-      }, { once: true });
+      el.querySelectorAll("[data-tkll]").forEach(a => {
+        a.addEventListener("click", () => {
+          const ll = String(a.getAttribute("data-tkll") || "").split(",").map(Number);
+          if (ll.length === 2 && isFinite(ll[0]) && isFinite(ll[1])) {
+            rememberLook({ lat: ll[0], lng: ll[1], city: cl.city, ha: cl.ha,
+                           label: a.getAttribute("data-tklabel") || "", at: Date.now() });
+          }
+          if (a.hasAttribute("data-tkpano")) {
+            const fn = tkOnSeenRef.current;
+            if (fn) fn(cl.codes);
+          }
+        });
+      });
       el.querySelectorAll("[data-tkmark]").forEach(b => {
         b.onclick = () => {
           const memoEl = el.querySelector("[data-tkmemo]");
@@ -19829,10 +19895,22 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [svScans, setSvScans] = useState([]);
   const [showSvScan, setShowSvScan] = useState(true);
   // 🆕 v9.421: 宅地化した年代レイヤー（🏠物件住所モードのときだけ使う）
-  const [showTakuchi, setShowTakuchi] = useState(false);
-  const [takuchiOnlyNew, setTakuchiOnlyNew] = useState(false);
+  // 🆕 v9.427: 表示状態を保存。ストリートビューから戻った時にレイヤーが消えていると
+  //   「どこ見てたんだっけ」が余計に分からなくなるため。
+  const TAKUCHI_UI_KEY = "hikari_takuchi_ui";
+  const _tkUI = (() => {
+    try { return JSON.parse(localStorage.getItem(TAKUCHI_UI_KEY) || "{}") || {}; } catch (e) { return {}; }
+  })();
+  const [showTakuchi, setShowTakuchi] = useState(!!_tkUI.show);
+  const [takuchiOnlyNew, setTakuchiOnlyNew] = useState(!!_tkUI.onlyNew);
   // 🆕 v9.425: 団地ごとの判定（⭐有望/✓確認済/⬇後回し/✕対象外）。全員共有・クラウド保存。
-  const [takuchiHideDone, setTakuchiHideDone] = useState(false);
+  const [takuchiHideDone, setTakuchiHideDone] = useState(!!_tkUI.hideDone);
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(TAKUCHI_UI_KEY, JSON.stringify({
+        show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone }));
+    } catch (e) {}
+  }, [showTakuchi, takuchiOnlyNew, takuchiHideDone]);
   const [danchiMarks, setDanchiMarks] = useState({});
   const [danchiMarksVer, setDanchiMarksVer] = useState(0);
   React.useEffect(() => {
