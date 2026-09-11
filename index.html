@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.430-tap-perf";
+const APP_VERSION = "2026-09-12-v9.431-merge-blocks";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7395,27 +7395,31 @@ function loadTakuchi() {
   _takuchiPromise = fetch("takuchi-nendai.json")
     .then(r => { if (!r.ok) throw new Error("takuchi " + r.status); return r.json(); })
     .then(raw => {
-      const out = {};
-      TAKUCHI_PERIODS.forEach(p => {
-        out[p.k] = (raw.periods[p.k] || []).map(rec => {
-          const r0 = rec[1], c0 = rec[2], offs = rec[3];
-          let s = 99, w = 999, n = -99, e = -999;
-          const cells = offs.map(o => {
-            const r = r0 + o[0], c = c0 + o[1];
-            const a = _tkyToJgd(r / 1200, 100 + c / 800);
-            const b = _tkyToJgd((r + 1) / 1200, 100 + (c + 1) / 800);
-            if (a[0] < s) s = a[0];
-            if (b[0] > n) n = b[0];
-            if (a[1] < w) w = a[1];
-            if (b[1] > e) e = b[1];
-            return [a[0], a[1], b[0], b[1]];
-          });
-          const grid = offs.map(o => [r0 + o[0], c0 + o[1]]);
-          return { city: raw.cities[rec[0]] || "", ha: offs.length, cells, grid,
-                   codes: grid.map(g => _takuchiCellCode(g[0], g[1])), bbox: [s, w, n, e] };
-        });
+      // 🆕 v9.431(データ v3): 判定しやすいよう、300m以内のマトを「ひとつの街」にまとめてある。
+      //   年代はまたいでまとめるが、マスごとの年代は保持しているので色分けはそのまま。
+      return (raw.clusters || []).map(rec => {
+        const r0 = rec[1], c0 = rec[2], offs = rec[3];
+        let s = 99, w = 999, n = -99, e = -999;
+        const byP = [[], [], []], pha = [0, 0, 0], codes = [], grid = [];
+        for (let i = 0; i < offs.length; i++) {
+          const o = offs[i];
+          const r = r0 + o[0], c = c0 + o[1], pi = o[2] || 0;
+          const a = _tkyToJgd(r / 1200, 100 + c / 800);
+          const b = _tkyToJgd((r + 1) / 1200, 100 + (c + 1) / 800);
+          if (a[0] < s) s = a[0];
+          if (b[0] > n) n = b[0];
+          if (a[1] < w) w = a[1];
+          if (b[1] > e) e = b[1];
+          byP[pi].push([a[0], a[1], b[0], b[1]]);
+          pha[pi]++;
+          grid.push([r, c]);
+          codes.push(_takuchiCellCode(r, c));
+        }
+        let top = 0;
+        for (let i = 1; i < 3; i++) if (pha[i] > pha[top]) top = i;
+        return { city: raw.cities[rec[0]] || "", ha: offs.length,
+                 byP, pha, top, grid, codes, bbox: [s, w, n, e] };
       });
-      return out;
     })
     .catch(e => { _takuchiPromise = null; throw e; });
   return _takuchiPromise;
@@ -7785,9 +7789,12 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           + `font-family:inherit;font-size:10px;font-weight:700;border:1.5px solid ${x.color};`
           + `background:${on ? x.color : "#fff"};color:${on ? "#fff" : x.color};">${x.icon}<br>${x.label}</button>`;
       };
+      // 街ひとつの中に複数の年代が混ざることがあるので、内訳で出す
+      const eras = (cl.pha || []).map((n, i) => n ? `${TAKUCHI_PERIODS[i].name} ${n}ha` : "")
+        .filter(Boolean).join(" ／ ");
       return `<div style="font-size:12px;line-height:1.6;min-width:210px;">`
-        + `<b>${_hkEsc(cl.city)}</b><br>${meta.name}（${meta.era}）<br>`
-        + `このかたまり ${cl.ha}ha（約${(cl.ha * 30).toLocaleString()}区画）<br>`
+        + `<b>${_hkEsc(cl.city)}</b>　この一帯 ${cl.ha}ha（約${(cl.ha * 30).toLocaleString()}区画）<br>`
+        + `<span style="color:#475569;font-size:11px;">${_hkEsc(eras || (meta.name + "（" + meta.era + "）"))}</span><br>`
         + (t ? `<span style="color:#64748b;">すでにピンがある場所</span>`
              : `<b style="color:#b91c1c;">🚩 まだ行っていない</b>`)
         + markBox + seenBox
@@ -7825,54 +7832,57 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const area = z >= TAKUCHI_ZOOM_AREA;
       const minHa = z <= 9 ? 8 : (z === 10 ? 5 : (z === 11 ? 3 : 1));
       let drawn = 0;
-      TAKUCHI_ORDER.forEach(key => {
-        const meta = TAKUCHI_PERIODS.filter(x => x.k === key)[0];
-        (data[key] || []).forEach(cl => {
-          if (drawn >= TAKUCHI_CAP) return;
-          // ⭐有望だけの時は件数が少ないので、引きの画面でも大きさで間引かず全部出す
-          if (!tkOnlyStar && cl.ha < minHa) return;
-          if (cl.bbox[0] > n || cl.bbox[2] < s || cl.bbox[1] > e || cl.bbox[3] < w) return;
-          const t = isTouched(cl);
-          if (tkOnlyNew && t) return;
-          const mk = markOf(cl);
-          if (tkOnlyStar && !(mk && mk.v === "star")) return;
-          // 「後回し・対象外」は一度判断が済んでいる。隠せば“まだ考えていない場所”だけが残る
-          if (tkHideDone && mk && (mk.v === "later" || mk.v === "out")) return;
-          const md = mk && DANCHI_MARKS[mk.v];
-          const styleOf = (base) => {
-            if (!md) {
-              return (mk && mk.seenAt)
-                ? { ...base, color: "#64748b", weight: 1.2, dashArray: "3,3" }
-                : base;
-            }
-            if (mk.v === "star")  return { color: md.color, weight: 2,   fillColor: meta.color, fillOpacity: 0.7 };
-            if (mk.v === "ok")    return { color: md.color, weight: 1,   fillColor: meta.color, fillOpacity: 0.35 };
-            if (mk.v === "later") return { color: md.color, weight: 0.6, fillColor: md.color,   fillOpacity: 0.12 };
-            return { color: md.color, weight: 0.6, fillColor: md.color, fillOpacity: 0.10 };   // out
-          };
-          // 🆕 v9.430: 1マスごとに図形＋ポップアップを作ると、1画面で数千個になり
-          //   描画のたびにメインスレッドが約1秒止まる＝その間のタップが全部捨てられていた。
-          //   かたまり1つ＝図形1つ（複数マスは1枚の多角形）にまとめ、ポップアップは
-          //   押された時だけ1個作る。
-          let sh;
-          if (area) {
-            sh = L.polygon(cl.cells.map(c => [[[c[0], c[1]], [c[0], c[3]], [c[2], c[3]], [c[2], c[1]]]]), {
-              renderer, ...styleOf({ color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
-                                     fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55 }),
-            });
-          } else {
-            const base = { color: t ? "#ffffff" : "#7f1d1d", weight: t ? 1 : 1.6,
-                           fillColor: meta.color, fillOpacity: t ? 0.28 : 0.85 };
-            sh = L.circleMarker([(cl.bbox[0] + cl.bbox[2]) / 2, (cl.bbox[1] + cl.bbox[3]) / 2], {
-              renderer, radius: Math.min(14, 3 + Math.sqrt(cl.ha) * 1.9),
-              opacity: md ? 0.95 : (t ? 0.55 : 0.9), ...styleOf(base),
-            });
+      for (let ci = 0; ci < data.length; ci++) {
+        if (drawn >= TAKUCHI_CAP) break;
+        const cl = data[ci];
+        // ⭐有望だけの時は件数が少ないので、引きの画面でも大きさで間引かず全部出す
+        if (!tkOnlyStar && cl.ha < minHa) continue;
+        if (cl.bbox[0] > n || cl.bbox[2] < s || cl.bbox[1] > e || cl.bbox[3] < w) continue;
+        const t = isTouched(cl);
+        if (tkOnlyNew && t) continue;
+        const mk = markOf(cl);
+        if (tkOnlyStar && !(mk && mk.v === "star")) continue;
+        // 「後回し・対象外」は一度判断が済んでいる。隠せば“まだ考えていない場所”だけが残る
+        if (tkHideDone && mk && (mk.v === "later" || mk.v === "out")) continue;
+        const md = mk && DANCHI_MARKS[mk.v];
+        const topMeta = TAKUCHI_PERIODS[cl.top];
+        const styleOf = (base, color) => {
+          if (!md) {
+            return (mk && mk.seenAt)
+              ? { ...base, color: "#64748b", weight: 1.2, dashArray: "3,3" }
+              : base;
           }
-          sh._tkCl = cl; sh._tkMeta = meta; sh._tkT = t;
+          if (mk.v === "star")  return { color: md.color, weight: 2,   fillColor: color, fillOpacity: 0.7 };
+          if (mk.v === "ok")    return { color: md.color, weight: 1,   fillColor: color, fillOpacity: 0.35 };
+          if (mk.v === "later") return { color: md.color, weight: 0.6, fillColor: md.color, fillOpacity: 0.12 };
+          return { color: md.color, weight: 0.6, fillColor: md.color, fillOpacity: 0.10 };   // out
+        };
+        // 🆕 v9.431: 判定は「街ひとつ」単位。ただし年代の色分けは残したいので、
+        //   ひとつの街の中で年代ごとに1枚ずつ多角形を描く（最大3枚）。押せば同じ判定が付く。
+        if (area) {
+          for (let pi = 2; pi >= 0; pi--) {          // 古い年代ほど後から＝手前に描く
+            const cells = cl.byP[pi];
+            if (!cells || !cells.length) continue;
+            const meta = TAKUCHI_PERIODS[pi];
+            const sh = L.polygon(cells.map(c => [[[c[0], c[1]], [c[0], c[3]], [c[2], c[3]], [c[2], c[1]]]]), {
+              renderer, ...styleOf({ color: t ? meta.color : "#7f1d1d", weight: t ? 0 : 0.8,
+                                     fillColor: meta.color, fillOpacity: t ? 0.22 : 0.55 }, meta.color),
+            });
+            sh._tkCl = cl; sh._tkMeta = topMeta; sh._tkT = t;
+            sh.addTo(grp);
+          }
+        } else {
+          const base = { color: t ? "#ffffff" : "#7f1d1d", weight: t ? 1 : 1.6,
+                         fillColor: topMeta.color, fillOpacity: t ? 0.28 : 0.85 };
+          const sh = L.circleMarker([(cl.bbox[0] + cl.bbox[2]) / 2, (cl.bbox[1] + cl.bbox[3]) / 2], {
+            renderer, radius: Math.min(14, 3 + Math.sqrt(cl.ha) * 1.9),
+            opacity: md ? 0.95 : (t ? 0.55 : 0.9), ...styleOf(base, topMeta.color),
+          });
+          sh._tkCl = cl; sh._tkMeta = topMeta; sh._tkT = t;
           sh.addTo(grp);
-          drawn++;
-        });
-      });
+        }
+        drawn++;
+      }
       try { grp.bringToBack(); } catch (e) {}
     };
 
@@ -24852,6 +24862,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           <br />面をタップすると <b>⭐有望 / ✓確認済 / ⬇後回し / ✕対象外</b> を理由つきで残せます（全員に共有）。
                           一度判定すれば次に開いた時にその判断が出るので、同じ場所を見直す手間が消えます。
                           <br /><b>⭐有望だけ</b>を押すと、有望と判定した団地だけが残ります（大きさに関係なく全部出ます＝回る先のリスト）。
+                          <br />判定は<b>「街ひとつ」単位</b>（300m以内をまとめ、約1km四方まで）。どのマスを押しても一帯にまとめて付きます。
                         </div>
                       </div>
                     )}
