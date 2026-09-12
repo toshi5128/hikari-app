@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.435-trim-help";
+const APP_VERSION = "2026-09-12-v9.436-track-age";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7435,7 +7435,7 @@ function loadTakuchi() {
   return _takuchiPromise;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -8780,6 +8780,34 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   const livePolylineRef = React.useRef(null);
   const livePolylinePointsRef = React.useRef([]);
   // 🆕 v9.7: 週ごとの色（8色ローテ・判別しやすい色相）
+  // 🆕 v9.436: 「いつ回ったか」で色分け。空き家は時間とともに増えるので、
+  //   前に回って空き家が無くても、時間が経てば状況は変わる。古い足跡ほど目立たせて再訪を促す。
+  const AGE_BUCKETS = [
+    { d: 7,    c: "#3b82f6", l: "〜1週間" },
+    { d: 30,   c: "#06b6d4", l: "〜1ヶ月" },
+    { d: 90,   c: "#10b981", l: "〜3ヶ月" },
+    { d: 180,  c: "#f59e0b", l: "〜半年" },
+    { d: 9999, c: "#dc2626", l: "半年以上（要再訪）" },
+  ];
+  const ageOf = (ts) => Math.floor((Date.now() - (ts || 0)) / 86400000);
+  const ageColor = (ts) => {
+    const a = ageOf(ts);
+    for (const b of AGE_BUCKETS) if (a <= b.d) return b.c;
+    return AGE_BUCKETS[AGE_BUCKETS.length - 1].c;
+  };
+  const fmtAge = (ts) => {
+    const a = ageOf(ts);
+    if (a <= 0) return "今日";
+    if (a === 1) return "昨日";
+    if (a < 31) return `${a}日前`;
+    if (a < 365) return `${Math.round(a / 30)}ヶ月前`;
+    return `${(a / 365).toFixed(1)}年前`;
+  };
+  const fmtDate = (ts) => {
+    try { const d = new Date(ts); return `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()}`; }
+    catch (e) { return ""; }
+  };
+
   const WEEK_COLORS = [
     "#3b82f6", // 1週目: 青
     "#10b981", // 2週目: 緑
@@ -8873,7 +8901,10 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         const drawPts = seg.pts.length > 2 ? _simplifyRDP(seg.pts, 4) : seg.pts;
         if (drawPts.length < 2) return;
         const latlngs = drawPts.map(p => [p.lat, p.lng]);
-        const color = WEEK_COLORS[seg.weekRel % WEEK_COLORS.length];
+        const segTs = seg.pts[seg.pts.length - 1].ts || seg.pts[0].ts;
+        const color = trackColorMode === "week"
+          ? WEEK_COLORS[seg.weekRel % WEEK_COLORS.length]
+          : ageColor(segTs);
         const polyline = L.polyline(latlngs, {
           color,
           weight: 7,
@@ -8897,7 +8928,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         polyline.bindPopup(`
           <div style="font-family:'Noto Sans JP',sans-serif;min-width:140px;font-size:12px;">
             <div style="font-weight:700;margin-bottom:4px;">👤 <span style="background:${memberColor};color:#fff;padding:2px 8px;border-radius:4px;">${member}</span></div>
-            <div style="color:#64748b;">📅 ${weekYear}年 第${weekNum}週</div>
+            <div style="font-weight:700;color:#111827;">📅 ${fmtDate(segTs)}　<span style="color:${color};">${fmtAge(segTs)}</span></div>
+            <div style="color:#94a3b8;font-size:10px;">${weekYear}年 第${weekNum}週</div>
             <div style="display:inline-block;width:14px;height:14px;border-radius:3px;background:${color};margin-top:4px;vertical-align:middle;"></div>
             <span style="color:#64748b;font-size:11px;margin-left:4px;">${segDistStr}</span>
           </div>
@@ -8931,6 +8963,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     });
   }, [
     tracks ? Object.entries(tracks).map(([m, pts]) => `${m}:${(pts || []).length}`).join("|") : "",
+    trackColorMode,
   ]);
 
   // 🆕 v8.129: 長押し位置に赤いピン（Googleマップ風）を表示
@@ -19947,6 +19980,14 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.419: ストリートビューで確認した範囲（面）。足跡とは別レイヤーで切替できる。
   const [svScans, setSvScans] = useState([]);
   const [showSvScan, setShowSvScan] = useState(true);
+  // 🆕 v9.436: 足跡の色を「いつ回ったか」にする（既定）。担当者別の週色にも戻せる。
+  const [trackColorMode, setTrackColorMode] = useState(() => {
+    try { return localStorage.getItem("hikari_track_color") === "week" ? "week" : "age"; }
+    catch (e) { return "age"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hikari_track_color", trackColorMode); } catch (e) {}
+  }, [trackColorMode]);
   // 🆕 v9.421: 宅地化した年代レイヤー（🏠物件住所モードのときだけ使う）
   // 🆕 v9.427: 表示状態を保存。ストリートビューから戻った時にレイヤーが消えていると
   //   「どこ見てたんだっけ」が余計に分からなくなるため。
@@ -24850,6 +24891,35 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         }}>全解除</button>
                       </div>
                     </div>
+                    {/* 🆕 v9.436: 足跡の色を「いつ回ったか」で分ける */}
+                    <div style={{ marginTop: 6, marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>🎨 足跡の色</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {[{ k: "age", l: "いつ回ったか" }, { k: "week", l: "週ごと" }].map(o => (
+                          <button key={o.k} onClick={() => setTrackColorMode(o.k)} style={{
+                            padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                            background: trackColorMode === o.k ? "#0f766e" : "transparent",
+                            color: trackColorMode === o.k ? "#fff" : "#0f766e",
+                            border: "1.5px solid #0f766e", fontWeight: trackColorMode === o.k ? 700 : 400,
+                          }}>{o.l}</button>
+                        ))}
+                      </div>
+                      {trackColorMode === "age" && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 5 }}>
+                          {[["#3b82f6","〜1週間"],["#06b6d4","〜1ヶ月"],["#10b981","〜3ヶ月"],
+                            ["#f59e0b","〜半年"],["#dc2626","半年以上"]].map(([c, l]) => (
+                            <span key={l} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: C.muted }}>
+                              <span style={{ width: 12, height: 4, borderRadius: 2, background: c, display: "inline-block" }} />{l}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {trackColorMode === "age" && (
+                        <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.5 }}>
+                          赤い線＝半年以上たっている道。空き家は増えるので、ここは回り直す価値があります。線をタップすると日付が出ます。
+                        </div>
+                      )}
+                    </div>
                     {/* 🆕 v9.419: ストリートビューで見た範囲（面）の表示切替 */}
                     <div style={{ marginTop: 6, marginBottom: 4 }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>🖥 ストリートビューで見た範囲</div>
@@ -25763,6 +25833,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       })()}
                       tracks={trackRecording ? recordingPastTracks : displayTracks}
                       svScans={showSvScan ? svScans : null}
+                      trackColorMode={trackColorMode}
                       takuchi={{ show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
                                  onlyStar: takuchiOnlyStar,
                                  marks: danchiMarks, marksVer: danchiMarksVer, onMark: markDanchi,
