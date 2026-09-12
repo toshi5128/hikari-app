@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.438-posting-kpi";
+const APP_VERSION = "2026-09-13-v9.439-tap-maplevel";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7825,6 +7825,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     //   「開いたばかりのポップアップごと作り直す」＝押しても消える／反応しない、が起きていた。
     //   ポップアップが開いている間は描き直さず、閉じてから必要なら描き直す。
     let popupOpen = false, pendingDraw = false, lastView = null;
+    const drawnList = [];   // いま描いてある一帯。タップ位置から探すのに使う
     const draw = (force) => {
       const data = takuchiDataRef.current;
       if (!alive || !data) return;
@@ -7838,6 +7839,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           && s >= lastView.s && n <= lastView.n && w >= lastView.w && e <= lastView.e) return;
       lastView = { z, s, w, n, e };
       grp.clearLayers();
+      drawnList.length = 0;
       // 引きの画面で全部出すと県が塗りつぶされて読めないので、大きいものから段階的に出す
       const area = z >= TAKUCHI_ZOOM_AREA;
       const minHa = z <= 9 ? 8 : (z === 10 ? 5 : (z === 11 ? 3 : 1));
@@ -7870,13 +7872,10 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         // 🆕 v9.431: 判定は「街ひとつ」単位。ただし年代の色分けは残したいので、
         //   ひとつの街の中で年代ごとに1枚ずつ多角形を描く（最大3枚）。押せば同じ判定が付く。
         if (area) {
-          // 🆕 v9.433: 飛び飛びの四角そのものを狙わせると、すき間ばかり押してしまって反応しない。
-          //   一帯を覆う「透明な当たり判定」を1枚敷き、色の四角は見た目だけにする。
-          const hit = L.rectangle([[cl.bbox[0], cl.bbox[1]], [cl.bbox[2], cl.bbox[3]]], {
-            renderer, stroke: false, fill: true, fillOpacity: 0, interactive: true,
-          });
-          hit._tkCl = cl; hit._tkMeta = topMeta; hit._tkT = t;
-          hit.addTo(grp);
+          // 🆕 v9.439: 図形を「押せる部品」にすると、Leafletは指が動くたびに全図形と
+          //   当たり判定をするため、数千個あると触っただけで固まる。図形は見た目だけにして、
+          //   タップは地図の座標から自分で探す（下の onMapTap）。
+          drawnList.push({ cl, meta: topMeta, t });
           for (let pi = 2; pi >= 0; pi--) {          // 古い年代ほど後から＝手前に描く
             const cells = cl.byP[pi];
             if (!cells || !cells.length) continue;
@@ -7891,11 +7890,11 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         } else {
           const base = { color: t ? "#ffffff" : "#7f1d1d", weight: t ? 1 : 1.6,
                          fillColor: topMeta.color, fillOpacity: t ? 0.28 : 0.85 };
+          drawnList.push({ cl, meta: topMeta, t });
           const sh = L.circleMarker([(cl.bbox[0] + cl.bbox[2]) / 2, (cl.bbox[1] + cl.bbox[3]) / 2], {
-            renderer, radius: Math.min(16, 8 + Math.sqrt(cl.ha) * 1.5),
+            renderer, interactive: false, radius: Math.min(16, 8 + Math.sqrt(cl.ha) * 1.5),
             opacity: md ? 0.95 : (t ? 0.55 : 0.9), ...styleOf(base, topMeta.color),
           });
-          sh._tkCl = cl; sh._tkMeta = topMeta; sh._tkT = t;
           sh.addTo(grp);
         }
         drawn++;
@@ -7939,17 +7938,25 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         };
       });
     };
-    // 押された時にだけポップアップを1個作る（押した地点をそのままストリートビューの狙い先にする）
-    const onShapeClick = (ev) => {
-      const l = ev.layer;
-      if (!l || !l._tkCl || !ev.latlng) return;
+    // 押された地点を含む一帯を、自前で探す。図形数に関係なく一定の速さで済む。
+    const onMapTap = (ev) => {
+      if (!ev || !ev.latlng || !drawnList.length) return;
+      const la = ev.latlng.lat, lo = ev.latlng.lng;
+      let best = null, bestArea = Infinity;
+      for (let i = 0; i < drawnList.length; i++) {
+        const b = drawnList[i].cl.bbox;
+        if (la < b[0] || la > b[2] || lo < b[1] || lo > b[3]) continue;
+        const area = (b[2] - b[0]) * (b[3] - b[1]);      // 重なったら小さい方を優先
+        if (area < bestArea) { bestArea = area; best = drawnList[i]; }
+      }
+      if (!best) return;
       const pp = L.popup({ autoPan: true, closeButton: true })
         .setLatLng(ev.latlng)
-        .setContent(popupOf(l._tkCl, l._tkMeta, l._tkT, ev.latlng.lat, ev.latlng.lng));
-      pp._tkCl = l._tkCl;
+        .setContent(popupOf(best.cl, best.meta, best.t, la, lo));
+      pp._tkCl = best.cl;
       pp.openOn(map);
     };
-    grp.on("click", onShapeClick);
+    map.on("click", onMapTap);
 
     map.on("popupopen", onPopupOpen);
     map.on("popupclose", onPopupClose);
@@ -7966,7 +7973,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
-      try { map.off("zoomend", queue); map.off("moveend", queue); map.off("popupopen", onPopupOpen); map.off("popupclose", onPopupClose); } catch (e) {}
+      try { map.off("zoomend", queue); map.off("moveend", queue); map.off("popupopen", onPopupOpen); map.off("popupclose", onPopupClose); map.off("click", onMapTap); } catch (e) {}
       drop();
     };
   }, [tkShow, tkOnlyNew, tkHideDone, tkOnlyStar, tkMarksVer, takuchiPinSig]);
