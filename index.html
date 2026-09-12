@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-13-v9.439-tap-maplevel";
+const APP_VERSION = "2026-09-13-v9.440-akiya-area";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7389,6 +7389,36 @@ function _takuchiCellCode(row, col) {
   return String(p).padStart(2, "0") + String(u).padStart(2, "0") + q + v + r + w + s + t;
 }
 
+// 🆕 v9.440: 空き家が出やすいエリア（500mメッシュ・75歳以上比率）。
+//   実測: 実際に歩いた589メッシュで、75歳以上比率が高いほどピンが立った
+//   （15%未満 2.0件 → 30%以上 9.7件／1メッシュ。歩いた場所だけで比べているので偏りなし）
+const AKIYA_LEVELS = [
+  { v: 1, color: "#c4b5fd", label: "20-25%" },
+  { v: 2, color: "#a78bfa", label: "25-30%" },
+  { v: 3, color: "#7c3aed", label: "30%以上" },
+];
+// 500mメッシュ番号(9桁) → 四隅。世界測地系なので変換は要らない。
+function _akiyaBounds(id) {
+  const p = +id.slice(0, 2), u = +id.slice(2, 4);
+  const q = +id[4], v = +id[5], r = +id[6], w = +id[7], sq = +id[8];
+  const row = (sq - 1) >> 1, col = (sq - 1) & 1;
+  const lat = p / 1.5 + q / 12 + r / 120 + row / 240;
+  const lon = 100 + u + v / 8 + w / 80 + col / 160;
+  return [lat, lon, lat + 1 / 240, lon + 1 / 160];
+}
+let _akiyaPromise = null;
+function loadAkiya() {
+  if (_akiyaPromise) return _akiyaPromise;
+  _akiyaPromise = fetch("akiya-area.json")
+    .then(r => { if (!r.ok) throw new Error("akiya " + r.status); return r.json(); })
+    .then(raw => (raw.meshes || []).map(m => {
+      const b = _akiyaBounds(m[0]);
+      return { pct: m[1], pop: m[2], lvl: m[3], b };
+    }))
+    .catch(e => { _akiyaPromise = null; throw e; });
+  return _akiyaPromise;
+}
+
 let _takuchiPromise = null;
 function loadTakuchi() {
   if (_takuchiPromise) return _takuchiPromise;
@@ -7435,7 +7465,7 @@ function loadTakuchi() {
   return _takuchiPromise;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -7628,6 +7658,73 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     svLayerRef.current = grp;
     return () => { try { map.removeLayer(grp); } catch (e) {} };
   }, [svScans]);
+
+  // 🆕 v9.440: 空き家が出やすいエリア（紫の面）。ストリートビュー範囲と同じ見た目。
+  const akiyaLayerRef = React.useRef(null);
+  const akiyaDataRef = React.useRef(null);
+  const akShow = !!showAkiya;
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    const drop = () => {
+      if (akiyaLayerRef.current) {
+        try { map.removeLayer(akiyaLayerRef.current); } catch (e) {}
+        akiyaLayerRef.current = null;
+      }
+    };
+    if (!akShow) { drop(); return; }
+    let alive = true;
+    const grp = L.layerGroup();
+    const rend = L.canvas({ padding: 0.2 });
+    const build = (rows) => {
+      if (!alive) return;
+      // レベルごとに1枚の多角形にまとめる＝図形3個だけ。指の動きで重くならない。
+      AKIYA_LEVELS.forEach(lv => {
+        const rings = [];
+        for (let i = 0; i < rows.length; i++) {
+          const m = rows[i];
+          if (m.lvl !== lv.v) continue;
+          const b = m.b;
+          rings.push([[[b[0], b[1]], [b[0], b[3]], [b[2], b[3]], [b[2], b[1]]]]);
+        }
+        if (!rings.length) return;
+        L.polygon(rings, {
+          renderer: rend, interactive: false, stroke: false,
+          fillColor: lv.color, fillOpacity: 0.30,
+        }).addTo(grp);
+      });
+      grp.addTo(map);
+      try { grp.bringToBack(); } catch (e) {}
+      akiyaLayerRef.current = grp;
+    };
+    (akiyaDataRef.current ? Promise.resolve(akiyaDataRef.current) : loadAkiya())
+      .then(rows => { if (!alive) return; akiyaDataRef.current = rows; build(rows); })
+      .catch(e => { console.warn("空き家エリアの読み込みに失敗", e); });
+
+    // タップでその区画の数字を出す（図形は押せない部品なので、地図の座標から探す）
+    const onTap = (ev) => {
+      const rows = akiyaDataRef.current;
+      if (!rows || !ev || !ev.latlng) return;
+      const la = ev.latlng.lat, lo = ev.latlng.lng;
+      for (let i = 0; i < rows.length; i++) {
+        const b = rows[i].b;
+        if (la >= b[0] && la <= b[2] && lo >= b[1] && lo <= b[3]) {
+          L.popup({ autoPan: true })
+            .setLatLng(ev.latlng)
+            .setContent(`<div style="font-size:12px;line-height:1.7;">`
+              + `<b>🏚 空き家が出やすいエリア</b><br>`
+              + `75歳以上の割合 <b style="font-size:14px;">${rows[i].pct}%</b><br>`
+              + `<span style="color:#64748b;">この500m四方の人口 約${rows[i].pop}人</span><br>`
+              + `<span style="color:#64748b;font-size:11px;">実績では75歳以上30%超の区画で、`
+              + `1区画あたり9.7件の空き家が見つかっています（県平均の約5倍）</span></div>`)
+            .openOn(map);
+          return;
+        }
+      }
+    };
+    map.on("click", onTap);
+    return () => { alive = false; try { map.off("click", onTap); } catch (e) {} drop(); };
+  }, [akShow]);
 
   // 🆕 v9.421→v9.422: 宅地化した年代（🏠物件住所モードのときだけ出す。所有者の自宅にピンを打つモードでは無意味なので）
   const takuchiLayerRef = React.useRef(null);
@@ -19987,6 +20084,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.419: ストリートビューで確認した範囲（面）。足跡とは別レイヤーで切替できる。
   const [svScans, setSvScans] = useState([]);
   const [showSvScan, setShowSvScan] = useState(true);
+  // 🆕 v9.440: 空き家が出やすいエリア（75歳以上比率）
+  const [showAkiya, setShowAkiya] = useState(() => {
+    try { return localStorage.getItem("hikari_show_akiya") === "1"; } catch (e) { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hikari_show_akiya", showAkiya ? "1" : "0"); } catch (e) {}
+  }, [showAkiya]);
   // 🆕 v9.436: 足跡の色を「いつ回ったか」にする（既定）。担当者別の週色にも戻せる。
   const [trackColorMode, setTrackColorMode] = useState(() => {
     try { return localStorage.getItem("hikari_track_color") === "week" ? "week" : "age"; }
@@ -24979,6 +25083,27 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         </div>
                       )}
                     </div>
+                    {/* 🆕 v9.440: 空き家が出やすいエリア */}
+                    <div style={{ marginTop: 6, marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>🏚 空き家が出やすいエリア</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                        <button onClick={() => setShowAkiya(v => !v)} style={{
+                          padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                          background: showAkiya ? "#7c3aed" : "transparent",
+                          color: showAkiya ? "#fff" : "#7c3aed",
+                          border: "1.5px solid #7c3aed", fontWeight: showAkiya ? 700 : 400,
+                        }}>{showAkiya ? "✓ 表示中" : "表示する"}</button>
+                        {showAkiya && [["#c4b5fd","20-25%"],["#a78bfa","25-30%"],["#7c3aed","30%以上"]].map(([c, l]) => (
+                          <span key={l} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: C.muted }}>
+                            <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: "inline-block" }} />{l}
+                          </span>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.5 }}>
+                        500m四方ごとの<b>75歳以上の割合</b>（国の人口データ）。濃いほど空き家が出やすい。
+                        実測では30%超の区画で1区画9.7件、15%未満の2.0件に対し<b>約5倍</b>見つかっています。
+                      </div>
+                    </div>
                     {/* 🆕 v9.419: ストリートビューで見た範囲（面）の表示切替 */}
                     <div style={{ marginTop: 6, marginBottom: 4 }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>🖥 ストリートビューで見た範囲</div>
@@ -25893,6 +26018,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       tracks={trackRecording ? recordingPastTracks : displayTracks}
                       svScans={showSvScan ? svScans : null}
                       trackColorMode={trackColorMode}
+                      showAkiya={showAkiya}
                       takuchi={{ show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
                                  onlyStar: takuchiOnlyStar,
                                  marks: danchiMarks, marksVer: danchiMarksVer, onMark: markDanchi,
