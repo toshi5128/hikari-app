@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.436-track-age";
+const APP_VERSION = "2026-09-12-v9.437-posting";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -20669,7 +20669,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [selected && selected.item && (selected.item.rawId != null ? selected.item.rawId : selected.item.id)]);
-  const [pinForm, setPinForm] = useState({ address: "", landmark: "", assignee: "", memo: "" });
+  const [pinForm, setPinForm] = useState({ address: "", landmark: "", assignee: "", memo: "", posting: false });
   // 🆕 v9.25: ピン保存前に撮影した写真を Blob で保持 → 保存時に一括 upload
   const [pendingPinPhotos, setPendingPinPhotos] = useState([]);
   const [landmarkLoading, setLandmarkLoading] = useState(false); // 🆕 v8.98: 逆ジオコ実行中
@@ -20984,14 +20984,14 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       return;
     }
     setPendingPin({ lat: currentLoc.lat, lng: currentLoc.lng, mode: "current" });
-    setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "" });
+    setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "", posting: false });
     // 🆕 v8.122: 目印住所の自動入力は廃止（空のまま開く）
   };
   const handleMapTap = (lat, lng) => {
     if (!placementMode) return;
     setPlacementMode(false);
     setPendingPin({ lat, lng, mode: "tap" });
-    setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "" });
+    setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "", posting: false });
     // 🆕 v8.122: 目印住所の自動入力は廃止（空のまま開く）
   };
   // 🆕 v8.127: 地図長押しでピン立て（Googleマップ風）
@@ -21001,12 +21001,12 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     if (pendingPin) return;
     setPlacementMode(false);
     setPendingPin({ lat, lng, mode: "longpress" });
-    setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "" });
+    setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "", posting: false });
     // 目印住所の自動入力なし（空のまま）
   };
   const cancelPendingPin = () => {
     setPendingPin(null);
-    setPinForm({ address: "", landmark: "", assignee: "", memo: "" });
+    setPinForm({ address: "", landmark: "", assignee: "", memo: "", posting: false });
     setLandmarkLoading(false);
   };
   const saveOnsitePin = () => {
@@ -21045,6 +21045,12 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       visitLog: [],
       family: [],
     };
+    // 🆕 v9.437: 空き家そのものへ資料を投函した記録。所有者宅への訪問とは別物なので visitLog には混ぜない。
+    if (pinForm.posting) {
+      newJiage.postingAt = newId;
+      newJiage.postingBy = pinForm.assignee || currentUser || MEMBERS[0];
+      newJiage.postingCount = 1;
+    }
     // 🆕 v9.155: 同期より先に「独立バックアップ」へ即追記（圏外・保存失敗でも消えないための保険）
     backupOnsitePin(newJiage);
     const pinLat = pendingPin.lat;
@@ -21111,7 +21117,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     }
     setPendingPinPhotos([]);
     setPendingPin(null);
-    setPinForm({ address: "", landmark: "", assignee: "", memo: "" });
+    setPinForm({ address: "", landmark: "", assignee: "", memo: "", posting: false });
     setPlacementMode(false);
     setLandmarkLoading(false);
     setPanToCoords({ lat: pinLat, lng: pinLng });
@@ -22081,6 +22087,32 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     setData(d => ({ ...d, owners: d.owners.map(o => o.id === updated.id ? updated : o) }));
     setSelected(s => ({ ...s, item: { ...s.item, history: updated.history, raw: updated } }));
     setHistForm({ date: today, method: "電話", note: "", member: MEMBERS[0] });
+  };
+
+  // 🆕 v9.437: 空き家へのポスティングを後から記録（回るたびに +1 できる）
+  const addPosting = (jid) => {
+    if (jid == null) return;
+    const now = Date.now();
+    setData(d => ({
+      ...d,
+      jiage: (d.jiage || []).map(j => j.id !== jid ? j : {
+        ...j,
+        postingAt: now,
+        postingBy: currentUser || j.assignee || "",
+        postingCount: (Number(j.postingCount) || 0) + 1,
+        updatedAt: now,
+        _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}),
+          postingAt: now, postingBy: now, postingCount: now },
+      }),
+    }));
+    setSelected(sel => {
+      if (!sel || !sel.item || !sel.item.raw) return sel;
+      const r = sel.item.raw;
+      if ((r.id) !== jid) return sel;
+      return { ...sel, item: { ...sel.item, raw: { ...r, postingAt: now,
+        postingBy: currentUser || r.assignee || "",
+        postingCount: (Number(r.postingCount) || 0) + 1 } } };
+    });
   };
 
   // 訪問記録モーダルを開く
@@ -26787,6 +26819,21 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               placeholder="築年数・空き家っぽさ・特徴など"
             />
           </Field>
+          {/* 🆕 v9.437: 空き家に資料を投函したらここで記録 */}
+          <div style={{ marginBottom: 10 }}>
+            <button onClick={() => setPinForm(p => ({ ...p, posting: !p.posting }))} style={{
+              width: "100%", padding: "10px 12px", borderRadius: 10, cursor: "pointer",
+              fontFamily: "inherit", fontSize: 13, fontWeight: 700, textAlign: "left",
+              background: pinForm.posting ? "#f97316" : "transparent",
+              color: pinForm.posting ? "#fff" : "#f97316",
+              border: `1.5px solid #f97316`,
+            }}>
+              {pinForm.posting ? "📬 ポスティング済み" : "📬 この空き家にポスティングした"}
+            </button>
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 3, lineHeight: 1.5 }}>
+              空き家の郵便受けに資料を入れた場合に押してください。所有者宅への訪問とは別で記録されます。
+            </div>
+          </div>
           <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginTop: 4, marginBottom: 8 }}>
             <NavIcon name="bulb" size={15} /> 地番が空のままでもピンは作れます。地図上で<b style={{ color: "#fbbf24" }}>🟡 地番待ち</b>として表示され、後でブルーマップを見ながら地番を入れて確定できます。
           </div>
@@ -26826,8 +26873,23 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
         return (
         <BottomSheet title={_sheetTitle} onClose={() => setSelected(null)}>
           {/* タイプバッジ */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
             <Tag label={selected.item.type === "jiage" ? "📍地上げ" : "👤所有者アタック"} color={selected.item.type === "jiage" ? C.accent : C.purple} />
+            {selected.item.type === "jiage" && (() => {
+              const r = selected.item.raw || {};
+              const n = Number(r.postingCount) || 0;
+              const when = r.postingAt ? new Date(r.postingAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) : "";
+              return (
+                <button onClick={() => addPosting(r.id)} style={{
+                  padding: "4px 10px", borderRadius: 12, cursor: "pointer", fontSize: 11,
+                  fontFamily: "inherit", fontWeight: 700,
+                  background: n ? "#f97316" : "transparent", color: n ? "#fff" : "#f97316",
+                  border: "1.5px solid #f97316",
+                }}>
+                  {n ? `📬 投函済 ${n}回${when ? "（" + when + "）" : ""}　＋1` : "📬 ポスティングした"}
+                </button>
+              );
+            })()}
             {_raw.coordsManual && <Tag label="📍現地ピン" color="#fbbf24" />}
             {_isPendingLot ? <Tag label="🟡 地番待ち" color="#fbbf24" /> : <StatusTag status={selected.item.status} />}
             {/* 🆕 v8.114: 対象外バッジ */}
