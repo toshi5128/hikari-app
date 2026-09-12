@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-13-v9.441-mitsu-count";
+const APP_VERSION = "2026-09-13-v9.442-tap-priority";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7420,6 +7420,17 @@ function _akiyaBounds(id) {
 //   2016年の都市地域土地利用細分メッシュ 0704「低層建物（密集地）」。
 //   1976年より前からある街なので、宅地化年代レイヤーには構造的に出てこない。
 //   ※このデータは世界測地系なので、宅地化レイヤーと違い測地系の変換は不要。
+// 🆕 v9.442: 面のレイヤーが3枚になり、同じタップを奪い合って最後に動いたものが勝っていた。
+//   （宅地化の四角を押しても、上に広がる空き家エリアのポップアップに差し替わる）
+//   宅地化(3) > 密集市街地(2) > 空き家エリア(1) の優先で、1回のタップに1つだけ答える。
+function _tapClaim(ev, level) {
+  const t = (ev && ev.originalEvent && ev.originalEvent.timeStamp) || 0;
+  const c = window.__hikariTapClaim__;
+  if (!c || c.t !== t) { window.__hikariTapClaim__ = { t: t, lvl: level }; return true; }
+  if (c.lvl >= level) return false;
+  c.lvl = level;
+  return true;
+}
 const MITSU_COLOR = "#78350f";
 let _mitsuPromise = null;
 function loadMitsu() {
@@ -7748,7 +7759,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         const ar = (b[2] - b[0]) * (b[3] - b[1]);
         if (ar < bestArea) { bestArea = ar; best = rows[i]; }
       }
-      if (!best) return;
+      if (!best || !_tapClaim(ev, 2)) return;
       const ll = `${la.toFixed(6)},${lo.toFixed(6)}`;
       L.popup({ autoPan: true }).setLatLng(ev.latlng).setContent(
         `<div style="font-size:12px;line-height:1.7;min-width:190px;">`
@@ -7817,6 +7828,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       for (let i = 0; i < rows.length; i++) {
         const b = rows[i].b;
         if (la >= b[0] && la <= b[2] && lo >= b[1] && lo <= b[3]) {
+          if (!_tapClaim(ev, 1)) return;
           L.popup({ autoPan: true })
             .setLatLng(ev.latlng)
             .setContent(`<div style="font-size:12px;line-height:1.7;">`
@@ -8155,7 +8167,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         const area = (b[2] - b[0]) * (b[3] - b[1]);      // 重なったら小さい方を優先
         if (area < bestArea) { bestArea = area; best = drawnList[i]; }
       }
-      if (!best) return;
+      if (!best || !_tapClaim(ev, 3)) return;
       const pp = L.popup({ autoPan: true, closeButton: true })
         .setLatLng(ev.latlng)
         .setContent(popupOf(best.cl, best.meta, best.t, la, lo));
