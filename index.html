@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-12-v9.437-posting";
+const APP_VERSION = "2026-09-12-v9.438-posting-kpi";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1502,7 +1502,7 @@ const JIAGE_COUNTER_SECTIONS = [
   { title: "🚪 回った先", desc: "訪問記録を付けた軒数。下の「訪問の結果」を足すとこの数になります", items: ["初訪", "地上再訪"] },
   { title: "📋 訪問の結果", desc: "相手次第で決まる数字なので目標は置きません", items: ["面談", "地上不在", "居留守", "訪問禁止", "対象外"] },
   { title: "🌱 そこから生まれた成果", desc: "", items: ["見込み候補", "見込み", "中長期見込", "見込無し", "交渉中", "媒介", "地上仕入"] },
-  { title: "🗺 現地でつけた記録", desc: "地図にピンを立てる／訪問記録で投函にチェックすると自動で増えます", items: ["新規地上", "ポスティング"] },
+  { title: "🗺 現地でつけた記録", desc: "ピンを立てる／空き家に投函する／訪問記録で投函にチェック、のいずれかで自動で増えます", items: ["新規地上", "ポスティング"] },
 ];
 
 const APPROACH_GROUP_KEYS = ["agent", "jiage"];
@@ -21067,6 +21067,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
           if (a.id !== existing.id) return a;
           const v = { ...(a.values || {}) };
           v["新規地上"] = (Number(v["新規地上"]) || 0) + 1;
+          // 🆕 v9.438: 空き家に投函したら営業行動の「ポスティング」も同時に +1
+          if (pinForm.posting) v["ポスティング"] = (Number(v["ポスティング"]) || 0) + 1;
           return { ...a, values: v, updatedAt: Date.now() };
         });
       } else {
@@ -21074,7 +21076,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
           id: Date.now() + 1,
           member: pinAssignee,
           date: todayDateStr,
-          values: { "新規地上": 1 },
+          values: pinForm.posting ? { "新規地上": 1, "ポスティング": 1 } : { "新規地上": 1 },
           mailDelivery: false,
           area: "",
           memo: "",
@@ -22093,18 +22095,36 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const addPosting = (jid) => {
     if (jid == null) return;
     const now = Date.now();
-    setData(d => ({
-      ...d,
-      jiage: (d.jiage || []).map(j => j.id !== jid ? j : {
+    const who = currentUser || MEMBERS[0];
+    setData(d => {
+      const jiage = (d.jiage || []).map(j => j.id !== jid ? j : {
         ...j,
         postingAt: now,
-        postingBy: currentUser || j.assignee || "",
+        postingBy: who,
         postingCount: (Number(j.postingCount) || 0) + 1,
         updatedAt: now,
         _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}),
           postingAt: now, postingBy: now, postingCount: now },
-      }),
-    }));
+      });
+      // 🆕 v9.438: 営業行動の「ポスティング」を今日の分に +1（1日の動きとして把握できるように）
+      let approaches = d.approaches || [];
+      const ex = approaches.find(a => a.member === who && a.date === today);
+      if (ex) {
+        approaches = approaches.map(a => a.id !== ex.id ? a : {
+          ...a,
+          values: { ...(a.values || {}), "ポスティング": (Number((a.values || {})["ポスティング"]) || 0) + 1 },
+          updatedAt: now,
+        });
+      } else {
+        approaches = [...approaches, {
+          id: now + 1, member: who, date: today,
+          values: { "ポスティング": 1 },
+          mailDelivery: false, area: "", memo: "", dailyGoals: {}, comments: [],
+          createdAt: now + 1, updatedAt: now + 1,
+        }];
+      }
+      return { ...d, jiage, approaches };
+    });
     setSelected(sel => {
       if (!sel || !sel.item || !sel.item.raw) return sel;
       const r = sel.item.raw;
