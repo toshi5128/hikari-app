@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.444-personal-hold";
+const APP_VERSION = "2026-09-22-v9.445-holdings-tab";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3340,6 +3340,7 @@ const DEFAULT_DATA = {
   ukeoiDocs: [], // 🆕 v9.304: 保存したリフォーム工事請負契約書（入力内容のスナップショット。全社共有）
   baikaiDocs: [], // 🆕 v9.308: 保存した専任媒介契約書（入力内容のスナップショット。全社共有）
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
+  holdings: [], // 🆕 v9.445: 保有物件（個人で持っている物件の利回り・状態管理。personalOwner 本人だけに見える）
   hanro: [], // 🆕 v9.352: 買取業者リスト（先行打診の送り先。投資家は反響から自動集約＝v9.367）
   investorMail: [], // 🆕 v9.367: 投資家の打診メール設定（id＝名寄せキー / optOut / lastSentAt）
   offers: [], // 🆕 v9.354: 先行打診の送信履歴（いつ・どの物件を・何件に送ったか）
@@ -3960,7 +3961,7 @@ async function saveToSupabase(data, retries = 3) {
         });
         // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去（手動削除を尊重）
         // 配列の項目別マージ（mergeItems を使う）
-        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro", "offers", "offerTemplates", "investorMail"];
+        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro", "offers", "offerTemplates", "investorMail", "holdings"];
         const mergedArrays = {};
         arrayKeys.forEach(k => {
           const localArr = Array.isArray(data[k]) ? data[k] : [];
@@ -5508,7 +5509,7 @@ function MainApp({ onLock, onSwitchUser }) {
     // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去
     //   ・データ回復が済んだので、今後は通常通り「ユーザーが削除した」 tombstone を尊重する
     //   ・これにより手動で削除した stocks/jiage は復活しなくなる
-    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "activityLog", "todos"];
+    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "activityLog", "todos", "holdings"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
       const remoteArr = Array.isArray(merged[k]) ? merged[k] : [];
@@ -6639,6 +6640,11 @@ function MainApp({ onLock, onSwitchUser }) {
   };
 
   const isMapPage = page === "jiage";
+  // 🆕 v9.445: 保有物件タブは個人保有ができる人（下田さん）にだけ出す
+  const currentUser = getCurrentUser();
+  const navPages = canHoldPersonal(currentUser)
+    ? PAGES.slice(0, 4).concat([{ key: "holdings", label: "保有", icon: "gem" }], PAGES.slice(4))
+    : PAGES;
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "'Noto Sans JP', 'Hiragino Sans', sans-serif", paddingBottom: isMapPage ? 60 : 80, overflowX: "hidden", maxWidth: "100vw", boxSizing: "border-box" }}>
@@ -6671,12 +6677,13 @@ function MainApp({ onLock, onSwitchUser }) {
         {page === "stock" && <StockPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} />}
         {page === "approach" && <ApproachPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} onOpenJiageDetail={(id) => { setPendingNav({ tab: "jiage", jiageLinkId: id, returnTo: "approach" }); setPage("jiage"); }} />}
         {page === "jiage" && <JiagePage data={data} setData={setData} setDataRaw={setDataRaw} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} setPage={setPage} />}
+        {page === "holdings" && <HoldingsPage data={data} setData={setData} currentUser={currentUser} />}
         {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} onSwitchUser={onSwitchUser} />}
       </div>
 
       {/* Bottom Navigation */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.cardBg, borderTop: `1px solid ${C.borderDim}`, display: "flex", zIndex: 200, paddingBottom: "env(safe-area-inset-bottom)" }}>
-        {PAGES.map(p => (
+        {navPages.map(p => (
           <button key={p.key} onClick={() => setPage(p.key)} style={{
             flex: 1, background: "none", border: "none", padding: "10px 4px 8px",
             color: page === p.key ? C.accent : C.muted, cursor: "pointer", fontFamily: "inherit",
@@ -32833,6 +32840,229 @@ function DMPage({ data, setData, onBack }) {
 function dmActBtn(col) { return { background: "transparent", border: `1px solid ${col}`, color: col, borderRadius: 7, padding: "5px 8px", fontSize: 10, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }; }
 
 // ===================== MORE PAGE (役所・積算) =====================
+// ===================== 🏠 保有物件（v9.445） =====================
+//   個人で持っている物件の「いくらで買って・いくら家賃が入って・今どうなっているか」を管理する。
+//   ・PERSONAL_HOLDERS（下田さん）だけに見えるタブ。data.holdings に保存（全端末同期）。
+//   ・表面利回り = 年家賃 ÷ 購入価格
+//   ・実質利回り = (年家賃 − 年経費) ÷ (購入価格 + 諸費用 + リフォーム費)
+const HOLDING_STATUSES = ["購入済", "リフォーム中", "募集中", "賃貸中", "売却中", "売却済"];
+const HOLDING_STATUS_COLORS = {
+  "購入済": "#64748b", "リフォーム中": "#f59e0b", "募集中": "#3b82f6",
+  "賃貸中": "#16a34a", "売却中": "#a855f7", "売却済": "#0f766e",
+};
+const hNum = v => { const n = Number(String(v == null ? "" : v).replace(/[^0-9.-]/g, "")); return isNaN(n) ? 0 : n; };
+function holdingCalc(h) {
+  const buy = hNum(h.buyPrice), cost = hNum(h.buyCost), reform = hNum(h.reformCost);
+  const total = buy + cost + reform;                       // 総投資額
+  const yearRent = hNum(h.rent) * 12;                      // 年家賃
+  const yearExp = hNum(h.mgmtFee) * 12 + hNum(h.tax) + hNum(h.insurance) + hNum(h.otherCost);
+  const net = yearRent - yearExp;                          // 年間の手取り（ローン返済前）
+  const loanYear = hNum(h.loanMonthly) * 12;
+  return {
+    buy, cost, reform, total, yearRent, yearExp, net,
+    gross: buy > 0 ? yearRent / buy * 100 : 0,             // 表面利回り
+    real: total > 0 ? net / total * 100 : 0,               // 実質利回り
+    cashMonthly: Math.round((net - loanYear) / 12),        // 月々の手残り
+    soldProfit: hNum(h.soldPrice) ? hNum(h.soldPrice) - total : 0,
+  };
+}
+function HoldingsPage({ data, setData, currentUser }) {
+  const me = String(currentUser || "").trim();
+  const [edit, setEdit] = useState(null);      // 編集中の物件（null=閉じている）
+  const [filter, setFilter] = useState("すべて");
+  const list = React.useMemo(() => (data.holdings || []).filter(h => h && (!h.owner || h.owner === me)), [data.holdings, me]);
+  const shown = filter === "すべて" ? list : list.filter(h => h.status === filter);
+
+  const sum = React.useMemo(() => {
+    const act = list.filter(h => h.status !== "売却済");
+    const c = act.map(holdingCalc);
+    const total = c.reduce((a, x) => a + x.total, 0);
+    const rent = c.reduce((a, x) => a + x.yearRent, 0);
+    const net = c.reduce((a, x) => a + x.net, 0);
+    const cash = c.reduce((a, x) => a + x.cashMonthly, 0);
+    return { n: act.length, total, rent, net, cash, gross: total ? rent / total * 100 : 0, real: total ? net / total * 100 : 0 };
+  }, [list]);
+
+  const saveHolding = (h) => {
+    const now = Date.now();
+    setData(d => {
+      const arr = Array.isArray(d.holdings) ? d.holdings : [];
+      const exists = arr.some(x => x && x.id === h.id);
+      const stamps = {};
+      Object.keys(h).forEach(k => { if (k !== "_fieldUpdatedAt") stamps[k] = now; });
+      const next = { ...h, owner: h.owner || me, updatedAt: now,
+        _fieldUpdatedAt: { ...(h._fieldUpdatedAt || {}), ...stamps } };
+      return { ...d, holdings: exists ? arr.map(x => x && x.id === h.id ? next : x) : [...arr, next] };
+    });
+    setEdit(null);
+  };
+  const removeHolding = (id) => {
+    if (!window.confirm("この保有物件を削除します。よろしいですか？")) return;
+    const now = Date.now();
+    setData(d => ({
+      ...d,
+      holdings: (d.holdings || []).filter(x => x && x.id !== id),
+      tombstones: { ...(d.tombstones || {}), holdings: { ...((d.tombstones || {}).holdings || {}), [String(id)]: now } },
+    }));
+    setEdit(null);
+  };
+  const blankHolding = () => ({ id: Date.now(), owner: me, name: "", address: "", status: "購入済",
+    buyPrice: "", buyCost: "", reformCost: "", rent: "", mgmtFee: "", tax: "", insurance: "", otherCost: "",
+    loanMonthly: "", tenant: "", contractTo: "", soldPrice: "", memo: "" });
+
+  const yen = n => "¥" + Math.round(n || 0).toLocaleString("ja-JP");
+  const man = n => (Math.round((n || 0) / 1000) / 10).toLocaleString("ja-JP") + "万";
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>🏠 保有物件<span style={{ fontSize: 11, color: C.muted, marginLeft: 8, fontWeight: 700 }}>🔒 {me}さんだけに見えています</span></div>
+        <button onClick={() => setEdit(blankHolding())} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>＋ 物件を追加</button>
+      </div>
+
+      {/* まとめ */}
+      <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 8 }}>保有中 {sum.n}件（売却済は除く）</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
+          {[["投資した総額", man(sum.total)], ["年間の家賃", man(sum.rent)],
+            ["表面利回り", sum.gross.toFixed(1) + "%"], ["実質利回り", sum.real.toFixed(1) + "%"],
+            ["年間の手取り（返済前）", man(sum.net)], ["月々の手残り（返済後）", yen(sum.cash)]].map(([l, v]) => (
+            <div key={l} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px" }}>
+              <div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l}</div>
+              <div style={{ fontSize: 17, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 状態で絞る */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {["すべて"].concat(HOLDING_STATUSES).map(s => {
+          const n = s === "すべて" ? list.length : list.filter(h => h.status === s).length;
+          const on = filter === s;
+          const col = s === "すべて" ? C.borderDim : HOLDING_STATUS_COLORS[s];
+          return (
+            <button key={s} onClick={() => setFilter(s)} style={{
+              padding: "5px 10px", borderRadius: 14, fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              border: `1.5px solid ${col}`,
+              background: on ? (s === "すべて" ? C.text : col) : "transparent",
+              color: on ? (s === "すべて" ? C.bg : "#fff") : (s === "すべて" ? C.text : col),
+            }}>{s} {n}</button>
+          );
+        })}
+      </div>
+
+      {/* 一覧 */}
+      {shown.length === 0 && (
+        <div style={{ background: C.cardBg, border: `1px dashed ${C.borderDim}`, borderRadius: 12, padding: 24, textAlign: "center", color: C.muted, fontSize: 13, lineHeight: 1.8 }}>
+          まだ物件がありません。「＋ 物件を追加」から登録してください。<br />
+          地上げの🔒個人保有ピンからも登録できます。
+        </div>
+      )}
+      {shown.map(h => {
+        const c = holdingCalc(h);
+        const col = HOLDING_STATUS_COLORS[h.status] || C.muted;
+        return (
+          <div key={h.id} onClick={() => setEdit({ ...h })} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`, borderRadius: 10, padding: 12, marginBottom: 8, cursor: "pointer" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{h.name || h.address || "(名称未設定)"}</div>
+              <span style={{ fontSize: 10.5, fontWeight: 800, color: "#fff", background: col, borderRadius: 10, padding: "2px 8px" }}>{h.status}</span>
+            </div>
+            {h.address && h.name && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{h.address}</div>}
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 8, fontSize: 12, color: C.text, fontVariantNumeric: "tabular-nums" }}>
+              <span>購入 <b>{man(c.buy)}</b></span>
+              <span>家賃 <b>{hNum(h.rent) ? yen(hNum(h.rent)) + "/月" : "—"}</b></span>
+              <span style={{ color: c.gross >= 15 ? "#16a34a" : C.text }}>表面 <b>{c.gross ? c.gross.toFixed(1) + "%" : "—"}</b></span>
+              <span style={{ color: c.real >= 12 ? "#16a34a" : C.text }}>実質 <b>{c.real ? c.real.toFixed(1) + "%" : "—"}</b></span>
+              {hNum(h.loanMonthly) > 0 && <span>手残り <b>{yen(c.cashMonthly)}/月</b></span>}
+              {h.status === "売却済" && <span>売却益 <b>{man(c.soldProfit)}</b></span>}
+            </div>
+            {h.tenant && <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>入居: {h.tenant}{h.contractTo ? `（契約 ${h.contractTo} まで）` : ""}</div>}
+          </div>
+        );
+      })}
+
+      {/* 追加・編集 */}
+      {edit && (() => {
+        const c = holdingCalc(edit);
+        const set = (k, v) => setEdit(e => ({ ...e, [k]: v }));
+        const money = (label, k) => (
+          <div key={k}>
+            <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{label}</div>
+            <MoneyInput value={edit[k]} onChange={v => set(k, v)} placeholder="0" />
+          </div>
+        );
+        const text = (label, k, ph, type) => (
+          <div key={k}>
+            <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{label}</div>
+            <input type={type || "text"} value={edit[k] || ""} onChange={e => set(k, e.target.value)} placeholder={ph || ""}
+              style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+          </div>
+        );
+        const isSaved = (data.holdings || []).some(x => x && x.id === edit.id);
+        return (
+          <BottomSheet title={edit.name || edit.address || "物件を追加"} onClose={() => setEdit(null)}
+            footer={
+              <div style={{ display: "flex", gap: 8 }}>
+                {isSaved && (
+                  <button onClick={() => removeHolding(edit.id)} style={{ padding: "10px 14px", background: "transparent", border: `1px solid ${C.danger}`, color: C.danger, borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>削除</button>
+                )}
+                <button onClick={() => saveHolding(edit)} style={{ flex: 1, padding: "10px 14px", background: C.accent, border: "none", color: "#fff", borderRadius: 8, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>保存</button>
+              </div>
+            }>
+            <div style={{ display: "grid", gap: 10 }}>
+              {text("物件名（分かりやすい呼び名）", "name", "例: 市ノ川の戸建")}
+              {text("住所", "address", "例: 東松山市大字市ノ川199-91")}
+              <div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 4 }}>今の状態</div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                  {HOLDING_STATUSES.map(s => (
+                    <button key={s} onClick={() => set("status", s)} style={{
+                      padding: "6px 10px", borderRadius: 14, fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                      border: `1.5px solid ${HOLDING_STATUS_COLORS[s]}`,
+                      background: edit.status === s ? HOLDING_STATUS_COLORS[s] : "transparent",
+                      color: edit.status === s ? "#fff" : HOLDING_STATUS_COLORS[s],
+                    }}>{s}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 買ったとき</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
+                {money("購入価格", "buyPrice")}{money("諸費用", "buyCost")}{money("リフォーム費", "reformCost")}
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 毎月・毎年</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
+                {money("家賃（月）", "rent")}{money("管理費など（月）", "mgmtFee")}
+                {money("固定資産税（年）", "tax")}{money("保険（年）", "insurance")}
+                {money("その他の経費（年）", "otherCost")}{money("ローン返済（月）", "loanMonthly")}
+              </div>
+              <div style={{ background: C.bg, borderRadius: 8, padding: 10, fontSize: 12.5, color: C.text, lineHeight: 1.9 }}>
+                総投資額 <b>{man(c.total)}</b>　年家賃 <b>{man(c.yearRent)}</b>　年経費 <b>{man(c.yearExp)}</b><br />
+                <span style={{ fontSize: 15 }}>表面利回り <b style={{ color: "#16a34a" }}>{c.gross.toFixed(2)}%</b>　実質利回り <b style={{ color: "#16a34a" }}>{c.real.toFixed(2)}%</b></span>
+                {hNum(edit.loanMonthly) > 0 && <><br />返済後の手残り <b>{yen(c.cashMonthly)}/月</b></>}
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 入居・出口</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {text("入居者", "tenant", "例: 山田様")}
+                {text("契約の期限", "contractTo", "", "date")}
+              </div>
+              {money("売却価格（売れたら入力）", "soldPrice")}
+              {hNum(edit.soldPrice) > 0 && (
+                <div style={{ background: C.bg, borderRadius: 8, padding: 10, fontSize: 13 }}>売却益（投資額との差）<b style={{ marginLeft: 6, color: c.soldProfit >= 0 ? "#16a34a" : C.danger }}>{man(c.soldProfit)}</b></div>
+              )}
+              <div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>メモ</div>
+                <textarea value={edit.memo || ""} onChange={e => set("memo", e.target.value)} rows={3}
+                  style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", resize: "vertical" }} />
+              </div>
+            </div>
+          </BottomSheet>
+        );
+      })()}
+    </div>
+  );
+}
+
 function MorePage({ data, setData, onLock, onSwitchUser }) {
   const [subPage, setSubPage] = useState(null);
   const [currentUser, setCurrentUserState] = useState(getCurrentUser());
