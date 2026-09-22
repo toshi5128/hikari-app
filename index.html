@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.445-holdings-tab";
+const APP_VERSION = "2026-09-22-v9.446-holdings-costs";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -32851,8 +32851,27 @@ const HOLDING_STATUS_COLORS = {
   "賃貸中": "#16a34a", "売却中": "#a855f7", "売却済": "#0f766e",
 };
 const hNum = v => { const n = Number(String(v == null ? "" : v).replace(/[^0-9.-]/g, "")); return isNaN(n) ? 0 : n; };
+// 諸費用の内訳（入れた分だけ足す。全部空なら旧「諸費用」欄の数字を使う）
+const HOLDING_COST_ITEMS = [
+  ["brokerFee", "仲介手数料"], ["regFee", "登記費用（司法書士・登録免許税）"], ["stampFee", "印紙代"],
+  ["acqTax", "不動産取得税"], ["initInsurance", "火災保険（加入時）"], ["otherBuyCost", "その他"],
+];
+function holdingCostBreak(h) {
+  const rows = HOLDING_COST_ITEMS.map(([k, label]) => ({ k, label, v: hNum(h[k]) }));
+  const sum = rows.reduce((a, r) => a + r.v, 0);
+  return { rows, sum, total: sum > 0 ? sum : hNum(h.buyCost) };
+}
+// 契約満了（更新日）まであと何日か。過ぎていればマイナス
+function holdingDaysLeft(h) {
+  const d = String(h.contractTo || "").trim();
+  if (!d) return null;
+  const t = new Date(d + "T00:00:00").getTime();
+  if (isNaN(t)) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return Math.round((t - today.getTime()) / 86400000);
+}
 function holdingCalc(h) {
-  const buy = hNum(h.buyPrice), cost = hNum(h.buyCost), reform = hNum(h.reformCost);
+  const buy = hNum(h.buyPrice), cost = holdingCostBreak(h).total, reform = hNum(h.reformCost);
   const total = buy + cost + reform;                       // 総投資額
   const yearRent = hNum(h.rent) * 12;                      // 年家賃
   const yearExp = hNum(h.mgmtFee) * 12 + hNum(h.tax) + hNum(h.insurance) + hNum(h.otherCost);
@@ -32908,7 +32927,8 @@ function HoldingsPage({ data, setData, currentUser }) {
   };
   const blankHolding = () => ({ id: Date.now(), owner: me, name: "", address: "", status: "購入済",
     buyPrice: "", buyCost: "", reformCost: "", rent: "", mgmtFee: "", tax: "", insurance: "", otherCost: "",
-    loanMonthly: "", tenant: "", contractTo: "", soldPrice: "", memo: "" });
+    brokerFee: "", regFee: "", stampFee: "", acqTax: "", initInsurance: "", otherBuyCost: "",
+    loanMonthly: "", tenant: "", contractFrom: "", contractTo: "", renewalFee: "", soldPrice: "", memo: "" });
 
   const yen = n => "¥" + Math.round(n || 0).toLocaleString("ja-JP");
   const man = n => (Math.round((n || 0) / 1000) / 10).toLocaleString("ja-JP") + "万";
@@ -32977,7 +32997,25 @@ function HoldingsPage({ data, setData, currentUser }) {
               {hNum(h.loanMonthly) > 0 && <span>手残り <b>{yen(c.cashMonthly)}/月</b></span>}
               {h.status === "売却済" && <span>売却益 <b>{man(c.soldProfit)}</b></span>}
             </div>
-            {h.tenant && <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>入居: {h.tenant}{h.contractTo ? `（契約 ${h.contractTo} まで）` : ""}</div>}
+            {/* 🆕 v9.446: かかったお金の内訳（入れた分だけ出す） */}
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 5, fontSize: 11, color: C.muted, fontVariantNumeric: "tabular-nums" }}>
+              {hNum(h.reformCost) > 0 && <span>リフォーム {man(hNum(h.reformCost))}</span>}
+              {hNum(h.regFee) > 0 && <span>登記 {man(hNum(h.regFee))}</span>}
+              {hNum(h.brokerFee) > 0 && <span>仲介手数料 {man(hNum(h.brokerFee))}</span>}
+              {c.cost > 0 && <span>諸費用計 {man(c.cost)}</span>}
+              {hNum(h.tax) > 0 && <span>固定資産税 {yen(hNum(h.tax))}/年</span>}
+            </div>
+            {(h.tenant || h.contractTo) && (() => {
+              const left = holdingDaysLeft(h);
+              const warn = left != null && left <= 60;
+              return (
+                <div style={{ fontSize: 11, color: warn ? "#f59e0b" : C.muted, marginTop: 6, fontWeight: warn ? 800 : 400 }}>
+                  {h.tenant ? `入居: ${h.tenant}` : "空室"}
+                  {h.contractTo ? `　更新日 ${h.contractTo}` : ""}
+                  {left != null && (left >= 0 ? `（あと${left}日）` : `（${-left}日超過）`)}
+                </div>
+              );
+            })()}
           </div>
         );
       })}
@@ -33027,9 +33065,23 @@ function HoldingsPage({ data, setData, currentUser }) {
                 </div>
               </div>
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 買ったとき</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
-                {money("購入価格", "buyPrice")}{money("諸費用", "buyCost")}{money("リフォーム費", "reformCost")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {money("購入価格", "buyPrice")}{money("リフォーム費", "reformCost")}
               </div>
+              {/* 🆕 v9.446: 諸費用は内訳で入れる（何にいくらかかったか後から分かるように） */}
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 諸費用の内訳</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {HOLDING_COST_ITEMS.map(([k, label]) => money(label, k))}
+              </div>
+              {(() => {
+                const br = holdingCostBreak(edit);
+                return (
+                  <div style={{ background: C.bg, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, color: C.text }}>
+                    諸費用の合計 <b style={{ fontSize: 15 }}>{man(br.total)}</b>
+                    {br.sum === 0 && hNum(edit.buyCost) > 0 && <span style={{ color: C.muted, fontSize: 11 }}>（以前に入れた「諸費用」の数字を使っています。内訳を入れると置き換わります）</span>}
+                  </div>
+                );
+              })()}
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 毎月・毎年</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
                 {money("家賃（月）", "rent")}{money("管理費など（月）", "mgmtFee")}
@@ -33044,8 +33096,21 @@ function HoldingsPage({ data, setData, currentUser }) {
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 入居・出口</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {text("入居者", "tenant", "例: 山田様")}
-                {text("契約の期限", "contractTo", "", "date")}
+                {text("更新日（契約の満了日）", "contractTo", "", "date")}
+                {text("入居した日", "contractFrom", "", "date")}
+                {money("更新料", "renewalFee")}
               </div>
+              {(() => {
+                const left = holdingDaysLeft(edit);
+                if (left == null) return null;
+                const warn = left <= 60;
+                return (
+                  <div style={{ background: warn ? "#f59e0b22" : C.bg, border: warn ? "1px solid #f59e0b" : "none", borderRadius: 8, padding: "8px 10px", fontSize: 12.5, color: C.text }}>
+                    {left >= 0 ? `更新日まで あと ${left}日` : `更新日を ${-left}日 過ぎています`}
+                    {warn && left >= 0 && "　← そろそろ更新の話をする時期です"}
+                  </div>
+                );
+              })()}
               {money("売却価格（売れたら入力）", "soldPrice")}
               {hNum(edit.soldPrice) > 0 && (
                 <div style={{ background: C.bg, borderRadius: 8, padding: 10, fontSize: 13 }}>売却益（投資額との差）<b style={{ marginLeft: 6, color: c.soldProfit >= 0 ? "#16a34a" : C.danger }}>{man(c.soldProfit)}</b></div>
