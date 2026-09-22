@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.458-holdings-readable";
+const APP_VERSION = "2026-09-23-v9.459-holidays";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3362,6 +3362,67 @@ const DEFAULT_DATA = {
 };
 
 // ============== 現在のユーザー識別 ==============
+// 🆕 v9.459: 日本の祝日。ハッピーマンデー・春分秋分・振替休日・国民の休日（シルバーウィーク）まで計算で出す。
+//   ・春分/秋分は 1980〜2099年で使える近似式（国立天文台の官報と一致）
+//   ・国民の休日＝前後が祝日に挟まれた平日（2026/9/22 のように敬老の日と秋分の日の間の火曜）
+const _JP_HOL_CACHE = {};
+function _nthMonday(y, m, nth) {              // m は 1〜12
+  const d = new Date(y, m - 1, 1);
+  const first = (8 - d.getDay()) % 7 + 1;     // その月の最初の月曜日
+  return new Date(y, m - 1, first + (nth - 1) * 7);
+}
+function _jpHolidaysOf(year) {
+  if (_JP_HOL_CACHE[year]) return _JP_HOL_CACHE[year];
+  const map = {};
+  const put = (dt, name) => {
+    const k = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+    if (!map[k]) map[k] = name;
+  };
+  const Y = year;
+  put(new Date(Y, 0, 1), "元日");
+  put(_nthMonday(Y, 1, 2), "成人の日");
+  put(new Date(Y, 1, 11), "建国記念の日");
+  if (Y >= 2020) put(new Date(Y, 1, 23), "天皇誕生日");
+  const shunbun = Math.floor(20.8431 + 0.242194 * (Y - 1980) - Math.floor((Y - 1980) / 4));
+  put(new Date(Y, 2, shunbun), "春分の日");
+  put(new Date(Y, 3, 29), "昭和の日");
+  put(new Date(Y, 4, 3), "憲法記念日");
+  put(new Date(Y, 4, 4), "みどりの日");
+  put(new Date(Y, 4, 5), "こどもの日");
+  put(_nthMonday(Y, 7, 3), "海の日");
+  put(new Date(Y, 7, 11), "山の日");
+  put(_nthMonday(Y, 9, 3), "敬老の日");
+  const shubun = Math.floor(23.2488 + 0.242194 * (Y - 1980) - Math.floor((Y - 1980) / 4));
+  put(new Date(Y, 8, shubun), "秋分の日");
+  put(_nthMonday(Y, 10, 2), "スポーツの日");
+  put(new Date(Y, 10, 3), "文化の日");
+  put(new Date(Y, 10, 23), "勤労感謝の日");
+
+  // 国民の休日：祝日に挟まれた平日（敬老の日と秋分の日の間など）
+  const keiro = _nthMonday(Y, 9, 3);
+  const between = new Date(Y, 8, keiro.getDate() + 1);
+  if (between.getDate() === shubun - 1 && between.getDay() !== 0) put(between, "国民の休日");
+
+  // 振替休日：日曜と重なった祝日の翌日（すでに祝日ならさらに翌日）
+  Object.keys(map).sort().forEach(k => {
+    const d = new Date(k + "T00:00:00");
+    if (d.getDay() !== 0) return;
+    let nx = new Date(d.getTime() + 86400000);
+    let guard = 0;
+    while (map[`${nx.getFullYear()}-${String(nx.getMonth() + 1).padStart(2, "0")}-${String(nx.getDate()).padStart(2, "0")}`] && guard++ < 5) {
+      nx = new Date(nx.getTime() + 86400000);
+    }
+    put(nx, "振替休日");
+  });
+  _JP_HOL_CACHE[year] = map;
+  return map;
+}
+// 日付文字列(YYYY-MM-DD)が祝日なら名前を返す。違えば ""
+function jpHolidayName(dateStr) {
+  const ds = String(dateStr || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) return "";
+  return _jpHolidaysOf(Number(ds.slice(0, 4)))[ds] || "";
+}
 const CURRENT_USER_KEY = "hikari_current_user";
 function getCurrentUser() {
   try {
@@ -11319,6 +11380,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               const isSelected = dateStr === calSelectedDate;
               const events = calEventsByDate[dateStr] || [];
               const dow = d.getDay();
+              const _holName = jpHolidayName(dateStr);   // 🆕 v9.459
               const isOverdue = dateStr < today && events.some(e => e.type === "jiage" || e.type === "owner");
               return (
                 <div
@@ -11343,9 +11405,11 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                       minWidth: 20, height: 20, padding: "0 4px",
                       borderRadius: 10,
                       background: isToday ? C.accent : "transparent",
-                      color: isToday ? "#fff" : isOverdue ? C.danger : dow === 0 ? C.danger : dow === 6 ? C.accent : C.text,
+                      color: isToday ? "#fff" : isOverdue ? C.danger : (dow === 0 || _holName) ? C.danger : dow === 6 ? C.accent : C.text,
                       fontSize: 11, fontWeight: isToday ? 800 : 600,
                     }}>{d.getDate()}</span>
+                    {/* 🆕 v9.459: 祝日名 */}
+                    {_holName && <span style={{ fontSize: 8.5, color: C.danger, fontWeight: 700, marginLeft: 2, lineHeight: "20px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{_holName}</span>}
                   </div>
                   {/* 予定（複数日は連続した帯、単日はチップ）- タップで該当日のポップアップ */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 1, overflow: "hidden" }}>
@@ -11426,10 +11490,14 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                       display: "inline-flex", alignItems: "center", justifyContent: "center",
                       minWidth: 26, height: 26, borderRadius: 13,
                       background: isToday ? C.accent : "transparent",
-                      color: isToday ? "#fff" : dow === 0 ? C.danger : dow === 6 ? C.accent : C.text,
+                      color: isToday ? "#fff" : (dow === 0 || jpHolidayName(dateStr)) ? C.danger : dow === 6 ? C.accent : C.text,
                       fontSize: 13, fontWeight: isToday ? 800 : 700,
                     }}>{d.getDate()}</span>
                   </div>
+                  {/* 🆕 v9.459: 祝日名 */}
+                  {jpHolidayName(dateStr) && (
+                    <div style={{ fontSize: 9, color: C.danger, fontWeight: 700, textAlign: "center", marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{jpHolidayName(dateStr)}</div>
+                  )}
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, overflow: "hidden" }}>
                     {events.slice(0, 6).map((e, j) => {
                       const customEv = e.isCustom ? (data.customEvents || []).find(ev => ev.id === e.rawId) : null;
@@ -11472,6 +11540,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
             <button onClick={() => shiftSelectedDate(-1)} aria-label="前の日" style={{ background: C.accent + "18", border: `1px solid ${C.accent}44`, color: C.accent, borderRadius: 8, width: 28, height: 28, cursor: "pointer", fontFamily: "inherit", fontSize: 16, fontWeight: 800, lineHeight: 1, flexShrink: 0 }}>‹</button>
             <span style={{ fontSize: 16, fontWeight: 800, color: C.text }}><NavIcon name="calendar" size={16} /> {calSelectedDate}</span>
+            {jpHolidayName(calSelectedDate) && <Tag label={`🎌 ${jpHolidayName(calSelectedDate)}`} color={C.danger} />}
             {calSelectedDate === today && <Tag label="今日" color={C.accent} />}
             {calSelectedDate < today && <Tag label="過去" color={C.muted} />}
             {calSelectedDate > today && <Tag label="予定" color={C.success} />}
