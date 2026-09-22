@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.450-no-loan-label";
+const APP_VERSION = "2026-09-22-v9.451-holdings-sale-sim";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -32895,7 +32895,8 @@ function holdingCalc(h) {
 function holdingRecovery(h) {
   const c = holdingCalc(h);
   const monthly = Math.round(c.net / 12);                 // 毎月の手取り（ローン返済前）
-  const start = String(h.buyDate || h.contractFrom || "").trim();
+  // 🆕 v9.451: 家賃が入り始めた日を起点にする（買ってすぐは空室で家賃ゼロのため）
+  const start = String(h.rentStart || h.contractFrom || h.buyDate || "").trim();
   let months = 0;
   if (start) {
     const t = new Date(start + "T00:00:00");
@@ -32906,7 +32907,10 @@ function holdingRecovery(h) {
       months = Math.max(0, months);
     }
   }
-  const recovered = Math.max(0, monthly * months);
+  // 🆕 v9.451: 突発の出費（修繕など）は稼いだ額から引く
+  const extras = Array.isArray(h.extras) ? h.extras : [];
+  const extraSum = extras.reduce((a, e) => a + hNum(e && e.amount), 0);
+  const recovered = Math.max(0, monthly * months - extraSum);
   const beMonths = monthly > 0 ? Math.ceil(c.total / monthly) : null;   // 回収までの総月数
   const left = Math.max(0, c.total - recovered);
   const leftMonths = monthly > 0 ? Math.ceil(left / monthly) : null;
@@ -32918,7 +32922,7 @@ function holdingRecovery(h) {
   const cashAccum = Math.round(c.cashMonthly * months);      // ローン返済後の積み上げ
   return {
     total: c.total, monthly, months, recovered, left, beMonths, leftMonths,
-    sold, profitNow, cashAccum, hasLoan: hNum(h.loanMonthly) > 0,
+    sold, profitNow, cashAccum, extraSum, hasLoan: hNum(h.loanMonthly) > 0,
     pct: c.total > 0 ? Math.min(100, recovered / c.total * 100) : 0,
     hasStart: !!start, done: c.total > 0 && recovered >= c.total,
   };
@@ -32928,6 +32932,64 @@ const monthsText = (m) => {
   const y = Math.floor(m / 12), mm = m % 12;
   return (y ? `${y}年` : "") + (mm || !y ? `${mm}ヶ月` : "");
 };
+// 🆕 v9.451: 今売ったらいくら残るか（税率は目安。正確な申告は税理士へ）
+//   個人 … 売った年の1月1日時点で所有5年以下＝短期 約39.63% / 5年超＝長期 約20.315%
+//   法人 … 短期長期の区別なし。他の利益と合算されるので実効税率の目安 約30%
+const TAX_SHORT = 0.3963, TAX_LONG = 0.20315, TAX_CORP = 0.30;
+function holdingSale(h) {
+  const c = holdingCalc(h);
+  const price = hNum(h.saleTarget) || hNum(h.soldPrice);
+  if (price <= 0) return null;
+  // 仲介手数料（400万超の一般式 3%+6万 ＋消費税）。手入力があればそちら
+  const autoFee = Math.round((price * 0.03 + 60000) * 1.1);
+  const fee = hNum(h.saleFee) > 0 ? hNum(h.saleFee) : autoFee;
+  const otherFee = hNum(h.saleOtherCost);
+  const isCorp = (h.ownerType || "法人") === "法人";
+  // 所有期間（売った年の1月1日時点）
+  const bd = String(h.buyDate || "").trim();
+  let longTerm = false, monthsToLong = null;
+  if (bd) {
+    const b = new Date(bd + "T00:00:00");
+    if (!isNaN(b.getTime())) {
+      const jan1 = new Date(new Date().getFullYear(), 0, 1);
+      const yrs = (jan1 - b) / (365.25 * 86400000);
+      longTerm = yrs > 5;
+      if (!longTerm) {
+        const longDate = new Date(b.getFullYear() + 5, b.getMonth(), b.getDate());
+        const need = new Date(longDate.getFullYear() + 1, 0, 1);      // 5年超になる年の翌1/1
+        monthsToLong = Math.max(0, Math.round((need - new Date()) / (30.44 * 86400000)));
+      }
+    }
+  }
+  const rate = isCorp ? TAX_CORP : (longTerm ? TAX_LONG : TAX_SHORT);
+  const gain = Math.max(0, price - c.gross0 - fee - otherFee);        // ざっくり譲渡益
+  const tax = Math.round(gain * rate);
+  const loanLeft = hNum(h.loanBalance);
+  const net = price - fee - otherFee - tax - loanLeft;                // 手元に残るお金
+  const r = holdingRecovery(h);
+  return { price, fee, autoFee, otherFee, isCorp, longTerm, monthsToLong, rate, gain, tax, loanLeft, net,
+           totalProfit: net + r.recovered - c.total };                // 家賃も含めた通算の利益
+}
+// 🆕 v9.451: 忘れると損をするお知らせ（更新日・固定資産税・保険）
+function holdingAlerts(holdings) {
+  const out = [];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const m = today.getMonth() + 1;
+  (holdings || []).forEach(h => {
+    if (!h || h.status === "売却済") return;
+    const nm = h.name || h.address || "(名称未設定)";
+    const left = holdingDaysLeft(h);
+    if (left != null && left <= 60) {
+      out.push({ id: h.id, kind: left >= 0 ? "更新" : "更新切れ", color: left >= 0 ? "#f59e0b" : "#dc2626",
+        text: left >= 0 ? `${nm}：更新日まであと${left}日（${h.contractTo}）` : `${nm}：更新日を${-left}日過ぎています` });
+    }
+    if (hNum(h.tax) > 0 && [4, 7, 12, 2].includes(m)) {
+      out.push({ id: h.id, kind: "固定資産税", color: "#3b82f6",
+        text: `${nm}：固定資産税の納付月です（年 ${Math.round(hNum(h.tax)).toLocaleString("ja-JP")}円 / 4回払い）` });
+    }
+  });
+  return out;
+}
 // 回収の進み具合（細いバー）
 function HoldingRecoveryBar({ h }) {
   const r = holdingRecovery(h);
@@ -33069,7 +33131,8 @@ function HoldingsPage({ data, setData, currentUser }) {
     buyPrice: "", buyCost: "", reformCost: "", rent: "", mgmtFee: "", tax: "", insurance: "", otherCost: "",
     buyDate: "", brokerFee: "", regFee: "", stampFee: "", acqTax: "", initInsurance: "", otherBuyCost: "",
     loanMonthly: "", tenant: "", contractFrom: "", contractTo: "", renewalFee: "",
-    keyMoney: "", deposit: "", soldPrice: "", memo: "" });
+    keyMoney: "", deposit: "", soldPrice: "", ownerType: "法人", rentStart: "",
+    saleTarget: "", saleFee: "", saleOtherCost: "", loanBalance: "", extras: [], memo: "" });
 
   const yen = n => "¥" + Math.round(n || 0).toLocaleString("ja-JP");
   const man = n => (Math.round((n || 0) / 1000) / 10).toLocaleString("ja-JP") + "万";
@@ -33080,6 +33143,21 @@ function HoldingsPage({ data, setData, currentUser }) {
         <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>🏠 保有物件<span style={{ fontSize: 11, color: C.muted, marginLeft: 8, fontWeight: 700 }}>🔒 {me}さんだけに見えています</span></div>
         <button onClick={() => setEdit(blankHolding())} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>＋ 物件を追加</button>
       </div>
+
+      {/* 🆕 v9.451: 忘れると損をするお知らせ */}
+      {(() => {
+        const alerts = holdingAlerts(list);
+        if (!alerts.length) return null;
+        return (
+          <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+            {alerts.map((a, i) => (
+              <div key={i} style={{ background: a.color + "22", border: `1px solid ${a.color}`, borderRadius: 8, padding: "8px 10px", fontSize: 12, color: C.text, fontWeight: 700 }}>
+                🔔 {a.text}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* まとめ */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
@@ -33228,6 +33306,20 @@ function HoldingsPage({ data, setData, currentUser }) {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {money("購入価格", "buyPrice")}{money("リフォーム費", "reformCost")}
                 {text("買った日", "buyDate", "", "date")}
+                {text("家賃が入り始めた日", "rentStart", "", "date")}
+              </div>
+              <div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 4 }}>名義（売却時の税金の計算に使います）</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {["法人", "個人"].map(t => (
+                    <button key={t} onClick={() => set("ownerType", t)} style={{
+                      padding: "6px 14px", borderRadius: 14, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                      border: `1.5px solid ${C.accent}`,
+                      background: (edit.ownerType || "法人") === t ? C.accent : "transparent",
+                      color: (edit.ownerType || "法人") === t ? "#fff" : C.accent,
+                    }}>{t}</button>
+                  ))}
+                </div>
               </div>
               {/* 🆕 v9.446: 諸費用は内訳で入れる（何にいくらかかったか後から分かるように） */}
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 諸費用の内訳</div>
@@ -33256,8 +33348,58 @@ function HoldingsPage({ data, setData, currentUser }) {
                 <span style={{ fontSize: 15 }}>表面利回り <b style={{ color: "#16a34a" }}>{c.gross.toFixed(2)}%</b>　実質利回り <b style={{ color: "#16a34a" }}>{c.real.toFixed(2)}%</b></span>
                 {hNum(edit.loanMonthly) > 0 && <><br />返済後の手残り <b>{yen(c.cashMonthly)}/月</b></>}
               </div>
+              {/* 🆕 v9.451: 突発の出費（修繕など）。毎月つけるのではなく、起きた時だけ足す */}
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 突発の出費（エアコン交換・修繕など）</div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {(edit.extras || []).map((ex, i) => (
+                  <div key={ex.id || i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input type="date" value={ex.date || ""} onChange={e => set("extras", (edit.extras || []).map((x, j) => j === i ? { ...x, date: e.target.value } : x))}
+                      style={{ padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit", flexShrink: 0 }} />
+                    <input type="text" value={ex.label || ""} placeholder="内容（例: エアコン交換）"
+                      onChange={e => set("extras", (edit.extras || []).map((x, j) => j === i ? { ...x, label: e.target.value } : x))}
+                      style={{ flex: 1, minWidth: 0, padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit" }} />
+                    <div style={{ width: 86, flexShrink: 0 }}>
+                      <MoneyInput value={ex.amount} onChange={v => set("extras", (edit.extras || []).map((x, j) => j === i ? { ...x, amount: v } : x))} placeholder="金額" />
+                    </div>
+                    <button onClick={() => set("extras", (edit.extras || []).filter((x, j) => j !== i))}
+                      style={{ background: "transparent", border: "none", color: C.danger, fontSize: 16, cursor: "pointer", padding: "0 4px" }}>×</button>
+                  </div>
+                ))}
+                <button onClick={() => set("extras", [...(edit.extras || []), { id: Date.now(), date: new Date().toISOString().slice(0, 10), label: "", amount: "" }])}
+                  style={{ padding: "7px 12px", background: "transparent", border: `1px dashed ${C.borderDim}`, color: C.text, borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>＋ 出費を足す</button>
+                {(edit.extras || []).length > 0 && (
+                  <div style={{ fontSize: 12, color: C.text }}>突発の出費の合計 <b>{man((edit.extras || []).reduce((a, e) => a + hNum(e.amount), 0))}</b>（稼いだ額から引いています）</div>
+                )}
+              </div>
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 投資の回収（損益分岐）</div>
               <HoldingRecoveryChart h={edit} />
+              {/* 🆕 v9.451: 今売ったらいくら残るか */}
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 今売ったらいくら残るか</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {money("売れそうな価格", "saleTarget")}
+                {money("ローンの残り", "loanBalance")}
+                {money("仲介手数料（空欄なら自動）", "saleFee")}
+                {money("その他の費用（印紙・解体など）", "saleOtherCost")}
+              </div>
+              {(() => {
+                const sim = holdingSale(edit);
+                if (!sim) return <div style={{ fontSize: 11, color: C.muted }}>「売れそうな価格」を入れると、手元にいくら残るか計算します。</div>;
+                const plus = sim.net >= 0;
+                return (
+                  <div style={{ background: C.bg, borderRadius: 8, padding: 10, fontSize: 12.5, color: C.text, lineHeight: 2 }}>
+                    売却価格 <b>{man(sim.price)}</b><br />
+                    − 仲介手数料 {man(sim.fee)}{hNum(edit.saleFee) > 0 ? "（手入力）" : "（自動計算）"}<br />
+                    {sim.otherFee > 0 && <>− その他の費用 {man(sim.otherFee)}<br /></>}
+                    − 税金 {man(sim.tax)}<span style={{ color: C.muted, fontSize: 11 }}>（{sim.isCorp ? "法人・実効30%の目安" : sim.longTerm ? "個人・長期 20.315%" : "個人・短期 39.63%"}／もうけ {man(sim.gain)} に対して）</span><br />
+                    {sim.loanLeft > 0 && <>− ローンの残り {man(sim.loanLeft)}<br /></>}
+                    <span style={{ fontSize: 15 }}>手元に残るお金 <b style={{ color: plus ? "#16a34a" : C.danger }}>{man(sim.net)}</b></span><br />
+                    <span style={{ color: C.muted, fontSize: 11 }}>家賃でここまで稼いだ分も合わせた通算の利益は {man(sim.totalProfit)}</span>
+                    {!sim.isCorp && !sim.longTerm && sim.monthsToLong != null && (
+                      <><br /><span style={{ color: "#f59e0b", fontSize: 11.5 }}>あと {monthsText(sim.monthsToLong)} 待つと長期（20.3%）になり、税金が約 {man(sim.gain * (TAX_SHORT - TAX_LONG))} 減ります</span></>
+                    )}
+                  </div>
+                );
+              })()}
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 入居・出口</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {text("入居者", "tenant", "例: 山田様")}
