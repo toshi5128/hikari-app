@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.443-rotate-tap-fix";
+const APP_VERSION = "2026-09-22-v9.444-personal-hold";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -557,6 +557,29 @@ function visibleToUser(items, user, key = "assignee") {
   const who = Array.from(mates);
   return (items || []).filter(it => it && who.some(m => isAssignedTo([it[key]], m)));
 }
+// 🆕 v9.444: 個人保有（会社の案件ではなく、その人が個人で持っている物件）。
+//   ・ピンに personalOwner = "下田" のように保有者名を入れる。
+//   ・保有者本人以外の画面からは、地図・一覧・統計・DM のすべてから消える。
+//   ・会社の統計（仕入件数・ファネル・成約率）には、本人の画面でも数えない。
+//     本人には「🔒個人保有 n件」として別に出す。
+//   ※ データ自体はクラウド共有なので、端末の中身を直接覗けば見える。画面上の秘匿であることに注意。
+const PERSONAL_HOLDERS = ["下田"];                 // 個人保有にできる人
+function personalOwnerOf(it) { return String((it && it.personalOwner) || "").trim(); }
+function isPersonalItem(it) { return !!personalOwnerOf(it); }
+function canHoldPersonal(user) { return PERSONAL_HOLDERS.includes(String(user || "").trim()); }
+function canSeePersonal(it, user) {
+  const o = personalOwnerOf(it);
+  if (!o) return true;                              // 個人保有でないものは全員見える
+  return String(user == null ? getCurrentUser() : user || "").trim() === o;
+}
+// 表示用リストから、他人の個人保有を取り除く（保存用データには触らない）
+function hidePersonal(items, user) {
+  const u = String(user == null ? getCurrentUser() : user || "").trim();
+  return (items || []).filter(it => canSeePersonal(it, u));
+}
+// 会社の数字用（本人のものも含めて個人保有を全部外す）
+function companyOnly(items) { return (items || []).filter(it => !isPersonalItem(it)); }
+
 function canViewMoney(user) {
   const parts = expandAssignee(String(user || "").trim()); // 「比嘉・下田」のような連名も分解して判定
   if (parts.length === 0) return false;
@@ -3079,7 +3102,7 @@ function computeMyDailyAlerts(data, member, todayStr) {
   const _mates = editTeammatesOf(member);
   _mates.add(member);
   const isMine = (assignee) => Array.from(_mates).some(m => isAssignedTo([assignee], m));
-  const overdueJiage = (data.jiage || []).filter(j =>
+  const overdueJiage = hidePersonal(data.jiage).filter(j =>
     j.assignee && isMine(j.assignee) &&
     j.nextVisit && j.nextVisit < todayStr &&
     !CLOSED_JIAGE_STATUSES.includes(j.status) && j.status !== "媒介"
@@ -3101,7 +3124,7 @@ function computeMyDailyAlerts(data, member, todayStr) {
     const days = Math.floor((new Date(todayStr) - new Date(s.buyDate + "T00:00:00")) / 86400000);
     return days >= 90 && days < 180;
   });
-  const dmUn = (data.jiage || []).filter(j => isMine(j.assignee) && j.dm === "未" && j.status !== "訪問禁止"); // 🆕 v9.372: 訪問禁止はDM対象外
+  const dmUn = companyOnly(data.jiage).filter(j => isMine(j.assignee) && j.dm === "未" && j.status !== "訪問禁止"); // 🆕 v9.372: 訪問禁止はDM対象外
   const mediationStagnant = (data.mediations || []).filter(m => {
     if (!isMine(m.assignee)) return false;
     if (!["売出中", "媒介契約"].includes(m.status)) return false;
@@ -11071,7 +11094,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     [data.stocks, selectedYear]);
 
   const active = data.stocks.filter(s => s.status !== "売決完了");
-  const jiageToday = (data.jiage || []).filter(j => j.nextVisit === today);
+  const jiageToday = hidePersonal(data.jiage).filter(j => j.nextVisit === today);
   const ownerToday = (data.owners || []).filter(o => o.nextFollowDate === today);
 
   // 滞留警告：90日超・180日超の在庫を抽出（決済完了除外）
@@ -16410,7 +16433,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
 function TohonBatchStats({ data }) {
   const [open, setOpen] = useState(false);
   const [sel, setSel] = useState("");   // 開いている取り込み日
-  const jiage = Array.isArray(data.jiage) ? data.jiage : [];
+  const jiage = companyOnly(Array.isArray(data.jiage) ? data.jiage : []); // v9.444: 個人保有は会社の数字に入れない
 
   const batches = React.useMemo(() => {
     const map = {};
@@ -16511,7 +16534,7 @@ function JiageFunnelStats({ data, onOpenJiage }) {
   const yen = n => "¥" + (n || 0).toLocaleString();
 
   // 担当者ごとの集計（approaches を合算 ＋ 謄本はピンのフラグから）
-  const jiage = Array.isArray(data.jiage) ? data.jiage : [];
+  const jiage = companyOnly(Array.isArray(data.jiage) ? data.jiage : []); // v9.444: 個人保有は会社の数字に入れない
   const statFor = (mem) => {
     const agg = {}; const days = new Set();
     (data.approaches || []).forEach(a => {
@@ -16618,6 +16641,17 @@ function JiageFunnelStats({ data, onOpenJiage }) {
         <span><NavIcon name="barchart" size={15} /> 地上げ統計・ファネル分析</span><span style={{ color: C.muted }}>{open ? "▲" : "▼"}</span>
       </button>
       {open && (<div style={{ marginTop: 12 }}>
+        {/* 🆕 v9.444: 個人保有は会社の数字に入れない。保有者本人にだけ件数を出す */}
+        {(() => {
+          const mine = (data.jiage || []).filter(j => personalOwnerOf(j) === String(getCurrentUser() || "").trim() && personalOwnerOf(j));
+          if (!mine.length) return null;
+          const shi = mine.filter(j => ["仕入", "媒介", "リフォーム請負"].includes(j.status)).length;
+          return (
+            <div style={{ background: "#0f766e22", border: "1px solid #0f766e", borderRadius: 8, padding: "7px 10px", marginBottom: 10, fontSize: 11.5, color: C.text }}>
+              🔒 <b>個人保有 {mine.length}件</b>（うち成約 {shi}件）— 下の会社の数字には入っていません。あなたにだけ見えています。
+            </div>
+          );
+        })()}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
           {Seg(period, setPeriod, [{ v: "today", l: "今日" }, { v: "week", l: "今週" }, { v: "month", l: "今月" }, { v: "all", l: "全期間" }])}
           {Seg(member, setMember, [{ v: "__ALL__", l: "全員" }, ...MEMBERS.filter(m => m !== "比嘉・下田").map(m => ({ v: m, l: m }))])}
@@ -17347,8 +17381,8 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   };
 
   const pipeline = useMemo(() => {
-    const jiageActive = filterByMember((data.jiage || []).filter(j => !CLOSED_JIAGE_STATUSES.includes(j.status) && j.status !== "媒介"));
-    const jiageMediation = filterByMember((data.jiage || []).filter(j => j.status === "媒介"));
+    const jiageActive = filterByMember(companyOnly(data.jiage).filter(j => !CLOSED_JIAGE_STATUSES.includes(j.status) && j.status !== "媒介"));
+    const jiageMediation = filterByMember(companyOnly(data.jiage).filter(j => j.status === "媒介"));
     const ownersActive = filterByMember((data.owners || []).filter(o => !CLOSED_JIAGE_STATUSES.includes(o.status)));
     const sekisanActive = filterByMember((data.sekisan || []).filter(s => s.judgment !== "見送り"));
     const sekisanHot = sekisanActive.filter(s => s.judgment === "熱い");
@@ -17364,7 +17398,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
   }, [data.jiage, data.owners, data.sekisan, data.stocks, data.mediations, casesMember, casesMonth]);
 
   const alerts = useMemo(() => {
-    const overdueJiage = filterByMember((data.jiage || []).filter(j =>
+    const overdueJiage = filterByMember(hidePersonal(data.jiage).filter(j =>
       j.nextVisit && j.nextVisit < today && !CLOSED_JIAGE_STATUSES.includes(j.status) && j.status !== "媒介"
     ));
     const overdueOwner = filterByMember((data.owners || []).filter(o =>
@@ -17380,7 +17414,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
       const d = daysSinceBuy(s.buyDate);
       return d != null && d >= 180;
     }));
-    const dmUn = filterByMember((data.jiage || []).filter(j => j.dm === "未" && j.status !== "訪問禁止")); // 🆕 v9.372: 訪問禁止はDM対象外
+    const dmUn = filterByMember(companyOnly(data.jiage).filter(j => j.dm === "未" && j.status !== "訪問禁止")); // 🆕 v9.372: 訪問禁止はDM対象外
     const hotNotPurchased = filterByMember((data.sekisan || []).filter(s => {
       if (s.judgment !== "熱い") return false;
       return !(data.stocks || []).some(st => st.fromSekisanId === s.id);
@@ -17417,7 +17451,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     ));
     const currentKentou = filterByMember((data.sekisan || []).filter(s => s.judgment === "仕入検討"));
     const currentHot = filterByMember((data.sekisan || []).filter(s => s.judgment === "熱い"));
-    const currentMediation = filterByMember((data.jiage || []).filter(j => j.status === "媒介"));
+    const currentMediation = filterByMember(companyOnly(data.jiage).filter(j => j.status === "媒介"));
     return { newSekisan, newBuyContract, newPurchase, newSellContract, newCompleted, currentKentou, currentHot, currentMediation };
   }, [data.sekisan, data.stocks, data.jiage, casesMember, casesMonth]);
 
@@ -19490,7 +19524,7 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
           from={countDetail.from}
           to={countDetail.to}
           count={countDetail.count}
-          jiage={data.jiage}
+          jiage={hidePersonal(data.jiage)}
           onClose={() => setCountDetail(null)}
           onOpenPin={(id) => { setCountDetail(null); if (onOpenJiageDetail) onOpenJiageDetail(id); }}
         />
@@ -20981,7 +21015,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   //   4. 🔧 要修正     = coordsManual && address && !hasOwner && !excluded && lookupFailed  ← 🆕 v8.118
   //   5. ⏳ 謄本待ち   = coordsManual && address && !hasOwner && !excluded && !lookupFailed
   const pendingPinSummary = useMemo(() => {
-    const onsiteAll = (data.jiage || []).filter(j => !!j.coordsManual);
+    const onsiteAll = hidePersonal(data.jiage).filter(j => !!j.coordsManual);
     const hasOwner = (j) => !!((j.owner && String(j.owner).trim()) || (j.ownerName && String(j.ownerName).trim()));
     // 🆕 v9.381: 地番が空のピンを「🤖自動照会中」と「🟡地番待ち(担当者の番)」に割る
     const isAutoLookup = (j) => !!(j && (j.landmark && String(j.landmark).trim() !== "")
@@ -21047,7 +21081,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     });
     // 🆕 v9.348: 所有者宅の場所確認（🏠住所要確認 / ✅確認済み）。
     //   現地ピンに限らず全件（CSV取込ピンも所有者住所マップに出るため）。
-    const _allJiage = (data.jiage || []);
+    const _allJiage = hidePersonal(data.jiage);
     const addrNgPins = _allJiage.filter(j => addrCheckOf(j) === "ng");
     const addrOkPins = _allJiage.filter(j => addrCheckOf(j) === "ok");
     const addrNgByAssignee = {};
@@ -22052,7 +22086,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
 
   // 地上げと所有者を統合
   const allItems = useMemo(() => {
-    return (data.jiage || []).map(j => ({
+    return hidePersonal(data.jiage).map(j => ({
       type: "jiage", id: `j_${j.id}`, rawId: j.id,
       address: j.address, ownerName: j.owner, ownerAddress: j.ownerAddr,
       ownerContact: j.ownerContact || "", assignee: j.assignee,
@@ -22363,6 +22397,27 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   };
 
   // 🆕 v9.437: 空き家へのポスティングを後から記録（回るたびに +1 できる）
+  // 🆕 v9.444: 個人保有の切り替え（保有者本人だけが押せる）
+  const togglePersonal = (jid) => {
+    if (jid == null) return;
+    const me = String(currentUser || "").trim();
+    if (!canHoldPersonal(me)) return;
+    const cur = (data.jiage || []).find(j => j.id === jid);
+    const on = isPersonalItem(cur);
+    if (!on && !window.confirm(`この案件を「🔒 個人保有（${me}）」にします。\n\n・会社の地図／一覧／統計／DMから見えなくなります\n・会社の仕入件数には数えません\n\nよろしいですか？`)) return;
+    if (on && !window.confirm("個人保有を解除して、会社の案件に戻します。よろしいですか？")) return;
+    const now = Date.now();
+    setData(d => ({
+      ...d,
+      jiage: (d.jiage || []).map(j => j.id !== jid ? j : {
+        ...j,
+        personalOwner: on ? "" : me,
+        updatedAt: now,
+        _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), personalOwner: now },
+      }),
+    }));
+  };
+
   const addPosting = (jid) => {
     if (jid == null) return;
     const now = Date.now();
@@ -27224,6 +27279,22 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           {/* タイプバッジ */}
           <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
             <Tag label={selected.item.type === "jiage" ? "📍地上げ" : "👤所有者アタック"} color={selected.item.type === "jiage" ? C.accent : C.purple} />
+            {/* 🆕 v9.444: 個人保有（自分で持っている物件）。本人以外の画面には出ない */}
+            {selected.item.type === "jiage" && (() => {
+              const r = selected.item.raw || {};
+              const on = isPersonalItem(r);
+              if (!on && !canHoldPersonal(currentUser)) return null;
+              return (
+                <button onClick={() => togglePersonal(r.id)} style={{
+                  padding: "4px 10px", borderRadius: 12, cursor: "pointer", fontSize: 11,
+                  fontFamily: "inherit", fontWeight: 700,
+                  background: on ? "#0f766e" : "transparent", color: on ? "#fff" : "#0f766e",
+                  border: "1.5px solid #0f766e",
+                }}>
+                  {on ? `🔒 個人保有（${personalOwnerOf(r)}）　タップで解除` : "🔒 個人保有にする"}
+                </button>
+              );
+            })()}
             {selected.item.type === "jiage" && (() => {
               const r = selected.item.raw || {};
               const n = Number(r.postingCount) || 0;
@@ -32227,7 +32298,7 @@ function DMPage({ data, setData, onBack }) {
   const [q, setQ] = useState(""); // 🆕 v9.146: 検索（名前・住所・ワード）
   const [attachFlyer, setAttachFlyer] = useState(true); // 🆕 v9.197: DM手紙の後ろに空き家チラシ(表裏2P)を同封して印刷
 
-  const jiage = Array.isArray(data.jiage) ? data.jiage : [];
+  const jiage = companyOnly(Array.isArray(data.jiage) ? data.jiage : []); // v9.444: 個人保有は会社の数字に入れない
   const ownerName = j => String(j.owner || j.ownerName || "").trim();
   const mailAddr = j => String(j.ownerAddr || "").trim();
   const propAddr = j => String(j.address || "").trim();
