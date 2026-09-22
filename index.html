@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-13-v9.442-tap-priority";
+const APP_VERSION = "2026-09-22-v9.443-rotate-tap-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7514,6 +7514,33 @@ function loadTakuchi() {
   return _takuchiPromise;
 }
 
+// 🆕 v9.443: ヘディングアップ（進行方向が上）で地図を傾けた時のタップ位置ズレを補正
+//   地図コンテナに CSS transform:rotate(-bearing) を掛けているが Leaflet は回転を知らない。
+//   そのため「画面の指の位置 → 地図コンテナ内の座標」の変換で回転を打ち消す必要がある。
+//   コンテナの中心は回転しても動かないので、中心からのズレを +bearing 回して元に戻す。
+function hkContainerPoint(container, clientX, clientY) {
+  const rect = container.getBoundingClientRect();
+  const deg = Number(container.dataset && container.dataset.hkBearing) || 0;
+  if (!deg) return L.point(clientX - rect.left, clientY - rect.top);
+  const w = container.offsetWidth, h = container.offsetHeight;
+  const dx = clientX - (rect.left + rect.width / 2);
+  const dy = clientY - (rect.top + rect.height / 2);
+  const r = deg * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r);
+  return L.point(dx * cos - dy * sin + w / 2, dx * sin + dy * cos + h / 2);
+}
+// Leaflet 本体のクリック座標計算も同じ補正を通す（map.on("click") の e.latlng が正しくなる）
+if (typeof L !== "undefined" && L.Map && !L.Map.prototype._hkRotPatched) {
+  const _hkOrigMEtCP = L.Map.prototype.mouseEventToContainerPoint;
+  L.Map.prototype.mouseEventToContainerPoint = function (e) {
+    const c = this._container;
+    if (!c || !c.dataset || !(Number(c.dataset.hkBearing) || 0)) return _hkOrigMEtCP.call(this, e);
+    const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
+    if (typeof t.clientX !== "number") return _hkOrigMEtCP.call(this, e);
+    return hkContainerPoint(c, t.clientX, t.clientY);
+  };
+  L.Map.prototype._hkRotPatched = true;
+}
+
 function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
@@ -8757,7 +8784,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     const _prevTouchAction = container.style.touchAction;
     container.style.touchAction = "none";
     let drawing = false, path = [], line = null;
-    const toLL = (cx, cy) => { const rect = container.getBoundingClientRect(); return map.containerPointToLatLng(L.point(cx - rect.left, cy - rect.top)); };
+    const toLL = (cx, cy) => map.containerPointToLatLng(hkContainerPoint(container, cx, cy)); // v9.443: 回転補正
     const begin = (cx, cy) => {
       drawing = true; path = [];
       const p = toLL(cx, cy); path.push([p.lat, p.lng]);
@@ -8943,14 +8970,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       startY = t.clientY;
       cancelled = false;
       try {
-        const rect = mapRef.current.getBoundingClientRect();
-        const containerPoint = L.point(t.clientX - rect.left, t.clientY - rect.top);
+        const containerPoint = hkContainerPoint(mapRef.current, t.clientX, t.clientY); // v9.443: 回転補正
         startLatLng = map.containerPointToLatLng(containerPoint);
         // 🆕 v8.131: 長押し中の青いリップルアニメーションを表示（Googleマップ風）
         removeRipple();
         rippleEl = document.createElement("div");
         // 🆕 v8.137: リップルを大きく＆赤系（Googleマップ風）に
-        rippleEl.style.cssText = `position:absolute;left:${t.clientX - rect.left - 60}px;top:${t.clientY - rect.top - 60}px;width:120px;height:120px;pointer-events:none;z-index:9999;`;
+        rippleEl.style.cssText = `position:absolute;left:${containerPoint.x - 60}px;top:${containerPoint.y - 60}px;width:120px;height:120px;pointer-events:none;z-index:9999;`;
         rippleEl.innerHTML = `
           <div style="position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle,rgba(220,38,38,0.6) 0%,rgba(220,38,38,0.15) 50%,rgba(220,38,38,0) 80%);animation:hikariRipple ${LONG_PRESS_MS}ms ease-out forwards;"></div>
           <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:32px;height:32px;border-radius:50%;background:#dc2626;border:4px solid white;box-shadow:0 4px 14px rgba(220,38,38,0.7), 0 2px 6px rgba(0,0,0,0.5);animation:hikariRippleCore ${LONG_PRESS_MS}ms ease-out forwards;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:900;font-family:sans-serif;line-height:1;">+</div>
@@ -9283,6 +9309,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     <div style={{ position: "relative" }} className={hideZoomControl ? "hikari-hide-zoom" : ""}>
       <div
         ref={mapRef}
+        data-hk-bearing={mapBearing}
         style={{
           height, width: "100%", borderRadius: 12, border: `1px solid ${C.borderDim}`,
           transform: `rotate(${-mapBearing}deg)`,
