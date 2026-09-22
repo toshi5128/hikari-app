@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.456-holdings-exit";
+const APP_VERSION = "2026-09-22-v9.457-holdings-cleanup";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -32860,7 +32860,10 @@ const HOLDING_COST_ITEMS = [
 function holdingCostBreak(h) {
   const rows = HOLDING_COST_ITEMS.map(([k, label]) => ({ k, label, v: hNum(h[k]) }));
   const sum = rows.reduce((a, r) => a + r.v, 0);
-  return { rows, sum, total: sum > 0 ? sum : hNum(h.buyCost) };
+  // 🆕 v9.457: 内訳が1つでも入っていれば内訳だけを合計する（旧「諸費用」buyCost は無視＝二重計上しない）。
+  //   内訳が全部空の古いレコードだけ、旧 buyCost をそのまま使う。
+  const legacy = hNum(h.buyCost);
+  return { rows, sum, legacy, usesLegacy: sum === 0 && legacy > 0, total: sum > 0 ? sum : legacy };
 }
 // 契約満了（更新日）まであと何日か。過ぎていればマイナス
 function holdingDaysLeft(h) {
@@ -33015,8 +33018,11 @@ function holdingAlerts(holdings) {
     const nm = h.name || h.address || "(名称未設定)";
     const left = holdingDaysLeft(h);
     if (left != null && left <= 60) {
-      out.push({ id: h.id, kind: left >= 0 ? "更新" : "更新切れ", color: left >= 0 ? "#f59e0b" : "#dc2626",
-        text: left >= 0 ? `${nm}：更新日まであと${left}日（${h.contractTo}）` : `${nm}：更新日を${-left}日過ぎています` });
+      // 🆕 v9.457: 60日前=黄 / 30日前=赤 / 過ぎたら濃い赤
+      const col = left < 0 ? "#dc2626" : left <= 30 ? "#ef4444" : "#f59e0b";
+      const tail = hNum(h.renewalFee) > 0 ? `／更新料 ${Math.round(hNum(h.renewalFee)).toLocaleString("ja-JP")}円` : "";
+      out.push({ id: h.id, kind: left >= 0 ? "更新" : "更新切れ", color: col,
+        text: left >= 0 ? `${nm}：更新日まであと${left}日（${h.contractTo}${tail}）` : `${nm}：更新日を${-left}日過ぎています` });
     }
     const ex = holdingExit(h);
     if (ex && ex.leftM <= 12) {
@@ -33168,6 +33174,14 @@ function HoldingsPage({ data, setData, currentUser }) {
     }));
     setEdit(null);
   };
+  // 🆕 v9.457: 古いレコードに無いキーを空文字で埋める（既存の値は絶対に上書きしない）
+  const normalizeHolding = (h) => {
+    const base = blankHolding();
+    const out = { ...base, ...h };
+    out.id = h.id; out.owner = h.owner || me;
+    if (!Array.isArray(out.extras)) out.extras = [];
+    return out;
+  };
   const blankHolding = () => ({ id: Date.now(), owner: me, name: "", address: "", status: "購入済",
     buyPrice: "", buyCost: "", reformCost: "", rent: "", mgmtFee: "", tax: "", insurance: "", otherCost: "",
     buyDate: "", builtDate: "", brokerFee: "", regFee: "", stampFee: "", acqTax: "", initInsurance: "", otherBuyCost: "",
@@ -33290,7 +33304,7 @@ function HoldingsPage({ data, setData, currentUser }) {
         const c = holdingCalc(h);
         const col = HOLDING_STATUS_COLORS[h.status] || C.muted;
         return (
-          <div key={h.id} onClick={() => setEdit({ ...h })} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`, borderRadius: 10, padding: 12, marginBottom: 8, cursor: "pointer" }}>
+          <div key={h.id} onClick={() => setEdit(normalizeHolding(h))} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`, borderRadius: 10, padding: 12, marginBottom: 8, cursor: "pointer" }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
               <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{h.name || h.address || "(名称未設定)"}</div>
               <span style={{ fontSize: 10.5, fontWeight: 800, color: "#fff", background: col, borderRadius: 10, padding: "2px 8px" }}>{h.status}</span>
@@ -33346,8 +33360,9 @@ function HoldingsPage({ data, setData, currentUser }) {
             {(h.tenant || h.contractTo) && (() => {
               const left = holdingDaysLeft(h);
               const warn = left != null && left <= 60;
+              const col = left == null ? C.muted : left < 0 ? "#dc2626" : left <= 30 ? "#ef4444" : left <= 60 ? "#f59e0b" : C.muted;
               return (
-                <div style={{ fontSize: 11, color: warn ? "#f59e0b" : C.muted, marginTop: 6, fontWeight: warn ? 800 : 400 }}>
+                <div style={{ fontSize: 11, color: col, marginTop: 6, fontWeight: warn ? 800 : 400 }}>
                   {h.tenant ? `入居: ${h.tenant}` : "空室"}
                   {h.contractTo ? `　更新日 ${h.contractTo}` : ""}
                   {left != null && (left >= 0 ? `（あと${left}日）` : `（${-left}日超過）`)}
@@ -33444,7 +33459,13 @@ function HoldingsPage({ data, setData, currentUser }) {
                   <div style={{ background: C.bg, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, color: C.text }}>
                     諸費用の合計 <b style={{ fontSize: 15 }}>{man(br.total)}</b>
                     {cc.initIncome > 0 && <><br />出したお金の合計 {man(cc.gross0)} − 入居初期費用 {man(cc.initIncome)} ＝ <b style={{ fontSize: 15 }}>{man(cc.total)}</b></>}
-                    {br.sum === 0 && hNum(edit.buyCost) > 0 && <span style={{ color: C.muted, fontSize: 11 }}>（以前に入れた「諸費用」の数字を使っています。内訳を入れると置き換わります）</span>}
+                    {br.usesLegacy && <span style={{ color: C.muted, fontSize: 11 }}>（以前に入れた「諸費用」の数字を使っています。内訳を入れると置き換わります）</span>}
+                    {br.sum > 0 && hNum(edit.buyCost) > 0 && (
+                      <div style={{ marginTop: 6, fontSize: 11.5, color: "#f59e0b" }}>
+                        古い「諸費用」欄に {man(hNum(edit.buyCost))} が残っています（合計には入れていません）。
+                        <button onClick={() => set("buyCost", "")} style={{ marginLeft: 6, padding: "2px 8px", borderRadius: 10, border: "1px solid #f59e0b", background: "transparent", color: "#f59e0b", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>消す</button>
+                      </div>
+                    )}
                   </div>
                 );
               })()}
