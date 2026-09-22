@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.446-holdings-costs";
+const APP_VERSION = "2026-09-22-v9.447-holdings-breakeven";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -32885,6 +32885,120 @@ function holdingCalc(h) {
     soldProfit: hNum(h.soldPrice) ? hNum(h.soldPrice) - total : 0,
   };
 }
+// 🆕 v9.447: 投資回収（損益分岐）の計算
+//   回収済み＝（毎月の手取り）×（買ってから今までの月数）
+//   損益分岐＝総投資額を家賃の手取りで割り切れるまでの月数
+function holdingRecovery(h) {
+  const c = holdingCalc(h);
+  const monthly = Math.round(c.net / 12);                 // 毎月の手取り（ローン返済前）
+  const start = String(h.buyDate || h.contractFrom || "").trim();
+  let months = 0;
+  if (start) {
+    const t = new Date(start + "T00:00:00");
+    if (!isNaN(t.getTime())) {
+      const now = new Date();
+      months = (now.getFullYear() - t.getFullYear()) * 12 + (now.getMonth() - t.getMonth());
+      if (now.getDate() < t.getDate()) months -= 1;
+      months = Math.max(0, months);
+    }
+  }
+  const recovered = Math.max(0, monthly * months);
+  const beMonths = monthly > 0 ? Math.ceil(c.total / monthly) : null;   // 回収までの総月数
+  const left = Math.max(0, c.total - recovered);
+  const leftMonths = monthly > 0 ? Math.ceil(left / monthly) : null;
+  return {
+    total: c.total, monthly, months, recovered, left, beMonths, leftMonths,
+    pct: c.total > 0 ? Math.min(100, recovered / c.total * 100) : 0,
+    hasStart: !!start, done: c.total > 0 && recovered >= c.total,
+  };
+}
+const monthsText = (m) => {
+  if (m == null) return "—";
+  const y = Math.floor(m / 12), mm = m % 12;
+  return (y ? `${y}年` : "") + (mm || !y ? `${mm}ヶ月` : "");
+};
+// 回収の進み具合（細いバー）
+function HoldingRecoveryBar({ h }) {
+  const r = holdingRecovery(h);
+  if (r.monthly <= 0) return null;
+  const col = r.done ? "#16a34a" : "#3b82f6";
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>
+        <span>投資の回収 {Math.round(r.pct)}%</span>
+        <span>{r.done ? "回収ずみ 🎉" : `あと ${monthsText(r.leftMonths)}`}</span>
+      </div>
+      <div style={{ height: 8, background: C.bg, borderRadius: 4, overflow: "hidden" }}>
+        <div style={{ width: `${Math.max(1.5, r.pct)}%`, height: "100%", background: col, borderRadius: 4 }} />
+      </div>
+    </div>
+  );
+}
+// 回収グラフ（横軸＝年数、縦軸＝お金。家賃の積み上がりが投資額の線を越えたところが損益分岐点）
+function HoldingRecoveryChart({ h }) {
+  const r = holdingRecovery(h);
+  const yen = n => "¥" + Math.round(n || 0).toLocaleString("ja-JP");
+  const man = n => (Math.round((n || 0) / 1000) / 10).toLocaleString("ja-JP") + "万";
+  if (r.monthly <= 0 || r.total <= 0) {
+    return (
+      <div style={{ background: C.bg, borderRadius: 8, padding: 12, fontSize: 12, color: C.muted, lineHeight: 1.8 }}>
+        購入価格と家賃を入れると、<b style={{ color: C.text }}>あと何年で投資した額を回収できるか</b>のグラフが出ます。
+      </div>
+    );
+  }
+  const W = 320, H = 150, L = 46, R = 10, T = 14, B = 26;     // 余白（ラベルがはみ出さないように）
+  const endM = Math.max(r.beMonths * 1.25, r.months + 6);     // 横軸の終わり（分岐点の少し先まで）
+  const maxY = r.total * 1.25;
+  const x = m => L + (W - L - R) * (m / endM);
+  const y = v => T + (H - T - B) * (1 - v / maxY);
+  const nowX = x(Math.min(r.months, endM)), beX = x(Math.min(r.beMonths, endM));
+  const lineEnd = Math.min(endM, r.beMonths * 1.25);
+  // 横軸の年ラベル（年数が多いときは間引いて重ならないように）
+  const lastYear = Math.ceil(endM / 12);
+  const step = lastYear > 20 ? 5 : lastYear > 8 ? 2 : 1;
+  const yearTicks = [];
+  for (let yr = 0; yr <= lastYear; yr += step) if (yr * 12 <= endM) yearTicks.push(yr);
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} role="img"
+           aria-label={`投資${man(r.total)}を家賃で回収するグラフ。損益分岐は${monthsText(r.beMonths)}後`}>
+        {/* 目盛り */}
+        {[0, 0.5, 1].map(f => (
+          <line key={f} x1={L} x2={W - R} y1={y(r.total * f)} y2={y(r.total * f)} stroke={C.borderDim} strokeWidth="1" />
+        ))}
+        {/* 投資額のライン（ここを越えたら回収完了） */}
+        <line x1={L} x2={W - R} y1={y(r.total)} y2={y(r.total)} stroke="#f59e0b" strokeWidth="2" strokeDasharray="4 3" />
+        <text x={L - 4} y={y(r.total) + 3.5} textAnchor="end" fontSize="9" fill="#f59e0b" fontWeight="700">{man(r.total)}</text>
+        <text x={L - 4} y={y(0) + 3.5} textAnchor="end" fontSize="9" fill={C.muted}>0</text>
+        {/* 家賃の積み上がり（これまで＝濃い / これから＝薄い） */}
+        <line x1={x(0)} y1={y(0)} x2={x(lineEnd)} y2={y(Math.min(maxY, r.monthly * lineEnd))} stroke="#3b82f6" strokeWidth="2" strokeOpacity="0.35" />
+        <line x1={x(0)} y1={y(0)} x2={nowX} y2={y(Math.min(maxY, r.recovered))} stroke="#3b82f6" strokeWidth="3" />
+        <circle cx={nowX} cy={y(Math.min(maxY, r.recovered))} r="4" fill="#3b82f6" />
+        {/* 損益分岐点 */}
+        <circle cx={beX} cy={y(r.total)} r="4.5" fill="#f59e0b" stroke={C.cardBg} strokeWidth="1.5" />
+        <text x={Math.min(beX, W - R - 40)} y={y(r.total) - 7} fontSize="9" fill="#f59e0b" fontWeight="700">損益分岐</text>
+        {/* 今 */}
+        <line x1={nowX} x2={nowX} y1={T} y2={H - B} stroke={C.muted} strokeWidth="1" strokeDasharray="3 3" />
+        <text x={nowX} y={H - B + 12} textAnchor="middle" fontSize="9" fill={C.text} fontWeight="700">今</text>
+        {/* 横軸の年 */}
+        {yearTicks.map(yr => (
+          <text key={yr} x={x(yr * 12)} y={H - 4} textAnchor="middle" fontSize="8.5" fill={C.muted}>{yr}年</text>
+        ))}
+        <line x1={L} x2={W - R} y1={y(0)} y2={y(0)} stroke={C.borderDim} strokeWidth="1" />
+      </svg>
+      <div style={{ background: C.bg, borderRadius: 8, padding: 10, fontSize: 12.5, color: C.text, lineHeight: 1.9, marginTop: 6 }}>
+        毎月の手取り <b>{yen(r.monthly)}</b>（家賃から経費を引いた額）<br />
+        {r.hasStart
+          ? <>ここまで <b>{monthsText(r.months)}</b> で <b>{man(r.recovered)}</b> 回収（{Math.round(r.pct)}%）<br /></>
+          : <span style={{ color: C.muted }}>買った日を入れると「今どこまで回収できたか」が出ます<br /></span>}
+        {r.done
+          ? <b style={{ color: "#16a34a" }}>投資額は回収ずみです。ここから先は利益になります 🎉</b>
+          : <>残り <b>{man(r.left)}</b>　<b style={{ color: "#f59e0b" }}>あと {monthsText(r.leftMonths)}</b> で回収できます<br />
+             <span style={{ color: C.muted, fontSize: 11 }}>買った日から数えると {monthsText(r.beMonths)} で損益分岐（ローン返済は含みません）</span></>}
+      </div>
+    </div>
+  );
+}
 function HoldingsPage({ data, setData, currentUser }) {
   const me = String(currentUser || "").trim();
   const [edit, setEdit] = useState(null);      // 編集中の物件（null=閉じている）
@@ -32899,7 +33013,11 @@ function HoldingsPage({ data, setData, currentUser }) {
     const rent = c.reduce((a, x) => a + x.yearRent, 0);
     const net = c.reduce((a, x) => a + x.net, 0);
     const cash = c.reduce((a, x) => a + x.cashMonthly, 0);
-    return { n: act.length, total, rent, net, cash, gross: total ? rent / total * 100 : 0, real: total ? net / total * 100 : 0 };
+    const rec = act.map(holdingRecovery);
+    const recovered = rec.reduce((a, x) => a + Math.min(x.recovered, x.total), 0);
+    return { n: act.length, total, rent, net, cash, recovered,
+      recPct: total ? recovered / total * 100 : 0,
+      gross: total ? rent / total * 100 : 0, real: total ? net / total * 100 : 0 };
   }, [list]);
 
   const saveHolding = (h) => {
@@ -32927,7 +33045,7 @@ function HoldingsPage({ data, setData, currentUser }) {
   };
   const blankHolding = () => ({ id: Date.now(), owner: me, name: "", address: "", status: "購入済",
     buyPrice: "", buyCost: "", reformCost: "", rent: "", mgmtFee: "", tax: "", insurance: "", otherCost: "",
-    brokerFee: "", regFee: "", stampFee: "", acqTax: "", initInsurance: "", otherBuyCost: "",
+    buyDate: "", brokerFee: "", regFee: "", stampFee: "", acqTax: "", initInsurance: "", otherBuyCost: "",
     loanMonthly: "", tenant: "", contractFrom: "", contractTo: "", renewalFee: "", soldPrice: "", memo: "" });
 
   const yen = n => "¥" + Math.round(n || 0).toLocaleString("ja-JP");
@@ -32946,7 +33064,8 @@ function HoldingsPage({ data, setData, currentUser }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
           {[["投資した総額", man(sum.total)], ["年間の家賃", man(sum.rent)],
             ["表面利回り", sum.gross.toFixed(1) + "%"], ["実質利回り", sum.real.toFixed(1) + "%"],
-            ["年間の手取り（返済前）", man(sum.net)], ["月々の手残り（返済後）", yen(sum.cash)]].map(([l, v]) => (
+            ["年間の手取り（返済前）", man(sum.net)], ["月々の手残り（返済後）", yen(sum.cash)],
+            ["回収できた額", man(sum.recovered)], ["回収率", sum.recPct.toFixed(0) + "%"]].map(([l, v]) => (
             <div key={l} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px" }}>
               <div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l}</div>
               <div style={{ fontSize: 17, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{v}</div>
@@ -33005,6 +33124,7 @@ function HoldingsPage({ data, setData, currentUser }) {
               {c.cost > 0 && <span>諸費用計 {man(c.cost)}</span>}
               {hNum(h.tax) > 0 && <span>固定資産税 {yen(hNum(h.tax))}/年</span>}
             </div>
+            <HoldingRecoveryBar h={h} />
             {(h.tenant || h.contractTo) && (() => {
               const left = holdingDaysLeft(h);
               const warn = left != null && left <= 60;
@@ -33067,6 +33187,7 @@ function HoldingsPage({ data, setData, currentUser }) {
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 買ったとき</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {money("購入価格", "buyPrice")}{money("リフォーム費", "reformCost")}
+                {text("買った日", "buyDate", "", "date")}
               </div>
               {/* 🆕 v9.446: 諸費用は内訳で入れる（何にいくらかかったか後から分かるように） */}
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 諸費用の内訳</div>
@@ -33093,6 +33214,8 @@ function HoldingsPage({ data, setData, currentUser }) {
                 <span style={{ fontSize: 15 }}>表面利回り <b style={{ color: "#16a34a" }}>{c.gross.toFixed(2)}%</b>　実質利回り <b style={{ color: "#16a34a" }}>{c.real.toFixed(2)}%</b></span>
                 {hNum(edit.loanMonthly) > 0 && <><br />返済後の手残り <b>{yen(c.cashMonthly)}/月</b></>}
               </div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 投資の回収（損益分岐）</div>
+              <HoldingRecoveryChart h={edit} />
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 入居・出口</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {text("入居者", "tenant", "例: 山田様")}
