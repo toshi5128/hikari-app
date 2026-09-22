@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.447-holdings-breakeven";
+const APP_VERSION = "2026-09-22-v9.448-holdings-earned";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -32906,8 +32906,15 @@ function holdingRecovery(h) {
   const beMonths = monthly > 0 ? Math.ceil(c.total / monthly) : null;   // 回収までの総月数
   const left = Math.max(0, c.total - recovered);
   const leftMonths = monthly > 0 ? Math.ceil(left / monthly) : null;
+  // 🆕 v9.448: これまでいくら稼いだか
+  //   累計収入 ＝ 毎月の手取り × 経過月数（家賃から経費を引いた額の積み上げ）
+  //   今の損益 ＝ 累計収入 − 総投資額（＋売れていれば売却価格）。プラスなら投資を上回った状態
+  const sold = hNum(h.soldPrice);
+  const profitNow = recovered + sold - c.total;
+  const cashAccum = Math.round(c.cashMonthly * months);      // ローン返済後の積み上げ
   return {
     total: c.total, monthly, months, recovered, left, beMonths, leftMonths,
+    sold, profitNow, cashAccum, hasLoan: hNum(h.loanMonthly) > 0,
     pct: c.total > 0 ? Math.min(100, recovered / c.total * 100) : 0,
     hasStart: !!start, done: c.total > 0 && recovered >= c.total,
   };
@@ -32991,6 +32998,13 @@ function HoldingRecoveryChart({ h }) {
         {r.hasStart
           ? <>ここまで <b>{monthsText(r.months)}</b> で <b>{man(r.recovered)}</b> 回収（{Math.round(r.pct)}%）<br /></>
           : <span style={{ color: C.muted }}>買った日を入れると「今どこまで回収できたか」が出ます<br /></span>}
+        <span style={{ color: C.muted, fontSize: 11 }}>
+          これまで稼いだ額（家賃の手取り）<b style={{ color: C.text, fontSize: 12.5 }}>{man(r.recovered)}</b>
+          {r.hasLoan && <>　返済後の手残り <b style={{ color: C.text, fontSize: 12.5 }}>{man(r.cashAccum)}</b></>}
+          {r.sold > 0 && <>　売却 <b style={{ color: C.text, fontSize: 12.5 }}>{man(r.sold)}</b></>}
+        </span><br />
+        今の損益 <b style={{ fontSize: 15, color: r.profitNow >= 0 ? "#16a34a" : "#f59e0b" }}>{r.profitNow >= 0 ? "＋" : "−"}{man(Math.abs(r.profitNow))}</b>
+        <span style={{ color: C.muted, fontSize: 11 }}>（稼いだ額 − 投資した額）</span><br />
         {r.done
           ? <b style={{ color: "#16a34a" }}>投資額は回収ずみです。ここから先は利益になります 🎉</b>
           : <>残り <b>{man(r.left)}</b>　<b style={{ color: "#f59e0b" }}>あと {monthsText(r.leftMonths)}</b> で回収できます<br />
@@ -33013,9 +33027,12 @@ function HoldingsPage({ data, setData, currentUser }) {
     const rent = c.reduce((a, x) => a + x.yearRent, 0);
     const net = c.reduce((a, x) => a + x.net, 0);
     const cash = c.reduce((a, x) => a + x.cashMonthly, 0);
+    const recAll = list.map(holdingRecovery);           // 売却済も含めた通算
+    const earned = recAll.reduce((a, x) => a + x.recovered, 0);
+    const profitNow = recAll.reduce((a, x) => a + x.profitNow, 0);
     const rec = act.map(holdingRecovery);
     const recovered = rec.reduce((a, x) => a + Math.min(x.recovered, x.total), 0);
-    return { n: act.length, total, rent, net, cash, recovered,
+    return { n: act.length, total, rent, net, cash, recovered, earned, profitNow,
       recPct: total ? recovered / total * 100 : 0,
       gross: total ? rent / total * 100 : 0, real: total ? net / total * 100 : 0 };
   }, [list]);
@@ -33065,7 +33082,9 @@ function HoldingsPage({ data, setData, currentUser }) {
           {[["投資した総額", man(sum.total)], ["年間の家賃", man(sum.rent)],
             ["表面利回り", sum.gross.toFixed(1) + "%"], ["実質利回り", sum.real.toFixed(1) + "%"],
             ["年間の手取り（返済前）", man(sum.net)], ["月々の手残り（返済後）", yen(sum.cash)],
-            ["回収できた額", man(sum.recovered)], ["回収率", sum.recPct.toFixed(0) + "%"]].map(([l, v]) => (
+            ["回収できた額", man(sum.recovered)], ["回収率", sum.recPct.toFixed(0) + "%"],
+            ["これまで稼いだ額", man(sum.earned)],
+            ["今の損益", (sum.profitNow >= 0 ? "＋" : "−") + man(Math.abs(sum.profitNow))]].map(([l, v]) => (
             <div key={l} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px" }}>
               <div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l}</div>
               <div style={{ fontSize: 17, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{v}</div>
@@ -33124,6 +33143,19 @@ function HoldingsPage({ data, setData, currentUser }) {
               {c.cost > 0 && <span>諸費用計 {man(c.cost)}</span>}
               {hNum(h.tax) > 0 && <span>固定資産税 {yen(hNum(h.tax))}/年</span>}
             </div>
+            {(() => {
+              const r = holdingRecovery(h);
+              if (r.monthly <= 0 && !r.sold) return null;
+              const plus = r.profitNow >= 0;
+              return (
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 6, fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+                  <span style={{ color: C.text }}>これまで稼いだ額 <b>{man(r.recovered)}</b>{r.hasStart ? `（${monthsText(r.months)}）` : ""}</span>
+                  <span style={{ color: plus ? "#16a34a" : "#f59e0b", fontWeight: 700 }}>
+                    今の損益 {plus ? "＋" : "−"}{man(Math.abs(r.profitNow))}
+                  </span>
+                </div>
+              );
+            })()}
             <HoldingRecoveryBar h={h} />
             {(h.tenant || h.contractTo) && (() => {
               const left = holdingDaysLeft(h);
