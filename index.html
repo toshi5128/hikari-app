@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.452-no-broker-fee";
+const APP_VERSION = "2026-09-22-v9.453-total-return";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -33220,6 +33220,12 @@ function HoldingsPage({ data, setData, currentUser }) {
               <span style={{ color: c.real >= 12 ? "#16a34a" : C.text }}>実質 <b>{c.real ? c.real.toFixed(1) + "%" : "—"}</b></span>
               {hNum(h.loanMonthly) > 0 && <span>手残り <b>{yen(c.cashMonthly)}/月</b></span>}
               {h.status === "売却済" && <span>売却益 <b>{man(c.soldProfit)}</b></span>}
+              {(() => {
+                const sim = holdingSale(h);
+                if (!sim) return null;
+                const r = holdingRecovery(h);
+                return <span style={{ color: "#16a34a" }}>売れば合計 <b>{man(r.recovered + sim.net)}</b></span>;
+              })()}
             </div>
             {/* 🆕 v9.446: かかったお金の内訳（入れた分だけ出す） */}
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 5, fontSize: 11, color: C.muted, fontVariantNumeric: "tabular-nums" }}>
@@ -33396,7 +33402,24 @@ function HoldingsPage({ data, setData, currentUser }) {
                     − 税金 {man(sim.tax)}<span style={{ color: C.muted, fontSize: 11 }}>（{sim.isCorp ? "法人・実効30%の目安" : sim.longTerm ? "個人・長期 20.315%" : "個人・短期 39.63%"}／もうけ {man(sim.gain)} に対して）</span><br />
                     {sim.loanLeft > 0 && <>− ローンの残り {man(sim.loanLeft)}<br /></>}
                     <span style={{ fontSize: 15 }}>手元に残るお金 <b style={{ color: plus ? "#16a34a" : C.danger }}>{man(sim.net)}</b></span><br />
-                    <span style={{ color: C.muted, fontSize: 11 }}>家賃でここまで稼いだ分も合わせた通算の利益は {man(sim.totalProfit)}</span>
+                    {(() => {
+                      const r = holdingRecovery(edit);
+                      const grand = r.recovered + sim.net;              // 家賃 ＋ 売却の手残り
+                      const prof = grand - holdingCalc(edit).total;     // 投資した額を引いた最終の利益
+                      return (
+                        <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${C.borderDim}`, lineHeight: 2 }}>
+                          <div style={{ fontSize: 11, color: C.muted, fontWeight: 800 }}>この物件で手にするお金（合計）</div>
+                          これまでの家賃の手取り <b>{man(r.recovered)}</b>{r.hasStart ? `（${monthsText(r.months)}分）` : ""}<br />
+                          ＋ 売った時の手残り <b>{man(sim.net)}</b><br />
+                          <span style={{ fontSize: 16 }}>＝ 合計 <b style={{ color: "#16a34a" }}>{man(grand)}</b></span><br />
+                          <span style={{ color: C.muted, fontSize: 11.5 }}>
+                            投資した {man(holdingCalc(edit).total)} に対して、もうけは
+                            <b style={{ color: prof >= 0 ? "#16a34a" : C.danger }}> {prof >= 0 ? "＋" : "−"}{man(Math.abs(prof))}</b>
+                            {holdingCalc(edit).total > 0 && <>（{(grand / holdingCalc(edit).total).toFixed(2)}倍）</>}
+                          </span>
+                        </div>
+                      );
+                    })()}
                     {!sim.isCorp && !sim.longTerm && sim.monthsToLong != null && (
                       <><br /><span style={{ color: "#f59e0b", fontSize: 11.5 }}>あと {monthsText(sim.monthsToLong)} 待つと長期（20.3%）になり、税金が約 {man(sim.gain * (TAX_SHORT - TAX_LONG))} 減ります</span></>
                     )}
