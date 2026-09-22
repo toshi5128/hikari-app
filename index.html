@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.460-funnel-personal";
+const APP_VERSION = "2026-09-23-v9.461-personal-in-stats";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -16677,6 +16677,9 @@ function JiageFunnelStats({ data, onOpenJiage }) {
   };
   const d = statFor(member);
   const seikyaku = d.baikai + d.shiire + d.reform;
+  // 🆕 v9.461: 本人には「会社の成約＋個人保有」も出す（会社の数字自体は変えない）
+  const _isHolder = canHoldPersonal(getCurrentUser());
+  const seikyakuAll = seikyaku + (_isHolder ? (d.personal || 0) : 0);
   const cost = d.touhon * 140;
   const days = Math.max(d.days, 1);
 
@@ -16837,9 +16840,10 @@ function JiageFunnelStats({ data, onOpenJiage }) {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
           {Kpi("謄本 取得件数", d.touhon + "件", "")}
           {Kpi("謄本 課金総額", yen(cost), "", "#fbbf24")}
-          {Kpi("成約数(媒介＋仕入＋リフォーム請負)", seikyaku + "件", "", "#22c55e")}
-          {Kpi("1成約あたり謄本コスト", seikyaku ? yen(Math.round(cost / seikyaku)) : "—", "")}
-          {Kpi("謄本→成約率", pct(seikyaku, d.touhon) + "%", "")}
+          {Kpi("成約数(媒介＋仕入＋リフォーム請負)", seikyakuAll + "件",
+            _isHolder && d.personal > 0 ? `会社 ${seikyaku}件 ＋ 🔒個人保有 ${d.personal}件` : "", "#22c55e")}
+          {Kpi("1成約あたり謄本コスト", seikyakuAll ? yen(Math.round(cost / seikyakuAll)) : "—", "")}
+          {Kpi("謄本→成約率", pct(seikyakuAll, d.touhon) + "%", "")}
           {Kpi("現在の見込み", d.genmikomi + "件", "（ストック）")}
         </div>
         <div style={{ fontSize: 10, color: C.muted, marginBottom: 14 }}>※ 謄本数＝「<NavIcon name="file" size={12} /> 謄本取得済み」記録 ＋ 既存の所有者判明・DM不要・要修正ピン（謄本を取った分）を×140円で集計。活動系は営業の活動カウンターから集計。期間は謄本記録日／無い場合はピン作成日で判定。</div>
@@ -16847,8 +16851,8 @@ function JiageFunnelStats({ data, onOpenJiage }) {
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 6 }}>④ 担当者別</div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead><tr>{["担当", "新規", "訪問", "面談", "謄本", "見込", "媒介", "仕入", "リフォーム", "謄本課金"].map((h, i) => <th key={h} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.borderDim}` }}>{h}</th>)}</tr></thead>
-            <tbody>{MEMBERS.filter(m => m !== "比嘉・下田").map(m => { const s = statFor(m); return (<tr key={m}>{[m, s.shinki, s.homon, s.mendan, s.touhon, s.mikomi, s.baikai, s.shiire, s.reform, yen(s.touhon * 140)].map((c, i) => <td key={i} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: i === 0 ? C.text : C.muted, fontWeight: i === 0 ? 800 : 400, borderBottom: `1px solid ${C.borderDim}` }}>{c}</td>)}</tr>); })}</tbody>
+            <thead><tr>{["担当", "新規", "訪問", "面談", "謄本", "見込", "媒介", "仕入", "リフォーム"].concat(_isHolder ? ["🔒保有"] : []).concat(["謄本課金"]).map((h, i) => <th key={h} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.borderDim}` }}>{h}</th>)}</tr></thead>
+            <tbody>{MEMBERS.filter(m => m !== "比嘉・下田").map(m => { const s = statFor(m); return (<tr key={m}>{[m, s.shinki, s.homon, s.mendan, s.touhon, s.mikomi, s.baikai, s.shiire, s.reform].concat(_isHolder ? [s.personal || 0] : []).concat([yen(s.touhon * 140)]).map((c, i) => <td key={i} style={{ padding: "6px 5px", textAlign: i === 0 ? "left" : "right", color: i === 0 ? C.text : C.muted, fontWeight: i === 0 ? 800 : 400, borderBottom: `1px solid ${C.borderDim}` }}>{c}</td>)}</tr>); })}</tbody>
           </table>
         </div>
         {/* 🆕 v9.271: ⑤ 天候別の面談率（雨の日は会えるか） */}
