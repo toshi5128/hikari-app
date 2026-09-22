@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.454-yield-fix-age";
+const APP_VERSION = "2026-09-22-v9.455-holdings-goal";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3341,6 +3341,7 @@ const DEFAULT_DATA = {
   baikaiDocs: [], // 🆕 v9.308: 保存した専任媒介契約書（入力内容のスナップショット。全社共有）
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
   holdings: [], // 🆕 v9.445: 保有物件（個人で持っている物件の利回り・状態管理。personalOwner 本人だけに見える）
+  holdingGoal: 500000, // 🆕 v9.455: 家賃の手取りの月額目標（まず50万、いずれ100万・200万）
   hanro: [], // 🆕 v9.352: 買取業者リスト（先行打診の送り先。投資家は反響から自動集約＝v9.367）
   investorMail: [], // 🆕 v9.367: 投資家の打診メール設定（id＝名寄せキー / optOut / lastSentAt）
   offers: [], // 🆕 v9.354: 先行打診の送信履歴（いつ・どの物件を・何件に送ったか）
@@ -33173,6 +33174,48 @@ function HoldingsPage({ data, setData, currentUser }) {
                 🔔 {a.text}
               </div>
             ))}
+          </div>
+        );
+      })()}
+
+      {/* 🆕 v9.455: 月の手取りの目標メーター */}
+      {(() => {
+        const goal = Number(data.holdingGoal) || 500000;
+        const now = Math.round(sum.net / 12);                       // 今の月の手取り合計
+        const pct = goal > 0 ? Math.min(100, now / goal * 100) : 0;
+        // 1件あたりの手取り（実績の平均。まだ無ければ市ノ川型の6.5万で見る）
+        const per = sum.n > 0 ? Math.round(sum.net / 12 / sum.n) : 65000;
+        const need = Math.max(0, Math.ceil((goal - now) / (per || 65000)));
+        const perCost = sum.n > 0 ? Math.round(sum.total / sum.n) : 2360000;
+        const setGoal = (v) => setData(d => ({ ...d, holdingGoal: v }));
+        return (
+          <div style={{ background: C.cardBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontSize: 12, color: C.muted, fontWeight: 800 }}>毎月の手取りの目標</div>
+              <div style={{ display: "flex", gap: 5 }}>
+                {[500000, 1000000, 2000000].map(v => (
+                  <button key={v} onClick={() => setGoal(v)} style={{
+                    padding: "4px 10px", borderRadius: 12, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                    border: `1.5px solid ${C.accent}`,
+                    background: goal === v ? C.accent : "transparent",
+                    color: goal === v ? "#fff" : C.accent,
+                  }}>月{v / 10000}万</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 26, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{yen(now)}</span>
+              <span style={{ fontSize: 13, color: C.muted }}>／ 目標 {yen(goal)}（{Math.round(pct)}%）</span>
+            </div>
+            <div style={{ height: 10, background: C.bg, borderRadius: 5, overflow: "hidden", marginTop: 6 }}>
+              <div style={{ width: `${Math.max(1.5, pct)}%`, height: "100%", background: pct >= 100 ? "#16a34a" : C.accent, borderRadius: 5 }} />
+            </div>
+            <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 1.7 }}>
+              {pct >= 100
+                ? "目標を達成しています。次の目標に上げましょう 🎉"
+                : <>いまのペースだと <b style={{ color: C.text }}>あと{need}件</b>（1件あたり手取り {yen(per)} / 投資 {man(perCost)} で計算）<br />
+                   必要な資金の目安 <b style={{ color: C.text }}>{man(need * perCost)}</b></>}
+            </div>
           </div>
         );
       })()}
