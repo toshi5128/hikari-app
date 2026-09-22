@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-22-v9.457-holdings-cleanup";
+const APP_VERSION = "2026-09-22-v9.458-holdings-readable";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -33129,6 +33129,8 @@ function HoldingsPage({ data, setData, currentUser }) {
   const me = String(currentUser || "").trim();
   const [edit, setEdit] = useState(null);      // 編集中の物件（null=閉じている）
   const [filter, setFilter] = useState("すべて");
+  const [sumOpen, setSumOpen] = useState(false);   // 🆕 v9.458: まとめの「くわしく」
+  const [cardOpen, setCardOpen] = useState({});    // 🆕 v9.458: カードごとの「くわしく」
   const list = React.useMemo(() => (data.holdings || []).filter(h => h && (!h.owner || h.owner === me)), [data.holdings, me]);
   const shown = filter === "すべて" ? list : list.filter(h => h.status === filter);
 
@@ -33257,34 +33259,48 @@ function HoldingsPage({ data, setData, currentUser }) {
         );
       })()}
 
-      {/* まとめ */}
+      {/* まとめ（主役は3つだけ。細かい数字は「くわしく」で開く） */}
       <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 8 }}>保有中 {sum.n}件（売却済は除く）</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
-          {[["投資した総額", man(sum.total)], ["年間の家賃", man(sum.rent)],
-            ["表面利回り（総額）", sum.gross.toFixed(1) + "%"], ["実質利回り", sum.real.toFixed(1) + "%"],
-            [sum.anyLoan ? "年間の手取り（返済前）" : "年間の手取り", man(sum.net)],
-            [sum.anyLoan ? "月々の手残り（返済後）" : "月々の手取り", yen(sum.cash)],
-            ["回収できた額", man(sum.recovered)], ["回収率", sum.recPct.toFixed(0) + "%"],
-            ["これまで稼いだ額", man(sum.earned)],
-            ["今の損益", (sum.profitNow >= 0 ? "＋" : "−") + man(Math.abs(sum.profitNow))]].map(([l, v]) => (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: C.muted, fontWeight: 800 }}>保有中 {sum.n}件</div>
+          <button onClick={() => setSumOpen(o => !o)} style={{ background: "transparent", border: "none", color: C.accent, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+            {sumOpen ? "とじる ▲" : "くわしく ▼"}
+          </button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
+          {[["投資した総額", man(sum.total)], ["実質利回り", sum.real.toFixed(1) + "%"], ["回収率", sum.recPct.toFixed(0) + "%"]].map(([l, v]) => (
             <div key={l} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px" }}>
-              <div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{l}</div>
-              <div style={{ fontSize: 17, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+              <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700 }}>{l}</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{v}</div>
             </div>
           ))}
         </div>
+        {sumOpen && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginTop: 8 }}>
+            {[["年間の家賃", man(sum.rent)], ["表面利回り（総額）", sum.gross.toFixed(1) + "%"],
+              [sum.anyLoan ? "年間の手取り（返済前）" : "年間の手取り", man(sum.net)],
+              ["これまで稼いだ額", man(sum.earned)],
+              ["今の損益（売却済も通算）", (sum.profitNow >= 0 ? "＋" : "−") + man(Math.abs(sum.profitNow))],
+            ].map(([l, v]) => (
+              <div key={l} style={{ background: C.bg, borderRadius: 8, padding: "8px 10px" }}>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700 }}>{l}</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* 状態で絞る */}
+      {/* 状態で絞る（0件のものは出さない） */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
         {["すべて"].concat(HOLDING_STATUSES).map(s => {
           const n = s === "すべて" ? list.length : list.filter(h => h.status === s).length;
+          if (n === 0 && s !== "すべて" && filter !== s) return null;
           const on = filter === s;
           const col = s === "すべて" ? C.borderDim : HOLDING_STATUS_COLORS[s];
           return (
             <button key={s} onClick={() => setFilter(s)} style={{
-              padding: "5px 10px", borderRadius: 14, fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              padding: "6px 12px", borderRadius: 14, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
               border: `1.5px solid ${col}`,
               background: on ? (s === "すべて" ? C.text : col) : "transparent",
               color: on ? (s === "すべて" ? C.bg : "#fff") : (s === "すべて" ? C.text : col),
@@ -33302,73 +33318,86 @@ function HoldingsPage({ data, setData, currentUser }) {
       )}
       {shown.map(h => {
         const c = holdingCalc(h);
+        const r = holdingRecovery(h);
         const col = HOLDING_STATUS_COLORS[h.status] || C.muted;
+        const rented = h.status === "賃貸中";
+        const openDetail = !!cardOpen[h.id];
+        const left = holdingDaysLeft(h);
+        const renewCol = left == null ? C.muted : left < 0 ? "#dc2626" : left <= 30 ? "#ef4444" : left <= 60 ? "#f59e0b" : C.muted;
         return (
-          <div key={h.id} onClick={() => setEdit(normalizeHolding(h))} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`, borderRadius: 10, padding: 12, marginBottom: 8, cursor: "pointer" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-              <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{h.name || h.address || "(名称未設定)"}</div>
-              <span style={{ fontSize: 10.5, fontWeight: 800, color: "#fff", background: col, borderRadius: 10, padding: "2px 8px" }}>{h.status}</span>
+          <div key={h.id} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`, borderRadius: 10, padding: 13, marginBottom: 10 }}>
+            {/* 1段目: 名前と状態 */}
+            <div onClick={() => setEdit(normalizeHolding(h))} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", cursor: "pointer" }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: C.text }}>{h.name || h.address || "(名称未設定)"}</div>
+              <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: col, borderRadius: 10, padding: "3px 9px", flexShrink: 0 }}>{h.status}</span>
             </div>
-            {h.address && h.name && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{h.address}</div>}
-            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 8, fontSize: 12, color: C.text, fontVariantNumeric: "tabular-nums" }}>
-              <span>購入 <b>{man(c.buy)}</b></span>
-              <span>家賃 <b>{hNum(h.rent) ? yen(hNum(h.rent)) + "/月" : "—"}</b></span>
-              <span style={{ color: c.gross >= 15 ? "#16a34a" : C.text }}>表面 <b>{c.gross ? c.gross.toFixed(1) + "%" : "—"}</b></span>
-              <span style={{ color: c.real >= 12 ? "#16a34a" : C.text }}>実質 <b>{c.real ? c.real.toFixed(1) + "%" : "—"}</b></span>
-              {hNum(h.loanMonthly) > 0 && <span>手残り <b>{yen(c.cashMonthly)}/月</b></span>}
-              {h.status === "売却済" && <span>売却益 <b>{man(c.soldProfit)}</b></span>}
-              {(() => {
-                const sim = holdingSale(h);
-                if (!sim) return null;
-                const r = holdingRecovery(h);
-                return <span style={{ color: "#16a34a" }}>売れば合計 <b>{man(r.recovered + sim.net)}</b></span>;
-              })()}
+
+            {/* 2段目: 毎月いくら入るか（主役） */}
+            <div onClick={() => setEdit(normalizeHolding(h))} style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 8, flexWrap: "wrap", cursor: "pointer" }}>
+              <span style={{ fontSize: 24, fontWeight: 800, color: rented ? "#16a34a" : C.muted, fontVariantNumeric: "tabular-nums" }}>
+                {r.monthly > 0 ? yen(r.monthly) : "—"}
+              </span>
+              <span style={{ fontSize: 12, color: C.muted }}>{rented ? "毎月の手取り" : "入居したら毎月これだけ"}</span>
+              {c.real > 0 && (
+                <span style={{ marginLeft: "auto", fontSize: 14, fontWeight: 800, color: c.real >= 12 ? "#16a34a" : C.text }}>
+                  利回り {c.real.toFixed(1)}%
+                </span>
+              )}
             </div>
-            {/* 🆕 v9.446: かかったお金の内訳（入れた分だけ出す） */}
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 5, fontSize: 11, color: C.muted, fontVariantNumeric: "tabular-nums" }}>
-              {hNum(h.reformCost) > 0 && <span>リフォーム {man(hNum(h.reformCost))}</span>}
-              {hNum(h.regFee) > 0 && <span>登記 {man(hNum(h.regFee))}</span>}
-              {hNum(h.brokerFee) > 0 && <span>仲介手数料 {man(hNum(h.brokerFee))}</span>}
-              {c.cost > 0 && <span>諸費用計 {man(c.cost)}</span>}
-              {c.initIncome > 0 && <span style={{ color: "#16a34a" }}>初期費用 +{man(c.initIncome)}</span>}
-              {hNum(h.tax) > 0 && <span>固定資産税 {yen(hNum(h.tax))}/年</span>}
-              {(() => { const ag = holdingAge(h); return ag ? <span>築{ag.years}年</span> : null; })()}
-            </div>
-            {(() => {
-              const r = holdingRecovery(h);
-              if (r.monthly <= 0 && !r.sold) return null;
-              const plus = r.profitNow >= 0;
-              return (
-                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 6, fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
-                  <span style={{ color: C.text }}>これまで稼いだ額 <b>{man(r.recovered)}</b>{r.hasStart ? `（${monthsText(r.months)}）` : ""}</span>
-                  <span style={{ color: plus ? "#16a34a" : "#f59e0b", fontWeight: 700 }}>
-                    今の損益 {plus ? "＋" : "−"}{man(Math.abs(r.profitNow))}
-                  </span>
+
+            {/* 3段目: 回収の進み具合 */}
+            {r.monthly > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.text, marginBottom: 4, fontVariantNumeric: "tabular-nums" }}>
+                  <span>回収 <b>{Math.round(r.pct)}%</b> <span style={{ color: C.muted }}>（{man(r.recovered)} / {man(r.total)}）</span></span>
+                  <span style={{ color: r.done ? "#16a34a" : C.muted }}>{r.done ? "回収ずみ 🎉" : `あと ${monthsText(r.leftMonths)}`}</span>
                 </div>
-              );
-            })()}
-            {(() => {
-              const ex = holdingExit(h);
-              if (!ex || h.status === "売却済") return null;
-              return (
-                <div style={{ fontSize: 11, color: ex.due ? "#f59e0b" : C.muted, marginTop: 5, fontWeight: ex.due ? 800 : 400 }}>
-                  売り時まで あと{monthsText(ex.leftM)}{ex.ageAtExit != null ? `（築${ex.ageAtExit}年のとき）` : ""}
+                <div style={{ height: 9, background: C.bg, borderRadius: 5, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.max(1.5, r.pct)}%`, height: "100%", background: r.done ? "#16a34a" : "#3b82f6", borderRadius: 5 }} />
                 </div>
-              );
-            })()}
-            <HoldingRecoveryBar h={h} />
-            {(h.tenant || h.contractTo) && (() => {
-              const left = holdingDaysLeft(h);
-              const warn = left != null && left <= 60;
-              const col = left == null ? C.muted : left < 0 ? "#dc2626" : left <= 30 ? "#ef4444" : left <= 60 ? "#f59e0b" : C.muted;
-              return (
-                <div style={{ fontSize: 11, color: col, marginTop: 6, fontWeight: warn ? 800 : 400 }}>
-                  {h.tenant ? `入居: ${h.tenant}` : "空室"}
-                  {h.contractTo ? `　更新日 ${h.contractTo}` : ""}
-                  {left != null && (left >= 0 ? `（あと${left}日）` : `（${-left}日超過）`)}
-                </div>
-              );
-            })()}
+              </div>
+            )}
+
+            {/* 4段目: いま気にすべきこと（1行だけ） */}
+            {rented && h.tenant && (
+              <div style={{ fontSize: 12, color: renewCol, marginTop: 8, fontWeight: left != null && left <= 60 ? 800 : 400 }}>
+                入居: {h.tenant}{h.contractTo ? `　更新 ${h.contractTo}` : ""}{left != null && (left >= 0 ? `（あと${left}日）` : `（${-left}日超過）`)}
+              </div>
+            )}
+            {!rented && h.status !== "売却済" && (
+              <div style={{ fontSize: 12, color: "#f59e0b", marginTop: 8, fontWeight: 700 }}>
+                空室中 — 1ヶ月遅れるごとに {yen(hNum(h.rent))} の損
+              </div>
+            )}
+
+            {/* くわしく（たたんである） */}
+            <button onClick={() => setCardOpen(o => ({ ...o, [h.id]: !o[h.id] }))}
+              style={{ marginTop: 9, background: "transparent", border: "none", color: C.accent, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+              {openDetail ? "とじる ▲" : "くわしく ▼"}
+            </button>
+            {openDetail && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.borderDim}`, fontSize: 12.5, color: C.text, lineHeight: 2, fontVariantNumeric: "tabular-nums" }}>
+                <div>購入 <b>{man(c.buy)}</b>　リフォーム <b>{man(c.reform)}</b>　諸費用 <b>{man(c.cost)}</b>
+                  {c.initIncome > 0 && <span style={{ color: "#16a34a" }}>　初期費用 +{man(c.initIncome)}</span>}</div>
+                <div>家賃 <b>{hNum(h.rent) ? yen(hNum(h.rent)) + "/月" : "—"}</b>　表面 <b>{c.gross ? c.gross.toFixed(1) + "%" : "—"}</b>
+                  {hNum(h.tax) > 0 && <>　固定資産税 <b>{yen(hNum(h.tax))}/年</b></>}
+                  {(() => { const ag = holdingAge(h); return ag ? <>　築<b>{ag.years}年</b></> : null; })()}</div>
+                <div>これまで稼いだ額 <b>{man(r.recovered)}</b>{r.hasStart ? `（${monthsText(r.months)}）` : ""}
+                  <span style={{ color: r.profitNow >= 0 ? "#16a34a" : "#f59e0b", fontWeight: 700 }}>今の損益 {r.profitNow >= 0 ? "＋" : "−"}{man(Math.abs(r.profitNow))}</span></div>
+                {(() => {
+                  const sim = holdingSale(h);
+                  const ex = holdingExit(h);
+                  return (
+                    <>
+                      {sim && <div style={{ color: "#16a34a" }}>売れば合計 <b>{man(r.recovered + sim.net)}</b>（手残り {man(sim.net)}）</div>}
+                      {ex && h.status !== "売却済" && <div style={{ color: ex.due ? "#f59e0b" : C.muted }}>売り時まで あと{monthsText(ex.leftM)}{ex.ageAtExit != null ? `（築${ex.ageAtExit}年）` : ""}</div>}
+                    </>
+                  );
+                })()}
+                <button onClick={() => setEdit(normalizeHolding(h))}
+                  style={{ marginTop: 6, padding: "8px 14px", background: C.accent, border: "none", color: "#fff", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>編集する</button>
+              </div>
+            )}
           </div>
         );
       })}
