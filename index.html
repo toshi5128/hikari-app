@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.464-minus-input";
+const APP_VERSION = "2026-09-23-v9.465-month-deal-list";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -33129,22 +33129,52 @@ function IncomePage({ data, setData, currentUser }) {
                   <span style={{ fontSize: 13, fontWeight: 800, color: r.pay > 0 ? C.text : C.muted }}>{r.ym.replace("-", "/")}</span>
                   <span style={{ fontSize: 16, fontWeight: 800, color: r.pay > 0 ? "#16a34a" : C.muted, fontVariantNumeric: "tabular-nums" }}>{r.pay > 0 ? yen(r.pay) : "—"}</span>
                 </div>
-                {r.memo && <div style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>{r.memo}</div>}
-                {r.fromDeals > 0 && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>案件 {r.count}件から {yen(r.fromDeals)}{r.manual > 0 ? `　＋ 手入力 ${yen(r.manual)}` : ""}</div>}
+                {/* 🆕 v9.465: その月の案件を1件ずつ並べる（タップでその案件を開く） */}
+                {r.ds.length > 0 && (
+                  <div style={{ display: "grid", gap: 3, marginTop: 6 }}>
+                    {r.ds.map(d => {
+                      const dc = dealCalc(d);
+                      return (
+                        <button key={d.id} onClick={() => setEdit(normalizeDeal(d))} style={{
+                          display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8,
+                          background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8,
+                          padding: "6px 9px", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                        }}>
+                          <span style={{ fontSize: 12.5, color: C.text, fontWeight: 700 }}>{d.name || "(名称未設定)"}</span>
+                          <span style={{ fontSize: 12.5, color: "#16a34a", fontWeight: 800, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{yen(dc.pay)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* 手入力（まだ案件として入れていない分） */}
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
-                  <span style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, flexShrink: 0 }}>手入力</span>
+                  <span style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, flexShrink: 0 }}>案件外</span>
                   <div style={{ width: 120 }}>
                     <MoneyInput value={(months[r.ym] || {}).pay} onChange={v => setMonth(r.ym, { pay: v })} placeholder="0" />
                   </div>
-                  <input type="text" value={(months[r.ym] || {}).memo || ""} placeholder="物件名メモ"
+                  <input type="text" value={(months[r.ym] || {}).memo || ""} placeholder="メモ（案件を入れたら空でOK）"
                     onChange={e => setMonth(r.ym, { memo: e.target.value })}
                     style={{ flex: 1, minWidth: 0, padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit" }} />
                 </div>
+                {/* 🆕 v9.465: 案件と手入力が両方ある月は二重計上の可能性を知らせる */}
+                {r.ds.length > 0 && r.manual > 0 && (
+                  <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "7px 9px", marginTop: 6, fontSize: 11.5, color: C.text, lineHeight: 1.7 }}>
+                    ⚠️ 案件 {r.count}件（{yen(r.fromDeals)}）と「案件外」{yen(r.manual)} の<b>両方</b>を足しています。同じ案件なら二重です。
+                    <div style={{ display: "flex", gap: 6, marginTop: 5, flexWrap: "wrap" }}>
+                      <button onClick={() => setMonth(r.ym, { pay: String(Math.max(0, r.manual - r.fromDeals)) })}
+                        style={{ padding: "4px 10px", borderRadius: 10, border: "1px solid #f59e0b", background: "transparent", color: "#f59e0b", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>案件の分を引く</button>
+                      <button onClick={() => setMonth(r.ym, { pay: "" })}
+                        style={{ padding: "4px 10px", borderRadius: 10, border: "1px solid #f59e0b", background: "transparent", color: "#f59e0b", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>案件外を0にする</button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 10, lineHeight: 1.8 }}>
-            ※ 月の金額＝「決済済にした案件の歩合」＋「手入力」。過去の実績は手入力に入れてあります。案件を登録して決済月を入れると、自動で足されます。
+            ※ 月の金額＝「決済済にした案件の歩合」＋「案件外」。過去の実績（2023/6〜2026/9）はスプレッドシートから「案件外」に入れてあります。
+            案件を1件ずつ登録して決済日を入れると、その月にタイトルと金額が並びます。<b>同じ分を案件として入れたら、「案件外」からは引いてください</b>（⚠️が出ます）。
           </div>
         </>
       )}
