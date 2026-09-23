@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.469-kind-words";
+const APP_VERSION = "2026-09-23-v9.470-plan-month";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -33056,23 +33056,30 @@ function IncomePage({ data, setData, currentUser }) {
   const termData = React.useMemo(() => {
     const ms = termMonths(term);
     const rows = ms.map(ym => {
+      // 確定＝完了ステータス＆決済日がその月
       const ds = deals.filter(d => isDealDone(d) && String(d.settleDate || "").slice(0, 7) === ym);
+      // 🆕 v9.470: 予定＝まだ完了していないが、予定月がその月（または決済日だけ先に入っている）
+      const plan = deals.filter(d => !isDealDone(d) &&
+        (String(d.planMonth || "").slice(0, 7) === ym ||
+         (!d.planMonth && String(d.settleDate || "").slice(0, 7) === ym)));
       const fromDeals = ds.reduce((a, d) => a + dealCalc(d).pay, 0);
+      const planPay = plan.reduce((a, d) => a + dealCalc(d).pay, 0);
       const manual = hNum((months[ym] || {}).pay);
       const memo = (months[ym] || {}).memo || ds.map(d => d.name).filter(Boolean).join("、");
-      return { ym, fromDeals, manual, pay: fromDeals + manual, count: ds.length, memo, ds };
+      return { ym, fromDeals, planPay, manual, pay: fromDeals + manual, count: ds.length, memo, ds, plan };
     });
     const total = rows.reduce((a, r) => a + r.pay, 0);
+    const planTotal = rows.reduce((a, r) => a + r.planPay, 0);
     const done = rows.filter(r => r.pay > 0).length;
     // 🆕 v9.467: 期の内訳（種別・担当者ごとの件数と金額）
-    const allDs = rows.flatMap(r => r.ds);
+    const allDs = rows.flatMap(r => r.ds.concat(r.plan));
     const byKind = {}; const byMember = {};
     allDs.forEach(d => {
       const k = d.kind || "仕入", m = d.member || "下田", pay = dealCalc(d).pay;
       byKind[k] = byKind[k] || { n: 0, pay: 0 }; byKind[k].n++; byKind[k].pay += pay;
       byMember[m] = byMember[m] || { n: 0, pay: 0 }; byMember[m].n++; byMember[m].pay += pay;
     });
-    return { rows, total, done, avg: done ? Math.round(total / done) : 0, byKind, byMember, dealCount: allDs.length };
+    return { rows, total, planTotal, done, avg: done ? Math.round(total / done) : 0, byKind, byMember, dealCount: allDs.length };
   }, [deals, months, term]);
 
   const prevTotal = React.useMemo(() => {
@@ -33108,7 +33115,7 @@ function IncomePage({ data, setData, currentUser }) {
   const blankDeal = () => ({
     id: Date.now(), owner: me, name: "", address: "", status: "検討中",
     kind: "仕入", member: me || "下田",
-    buyPrice: "", sellPrice: "", rate: 0.6, settleDate: "", memo: "",
+    buyPrice: "", sellPrice: "", rate: 0.6, settleDate: "", planMonth: "", memo: "",
     costs: DEAL_COST_LABELS.map(l => ({ label: l, amount: "" })),
   });
   const normalizeDeal = (d) => {
@@ -33154,13 +33161,20 @@ function IncomePage({ data, setData, currentUser }) {
               <button onClick={() => setTerm(t => t + 1)} style={{ background: "transparent", border: `1px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>▶</button>
             </div>
             <div style={{ fontSize: 30, fontWeight: 800, color: C.text, marginTop: 8, fontVariantNumeric: "tabular-nums" }}>{yen(termData.total)}</div>
+            {/* 🆕 v9.470: 予定（まだ決済していない案件）を足した見込み */}
+            {termData.planTotal > 0 && (
+              <div style={{ fontSize: 13, color: "#f59e0b", fontWeight: 700, marginTop: 2 }}>
+                ＋ 予定 {yen(termData.planTotal)} → 見込み <b style={{ fontSize: 17 }}>{yen(termData.total + termData.planTotal)}</b>
+              </div>
+            )}
             <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
               入金のあった月 {termData.done}ヶ月／平均 {yen(termData.avg)}
-              {prevTotal > 0 && <>　前期 {man(prevTotal)}（{Math.round(termData.total / prevTotal * 100)}%）</>}
+              {prevTotal > 0 && <>　前期 {man(prevTotal)}（確定 {Math.round(termData.total / prevTotal * 100)}%{termData.planTotal > 0 ? ` ／ 見込み ${Math.round((termData.total + termData.planTotal) / prevTotal * 100)}%` : ""}）</>}
             </div>
             {prevTotal > 0 && (
-              <div style={{ height: 9, background: C.bg, borderRadius: 5, overflow: "hidden", marginTop: 8 }}>
-                <div style={{ width: `${Math.min(100, termData.total / prevTotal * 100)}%`, height: "100%", background: termData.total >= prevTotal ? "#16a34a" : C.accent, borderRadius: 5 }} />
+              <div style={{ display: "flex", height: 9, background: C.bg, borderRadius: 5, overflow: "hidden", marginTop: 8 }}>
+                <div style={{ width: `${Math.min(100, termData.total / prevTotal * 100)}%`, height: "100%", background: termData.total >= prevTotal ? "#16a34a" : C.accent }} />
+                <div style={{ width: `${Math.max(0, Math.min(100 - termData.total / prevTotal * 100, termData.planTotal / prevTotal * 100))}%`, height: "100%", background: "#f59e0b66" }} />
               </div>
             )}
             {/* 🆕 v9.467: 期の内訳（種別・担当者） */}
@@ -33201,12 +33215,15 @@ function IncomePage({ data, setData, currentUser }) {
               <div key={r.ym} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
                   <span style={{ fontSize: 13, fontWeight: 800, color: r.pay > 0 ? C.text : C.muted }}>{r.ym.replace("-", "/")}</span>
-                  <span style={{ fontSize: 16, fontWeight: 800, color: r.pay > 0 ? "#16a34a" : C.muted, fontVariantNumeric: "tabular-nums" }}>{r.pay > 0 ? yen(r.pay) : "—"}</span>
+                  <span style={{ fontSize: 16, fontWeight: 800, color: r.pay > 0 ? "#16a34a" : C.muted, fontVariantNumeric: "tabular-nums" }}>
+                    {r.pay > 0 ? yen(r.pay) : "—"}
+                    {r.planPay > 0 && <span style={{ fontSize: 12.5, color: "#f59e0b", marginLeft: 6 }}>＋予定 {yen(r.planPay)}</span>}
+                  </span>
                 </div>
                 {/* 🆕 v9.467: その月の種別ごとの件数 */}
-                {r.ds.length > 0 && (() => {
+                {(r.ds.length > 0 || r.plan.length > 0) && (() => {
                   const kc = {};
-                  r.ds.forEach(d => { const k = d.kind || "仕入"; kc[k] = (kc[k] || 0) + 1; });
+                  r.ds.concat(r.plan).forEach(d => { const k = d.kind || "仕入"; kc[k] = (kc[k] || 0) + 1; });
                   return (
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
                       {DEAL_KINDS.filter(k => kc[k]).map(k => (
@@ -33216,21 +33233,22 @@ function IncomePage({ data, setData, currentUser }) {
                   );
                 })()}
                 {/* 🆕 v9.465: その月の案件を1件ずつ並べる（タップでその案件を開く） */}
-                {r.ds.length > 0 && (
+                {(r.ds.length > 0 || r.plan.length > 0) && (
                   <div style={{ display: "grid", gap: 3, marginTop: 6 }}>
-                    {r.ds.map(d => {
+                    {r.ds.concat(r.plan).map(d => {
                       const dc = dealCalc(d);
                       return (
                         <button key={d.id} onClick={() => setEdit(normalizeDeal(d))} style={{
                           display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8,
-                          background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8,
+                          background: C.bg, border: `1px solid ${isDealDone(d) ? C.borderDim : "#f59e0b"}`, borderRadius: 8,
                           padding: "6px 9px", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
                         }}>
                           <span style={{ fontSize: 12.5, color: C.text, fontWeight: 700 }}>
+                            {!isDealDone(d) && <span style={{ color: "#f59e0b", marginRight: 4 }}>予定</span>}
                             {d.name || "(名称未設定)"}
-                            <span style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginLeft: 6 }}>{d.kind || "仕入"}・{d.member || "下田"}</span>
+                            <span style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginLeft: 6 }}>{d.kind || "仕入"}・{d.member || "下田"}・{d.status}</span>
                           </span>
-                          <span style={{ fontSize: 12.5, color: "#16a34a", fontWeight: 800, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{yen(dc.pay)}</span>
+                          <span style={{ fontSize: 12.5, color: isDealDone(d) ? "#16a34a" : "#f59e0b", fontWeight: 800, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{yen(dc.pay)}</span>
                         </button>
                       );
                     })}
@@ -33311,7 +33329,8 @@ function IncomePage({ data, setData, currentUser }) {
                 </div>
                 <div style={{ fontSize: 12, color: C.muted, marginTop: 6, fontVariantNumeric: "tabular-nums" }}>
                   {d.member || "下田"}　{dealWords(d.kind).cost} {man(c.buy)}{c.costSum ? ` ＋諸費用 ${man(c.costSum)}` : ""} → {dealWords(d.kind).sale} {man(c.sell)}
-                  {d.settleDate && <>　決済 {d.settleDate}</>}
+                  {d.settleDate && <>　{isDealDone(d) ? "決済" : "予定日"} {d.settleDate}</>}
+                  {!isDealDone(d) && d.planMonth && <span style={{ color: "#f59e0b" }}>　予定 {String(d.planMonth).replace("-", "/")}</span>}
                 </div>
               </div>
             );
@@ -33429,10 +33448,25 @@ function IncomePage({ data, setData, currentUser }) {
                 {dealWords(edit.kind).sale} {man(c.sell)} − {dealWords(edit.kind).costLabel} {man(c.genka)} ＝ {dealWords(edit.kind).profitLabel} <b style={{ fontSize: 16, color: c.profit >= 0 ? "#16a34a" : C.danger }}>{man(c.profit)}</b><br />
                 <span style={{ fontSize: 16 }}>歩合 {Math.round(c.rate * 100)}% → <b style={{ color: "#16a34a" }}>{yen(c.pay)}</b></span>
               </div>
-              <div>
-                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{(edit.kind === "リフォーム" ? "入金日" : "決済日")}（入れると、その月の成績に入ります）</div>
-                <input type="date" value={edit.settleDate || ""} onChange={e => set("settleDate", e.target.value)}
-                  style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+              {/* 🆕 v9.470: 予定月（日にちが決まっていなくても、期の見込みに入る） */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 10.5, color: "#f59e0b", fontWeight: 700, marginBottom: 3 }}>予定月（見込み）</div>
+                  <input type="month" value={edit.planMonth || ""} onChange={e => set("planMonth", e.target.value)}
+                    style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid #f59e0b`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>日にち未定でもOK</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{(edit.kind === "リフォーム" ? "入金日" : "決済日")}（確定）</div>
+                  <input type="date" value={edit.settleDate || ""} onChange={e => set("settleDate", e.target.value)}
+                    style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{edit.kind === "リフォーム" ? "入金済" : "決済済"}にすると確定</div>
+                </div>
+              </div>
+              <div style={{ background: C.bg, borderRadius: 8, padding: "8px 10px", fontSize: 11.5, color: C.muted, lineHeight: 1.7 }}>
+                {isDealDone(edit)
+                  ? <span style={{ color: "#16a34a", fontWeight: 700 }}>確定として、{String(edit.settleDate || "").slice(0, 7).replace("-", "/") || "決済日の月"} の成績に入ります</span>
+                  : <span style={{ color: "#f59e0b", fontWeight: 700 }}>予定として、{String(edit.planMonth || edit.settleDate || "").slice(0, 7).replace("-", "/") || "（予定月を入れてください）"} の見込みに入ります</span>}
               </div>
               <div>
                 <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>メモ</div>
