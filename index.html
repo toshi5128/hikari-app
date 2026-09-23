@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.468-simplify-month";
+const APP_VERSION = "2026-09-23-v9.469-kind-words";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -32984,6 +32984,36 @@ const DEAL_RATES = [0.2, 0.4, 0.5, 0.6];
 const DEAL_KINDS = ["仕入", "リフォーム", "中間省略", "仲介"];
 const DEAL_KIND_COLORS = { "仕入": "#f59e0b", "リフォーム": "#4f46e5", "中間省略": "#0ea5e9", "仲介": "#a855f7" };
 const DEAL_MEMBERS = ["下田", "谷津", "松村", "その他"];
+// 🆕 v9.469: 種別ごとに金額の呼び名と進み具合を変える。
+//   仕入/中間省略 … 仕入額・売却額
+//   リフォーム    … 工事にかかる費用・お客様からの請負額
+//   仲介          … （原価なし）もらう手数料
+const DEAL_WORDS = {
+  "仕入":     { cost: "仕入額",         sale: "売却額",             costHint: "買った金額", saleHint: "売った金額",
+                statuses: ["検討中", "交渉中", "仕入済", "売出中", "決済済"],
+                costLabel: "仕入原価", profitLabel: "利益" },
+  "中間省略": { cost: "仕入額",         sale: "売却額",             costHint: "売主からの買値", saleHint: "買主への売値",
+                statuses: ["検討中", "交渉中", "契約済", "決済済"],
+                costLabel: "仕入原価", profitLabel: "利益" },
+  "リフォーム": { cost: "工事にかかる費用", sale: "お客様からの請負額", costHint: "職人・材料など", saleHint: "見積・契約の金額",
+                statuses: ["見積中", "受注", "着工", "完工", "入金済"],
+                costLabel: "工事の原価", profitLabel: "粗利" },
+  "仲介":     { cost: "かかった費用",   sale: "もらう仲介手数料",   costHint: "広告費など（無ければ0）", saleHint: "手数料の金額",
+                statuses: ["媒介前", "媒介中", "契約済", "決済済"],
+                costLabel: "かかった費用", profitLabel: "手数料の残り" },
+};
+const dealWords = (k) => DEAL_WORDS[k || "仕入"] || DEAL_WORDS["仕入"];
+// 完了（お金が入った）とみなすステータス
+const DEAL_DONE = ["決済済", "入金済"];
+const isDealDone = (d) => DEAL_DONE.includes(d && d.status);
+// 進み具合の色（種別をまたいで使う）
+const DEAL_STATUS_COLOR2 = {
+  "検討中": "#64748b", "見積中": "#64748b", "媒介前": "#64748b",
+  "交渉中": "#f59e0b", "受注": "#f59e0b", "媒介中": "#f59e0b",
+  "仕入済": "#3b82f6", "着工": "#3b82f6", "契約済": "#3b82f6",
+  "売出中": "#a855f7", "完工": "#a855f7",
+  "決済済": "#16a34a", "入金済": "#16a34a",
+};
 function dealCalc(d) {
   const buy = hNum(d.buyPrice), sell = hNum(d.sellPrice);
   const costs = Array.isArray(d.costs) ? d.costs : [];
@@ -33026,7 +33056,7 @@ function IncomePage({ data, setData, currentUser }) {
   const termData = React.useMemo(() => {
     const ms = termMonths(term);
     const rows = ms.map(ym => {
-      const ds = deals.filter(d => d.status === "決済済" && String(d.settleDate || "").slice(0, 7) === ym);
+      const ds = deals.filter(d => isDealDone(d) && String(d.settleDate || "").slice(0, 7) === ym);
       const fromDeals = ds.reduce((a, d) => a + dealCalc(d).pay, 0);
       const manual = hNum((months[ym] || {}).pay);
       const memo = (months[ym] || {}).memo || ds.map(d => d.name).filter(Boolean).join("、");
@@ -33048,7 +33078,7 @@ function IncomePage({ data, setData, currentUser }) {
   const prevTotal = React.useMemo(() => {
     const ms = termMonths(term - 1);
     return ms.reduce((a, ym) => {
-      const fromDeals = deals.filter(d => d.status === "決済済" && String(d.settleDate || "").slice(0, 7) === ym)
+      const fromDeals = deals.filter(d => isDealDone(d) && String(d.settleDate || "").slice(0, 7) === ym)
         .reduce((x, d) => x + dealCalc(d).pay, 0);
       return a + fromDeals + hNum((months[ym] || {}).pay);
     }, 0);
@@ -33264,7 +33294,7 @@ function IncomePage({ data, setData, currentUser }) {
           )}
           {deals.slice().sort((a, b) => String(b.settleDate || "").localeCompare(String(a.settleDate || ""))).map(d => {
             const c = dealCalc(d);
-            const col = DEAL_STATUS_COLORS[d.status] || C.muted;
+            const col = DEAL_STATUS_COLOR2[d.status] || DEAL_STATUS_COLORS[d.status] || C.muted;
             return (
               <div key={d.id} onClick={() => setEdit(normalizeDeal(d))} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`, borderRadius: 10, padding: 13, marginBottom: 10, cursor: "pointer" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
@@ -33280,7 +33310,7 @@ function IncomePage({ data, setData, currentUser }) {
                   <span style={{ marginLeft: "auto", fontSize: 13, color: C.text }}>利益 <b>{man(c.profit)}</b></span>
                 </div>
                 <div style={{ fontSize: 12, color: C.muted, marginTop: 6, fontVariantNumeric: "tabular-nums" }}>
-                  {d.member || "下田"}　仕入 {man(c.buy)} ＋諸費用 {man(c.costSum)} → 売却 {man(c.sell)}
+                  {d.member || "下田"}　{dealWords(d.kind).cost} {man(c.buy)}{c.costSum ? ` ＋諸費用 ${man(c.costSum)}` : ""} → {dealWords(d.kind).sale} {man(c.sell)}
                   {d.settleDate && <>　決済 {d.settleDate}</>}
                 </div>
               </div>
@@ -33313,21 +33343,27 @@ function IncomePage({ data, setData, currentUser }) {
               <div>
                 <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 4 }}>進み具合</div>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                  {DEAL_STATUSES.map(st => (
-                    <button key={st} onClick={() => set("status", st)} style={{
-                      padding: "6px 11px", borderRadius: 14, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                      border: `1.5px solid ${DEAL_STATUS_COLORS[st]}`,
-                      background: edit.status === st ? DEAL_STATUS_COLORS[st] : "transparent",
-                      color: edit.status === st ? "#fff" : DEAL_STATUS_COLORS[st],
-                    }}>{st}</button>
-                  ))}
+                  {dealWords(edit.kind).statuses.map(st => {
+                    const sc = DEAL_STATUS_COLOR2[st] || C.muted;
+                    return (
+                      <button key={st} onClick={() => set("status", st)} style={{
+                        padding: "6px 11px", borderRadius: 14, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                        border: `1.5px solid ${sc}`,
+                        background: edit.status === st ? sc : "transparent",
+                        color: edit.status === st ? "#fff" : sc,
+                      }}>{st}</button>
+                    );
+                  })}
                 </div>
               </div>
               <div>
                 <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 4 }}>種別</div>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                   {DEAL_KINDS.map(k => (
-                    <button key={k} onClick={() => set("kind", k)} style={{
+                    <button key={k} onClick={() => setEdit(e => {
+                      const ws = dealWords(k);
+                      return { ...e, kind: k, status: ws.statuses.includes(e.status) ? e.status : ws.statuses[0] };
+                    })} style={{
                       padding: "6px 12px", borderRadius: 14, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                       border: `1.5px solid ${DEAL_KIND_COLORS[k]}`,
                       background: (edit.kind || "仕入") === k ? DEAL_KIND_COLORS[k] : "transparent",
@@ -33351,15 +33387,17 @@ function IncomePage({ data, setData, currentUser }) {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <div>
-                  <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>仕入額</div>
+                  <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{dealWords(edit.kind).cost}</div>
                   <MoneyInput value={edit.buyPrice} onChange={v => set("buyPrice", v)} placeholder="0" />
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{dealWords(edit.kind).costHint}</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>売却額</div>
+                  <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{dealWords(edit.kind).sale}</div>
                   <MoneyInput value={edit.sellPrice} onChange={v => set("sellPrice", v)} placeholder="0" />
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{dealWords(edit.kind).saleHint}</div>
                 </div>
               </div>
-              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 諸費用（項目名は書き換えできます）</div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ {edit.kind === "リフォーム" ? "その他の費用" : "諸費用"}（項目名は書き換えできます）</div>
               <div style={{ display: "grid", gap: 6 }}>
                 {(edit.costs || []).map((cc, i) => (
                   <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -33387,12 +33425,12 @@ function IncomePage({ data, setData, currentUser }) {
                 </div>
               </div>
               <div style={{ background: C.bg, borderRadius: 8, padding: 12, fontSize: 13, color: C.text, lineHeight: 2 }}>
-                仕入原価 <b>{man(c.genka)}</b>（仕入 {man(c.buy)} ＋ 諸費用 {man(c.costSum)}）<br />
-                売却 {man(c.sell)} − 原価 {man(c.genka)} ＝ 利益 <b style={{ fontSize: 16, color: c.profit >= 0 ? "#16a34a" : C.danger }}>{man(c.profit)}</b><br />
+                {dealWords(edit.kind).costLabel} <b>{man(c.genka)}</b>（{dealWords(edit.kind).cost} {man(c.buy)} ＋ 諸費用 {man(c.costSum)}）<br />
+                {dealWords(edit.kind).sale} {man(c.sell)} − {dealWords(edit.kind).costLabel} {man(c.genka)} ＝ {dealWords(edit.kind).profitLabel} <b style={{ fontSize: 16, color: c.profit >= 0 ? "#16a34a" : C.danger }}>{man(c.profit)}</b><br />
                 <span style={{ fontSize: 16 }}>歩合 {Math.round(c.rate * 100)}% → <b style={{ color: "#16a34a" }}>{yen(c.pay)}</b></span>
               </div>
               <div>
-                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>決済日（入れると、その月の成績に入ります）</div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{(edit.kind === "リフォーム" ? "入金日" : "決済日")}（入れると、その月の成績に入ります）</div>
                 <input type="date" value={edit.settleDate || ""} onChange={e => set("settleDate", e.target.value)}
                   style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
               </div>
