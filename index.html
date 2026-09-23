@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.471-done-without-date";
+const APP_VERSION = "2026-09-23-v9.472-done-dim";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -33141,7 +33141,7 @@ function IncomePage({ data, setData, currentUser }) {
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        {[["term", "期の成績"], ["deals", `案件 ${deals.length}`]].map(([k, l]) => (
+        {[["term", "期の成績"], ["deals", `案件 ${deals.filter(d => !isDealDone(d)).length}／${deals.length}`]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} style={{
             flex: 1, padding: "9px 10px", borderRadius: 10, fontSize: 13.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
             border: `1.5px solid ${tab === k ? C.accent : C.borderDim}`,
@@ -33311,11 +33311,20 @@ function IncomePage({ data, setData, currentUser }) {
               まだ案件がありません。「＋ 案件を追加」から登録してください。
             </div>
           )}
-          {deals.slice().sort((a, b) => String(b.settleDate || "").localeCompare(String(a.settleDate || ""))).map(d => {
+          {deals.slice().sort((a, b) => {
+            // 🆕 v9.472: 進行中を上、終わったものを下。同じ区分の中は新しい順
+            const da = isDealDone(a) ? 1 : 0, db = isDealDone(b) ? 1 : 0;
+            if (da !== db) return da - db;
+            return String(b.settleDate || b.planMonth || "").localeCompare(String(a.settleDate || a.planMonth || ""));
+          }).map(d => {
             const c = dealCalc(d);
             const col = DEAL_STATUS_COLOR2[d.status] || DEAL_STATUS_COLORS[d.status] || C.muted;
             return (
-              <div key={d.id} onClick={() => setEdit(normalizeDeal(d))} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`, borderRadius: 10, padding: 13, marginBottom: 10, cursor: "pointer" }}>
+              <div key={d.id} onClick={() => setEdit(normalizeDeal(d))} style={{
+                background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`,
+                borderRadius: 10, padding: 13, marginBottom: 10, cursor: "pointer",
+                opacity: isDealDone(d) ? 0.55 : 1,   // 🆕 v9.472: 終わった案件は薄く
+              }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
                   <div style={{ fontSize: 16, fontWeight: 800, color: C.text }}>{d.name || d.address || "(名称未設定)"}</div>
                   <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
@@ -33324,7 +33333,7 @@ function IncomePage({ data, setData, currentUser }) {
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 22, fontWeight: 800, color: c.pay >= 0 ? "#16a34a" : C.danger, fontVariantNumeric: "tabular-nums" }}>{yen(c.pay)}</span>
+                  <span style={{ fontSize: 22, fontWeight: 800, color: c.pay < 0 ? C.danger : isDealDone(d) ? C.muted : "#16a34a", fontVariantNumeric: "tabular-nums" }}>{yen(c.pay)}</span>
                   <span style={{ fontSize: 12, color: C.muted }}>歩合 {Math.round(c.rate * 100)}%</span>
                   <span style={{ marginLeft: "auto", fontSize: 13, color: C.text }}>利益 <b>{man(c.profit)}</b></span>
                 </div>
