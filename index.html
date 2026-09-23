@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.461-personal-in-stats";
+const APP_VERSION = "2026-09-23-v9.462-saitama-filter";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3362,6 +3362,14 @@ const DEFAULT_DATA = {
 };
 
 // ============== 現在のユーザー識別 ==============
+// 🆕 v9.462: 所有者が埼玉県内に住んでいるか（＝車で会いに行ける先）。
+//   登記の住所は県内なら県名を省くことが多いので、「都道府県が書いていない＝埼玉」とみなす。
+function isOwnerInSaitama(j) {
+  const a = String((j && (j.ownerAddr || j.ownerAddress)) || "").trim();
+  if (!a) return false;
+  const m = a.match(/^(北海道|東京都|京都府|大阪府|..県)/);
+  return !m || m[1] === "埼玉県";
+}
 // 🆕 v9.459: 日本の祝日。ハッピーマンデー・春分秋分・振替休日・国民の休日（シルバーウィーク）まで計算で出す。
 //   ・春分/秋分は 1980〜2099年で使える近似式（国立天文台の官報と一致）
 //   ・国民の休日＝前後が祝日に挟まれた平日（2026/9/22 のように敬老の日と秋分の日の間の火曜）
@@ -22258,6 +22266,16 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     if (quickFilter === "banned") {
       if (item.status !== "訪問禁止") return false;
     }
+    // 🆕 v9.462: 所有者が埼玉県内＝訪問できる先だけ／県外＝DMで攻める先だけ
+    if (quickFilter === "in_saitama") {
+      const raw = item.raw || {};
+      if (raw.excluded === true || !isOwnerInSaitama(raw)) return false;
+    }
+    if (quickFilter === "out_saitama") {
+      const raw = item.raw || {};
+      const oa = String(raw.ownerAddr || "").trim();
+      if (raw.excluded === true || !oa || isOwnerInSaitama(raw)) return false;
+    }
     if (quickFilter === "hot") {
       if (!(item.status === "見込" || item.status === "興味あり")) return false;
     }
@@ -26701,6 +26719,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   { key: "lookup_failed",  label: "🔧 要修正",   color: "#dc2626", count: pendingPinSummary.lookupFailedTotal },
                                   { key: "give_up",        label: "🛑 取れない",  color: "#64748b", count: pendingPinSummary.giveUpTotal },
                                   { key: "dm_ready",       label: "🚪 訪問OK",   color: "#16a34a", count: pendingPinSummary.dmReadyTotal },
+                                  // 🆕 v9.462: 県内＝会いに行ける先 / 県外＝DMで攻める先
+                                  { key: "in_saitama",     label: "🚗 県内（訪問可）", color: "#0ea5e9", count: _pool.filter(j => j.excluded !== true && isOwnerInSaitama(j)).length },
+                                  { key: "out_saitama",    label: "✉️ 県外（DM）", color: "#94a3b8", count: _pool.filter(j => j.excluded !== true && String(j.ownerAddr || "").trim() && !isOwnerInSaitama(j)).length },
                                   { key: "addr_ng",        label: "🏠 住所要確認", color: "#a855f7", count: pendingPinSummary.addrNgTotal },
                                   { key: "addr_ok",        label: "✅ 場所確認済", color: "#16a34a", count: pendingPinSummary.addrOkTotal },
                                   { key: "result_absent",  label: "🚪 不在",     color: "#92400e", count: _resultCount("absent") },
