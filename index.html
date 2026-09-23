@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.465-month-deal-list";
+const APP_VERSION = "2026-09-23-v9.466-hide-empty-manual";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -33011,6 +33011,7 @@ function IncomePage({ data, setData, currentUser }) {
   const [tab, setTab] = useState("term");            // "term" = 期の成績 / "deals" = 案件
   const nowYM = new Date().toISOString().slice(0, 7);
   const [term, setTerm] = useState(termOf(nowYM) || 3);
+  const [monthOpen, setMonthOpen] = useState({});     // 🆕 v9.466: 「案件外」を開いた月
   const deals = React.useMemo(() => (data.deals || []).filter(d => d && (!d.owner || d.owner === me)), [data.deals, me]);
   const months = React.useMemo(() => data.incomeMonths || {}, [data.incomeMonths]);
 
@@ -33147,16 +33148,36 @@ function IncomePage({ data, setData, currentUser }) {
                     })}
                   </div>
                 )}
-                {/* 手入力（まだ案件として入れていない分） */}
-                <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
-                  <span style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, flexShrink: 0 }}>案件外</span>
-                  <div style={{ width: 120 }}>
-                    <MoneyInput value={(months[r.ym] || {}).pay} onChange={v => setMonth(r.ym, { pay: v })} placeholder="0" />
-                  </div>
-                  <input type="text" value={(months[r.ym] || {}).memo || ""} placeholder="メモ（案件を入れたら空でOK）"
-                    onChange={e => setMonth(r.ym, { memo: e.target.value })}
-                    style={{ flex: 1, minWidth: 0, padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit" }} />
-                </div>
+                {/* 🆕 v9.466: 「案件外」は中身がある時だけ出す。空の月は小さなリンクだけ */}
+                {(() => {
+                  const mm = months[r.ym] || {};
+                  const hasAny = r.manual > 0 || String(mm.memo || "").trim() !== "";
+                  const opened = !!monthOpen[r.ym];
+                  if (!hasAny && !opened) {
+                    return (
+                      <button onClick={() => setMonthOpen(o => ({ ...o, [r.ym]: true }))}
+                        style={{ marginTop: 6, background: "transparent", border: "none", color: C.muted, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+                        ＋ 案件外の入金・メモを足す
+                      </button>
+                    );
+                  }
+                  return (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+                      <span style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, flexShrink: 0 }}>案件外</span>
+                      <div style={{ width: 110 }}>
+                        <MoneyInput value={mm.pay} onChange={v => setMonth(r.ym, { pay: v })} placeholder="0" />
+                      </div>
+                      <input type="text" value={mm.memo || ""} placeholder="メモ（入れ終わったら消してOK）"
+                        onChange={e => setMonth(r.ym, { memo: e.target.value })}
+                        style={{ flex: 1, minWidth: 0, padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit" }} />
+                      {hasAny && (
+                        <button onClick={() => { setMonth(r.ym, { pay: "", memo: "" }); setMonthOpen(o => ({ ...o, [r.ym]: false })); }}
+                          title="案件外の入金とメモを消す"
+                          style={{ flexShrink: 0, background: "transparent", border: "none", color: C.muted, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>×</button>
+                      )}
+                    </div>
+                  );
+                })()}
                 {/* 🆕 v9.465: 案件と手入力が両方ある月は二重計上の可能性を知らせる */}
                 {r.ds.length > 0 && r.manual > 0 && (
                   <div style={{ background: "#f59e0b22", border: "1px solid #f59e0b", borderRadius: 8, padding: "7px 9px", marginTop: 6, fontSize: 11.5, color: C.text, lineHeight: 1.7 }}>
