@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.463-income-tab";
+const APP_VERSION = "2026-09-23-v9.464-minus-input";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6928,29 +6928,48 @@ const btnStyle = (variant = "primary") => ({
 
 // ===================== SHARED COMPONENTS =====================
 // カンマ区切り数字入力（スピナーなし・手入力対応）
-function MoneyInput({ value, onChange, placeholder, style: extraStyle }) {
+function MoneyInput({ value, onChange, placeholder, style: extraStyle, allowMinus }) {
   const [focused, setFocused] = useState(false);
   const num = parseFloat(String(value || "").replace(/,/g, ""));
   const display = focused || isNaN(num) || value === ""
     ? String(value || "")
     : num.toLocaleString("ja-JP");
 
+  // 🆕 v9.464: マイナスを入れられるように（戻り金・値引きなど）。
+  //   先頭の「-」だけ許可。スマホの数字キーボードには「-」が無いので ± ボタンも出す。
   const handleChange = e => {
-    const raw = e.target.value.replace(/[^0-9.]/g, "");
-    onChange(raw);
+    let raw = e.target.value.replace(/[^0-9.\-]/g, "");
+    const neg = raw.startsWith("-");
+    raw = raw.replace(/-/g, "");
+    onChange((neg ? "-" : "") + raw);
+  };
+  const flipSign = () => {
+    const cur = String(value == null ? "" : value);
+    onChange(cur.startsWith("-") ? cur.slice(1) : (cur ? "-" + cur : "-"));
   };
 
-  return (
+  const field = (
     <input
       type="text"
-      inputMode="numeric"
+      inputMode={allowMinus ? "text" : "numeric"}
       value={display}
       onChange={handleChange}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       placeholder={placeholder}
-      style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none", ...(extraStyle || {}) }}
+      style={{ ...inp, MozAppearance: "textfield", WebkitAppearance: "none",
+        color: String(value || "").startsWith("-") ? "#f59e0b" : undefined, ...(extraStyle || {}) }}
     />
+  );
+  if (!allowMinus) return field;
+  return (
+    <div style={{ display: "flex", gap: 4, alignItems: "stretch" }}>
+      <div style={{ flex: 1, minWidth: 0 }}>{field}</div>
+      <button type="button" onClick={flipSign} title="プラスとマイナスを切り替え"
+        style={{ flexShrink: 0, width: 34, background: "transparent", border: `1px solid ${C.borderDim}`,
+          color: String(value || "").startsWith("-") ? "#f59e0b" : C.muted, borderRadius: 8,
+          fontSize: 15, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>±</button>
+    </div>
   );
 }
 
@@ -33212,7 +33231,7 @@ function IncomePage({ data, setData, currentUser }) {
                     <input type="text" value={cc.label || ""} onChange={e => setCost(i, { label: e.target.value })}
                       style={{ flex: 1, minWidth: 0, padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit" }} />
                     <div style={{ width: 110, flexShrink: 0 }}>
-                      <MoneyInput value={cc.amount} onChange={v => setCost(i, { amount: v })} placeholder="0" />
+                      <MoneyInput value={cc.amount} onChange={v => setCost(i, { amount: v })} placeholder="0" allowMinus />
                     </div>
                   </div>
                 ))}
@@ -33823,7 +33842,7 @@ function HoldingsPage({ data, setData, currentUser }) {
         const money = (label, k) => (
           <div key={k}>
             <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{label}</div>
-            <MoneyInput value={edit[k]} onChange={v => set(k, v)} placeholder="0" />
+            <MoneyInput value={edit[k]} onChange={v => set(k, v)} placeholder="0" allowMinus />
           </div>
         );
         const text = (label, k, ph, type) => (
@@ -33934,7 +33953,7 @@ function HoldingsPage({ data, setData, currentUser }) {
                       onChange={e => set("extras", (edit.extras || []).map((x, j) => j === i ? { ...x, label: e.target.value } : x))}
                       style={{ flex: 1, minWidth: 0, padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit" }} />
                     <div style={{ width: 86, flexShrink: 0 }}>
-                      <MoneyInput value={ex.amount} onChange={v => set("extras", (edit.extras || []).map((x, j) => j === i ? { ...x, amount: v } : x))} placeholder="金額" />
+                      <MoneyInput value={ex.amount} onChange={v => set("extras", (edit.extras || []).map((x, j) => j === i ? { ...x, amount: v } : x))} placeholder="金額" allowMinus />
                     </div>
                     <button onClick={() => set("extras", (edit.extras || []).filter((x, j) => j !== i))}
                       style={{ background: "transparent", border: "none", color: C.danger, fontSize: 16, cursor: "pointer", padding: "0 4px" }}>×</button>
