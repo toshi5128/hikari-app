@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.462-saitama-filter";
+const APP_VERSION = "2026-09-23-v9.463-income-tab";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3342,6 +3342,8 @@ const DEFAULT_DATA = {
   mediations: [], // 🆕 仲介案件（売主から預かる物件。仕入とは別枠で管理）
   holdings: [], // 🆕 v9.445: 保有物件（個人で持っている物件の利回り・状態管理。personalOwner 本人だけに見える）
   holdingGoal: 500000, // 🆕 v9.455: 家賃の手取りの月額目標（まず50万、いずれ100万・200万）
+  deals: [],           // 🆕 v9.463: 収支（案件ごとの仕入・売却・利益・歩合）。本人だけに見える
+  incomeMonths: {},    // 🆕 v9.463: 月別の手入力（過去の実績）。{ "2026-09": { pay, memo } }
   hanro: [], // 🆕 v9.352: 買取業者リスト（先行打診の送り先。投資家は反響から自動集約＝v9.367）
   investorMail: [], // 🆕 v9.367: 投資家の打診メール設定（id＝名寄せキー / optOut / lastSentAt）
   offers: [], // 🆕 v9.354: 先行打診の送信履歴（いつ・どの物件を・何件に送ったか）
@@ -4031,7 +4033,7 @@ async function saveToSupabase(data, retries = 3) {
         });
         // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去（手動削除を尊重）
         // 配列の項目別マージ（mergeItems を使う）
-        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro", "offers", "offerTemplates", "investorMail", "holdings"];
+        const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "todos", "hanro", "offers", "offerTemplates", "investorMail", "holdings", "deals"];
         const mergedArrays = {};
         arrayKeys.forEach(k => {
           const localArr = Array.isArray(data[k]) ? data[k] : [];
@@ -5579,7 +5581,7 @@ function MainApp({ onLock, onSwitchUser }) {
     // 🆕 v8.82 → v8.83: tombstone 強制無効化は撤去
     //   ・データ回復が済んだので、今後は通常通り「ユーザーが削除した」 tombstone を尊重する
     //   ・これにより手動で削除した stocks/jiage は復活しなくなる
-    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "activityLog", "todos", "holdings"];
+    const arrayKeys = ["customEvents", "stocks", "approaches", "jiage", "owners", "yakusho", "sekisan", "mediations", "activityLog", "todos", "holdings", "deals"];
     arrayKeys.forEach(k => {
       const localArr = Array.isArray(local[k]) ? local[k] : [];
       const remoteArr = Array.isArray(merged[k]) ? merged[k] : [];
@@ -6713,7 +6715,8 @@ function MainApp({ onLock, onSwitchUser }) {
   // 🆕 v9.445: 保有物件タブは個人保有ができる人（下田さん）にだけ出す
   const currentUser = getCurrentUser();
   const navPages = canHoldPersonal(currentUser)
-    ? PAGES.slice(0, 4).concat([{ key: "holdings", label: "保有", icon: "gem" }], PAGES.slice(4))
+    ? PAGES.slice(0, 4).concat([{ key: "holdings", label: "保有", icon: "gem" },
+                                { key: "income", label: "収支", icon: "yen" }], PAGES.slice(4))
     : PAGES;
 
   return (
@@ -6748,6 +6751,7 @@ function MainApp({ onLock, onSwitchUser }) {
         {page === "approach" && <ApproachPage data={data} setData={setData} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} onOpenJiageDetail={(id) => { setPendingNav({ tab: "jiage", jiageLinkId: id, returnTo: "approach" }); setPage("jiage"); }} />}
         {page === "jiage" && <JiagePage data={data} setData={setData} setDataRaw={setDataRaw} pendingNav={pendingNav} onConsumeNav={() => setPendingNav(null)} setPage={setPage} />}
         {page === "holdings" && <HoldingsPage data={data} setData={setData} currentUser={currentUser} />}
+        {page === "income" && <IncomePage data={data} setData={setData} currentUser={currentUser} />}
         {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} onSwitchUser={onSwitchUser} />}
       </div>
 
@@ -6848,6 +6852,7 @@ function NavIcon({ name, size = 22 }) {
     case "barchart": return (<svg {...c}><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>);
     case "target":   return (<svg {...c}><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>);
     case "landmark": return (<svg {...c}><line x1="3" x2="21" y1="22" y2="22"/><line x1="6" x2="6" y1="18" y2="11"/><line x1="10" x2="10" y1="18" y2="11"/><line x1="14" x2="14" y1="18" y2="11"/><line x1="18" x2="18" y1="18" y2="11"/><polygon points="12 2 20 7 4 7"/></svg>);
+    case "yen":      return (<svg {...c}><path d="M12 9.5 6 3M12 9.5 18 3M12 9.5V21M7 13h10M7 17h10"/></svg>);
     case "gem":      return (<svg {...c}><path d="M6 3h12l4 6-10 13L2 9Z"/><path d="M11 3 8 9l4 13 4-13-3-6"/><path d="M2 9h20"/></svg>);
     case "folder":   return (<svg {...c}><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>);
     case "mail":     return (<svg {...c}><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>);
@@ -32943,6 +32948,313 @@ function DMPage({ data, setData, onBack }) {
 function dmActBtn(col) { return { background: "transparent", border: `1px solid ${col}`, color: col, borderRadius: 7, padding: "5px 8px", fontSize: 10, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }; }
 
 // ===================== MORE PAGE (役所・積算) =====================
+// ===================== 💰 収支（v9.463） =====================
+//   下田さん個人の「案件ごとの利益と歩合」「期ごとの給与」を管理する。
+//   ・PERSONAL_HOLDERS（下田さん）だけに見えるタブ。data.deals / data.incomeMonths に保存
+//   ・利益 ＝ 売却額 −（仕入額 ＋ 諸費用の合計）／ 歩合 ＝ 利益 × 歩合率
+//   ・スプレッドシート「仕入検討積算表」の考え方をそのまま持ってきている
+const DEAL_STATUSES = ["検討中", "交渉中", "仕入済", "売出中", "決済済"];
+const DEAL_STATUS_COLORS = {
+  "検討中": "#64748b", "交渉中": "#f59e0b", "仕入済": "#3b82f6", "売出中": "#a855f7", "決済済": "#16a34a",
+};
+// 諸費用の既定の項目名（案件ごとに名前を変えられる。元のシートも書き換えて使っていたため）
+const DEAL_COST_LABELS = ["固定資産税", "登記費用", "不動産取得税", "印紙代", "残置物",
+                          "仲介手数料【仕】", "仲介手数料【売】", "業詫", "確定測量", "草刈り"];
+const DEAL_RATES = [0.2, 0.4, 0.5, 0.6];
+function dealCalc(d) {
+  const buy = hNum(d.buyPrice), sell = hNum(d.sellPrice);
+  const costs = Array.isArray(d.costs) ? d.costs : [];
+  const costSum = costs.reduce((a, c) => a + hNum(c && c.amount), 0);
+  const genka = buy + costSum;                      // 仕入原価
+  const profit = sell - genka;                      // 利益
+  const rate = d.rate == null || d.rate === "" ? 0.6 : Number(d.rate);
+  return { buy, sell, costSum, genka, profit, rate, pay: Math.round(profit * rate) };
+}
+// 期（9月はじまり）の判定。2026/9〜2027/8 が「3期目」
+const TERM_BASE_YEAR = 2024, TERM_BASE_NO = 1;      // 2024/9〜2025/8 が1期目
+function termOf(ym) {                                // ym = "2026-09"
+  const y = Number(String(ym).slice(0, 4)), m = Number(String(ym).slice(5, 7));
+  if (!y || !m) return null;
+  const startY = m >= 9 ? y : y - 1;
+  return TERM_BASE_NO + (startY - TERM_BASE_YEAR);
+}
+function termMonths(no) {                            // その期の12ヶ月分の "YYYY-MM"
+  const startY = TERM_BASE_YEAR + (no - TERM_BASE_NO);
+  return Array.from({ length: 12 }, (_, i) => {
+    const m = 9 + i, y = startY + Math.floor((m - 1) / 12);
+    return `${y}-${String(((m - 1) % 12) + 1).padStart(2, "0")}`;
+  });
+}
+
+function IncomePage({ data, setData, currentUser }) {
+  const me = String(currentUser || "").trim();
+  const [edit, setEdit] = useState(null);
+  const [tab, setTab] = useState("term");            // "term" = 期の成績 / "deals" = 案件
+  const nowYM = new Date().toISOString().slice(0, 7);
+  const [term, setTerm] = useState(termOf(nowYM) || 3);
+  const deals = React.useMemo(() => (data.deals || []).filter(d => d && (!d.owner || d.owner === me)), [data.deals, me]);
+  const months = React.useMemo(() => data.incomeMonths || {}, [data.incomeMonths]);
+
+  const yen = n => "¥" + Math.round(n || 0).toLocaleString("ja-JP");
+  const man = n => (Math.round((n || 0) / 1000) / 10).toLocaleString("ja-JP") + "万";
+
+  // 期の集計：案件の歩合（決済月）＋ 手入力の月別（過去の実績）
+  const termData = React.useMemo(() => {
+    const ms = termMonths(term);
+    const rows = ms.map(ym => {
+      const ds = deals.filter(d => d.status === "決済済" && String(d.settleDate || "").slice(0, 7) === ym);
+      const fromDeals = ds.reduce((a, d) => a + dealCalc(d).pay, 0);
+      const manual = hNum((months[ym] || {}).pay);
+      const memo = (months[ym] || {}).memo || ds.map(d => d.name).filter(Boolean).join("、");
+      return { ym, fromDeals, manual, pay: fromDeals + manual, count: ds.length, memo, ds };
+    });
+    const total = rows.reduce((a, r) => a + r.pay, 0);
+    const done = rows.filter(r => r.pay > 0).length;
+    return { rows, total, done, avg: done ? Math.round(total / done) : 0 };
+  }, [deals, months, term]);
+
+  const prevTotal = React.useMemo(() => {
+    const ms = termMonths(term - 1);
+    return ms.reduce((a, ym) => {
+      const fromDeals = deals.filter(d => d.status === "決済済" && String(d.settleDate || "").slice(0, 7) === ym)
+        .reduce((x, d) => x + dealCalc(d).pay, 0);
+      return a + fromDeals + hNum((months[ym] || {}).pay);
+    }, 0);
+  }, [deals, months, term]);
+
+  const saveDeal = (d) => {
+    const now = Date.now();
+    setData(prev => {
+      const arr = Array.isArray(prev.deals) ? prev.deals : [];
+      const exists = arr.some(x => x && x.id === d.id);
+      const stamps = {}; Object.keys(d).forEach(k => { if (k !== "_fieldUpdatedAt") stamps[k] = now; });
+      const next = { ...d, owner: d.owner || me, updatedAt: now, _fieldUpdatedAt: { ...(d._fieldUpdatedAt || {}), ...stamps } };
+      return { ...prev, deals: exists ? arr.map(x => x && x.id === d.id ? next : x) : [...arr, next] };
+    });
+    setEdit(null);
+  };
+  const removeDeal = (id) => {
+    if (!window.confirm("この案件を削除します。よろしいですか？")) return;
+    const now = Date.now();
+    setData(prev => ({
+      ...prev,
+      deals: (prev.deals || []).filter(x => x && x.id !== id),
+      tombstones: { ...(prev.tombstones || {}), deals: { ...((prev.tombstones || {}).deals || {}), [String(id)]: now } },
+    }));
+    setEdit(null);
+  };
+  const blankDeal = () => ({
+    id: Date.now(), owner: me, name: "", address: "", status: "検討中",
+    buyPrice: "", sellPrice: "", rate: 0.6, settleDate: "", memo: "",
+    costs: DEAL_COST_LABELS.map(l => ({ label: l, amount: "" })),
+  });
+  const normalizeDeal = (d) => {
+    const out = { ...blankDeal(), ...d };
+    out.id = d.id; out.owner = d.owner || me;
+    if (!Array.isArray(out.costs) || !out.costs.length) out.costs = DEAL_COST_LABELS.map(l => ({ label: l, amount: "" }));
+    return out;
+  };
+  const setMonth = (ym, patch) => {
+    const now = Date.now();
+    setData(prev => ({
+      ...prev,
+      incomeMonths: { ...(prev.incomeMonths || {}), [ym]: { ...((prev.incomeMonths || {})[ym] || {}), ...patch, updatedAt: now } },
+    }));
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>💰 収支<span style={{ fontSize: 11, color: C.muted, marginLeft: 8, fontWeight: 700 }}>🔒 {me}さんだけに見えています</span></div>
+        <button onClick={() => setEdit(blankDeal())} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>＋ 案件を追加</button>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[["term", "期の成績"], ["deals", `案件 ${deals.length}`]].map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)} style={{
+            flex: 1, padding: "9px 10px", borderRadius: 10, fontSize: 13.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+            border: `1.5px solid ${tab === k ? C.accent : C.borderDim}`,
+            background: tab === k ? C.accent : "transparent", color: tab === k ? "#fff" : C.text,
+          }}>{l}</button>
+        ))}
+      </div>
+
+      {tab === "term" && (
+        <>
+          {/* 期の切替と合計 */}
+          <div style={{ background: C.cardBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <button onClick={() => setTerm(t => Math.max(1, t - 1))} style={{ background: "transparent", border: `1px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>◀</button>
+              <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>
+                {term}期目<span style={{ fontSize: 11, color: C.muted, marginLeft: 6 }}>{termMonths(term)[0].replace("-", "/")}〜{termMonths(term)[11].replace("-", "/")}</span>
+              </div>
+              <button onClick={() => setTerm(t => t + 1)} style={{ background: "transparent", border: `1px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>▶</button>
+            </div>
+            <div style={{ fontSize: 30, fontWeight: 800, color: C.text, marginTop: 8, fontVariantNumeric: "tabular-nums" }}>{yen(termData.total)}</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+              入金のあった月 {termData.done}ヶ月／平均 {yen(termData.avg)}
+              {prevTotal > 0 && <>　前期 {man(prevTotal)}（{Math.round(termData.total / prevTotal * 100)}%）</>}
+            </div>
+            {prevTotal > 0 && (
+              <div style={{ height: 9, background: C.bg, borderRadius: 5, overflow: "hidden", marginTop: 8 }}>
+                <div style={{ width: `${Math.min(100, termData.total / prevTotal * 100)}%`, height: "100%", background: termData.total >= prevTotal ? "#16a34a" : C.accent, borderRadius: 5 }} />
+              </div>
+            )}
+          </div>
+
+          {/* 月別 */}
+          <div style={{ display: "grid", gap: 6 }}>
+            {termData.rows.map(r => (
+              <div key={r.ym} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: r.pay > 0 ? C.text : C.muted }}>{r.ym.replace("-", "/")}</span>
+                  <span style={{ fontSize: 16, fontWeight: 800, color: r.pay > 0 ? "#16a34a" : C.muted, fontVariantNumeric: "tabular-nums" }}>{r.pay > 0 ? yen(r.pay) : "—"}</span>
+                </div>
+                {r.memo && <div style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>{r.memo}</div>}
+                {r.fromDeals > 0 && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>案件 {r.count}件から {yen(r.fromDeals)}{r.manual > 0 ? `　＋ 手入力 ${yen(r.manual)}` : ""}</div>}
+                <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+                  <span style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, flexShrink: 0 }}>手入力</span>
+                  <div style={{ width: 120 }}>
+                    <MoneyInput value={(months[r.ym] || {}).pay} onChange={v => setMonth(r.ym, { pay: v })} placeholder="0" />
+                  </div>
+                  <input type="text" value={(months[r.ym] || {}).memo || ""} placeholder="物件名メモ"
+                    onChange={e => setMonth(r.ym, { memo: e.target.value })}
+                    style={{ flex: 1, minWidth: 0, padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit" }} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 10, lineHeight: 1.8 }}>
+            ※ 月の金額＝「決済済にした案件の歩合」＋「手入力」。過去の実績は手入力に入れてあります。案件を登録して決済月を入れると、自動で足されます。
+          </div>
+        </>
+      )}
+
+      {tab === "deals" && (
+        <>
+          {deals.length === 0 && (
+            <div style={{ background: C.cardBg, border: `1px dashed ${C.borderDim}`, borderRadius: 12, padding: 24, textAlign: "center", color: C.muted, fontSize: 13 }}>
+              まだ案件がありません。「＋ 案件を追加」から登録してください。
+            </div>
+          )}
+          {deals.slice().sort((a, b) => String(b.settleDate || "").localeCompare(String(a.settleDate || ""))).map(d => {
+            const c = dealCalc(d);
+            const col = DEAL_STATUS_COLORS[d.status] || C.muted;
+            return (
+              <div key={d.id} onClick={() => setEdit(normalizeDeal(d))} style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`, borderRadius: 10, padding: 13, marginBottom: 10, cursor: "pointer" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: C.text }}>{d.name || d.address || "(名称未設定)"}</div>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: col, borderRadius: 10, padding: "3px 9px", flexShrink: 0 }}>{d.status}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 22, fontWeight: 800, color: c.pay >= 0 ? "#16a34a" : C.danger, fontVariantNumeric: "tabular-nums" }}>{yen(c.pay)}</span>
+                  <span style={{ fontSize: 12, color: C.muted }}>歩合 {Math.round(c.rate * 100)}%</span>
+                  <span style={{ marginLeft: "auto", fontSize: 13, color: C.text }}>利益 <b>{man(c.profit)}</b></span>
+                </div>
+                <div style={{ fontSize: 12, color: C.muted, marginTop: 6, fontVariantNumeric: "tabular-nums" }}>
+                  仕入 {man(c.buy)} ＋諸費用 {man(c.costSum)} → 売却 {man(c.sell)}
+                  {d.settleDate && <>　決済 {d.settleDate}</>}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* 案件の編集 */}
+      {edit && (() => {
+        const c = dealCalc(edit);
+        const set = (k, v) => setEdit(e => ({ ...e, [k]: v }));
+        const setCost = (i, patch) => set("costs", (edit.costs || []).map((x, j) => j === i ? { ...x, ...patch } : x));
+        return (
+          <BottomSheet title={edit.name || "案件を追加"} onClose={() => setEdit(null)}
+            footer={
+              <div style={{ display: "flex", gap: 8 }}>
+                {(data.deals || []).some(x => x && x.id === edit.id) && (
+                  <button onClick={() => removeDeal(edit.id)} style={{ padding: "10px 14px", background: "transparent", border: `1px solid ${C.danger}`, color: C.danger, borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>削除</button>
+                )}
+                <button onClick={() => saveDeal(edit)} style={{ flex: 1, padding: "10px 14px", background: C.accent, border: "none", color: "#fff", borderRadius: 8, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>保存</button>
+              </div>
+            }>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>案件名</div>
+                <input type="text" value={edit.name || ""} onChange={e => set("name", e.target.value)} placeholder="例: 柿沼 / 川井宿"
+                  style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 4 }}>進み具合</div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                  {DEAL_STATUSES.map(st => (
+                    <button key={st} onClick={() => set("status", st)} style={{
+                      padding: "6px 11px", borderRadius: 14, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                      border: `1.5px solid ${DEAL_STATUS_COLORS[st]}`,
+                      background: edit.status === st ? DEAL_STATUS_COLORS[st] : "transparent",
+                      color: edit.status === st ? "#fff" : DEAL_STATUS_COLORS[st],
+                    }}>{st}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>仕入額</div>
+                  <MoneyInput value={edit.buyPrice} onChange={v => set("buyPrice", v)} placeholder="0" />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>売却額</div>
+                  <MoneyInput value={edit.sellPrice} onChange={v => set("sellPrice", v)} placeholder="0" />
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 諸費用（項目名は書き換えできます）</div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {(edit.costs || []).map((cc, i) => (
+                  <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input type="text" value={cc.label || ""} onChange={e => setCost(i, { label: e.target.value })}
+                      style={{ flex: 1, minWidth: 0, padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit" }} />
+                    <div style={{ width: 110, flexShrink: 0 }}>
+                      <MoneyInput value={cc.amount} onChange={v => setCost(i, { amount: v })} placeholder="0" />
+                    </div>
+                  </div>
+                ))}
+                <button onClick={() => set("costs", [...(edit.costs || []), { label: "", amount: "" }])}
+                  style={{ padding: "7px 12px", background: "transparent", border: `1px dashed ${C.borderDim}`, color: C.text, borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>＋ 項目を足す</button>
+              </div>
+              <div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 4 }}>歩合率</div>
+                <div style={{ display: "flex", gap: 5 }}>
+                  {DEAL_RATES.map(r => (
+                    <button key={r} onClick={() => set("rate", r)} style={{
+                      padding: "6px 14px", borderRadius: 14, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                      border: `1.5px solid ${C.accent}`,
+                      background: Number(edit.rate) === r ? C.accent : "transparent",
+                      color: Number(edit.rate) === r ? "#fff" : C.accent,
+                    }}>{Math.round(r * 100)}%</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ background: C.bg, borderRadius: 8, padding: 12, fontSize: 13, color: C.text, lineHeight: 2 }}>
+                仕入原価 <b>{man(c.genka)}</b>（仕入 {man(c.buy)} ＋ 諸費用 {man(c.costSum)}）<br />
+                売却 {man(c.sell)} − 原価 {man(c.genka)} ＝ 利益 <b style={{ fontSize: 16, color: c.profit >= 0 ? "#16a34a" : C.danger }}>{man(c.profit)}</b><br />
+                <span style={{ fontSize: 16 }}>歩合 {Math.round(c.rate * 100)}% → <b style={{ color: "#16a34a" }}>{yen(c.pay)}</b></span>
+              </div>
+              <div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>決済日（入れると、その月の成績に入ります）</div>
+                <input type="date" value={edit.settleDate || ""} onChange={e => set("settleDate", e.target.value)}
+                  style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>メモ</div>
+                <textarea value={edit.memo || ""} onChange={e => set("memo", e.target.value)} rows={2}
+                  style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", resize: "vertical" }} />
+              </div>
+            </div>
+          </BottomSheet>
+        );
+      })()}
+    </div>
+  );
+}
+
 // ===================== 🏠 保有物件（v9.445） =====================
 //   個人で持っている物件の「いくらで買って・いくら家賃が入って・今どうなっているか」を管理する。
 //   ・PERSONAL_HOLDERS（下田さん）だけに見えるタブ。data.holdings に保存（全端末同期）。
