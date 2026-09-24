@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-23-v9.472-done-dim";
+const APP_VERSION = "2026-09-25-v9.473-chika-layer";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7638,6 +7638,85 @@ function loadTakuchi() {
   return _takuchiPromise;
 }
 
+// 🆕 v9.473: 基準地価（地価公示＝1月1日時点／地価調査＝7月1日時点）の価格ピン。
+//   国土数値情報の埼玉県分を tools/make-chika.py で軽くして chika-points.json に同梱。
+//   色は坪単価。寄せる(ズーム14以上)と画面内の地点に「坪◯万」の札が出る。
+const CHIKA_BANDS = [   // 坪単価(万円)
+  [0,   15,  "#60a5fa", "〜15万"],
+  [15,  30,  "#10b981", "15〜30万"],
+  [30,  50,  "#eab308", "30〜50万"],
+  [50,  100, "#f97316", "50〜100万"],
+  [100, 1e9, "#dc2626", "100万〜"],
+];
+const CHIKA_ZOOM_LABEL = 14;
+const CHIKA_LABEL_CAP = 150;
+function _chikaTsubo(yenPerM2) { return yenPerM2 * 3.30578 / 10000; }   // 円/㎡ → 万円/坪
+function _chikaColor(yenPerM2) {
+  const t = _chikaTsubo(yenPerM2);
+  for (const b of CHIKA_BANDS) if (t >= b[0] && t < b[1]) return b[2];
+  return CHIKA_BANDS[CHIKA_BANDS.length - 1][2];
+}
+function _chikaTsuboText(yenPerM2) {
+  const t = _chikaTsubo(yenPerM2);
+  return t >= 100 ? Math.round(t).toLocaleString() + "万" : t.toFixed(1) + "万";
+}
+const CHIKA_CAT = { 0: "住宅地", 3: "準住宅地", 5: "商業地", 7: "準工業地", 9: "工業地", 10: "調整区域内宅地", 13: "調整区域内宅地", 20: "林地" };
+function _chikaIsRes(p) { return p.cat === 0 || p.cat === 3 || p.cat === 10 || p.cat === 13; }
+
+let _chikaPromise = null;
+function loadChika() {
+  if (_chikaPromise) return _chikaPromise;
+  _chikaPromise = fetch("chika-points.json")
+    .then(r => { if (!r.ok) throw new Error("chika " + r.status); return r.json(); })
+    .then(raw => {
+      const S = raw.s || [];
+      const years = raw.years || [];
+      const str = (i) => (typeof i === "number" ? (S[i] || "") : (i || ""));
+      return (raw.pts || []).map(a => ({
+        kind: a[0], year: years[a[0]] || "", lat: a[1], lng: a[2], price: a[3], chg: a[4], p5: a[5],
+        name: str(a[6]), cat: a[7], no: a[8], addr: a[9], area: a[10], use: str(a[11]),
+        env: str(a[12]), sta: str(a[13]), dist: a[14], zone: str(a[15]), ku: str(a[16]),
+        bcr: a[17], far: a[18], road: str(a[19]), roadw: a[20],
+      }));
+    })
+    .catch(e => { _chikaPromise = null; throw e; });
+  return _chikaPromise;
+}
+function _chikaPopupHtml(p) {
+  const code = (p.kind === 1 ? "(県)" : "") + p.name + (p.cat === 20 ? "(林)" : p.cat ? p.cat : "") + "-" + p.no;
+  const title = p.kind === 1 ? `地価調査（基準地価）${p.year}年7月1日` : `地価公示 ${p.year}年1月1日`;
+  const col = _chikaColor(p.price);
+  const chgCol = p.chg > 0 ? "#dc2626" : p.chg < 0 ? "#2563eb" : "#64748b";
+  const chg = (p.chg > 0 ? "+" : "") + p.chg + "%";
+  let p5 = "";
+  if (p.p5 > 0) {
+    const r = (p.price / p.p5 - 1) * 100;
+    p5 = `／5年前から <b style="color:${r > 0 ? "#dc2626" : r < 0 ? "#2563eb" : "#64748b"};">${r > 0 ? "+" : ""}${r.toFixed(1)}%</b>`;
+  }
+  const ll = `${p.lat},${p.lng}`;
+  const row = (k, v) => v ? `<div><span style="color:#64748b;display:inline-block;min-width:52px;">${k}</span>${_hkEsc(String(v))}</div>` : "";
+  return `<div style="font-size:12px;line-height:1.6;min-width:210px;max-width:260px;">`
+    + `<div style="font-size:10px;color:#64748b;">${_hkEsc(title)}　${_hkEsc(code)}</div>`
+    + `<div style="margin:2px 0;"><b style="font-size:17px;color:${col};">坪 ${_chikaTsuboText(p.price)}円</b>`
+    + `　<span style="color:#334155;">${p.price.toLocaleString()}円/㎡</span></div>`
+    + `<div>前年比 <b style="color:${chgCol};">${chg}</b>${p5}</div>`
+    + `<div style="border-top:1px solid #e2e8f0;margin:5px 0 3px;"></div>`
+    + row("所在", p.addr)
+    + row("種別", (CHIKA_CAT[p.cat] || "") + (p.use ? "（今は " + p.use + "）" : ""))
+    + row("地積", p.area ? p.area + "㎡（約" + (p.area / 3.30578).toFixed(1) + "坪）" : "")
+    + row("駅", p.sta ? p.sta + (p.dist ? "駅 " + p.dist.toLocaleString() + "m" : "") : "")
+    + row("用途", [p.zone, p.bcr && p.far ? p.bcr + "/" + p.far : "", p.ku].filter(Boolean).join("　"))
+    + row("道路", p.road ? p.road + (p.roadw ? " " + p.roadw + "m" : "") : "")
+    + (p.env ? `<div style="color:#64748b;font-size:11px;margin-top:2px;">${_hkEsc(p.env)}</div>` : "")
+    + `<div style="color:#94a3b8;font-size:10px;margin-top:4px;">更地としての土地だけの値段。実際の取引はこれを目安に形・道路・再建築の可否で上下します。</div>`
+    + `<div style="display:flex;gap:6px;margin-top:6px;">`
+    + `<a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${ll}" target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:6px 8px;border-radius:8px;background:#1a73e8;color:#fff;text-decoration:none;font-size:11px;font-weight:700;">👁 ストリートビュー</a>`
+    + `<a href="https://www.google.com/maps/search/?api=1&query=${ll}" target="_blank" rel="noopener noreferrer" style="padding:6px 8px;border-radius:8px;background:#f1f5f9;color:#334155;text-decoration:none;font-size:11px;font-weight:700;border:1px solid #cbd5e1;">🗺 地図</a>`
+    + `</div>`
+    + `<div style="color:#cbd5e1;font-size:9px;margin-top:4px;">出典: 国土数値情報（国土交通省）を加工</div>`
+    + `</div>`;
+}
+
 // 🆕 v9.443: ヘディングアップ（進行方向が上）で地図を傾けた時のタップ位置ズレを補正
 //   地図コンテナに CSS transform:rotate(-bearing) を掛けているが Leaflet は回転を知らない。
 //   そのため「画面の指の位置 → 地図コンテナ内の座標」の変換で回転を打ち消す必要がある。
@@ -7665,7 +7744,7 @@ if (typeof L !== "undefined" && L.Map && !L.Map.prototype._hkRotPatched) {
   L.Map.prototype._hkRotPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -7928,6 +8007,84 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     map.on("click", onTap);
     return () => { alive = false; try { map.off("click", onTap); } catch (e) {} drop(); };
   }, [miShow]);
+
+  // 🆕 v9.473: 基準地価（地価公示・地価調査）の価格ピン。色＝坪単価、寄せると「坪◯万」の札。
+  const chikaLayerRef = React.useRef(null);
+  const chikaDataRef = React.useRef(null);
+  const ckShow = !!(chika && chika.show);
+  const ckResOnly = !!(chika && chika.resOnly);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    const drop = () => {
+      if (chikaLayerRef.current) {
+        try { map.removeLayer(chikaLayerRef.current); } catch (e) {}
+        chikaLayerRef.current = null;
+      }
+    };
+    if (!ckShow) { drop(); return; }
+    let alive = true;
+    let rows = null;
+    // 札は物件ピンより下・面レイヤーより上に置く
+    if (!map.getPane("hkChikaLabel")) {
+      const pn = map.createPane("hkChikaLabel");
+      pn.style.zIndex = 450;
+    }
+    const grp = L.layerGroup();
+    const labels = L.layerGroup();
+    const rend = L.canvas({ padding: 0.2 });
+    const openPopup = (p) => {
+      L.popup({ autoPan: true, maxWidth: 280 }).setLatLng([p.lat, p.lng])
+        .setContent(_chikaPopupHtml(p)).openOn(map);
+    };
+    const drawLabels = () => {
+      labels.clearLayers();
+      if (!alive || !rows || map.getZoom() < CHIKA_ZOOM_LABEL) return;
+      const bb = map.getBounds().pad(0.1);
+      let n = 0;
+      for (let i = 0; i < rows.length && n < CHIKA_LABEL_CAP; i++) {
+        const p = rows[i];
+        if (!bb.contains([p.lat, p.lng])) continue;
+        n++;
+        const col = _chikaColor(p.price);
+        const html = `<div style="transform:translate(9px,-50%);white-space:nowrap;display:inline-block;`
+          + `padding:1px 5px;border-radius:6px;background:#fff;border:1.5px solid ${col};`
+          + `font-size:11px;font-weight:700;color:#1e293b;box-shadow:0 1px 3px rgba(0,0,0,.25);line-height:1.4;">`
+          + `坪${_chikaTsuboText(p.price)}</div>`;
+        const mk = L.marker([p.lat, p.lng], {
+          pane: "hkChikaLabel", bubblingMouseEvents: false, keyboard: false,
+          icon: L.divIcon({ className: "", html, iconSize: [0, 0], iconAnchor: [0, 0] }),
+        });
+        mk.on("click", (ev) => { if (ev && ev.originalEvent) L.DomEvent.stop(ev.originalEvent); openPopup(p); });
+        mk.addTo(labels);
+      }
+    };
+    (chikaDataRef.current ? Promise.resolve(chikaDataRef.current) : loadChika())
+      .then(all => {
+        if (!alive) return;
+        chikaDataRef.current = all;
+        rows = ckResOnly ? all.filter(_chikaIsRes) : all;
+        for (let i = 0; i < rows.length; i++) {
+          const p = rows[i];
+          // 公示＝白いふち／調査(基準地価)＝黒いふち
+          const cm = L.circleMarker([p.lat, p.lng], {
+            renderer: rend, radius: 6, weight: 2,
+            color: p.kind === 1 ? "#111827" : "#ffffff",
+            fillColor: _chikaColor(p.price), fillOpacity: 0.95,
+            bubblingMouseEvents: false,
+          });
+          cm.on("click", () => openPopup(p));
+          cm.addTo(grp);
+        }
+        labels.addTo(grp);
+        grp.addTo(map);
+        chikaLayerRef.current = grp;
+        drawLabels();
+      })
+      .catch(e => { console.warn("基準地価の読み込みに失敗", e); });
+    map.on("moveend", drawLabels);
+    return () => { alive = false; try { map.off("moveend", drawLabels); } catch (e) {} drop(); };
+  }, [ckShow, ckResOnly]);
 
   // 🆕 v9.440: 空き家が出やすいエリア（紫の面）。ストリートビュー範囲と同じ見た目。
   const akiyaLayerRef = React.useRef(null);
@@ -20399,13 +20556,22 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [showMitsu, setShowMitsu] = useState(() => {
     try { return localStorage.getItem("hikari_show_mitsu") === "1"; } catch (e) { return false; }
   });
+  // 🆕 v9.473: 基準地価（地価公示・地価調査）の価格ピン。この端末だけの表示設定。
+  const [showChika, setShowChika] = useState(() => {
+    try { return localStorage.getItem("hikari_show_chika") === "1"; } catch (e) { return false; }
+  });
+  const [chikaResOnly, setChikaResOnly] = useState(() => {
+    try { return localStorage.getItem("hikari_chika_res") !== "0"; } catch (e) { return true; }
+  });
   useEffect(() => {
     try {
       localStorage.setItem("hikari_show_akiya", showAkiya ? "1" : "0");
       localStorage.setItem("hikari_akiya_mode", akiyaMode);
       localStorage.setItem("hikari_show_mitsu", showMitsu ? "1" : "0");
+      localStorage.setItem("hikari_show_chika", showChika ? "1" : "0");
+      localStorage.setItem("hikari_chika_res", chikaResOnly ? "1" : "0");
     } catch (e) {}
-  }, [showAkiya, akiyaMode, showMitsu]);
+  }, [showAkiya, akiyaMode, showMitsu, showChika, chikaResOnly]);
   // 🆕 v9.436: 足跡の色を「いつ回ったか」にする（既定）。担当者別の週色にも戻せる。
   const [trackColorMode, setTrackColorMode] = useState(() => {
     try { return localStorage.getItem("hikari_track_color") === "week" ? "week" : "age"; }
@@ -25484,6 +25650,40 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         さいたま1,114ha／<b>川口782ha</b>／蕨212／越谷196／熊谷189／川越162。
                       </div>
                     </div>
+                    {/* 🆕 v9.473: 基準地価（地価公示・地価調査） */}
+                    <div style={{ marginTop: 6, marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>💴 基準地価（公示・調査の相場ピン）</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                        <button onClick={() => setShowChika(v => !v)} style={{
+                          padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                          background: showChika ? "#b45309" : "transparent",
+                          color: showChika ? "#fff" : "#b45309",
+                          border: "1.5px solid #b45309", fontWeight: showChika ? 700 : 400,
+                        }}>{showChika ? "✓ 表示中" : "表示する"}</button>
+                        {showChika && [{k:true,l:"住宅地だけ"},{k:false,l:"商業・工業も"}].map(o => (
+                          <button key={o.l} onClick={() => setChikaResOnly(o.k)} style={{
+                            padding: "3px 9px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                            background: chikaResOnly === o.k ? "#92400e" : "transparent",
+                            color: chikaResOnly === o.k ? "#fff" : "#92400e",
+                            border: "1px solid #92400e", fontWeight: chikaResOnly === o.k ? 700 : 400,
+                          }}>{o.l}</button>
+                        ))}
+                      </div>
+                      {showChika && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: 4 }}>
+                          <span style={{ fontSize: 9, color: C.muted }}>坪単価</span>
+                          {CHIKA_BANDS.map(b => (
+                            <span key={b[3]} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: C.muted }}>
+                              <span style={{ width: 10, height: 10, borderRadius: 5, background: b[2], display: "inline-block" }} />{b[3]}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.5 }}>
+                        国の地価公示（1月1日時点・白ふち）と県の地価調査＝基準地価（7月1日時点・黒ふち）。埼玉県内 約2,100地点。
+                        色は<b>坪単価</b>。地図を寄せると「坪◯万」の札が出ます。ピンを押すと前年比・5年前比・駅距離・用途地域。
+                      </div>
+                    </div>
                     {/* 🆕 v9.419: ストリートビューで見た範囲（面）の表示切替 */}
                     <div style={{ marginTop: 6, marginBottom: 4 }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>🖥 ストリートビューで見た範囲</div>
@@ -26401,6 +26601,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       showAkiya={showAkiya}
                       akiyaMode={akiyaMode}
                       showMitsu={showMitsu}
+                      chika={{ show: showChika, resOnly: chikaResOnly }}
                       takuchi={{ show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
                                  onlyStar: takuchiOnlyStar,
                                  marks: danchiMarks, marksVer: danchiMarksVer, onMark: markDanchi,
