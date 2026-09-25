@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-25-v9.473-chika-layer";
+const APP_VERSION = "2026-09-25-v9.474-whats-new";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6771,6 +6771,9 @@ function MainApp({ onLock, onSwitchUser }) {
         ))}
       </div>
 
+      {/* 🆕 v9.474: 更新後に「新しくできるようになったこと」を1回だけ出す */}
+      <WhatsNewGate currentUser={currentUser} />
+
       {/* 🆕 v9.81: インパクト通知（全画面フラッシュ・テーマ追従・音/バイブは effect 側） */}
       {flashNotif && (
         <div onClick={() => setFlashNotif(null)} style={{ position: "fixed", inset: 0, zIndex: 99998, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -6839,6 +6842,108 @@ const PAGES = [
 ];
 
 // 🆕 v9.238: 下部ナビをライン系SVGアイコンに（モノクロ・currentColorで選択色を自動継承＝シンプルで統一感のある見た目）。Lucide系パス。
+// 🆕 v9.474: 新機能のお知らせ。
+// 【ルール】みんなに見える機能を足したら、ここの先頭に1件足す（v は APP_VERSION と同じ番号）。
+//   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
+//   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
+const WHATS_NEW = [
+  { v: "9.474", date: "2026-09-25", title: "新機能のお知らせが届くようになりました",
+    body: "アプリに新しい機能が入ると、次に開いた時にこの画面で「何ができるようになったか」をお知らせします。",
+    where: "あとから見返す時は「その他 → 🆕 新機能のお知らせ」" },
+  { v: "9.473", date: "2026-09-25", title: "地図で「国の地価の目安」が見られるように",
+    body: "埼玉県内の地価公示・地価調査（2026年版）の地点が、値段の色の丸で出ます。地図を寄せると「坪◯万」、丸を押すと前年比・駅からの距離・用途地域が見られます。訪問前の下調べや「うちっていくら？」と聞かれた時の目安に。",
+    where: "地上げ → 地図 → 表示の切り替え「💴 基準地価」→「表示する」",
+    note: "国の目安で、実際に売れる値段ではありません。表示は押した人のスマホだけに出ます。" },
+  { v: "9.462", date: "2026-09-23", title: "所有者が埼玉県内か県外かで絞り込めるように",
+    body: "「🚗 県内（訪問可）」で会いに行ける所有者だけ、「✉️ 県外（DM）」でDMで攻める所有者だけに絞れます。",
+    where: "地上げ → 上のかんたん絞り込み" },
+  { v: "9.459", date: "2026-09-23", title: "カレンダーに祝日が出るように",
+    body: "ハッピーマンデーや振替休日、敬老の日と秋分の日に挟まれた休みまで表示します。",
+    where: "ホームのカレンダー" },
+  { v: "9.441", date: "2026-09-13", title: "空き家が出やすいエリア・密集市街地を地図に表示",
+    body: "75歳以上の人が多い地域を紫の面で出します（「人数」モードもあり）。古い戸建がぎっしり建つ「密集市街地」も重ねられます。次に回るエリア選びに。",
+    where: "地上げ → 地図 → 表示の切り替え「🏚 空き家が出やすいエリア」「🏘 密集市街地」" },
+  { v: "9.437", date: "2026-09-12", title: "空き家へのポスティングを記録できるように",
+    body: "空き家そのものに資料を投函したら記録できます。営業行動の「📬 ポスティング」も自動で1増えます。",
+    where: "地上げ → ピンを立てる画面の「📬 この空き家にポスティングした」" },
+  { v: "9.436", date: "2026-09-12", title: "探索ルートの足跡が「いつ回ったか」で色分けに",
+    body: "最近回った道と、しばらく回っていない道がひと目で分かります。探索にかかった時間も出ます。",
+    where: "地上げ → 地図 → 表示の切り替え「足跡の色」（「週ごと」にも戻せます）" },
+];
+const WHATS_NEW_SEEN_KEY = "hikari_whats_new_seen";
+const _wnNum = (v) => String(v || "0").split(".").map(n => parseInt(n, 10) || 0);
+const _wnNewer = (a, b) => { const x = _wnNum(a), y = _wnNum(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+function whatsNewFor(user) {
+  const u = String(user || "").trim();
+  return WHATS_NEW.filter(n => !n.who || n.who.includes(u));
+}
+function unseenWhatsNew(user) {
+  let seen = null;
+  try { seen = localStorage.getItem(WHATS_NEW_SEEN_KEY); } catch (e) {}
+  return whatsNewFor(user).filter(n => !seen || _wnNewer(n.v, seen));
+}
+function markWhatsNewSeen() {
+  try { localStorage.setItem(WHATS_NEW_SEEN_KEY, WHATS_NEW[0].v); } catch (e) {}
+}
+
+function WhatsNewCard({ n }) {
+  return (
+    <div style={{ background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 12, padding: "12px 14px", marginBottom: 10, textAlign: "left" }}>
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>{n.date}・v{n.v}</div>
+      <div style={{ fontSize: 15, fontWeight: 800, color: C.text, marginBottom: 6, lineHeight: 1.4 }}>{n.title}</div>
+      <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>{n.body}</div>
+      {n.where && <div style={{ fontSize: 12, color: C.accent, marginTop: 8, lineHeight: 1.5 }}>📍 {n.where}</div>}
+      {n.note && <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>※ {n.note}</div>}
+    </div>
+  );
+}
+
+// 更新後に開いた時、まだ見ていないお知らせを1回だけ出す（ログイン済みの時だけ）
+function WhatsNewGate({ currentUser }) {
+  const [items, setItems] = useState(null);
+  useEffect(() => {
+    if (!currentUser) return;
+    const list = unseenWhatsNew(currentUser);
+    if (list.length) setItems(list.slice(0, 6));
+    else markWhatsNewSeen(); // 自分向けが無い更新も「見た」にしておく
+  }, [currentUser]);
+  if (!items) return null;
+  const close = () => { markWhatsNewSeen(); setItems(null); };
+  return (
+    <div onClick={close} style={{ position: "fixed", inset: 0, zIndex: 99990, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: 440, maxHeight: "85vh", display: "flex", flexDirection: "column", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 18, boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+        <div style={{ padding: "18px 18px 10px", textAlign: "center" }}>
+          <div style={{ fontSize: 34, lineHeight: 1 }}>🆕</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: C.text, marginTop: 6 }}>アプリが新しくなりました</div>
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>できるようになったこと {items.length}件</div>
+        </div>
+        <div style={{ overflowY: "auto", padding: "4px 16px 8px", WebkitOverflowScrolling: "touch" }}>
+          {items.map(n => <WhatsNewCard key={n.v + n.title} n={n} />)}
+        </div>
+        <div style={{ padding: "10px 16px 16px" }}>
+          <button onClick={close} style={{ width: "100%", padding: "13px", borderRadius: 12, border: "none", background: C.accent, color: "#fff", fontSize: 15, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", touchAction: "manipulation" }}>わかった</button>
+          <div style={{ fontSize: 11, color: C.muted, textAlign: "center", marginTop: 8 }}>あとから「その他 → 🆕 新機能のお知らせ」で見返せます</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// その他 → 🆕 新機能のお知らせ（全件）
+function WhatsNewPage({ currentUser, onBack }) {
+  const list = whatsNewFor(currentUser);
+  useEffect(() => { markWhatsNewSeen(); }, []);
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 24, cursor: "pointer", padding: 0 }}>←</button>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>🆕 新機能のお知らせ</div>
+      </div>
+      {list.map(n => <WhatsNewCard key={n.v + n.title} n={n} />)}
+    </div>
+  );
+}
+
 function NavIcon({ name, size = 22 }) {
   const c = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", style: { display: "inline-block", verticalAlign: "-0.125em", flexShrink: 0 } };
   switch (name) {
@@ -34520,6 +34625,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
   if (subPage === "offer") return <OfferPage data={data} setData={setData} onBack={() => setSubPage(null)} currentUser={currentUser} />;
   if (subPage === "shorui") return <ShoruiPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "dm") return <DMPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
+  if (subPage === "whatsnew") return <WhatsNewPage currentUser={currentUser} onBack={() => setSubPage(null)} />;
   const hasPin = !!getPin();
   const activityLog = data.activityLog || [];
   const notifPermission = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
@@ -34754,6 +34860,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
       <>
       <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 20 }}>その他の機能</div>
       {[
+        { key: "whatsnew", icon: "bell", title: "🆕 新機能のお知らせ", desc: "アプリで新しくできるようになったこと・場所・使い方", count: null }, // 🆕 v9.474
         { key: "yakusho", icon: "landmark", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
         { key: "investors", icon: "gem", title: "投資家リスト", desc: "反響で「投資家」を選んだ顧客を自動集約（先行打診の送り先にも自動で入る）", count: collectInvestorTargets(data).length }, // 🆕 v9.369: 問合せ件数ではなく「人数」
         { key: "offer", icon: "mail", title: "先行打診（一斉メール）", desc: "市場に出す前に、買取業者・投資家へまとめてご案内", count: (data.offers || []).length },

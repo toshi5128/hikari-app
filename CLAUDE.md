@@ -28,7 +28,11 @@
    ```
    - Node v24 は `%LOCALAPPDATA%\Programs\nodejs`（bash の PATH 外）。PowerShell から実行。
    - 出力 `dist/index.html` のサイズが極端に小さくないか確認。
-3. `index.html` を commit → `git push`。
+3. **みんなに見える機能を足した・変えた時は、`WHATS_NEW`（index.html の `// 🆕 v9.474: 新機能のお知らせ` の所）の先頭に1件足す**（必須）。
+   - `v` は APP_VERSION と同じ番号、`title` は「◯◯できるように」、`body` は素人向けの言葉で何ができるか、`where` はアプリ内の場所（例「地上げ → 地図 → 表示の切り替え『…』」）。
+   - 下田さんだけの機能（保有・収支など）は `who: ["下田"]`。不具合の修正だけ・見た目の微調整だけなら足さなくてよい。
+   - 担当者は次にアプリを開いた時にこれを1回だけ見る。下田さんが口頭で説明しなくて済むための仕組み。
+4. `index.html` を commit → `git push`。
    - GitHub Actions（`deploy.yml`）が `dist/` を自動ビルドして Pages 配信。
    - `dist/` は **gitignore**。手で add しない（CIが生成する）。
 
