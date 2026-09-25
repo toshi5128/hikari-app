@@ -32793,6 +32793,73 @@ function dmStateFor(j) {
   return String(j.ownerAddr || "").trim() ? "送付対象" : "住所未取得";
 }
 
+// 🆕 v9.473: DM手紙に「ご家族で話すきっかけ」の一文＋売却時の注意点（正直版）を差し込む文例テンプレ3種。
+//   謄本由来の情報で出し分ける。読むだけ（データには一切書き込まない）。
+//   - 取得原因: acqCause / regCause（謄本取込で入っていれば使う）→ 無ければ memo・lookupNote に「相続」があるか
+//   - 取得日:   acqDate / regDate（"2001-04-01" / "平成13年" 等）→ 所有10年以上なら「長期所有」
+const DM_FAMILY_TPL = {
+  inherit: {
+    label: "相続タイプ",
+    lead: "ご実家を受け継がれた方へ",
+    body: "受け継いだ家をどうするかは、おひとりでは決めにくいものです。このお手紙を、ご家族やご親族の皆さまで「この家をこれからどうしたいか」を話すきっかけにしていただければ幸いです。売る・貸す・残すのどれを選ばれても、判断材料はお出しします。",
+    notes: [
+      "相続登記は2024年4月から義務になりました（相続を知ってから3年以内。売却にも登記が必要です）。",
+      "名義が共有の場合、売却には共有者全員の同意が必要です。",
+      "「空き家の3,000万円特別控除」は、建築時期（昭和56年5月以前）や相続から3年目の年末までの売却など条件があり、使えない場合もあります。",
+      "売却益が出れば譲渡所得税がかかる場合があります。税額は税理士・税務署でご確認ください。",
+    ],
+  },
+  long: {
+    label: "長期所有タイプ",
+    lead: "長くお持ちの不動産について",
+    body: "長くお持ちの不動産ほど、将来どなたが引き継ぐのか、ご家族の間で話す機会がないままになりがちです。このお手紙を、ご家族で「この家をこれからどうしたいか」を話すきっかけにしていただければ幸いです。",
+    notes: [
+      "築年数が古い建物は価格がつかず、土地の値段だけで評価されることがあります。",
+      "境界がはっきりしない場合は、売却前に測量（費用がかかります）が必要になることがあります。",
+      "買った時の金額が分からないと、税金の計算上、売った金額の5%しか経費に認められない場合があります。",
+      "仲介手数料・測量費・解体費など、売却には費用がかかる場合があります。事前にすべてお見せします。",
+    ],
+  },
+  general: {
+    label: "標準タイプ",
+    lead: "ご家族で話すきっかけに",
+    body: "「まだ先のこと」と思っていても、空き家のことはご家族の間で後回しになりがちです。このお手紙を、ご家族で「この家をこれからどうしたいか」を話すきっかけにしていただければ幸いです。",
+    notes: [
+      "空き家のままでも、固定資産税や草刈り・修繕などの管理の手間はかかり続けます。",
+      "管理が行き届かず「特定空家」等に指定されると、固定資産税の軽減が受けられなくなる場合があります。",
+      "仲介手数料・測量費・解体費など、売却には費用がかかる場合があります。事前にすべてお見せします。",
+      "売却益が出れば譲渡所得税がかかる場合があります。税額は税理士・税務署でご確認ください。",
+    ],
+  },
+};
+// 取得日文字列 → 西暦年（読めなければ null）。和暦（昭和/平成/令和・S/H/R）も対応
+function dmAcqYear(s) {
+  const t = String(s || "").normalize("NFKC").trim();
+  if (!t) return null;
+  const w = t.match(/(昭和|平成|令和|[SHR])\s*(元|\d{1,2})\s*年?/i);
+  if (w) {
+    const base = { "昭和": 1925, "S": 1925, "平成": 1988, "H": 1988, "令和": 2018, "R": 2018 }[w[1].length === 1 ? w[1].toUpperCase() : w[1]];
+    const n = w[2] === "元" ? 1 : parseInt(w[2], 10);
+    return base + n;
+  }
+  const y = t.match(/(19|20)\d{2}/);
+  return y ? parseInt(y[0], 10) : null;
+}
+// どの文例を使うか＋その理由（プレビューに表示して担当者が確かめられるようにする）
+function dmFamilyKind(j) {
+  const cause = String(j.acqCause || j.regCause || "");
+  if (/相続|遺贈|遺産/.test(cause)) return { kind: "inherit", why: `謄本の取得原因「${cause}」` };
+  const memoTxt = [j.memo, j.lookupNote].map(x => String(x || "")).join(" ");
+  if (/相続/.test(memoTxt)) return { kind: "inherit", why: "メモに「相続」の記載" };
+  const y = dmAcqYear(j.acqDate || j.regDate);
+  if (y) {
+    const yrs = new Date().getFullYear() - y;
+    if (yrs >= 10) return { kind: "long", why: `所有 約${yrs}年（${y}年取得）` };
+    return { kind: "general", why: `所有 約${yrs}年（10年未満）` };
+  }
+  return { kind: "general", why: "謄本に相続・取得日の情報なし" };
+}
+
 function DMPage({ data, setData, onBack }) {
   const me = (typeof getCurrentUser === "function" && getCurrentUser()) || "";
   const [view, setView] = useState("送付対象");
@@ -32812,6 +32879,8 @@ function DMPage({ data, setData, onBack }) {
   const [editShare, setEditShare] = useState(null); // { id, names, addrs, zips } 🆕 v9.150: 共有を一括編集
   const [q, setQ] = useState(""); // 🆕 v9.146: 検索（名前・住所・ワード）
   const [attachFlyer, setAttachFlyer] = useState(true); // 🆕 v9.197: DM手紙の後ろに空き家チラシ(表裏2P)を同封して印刷
+  const [familyNote, setFamilyNote] = useState(false); // 🆕 v9.473: 「ご家族で話すきっかけ」＋注意点を手紙に入れる（既定OFF＝今までの手紙のまま）
+  const [familyKind, setFamilyKind] = useState("auto"); // auto / inherit / long / general
 
   const jiage = companyOnly(Array.isArray(data.jiage) ? data.jiage : []); // v9.444: 個人保有は会社の数字に入れない
   const ownerName = j => String(j.owner || j.ownerName || "").trim();
@@ -33077,6 +33146,7 @@ function DMPage({ data, setData, onBack }) {
   // ===== 手紙ビュー =====
   const Letter = (j) => {
     const agent = dmAgentFor(j.assignee); // 🆕 v9.152: 担当者ごとに差出人名・携帯を切替
+    const fam = familyNote ? DM_FAMILY_TPL[familyKind === "auto" ? dmFamilyKind(j).kind : familyKind] : null; // 🆕 v9.473
     return (
     <div className="dm-letter" key={j._lkey || j.id} style={{ background: "#fff", color: "#1a1a1a", padding: "15mm 16mm", fontSize: "11pt", lineHeight: 1.8, fontFamily: "'Noto Sans JP',sans-serif", borderRadius: screen === "create" ? 10 : 0 }}>
       <div style={{ textAlign: "right", fontSize: "11pt", color: "#333", marginBottom: 8 }}>{dmWareki()}</div>
@@ -33094,9 +33164,17 @@ function DMPage({ data, setData, onBack }) {
       <p style={{ margin: "0 0 12px" }}>一般的な不動産会社では、築年数の浅い物件や家具、荷物がない状態の物件などを好む傾向があります。</p>
       <p style={{ margin: "0 0 12px" }}>一方、当社では築古住宅や空き家、故障や不具合などがあり利用されていない建物を数多く取り扱ってまいりました。<b>これまで培ってきた経験やノウハウを活かし、潜在的に魅力のある不動産の所有者様に現状を知って頂くために無料で見込売却額やお持ちの不動産の注意点などをお伝えしております。</b></p>
       <p style={{ margin: "0 0 12px" }}>「まだ売る予定はない」「話だけ聞きたい」という場合でも構いません。<br /><b>お時間のある際に、お気軽にご連絡いただけましたら幸いです。</b><br />突然の訪問にもかかわらず、お手紙をお読み頂きありがとうございます。</p>
+      {fam && (
+        <div className="dm-family" style={{ border: "1px solid #999", borderRadius: 4, padding: "6px 10px", margin: "0 0 10px", fontSize: "9.5pt", lineHeight: 1.55 }}>
+          <div style={{ fontWeight: 800, fontSize: "10.5pt", marginBottom: 2 }}>■ {fam.lead}</div>
+          <div style={{ marginBottom: 4 }}>{fam.body}</div>
+          <div style={{ fontWeight: 800 }}>売却をお考えの際に知っておいていただきたいこと（正直にお伝えします）</div>
+          <ul style={{ margin: "2px 0 0", paddingLeft: "1.3em" }}>{fam.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
+        </div>
+      )}
       <div style={{ background: "#d9d9d9", WebkitPrintColorAdjust: "exact", printColorAdjust: "exact", textAlign: "center", fontWeight: 800, fontSize: "14pt", letterSpacing: "1px", padding: "8px 0", margin: "6px 0 10px" }}>【担当者連絡先：{agent.mobile}】</div>
       <div className="dm-foot" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 24, paddingTop: 10 }}>
-        <img src={HIKARI_LOGO} alt="ひかり不動産" style={{ height: "150px" }} />
+        <img src={HIKARI_LOGO} alt="ひかり不動産" style={{ height: fam ? "90px" : "150px" }} />
         <div style={{ textAlign: "right", fontSize: "10.5pt", lineHeight: 1.7, color: "#222" }}>
           <div style={{ fontWeight: 800, fontSize: "11.5pt" }}>{DM_FROM.co}</div>
           <div>{DM_FROM.license}</div>
@@ -33138,6 +33216,22 @@ function DMPage({ data, setData, onBack }) {
             <div style={{ width: "210mm", minHeight: "297mm", margin: "0 auto", background: "#fff", boxShadow: "0 2px 14px rgba(0,0,0,0.28)", overflow: "hidden" }}>{Letter(o)}</div>
           </div>
         ) : <div style={{ textAlign: "center", color: C.muted, padding: 30 }}>印刷できる宛先がありません</div>}
+        {/* 🆕 v9.473: 「ご家族で話すきっかけ」＋売却の注意点（謄本の情報で3種を出し分け） */}
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, padding: "10px 12px", background: familyNote ? C.accentBg : C.inset, border: `1.5px solid ${familyNote ? C.accent : C.borderDim}`, borderRadius: 10, cursor: "pointer", fontSize: 13, color: C.text }}>
+          <input type="checkbox" checked={familyNote} onChange={e => setFamilyNote(e.target.checked)} style={{ width: 18, height: 18 }} />
+          <span><b><NavIcon name="users" size={15} /> 「ご家族で話すきっかけに」の一文と売却の注意点を入れる</b></span>
+        </label>
+        {familyNote && (
+          <div style={{ fontSize: 11, color: C.muted, margin: "6px 2px 0", lineHeight: 1.6 }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+              {[["auto", "自動で選ぶ"], ["inherit", DM_FAMILY_TPL.inherit.label], ["long", DM_FAMILY_TPL.long.label], ["general", DM_FAMILY_TPL.general.label]].map(([k, l]) => (
+                <button key={k} onClick={() => setFamilyKind(k)} style={{ background: familyKind === k ? C.accent : C.inset, color: familyKind === k ? "#fff" : C.text, border: `1.5px solid ${familyKind === k ? C.accent : C.borderDim}`, borderRadius: 20, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
+              ))}
+            </div>
+            {o && familyKind === "auto" && (() => { const r = dmFamilyKind(o); return <div>この手紙は <b>{DM_FAMILY_TPL[r.kind].label}</b>（理由：{r.why}）</div>; })()}
+            <div>※ 自動は「謄本の取得原因・取得日」→「メモの『相続』」の順で判定します。違っていたら上のボタンで全通まとめて切り替えられます。</div>
+          </div>
+        )}
         {/* 🆕 v9.197: 空き家チラシ(表裏2P)を同封 */}
         <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, padding: "10px 12px", background: attachFlyer ? C.accentBg : C.inset, border: `1.5px solid ${attachFlyer ? C.accent : C.borderDim}`, borderRadius: 10, cursor: "pointer", fontSize: 13, color: C.text }}>
           <input type="checkbox" checked={attachFlyer} onChange={e => setAttachFlyer(e.target.checked)} style={{ width: 18, height: 18 }} />
