@@ -7787,6 +7787,69 @@ function loadChika() {
     .catch(e => { _chikaPromise = null; throw e; });
   return _chikaPromise;
 }
+// 🆕 v9.474: 所有者詳細に「最寄りの基準地」。住宅地の地点を優先し、3km以内に無ければ種別を問わず探す。
+function _chikaDistM(lat1, lng1, lat2, lng2) {
+  const R = 6371000, toR = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toR, dLng = (lng2 - lng1) * toR;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * toR) * Math.cos(lat2 * toR) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+const CHIKA_NEAR_MAX_M = 3000;
+function _chikaNearest(pts, lat, lng) {
+  let best = null, bestD = Infinity, bestRes = null, bestResD = Infinity;
+  for (const p of pts) {
+    const d = _chikaDistM(lat, lng, p.lat, p.lng);
+    if (d < bestD) { best = p; bestD = d; }
+    if (d < bestResD && _chikaIsRes(p)) { bestRes = p; bestResD = d; }
+  }
+  if (bestRes && bestResD <= CHIKA_NEAR_MAX_M) return { p: bestRes, d: bestResD };
+  if (best && bestD <= CHIKA_NEAR_MAX_M) return { p: best, d: bestD };
+  return null;
+}
+function NearestChikaCard({ lat, lng }) {
+  const [near, setNear] = React.useState(undefined);   // undefined=読込中 / null=近くに無い
+  const [open, setOpen] = React.useState(false);
+  React.useEffect(() => {
+    if (typeof lat !== "number" || typeof lng !== "number") { setNear(null); return; }
+    let alive = true;
+    setNear(undefined);
+    loadChika().then(all => { if (alive) setNear(_chikaNearest(all, lat, lng)); })
+      .catch(() => { if (alive) setNear(null); });
+    return () => { alive = false; };
+  }, [lat, lng]);
+  if (typeof lat !== "number" || typeof lng !== "number") return null;
+  const box = { background: "#fffbeb", border: "1.5px solid #f59e0b66", borderRadius: 12, padding: "10px 12px", marginBottom: 14, color: "#334155" };
+  if (near === undefined) return <div style={{ ...box, fontSize: 11, color: "#92400e" }}>📈 最寄りの基準地を探しています…</div>;
+  if (!near) return <div style={{ ...box, fontSize: 11, color: "#92400e" }}>📈 近く（{CHIKA_NEAR_MAX_M / 1000}km以内）に基準地がありません</div>;
+  const p = near.p;
+  const dText = near.d < 1000 ? Math.round(near.d / 10) * 10 + "m" : (near.d / 1000).toFixed(1) + "km";
+  const chgCol = p.chg > 0 ? "#dc2626" : p.chg < 0 ? "#2563eb" : "#64748b";
+  const r5 = p.p5 > 0 ? (p.price / p.p5 - 1) * 100 : null;
+  const title = p.kind === 1 ? `地価調査 ${p.year}年7月` : `地価公示 ${p.year}年1月`;
+  return (
+    <div style={box}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: "#92400e" }}>📈 最寄りの基準地（ここから {dText}）</div>
+        <div style={{ fontSize: 10, color: "#64748b" }}>{title}・{CHIKA_CAT[p.cat] || ""}</div>
+      </div>
+      <div style={{ marginTop: 4, display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        <b style={{ fontSize: 18, color: _chikaColor(p.price) }}>坪 {_chikaTsuboText(p.price)}円</b>
+        <span style={{ fontSize: 12 }}>前年比 <b style={{ color: chgCol }}>{p.chg > 0 ? "+" : ""}{p.chg}%</b></span>
+        {r5 != null && <span style={{ fontSize: 12 }}>5年で <b style={{ color: r5 > 0 ? "#dc2626" : r5 < 0 ? "#2563eb" : "#64748b" }}>{r5 > 0 ? "+" : ""}{r5.toFixed(1)}%</b></span>}
+      </div>
+      <button onClick={() => setOpen(o => !o)} style={{ marginTop: 4, padding: 0, background: "none", border: "none", color: "#92400e", fontSize: 11, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
+        {open ? "閉じる" : "くわしく"}
+      </button>
+      {open && (
+        <div style={{ fontSize: 11, lineHeight: 1.6, marginTop: 4 }}>
+          <div>所在: {p.addr}</div>
+          <div>{p.price.toLocaleString()}円/㎡{p.sta ? `　${p.sta}駅 ${p.dist ? p.dist.toLocaleString() + "m" : ""}` : ""}</div>
+          <div style={{ color: "#94a3b8", fontSize: 10, marginTop: 2 }}>更地としての土地だけの値段。形・道路・再建築の可否で実際の取引は上下します。出典: 国土数値情報（国土交通省）を加工</div>
+        </div>
+      )}
+    </div>
+  );
+}
 function _chikaPopupHtml(p) {
   const code = (p.kind === 1 ? "(県)" : "") + p.name + (p.cat === 20 ? "(林)" : p.cat ? p.cat : "") + "-" + p.no;
   const title = p.kind === 1 ? `地価調査（基準地価）${p.year}年7月1日` : `地価公示 ${p.year}年1月1日`;
@@ -27788,6 +27851,14 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               return <Tag label="📭 DM未送付" color="#fbbf24" />;
             })()}
           </div>
+
+          {/* 🆕 v9.474: 最寄りの基準地（価格・前年比・距離）。表示だけでデータには触らない */}
+          {(() => {
+            const _lat = Number(_raw.lat != null ? _raw.lat : selected.item.lat);
+            const _lng = Number(_raw.lng != null ? _raw.lng : selected.item.lng);
+            if (!isFinite(_lat) || !isFinite(_lng) || (!_lat && !_lng)) return null;
+            return <NearestChikaCard lat={_lat} lng={_lng} />;
+          })()}
 
           {/* 🆕 v9.323: 「売却ご提案書（査定書）を作成」は下のワークフローへ移設（一番上からは撤去） */}
 
