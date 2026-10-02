@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-09-27-v9.476-ai-85f28f95";
+const APP_VERSION = "2026-10-02-v9.477-holding-cost-extras";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6847,6 +6847,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.477", date: "2026-10-02", title: "保有物件の諸費用に、自分で項目を足せるように",
+    body: "仲介手数料・登記費用などの決まった項目のほかに、「伐採費用」「蜂の駆除スプレー代」のように名前をつけて金額を足せます。足した分は諸費用の合計と利回り・回収の計算にそのまま入ります。",
+    where: "保有 → 物件を開く → 「■ 諸費用の内訳」の下の「＋ 諸費用の項目を足す」", who: ["下田"] },
   { v: "9.476", date: "2026-09-27", title: "DMの手紙に「ご家族で話すきっかけ」の一文を入れられるように",
     body: "チェックを入れると、手紙に「ご家族でこの家をどうしたいか話すきっかけに」という一文と、売る時に知っておいてほしい注意点（相続登記・税金・費用など）が入ります。相続で受け継いだ人・長く持っている人・それ以外で、文面が自動で変わります（ボタンで選び直しもできます）。",
     where: "その他 → DM管理 → 所有者を選んで「DMを作成」→「『ご家族で話すきっかけに』の一文と売却の注意点を入れる」",
@@ -33988,6 +33991,10 @@ const HOLDING_COST_ITEMS = [
 ];
 function holdingCostBreak(h) {
   const rows = HOLDING_COST_ITEMS.map(([k, label]) => ({ k, label, v: hNum(h[k]) }));
+  // 🆕 v9.477: 自分で名前をつけて足した諸費用（伐採・蜂の駆除など）も内訳に入れる
+  (Array.isArray(h.costExtras) ? h.costExtras : []).forEach((e, i) => {
+    if (e) rows.push({ k: "costExtras." + (e.id || i), label: e.label || "（名前なし）", v: hNum(e.amount) });
+  });
   const sum = rows.reduce((a, r) => a + r.v, 0);
   // 🆕 v9.457: 内訳が1つでも入っていれば内訳だけを合計する（旧「諸費用」buyCost は無視＝二重計上しない）。
   //   内訳が全部空の古いレコードだけ、旧 buyCost をそのまま使う。
@@ -34311,6 +34318,7 @@ function HoldingsPage({ data, setData, currentUser }) {
     const out = { ...base, ...h };
     out.id = h.id; out.owner = h.owner || me;
     if (!Array.isArray(out.extras)) out.extras = [];
+    if (!Array.isArray(out.costExtras)) out.costExtras = [];
     return out;
   };
   const blankHolding = () => ({ id: Date.now(), owner: me, name: "", address: "", status: "購入済",
@@ -34318,7 +34326,7 @@ function HoldingsPage({ data, setData, currentUser }) {
     buyDate: "", builtDate: "", brokerFee: "", regFee: "", stampFee: "", acqTax: "", initInsurance: "", otherBuyCost: "",
     loanMonthly: "", tenant: "", contractFrom: "", contractTo: "", renewalFee: "",
     keyMoney: "", deposit: "", soldPrice: "", ownerType: "法人", rentStart: "",
-    saleTarget: "", saleFee: "", saleOtherCost: "", loanBalance: "", extras: [],
+    saleTarget: "", saleFee: "", saleOtherCost: "", loanBalance: "", extras: [], costExtras: [],
     holdSpanY: "3", demolitionCost: "", memo: "" });
 
   const yen = n => "¥" + Math.round(n || 0).toLocaleString("ja-JP");
@@ -34609,6 +34617,23 @@ function HoldingsPage({ data, setData, currentUser }) {
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginTop: 4 }}>■ 諸費用の内訳</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {HOLDING_COST_ITEMS.map(([k, label]) => money(label, k))}
+              </div>
+              {/* 🆕 v9.477: 決まった項目にない諸費用（伐採・蜂の駆除スプレーなど）を名前つきで足す */}
+              <div style={{ display: "grid", gap: 6 }}>
+                {(edit.costExtras || []).map((ex, i) => (
+                  <div key={ex.id || i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input type="text" value={ex.label || ""} placeholder="内容（例: 伐採費用）"
+                      onChange={e => set("costExtras", (edit.costExtras || []).map((x, j) => j === i ? { ...x, label: e.target.value } : x))}
+                      style={{ flex: 1, minWidth: 0, padding: "7px 8px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 12, fontFamily: "inherit" }} />
+                    <div style={{ width: 110, flexShrink: 0 }}>
+                      <MoneyInput value={ex.amount} onChange={v => set("costExtras", (edit.costExtras || []).map((x, j) => j === i ? { ...x, amount: v } : x))} placeholder="金額" />
+                    </div>
+                    <button onClick={() => set("costExtras", (edit.costExtras || []).filter((x, j) => j !== i))}
+                      style={{ background: "transparent", border: "none", color: C.danger, fontSize: 16, cursor: "pointer", padding: "0 4px" }}>×</button>
+                  </div>
+                ))}
+                <button onClick={() => set("costExtras", [...(edit.costExtras || []), { id: Date.now(), label: "", amount: "" }])}
+                  style={{ padding: "7px 12px", background: "transparent", border: `1px dashed ${C.borderDim}`, color: C.text, borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>＋ 諸費用の項目を足す</button>
               </div>
               {(() => {
                 const br = holdingCostBreak(edit);
