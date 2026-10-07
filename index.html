@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-02-v9.478-fix";
+const APP_VERSION = "2026-10-07-v9.479-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -795,6 +795,321 @@ function viewingAttemptCaption(v) {
   return `${def ? def.short : "記録"}${cnt > 1 ? ` ${cnt}回` : ""}${when ? ` ${when}` : ""}${last.by ? " " + last.by : ""}`;
 }
 
+// 🆕 v9.479: 反響のお客様へ「資料つきメール」を1タップで作って会社アドレスから送る
+//   ・物件ごとに資料（マイソクPDF・図面・ドライブのリンク）を1回登録しておく＝ stock.docs / mediation.docs
+//   ・反響を取り込んだら、お礼＋資料メールの下書きが自動ででき、中身を見て「送信」を押すだけ
+//   ・送信は先行打診と同じ仕組み（Supabase の mail_queue → GAS が Gmail で送る。差出人＝担当者の会社アドレス）
+//   ・送ったら自動で「📧メール送った」とやり取り欄に記録する
+const VMAIL_TEMPLATES = [
+  {
+    key: "thanks", label: "お礼＋資料",
+    subject: "【ひかり不動産】{{物件名}} 資料送付のご案内",
+    body: `{{お名前}} 様
+
+この度は「{{物件名}}」にお問い合わせいただき、誠にありがとうございます。
+ひかり不動産の{{差出人}}でございます。
+
+物件の資料をお送りいたします。
+{{資料}}
+
+現地のご案内はいつでも承っております。
+ご都合のよい日時を2〜3つほどお知らせいただけましたら、こちらで調整いたします。
+
+ご不明な点がございましたら、お気軽にご返信ください。
+どうぞよろしくお願いいたします。`,
+    sms: "{{お名前}}様 ひかり不動産の{{差出人}}です。{{物件名}}へのお問い合わせありがとうございます。{{資料URL}}ご見学のご希望日時をお知らせください。",
+  },
+  {
+    key: "absent", label: "電話がつながらなかった",
+    subject: "【ひかり不動産】{{物件名}} お問い合わせの件",
+    body: `{{お名前}} 様
+
+ひかり不動産の{{差出人}}でございます。
+「{{物件名}}」へのお問い合わせ、誠にありがとうございます。
+
+お電話を差し上げましたが、ご不在のようでしたのでメールにて失礼いたします。
+物件の資料をお送りいたします。
+{{資料}}
+
+ご都合のよい時間帯やご連絡方法（お電話・メール）をお知らせいただけましたら、
+あらためてご連絡いたします。
+
+どうぞよろしくお願いいたします。`,
+    sms: "{{お名前}}様 ひかり不動産の{{差出人}}です。{{物件名}}の件でお電話いたしました。ご都合のよい時間帯をお知らせいただければ折り返しご連絡いたします。",
+  },
+  {
+    key: "visit", label: "案内の日程",
+    subject: "【ひかり不動産】{{物件名}} ご案内日程のご相談",
+    body: `{{お名前}} 様
+
+ひかり不動産の{{差出人}}でございます。
+「{{物件名}}」のご見学のご希望、ありがとうございます。
+
+下記の日程でご案内が可能です。
+ご都合のよい日時をお知らせください。
+
+・　月　日（　）　時〜
+・　月　日（　）　時〜
+・　月　日（　）　時〜
+
+上記以外の日時でも調整いたしますので、お気軽にお申し付けください。
+当日は現地にてお待ちしております。
+
+どうぞよろしくお願いいたします。`,
+    sms: "{{お名前}}様 ひかり不動産の{{差出人}}です。{{物件名}}のご見学について、ご希望の日時をいくつかお知らせください。",
+  },
+  {
+    key: "follow", label: "その後いかがですか",
+    subject: "【ひかり不動産】{{物件名}} その後のご検討状況について",
+    body: `{{お名前}} 様
+
+ひかり不動産の{{差出人}}でございます。
+先日は「{{物件名}}」にお問い合わせいただき、ありがとうございました。
+
+その後、ご検討の状況はいかがでしょうか。
+ご不明な点やご心配な点がございましたら、お気軽にお聞かせください。
+
+また、ご希望の条件（エリア・ご予算・広さなど）をお知らせいただければ、
+条件に近い物件が出た際に、一般に公開する前にご案内いたします。
+
+どうぞよろしくお願いいたします。`,
+    sms: "{{お名前}}様 ひかり不動産の{{差出人}}です。先日は{{物件名}}へのお問い合わせありがとうございました。その後ご検討の状況はいかがでしょうか。ほかの物件のご紹介もできますので、お気軽にご連絡ください。",
+  },
+];
+
+// ログイン中の人を差出人に（会社アドレスが無い人は先頭＝下田）
+function vmailSenderFor(user) {
+  const list = OFFER_SENDERS.filter(s => !isRetiredMember(s.short));
+  return list.find(s => s.short === user) || list[0] || OFFER_SENDERS[0];
+}
+function propertyDocsBlock(docs) {
+  const arr = (docs || []).filter(d => d && d.url);
+  if (!arr.length) return "（資料は準備ができ次第お送りいたします）";
+  return arr.map(d => `■ ${d.label || "物件資料"}\n${d.url}`).join("\n\n");
+}
+function vmailFill(text, ctx) {
+  const first = (ctx.docs || []).find(d => d && d.url);
+  return String(text || "")
+    .replace(/\{\{お名前\}\}/g, ctx.name || "お客")
+    .replace(/\{\{物件名\}\}/g, ctx.propName || "物件")
+    .replace(/\{\{差出人\}\}/g, ctx.senderShort || "")
+    .replace(/\{\{資料\}\}/g, propertyDocsBlock(ctx.docs))
+    .replace(/\{\{資料URL\}\}/g, first ? `資料はこちらです ${first.url} ` : "")
+    .replace(/\n{3,}/g, "\n\n");
+}
+// どこからでも「この反響のメールを作る」画面を開く（画面の一番外側の ViewingMailHost が受け取る）
+function openViewingMail(detail) {
+  try { window.dispatchEvent(new CustomEvent("hikari-vmail", { detail })); } catch (e) { /* 古い端末は何もしない */ }
+}
+// 物件資料（PDF・画像）をクラウドの置き場へ。返り値は誰でも開けるURL
+async function uploadPropertyDoc(parentId, file) {
+  if (!file) throw new Error("ファイルがありません");
+  if (file.size > 25 * 1024 * 1024) throw new Error("25MBを超えるファイルは送れません。ドライブのリンクで登録してください。");
+  const ext = ((file.name || "").match(/\.([a-zA-Z0-9]{1,5})$/) || [, "pdf"])[1].toLowerCase();
+  const path = `docs/${String(parentId).replace(/[^\w-]/g, "_")}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${PIN_PHOTOS_BUCKET}/${path}`, {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + SUPABASE_KEY, "apikey": SUPABASE_KEY, "Content-Type": file.type || "application/pdf", "x-upsert": "true" },
+    body: file,
+  });
+  if (!res.ok) throw new Error("アップロードできませんでした（" + res.status + "）");
+  return { url: `${SUPABASE_URL}/storage/v1/object/public/${PIN_PHOTOS_BUCKET}/${path}`, path };
+}
+// 物件1件の資料を書き換える（その物件の docs だけを最小差分で）
+function setParentDocs(setData, parentType, parentId, fn) {
+  const key = parentType === "mediation" ? "mediations" : "stocks";
+  setData(d => ({ ...d, [key]: (d[key] || []).map(p => p.id !== parentId ? p : { ...p, docs: fn(p.docs || []) }) }));
+}
+
+// 物件資料の一覧＋追加（在庫・仲介の編集画面と、メール作成画面の両方で使う）
+function PropertyDocsEditor({ parentType, parent, setData, currentUser, compact }) {
+  const docs = (parent && parent.docs) || [];
+  const [busy, setBusy] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [label, setLabel] = useState("");
+  const [url, setUrl] = useState("");
+  const fileRef = React.useRef(null);
+  if (!parent || parent.id == null) return null;
+  const add = (doc) => setParentDocs(setData, parentType, parent.id, arr => [...arr, { id: Date.now(), addedAt: new Date().toISOString(), by: currentUser || "", ...doc }]);
+  const onFile = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const nm = window.prompt("資料の名前（メールにこの名前で載ります）", (f.name || "物件資料").replace(/\.[^.]+$/, "")) ;
+    if (nm === null) return;
+    setBusy(true);
+    try { const r = await uploadPropertyDoc(parent.id, f); add({ label: nm.trim() || "物件資料", url: r.url, path: r.path }); }
+    catch (er) { alert("⚠️ " + er.message); }
+    setBusy(false);
+  };
+  const addLink = () => {
+    const u = url.trim();
+    if (!/^https?:\/\//.test(u)) { alert("https:// から始まるリンクを貼ってください"); return; }
+    add({ label: label.trim() || "物件資料", url: u });
+    setLabel(""); setUrl(""); setLinkOpen(false);
+  };
+  const remove = (d) => {
+    if (!window.confirm(`資料「${d.label}」を外しますか？\n（これからのメールに載らなくなります）`)) return;
+    setParentDocs(setData, parentType, parent.id, arr => arr.filter(x => x.id !== d.id));
+  };
+  return (
+    <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 10, marginBottom: compact ? 10 : 16 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: C.text, marginBottom: 6 }}>📎 物件資料（{docs.length}件）<span style={{ fontWeight: 500, color: C.muted, fontSize: 11 }}>　反響のメールに自動で載ります</span></div>
+      {docs.length === 0 && <div style={{ fontSize: 11, color: C.warn, marginBottom: 6 }}>まだありません。マイソク・図面のPDFか、ドライブのリンクを入れておくと、反響が来た時にそのまま送れます。</div>}
+      {docs.map(d => (
+        <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, background: C.cardBg, borderRadius: 8, padding: "7px 9px", marginBottom: 5 }}>
+          <a href={d.url} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 0, color: C.accent, fontSize: 13, fontWeight: 700, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.path ? "📄" : "🔗"} {d.label || "物件資料"}</a>
+          <button onClick={() => remove(d)} style={{ background: "transparent", border: `1px solid ${C.muted}55`, color: C.muted, borderRadius: 999, padding: "3px 9px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>外す</button>
+        </div>
+      ))}
+      <input ref={fileRef} type="file" accept="application/pdf,image/*" style={{ display: "none" }} onChange={onFile} />
+      <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+        <button disabled={busy} onClick={() => fileRef.current && fileRef.current.click()} style={{ flex: 1, background: C.accent + "18", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "9px 4px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>{busy ? "送信中…" : "📄 PDF・画像を入れる"}</button>
+        <button onClick={() => setLinkOpen(o => !o)} style={{ flex: 1, background: C.cardBg, border: `1.5px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "9px 4px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>🔗 リンクを貼る</button>
+      </div>
+      {linkOpen && (
+        <div style={{ marginTop: 8 }}>
+          <input value={label} onChange={e => setLabel(e.target.value)} placeholder="名前（例：販売図面）" style={{ ...inp, marginBottom: 6 }} />
+          <input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://drive.google.com/…" style={{ ...inp, marginBottom: 6 }} />
+          <button onClick={addLink} style={{ ...btnStyle("primary"), width: "100%", padding: "10px 0" }}>このリンクを登録</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 反響1件へのメール（下書き → 1タップ送信）。画面の一番外側に1つだけ置く。
+function ViewingMailHost({ data, setData }) {
+  const [req, setReq] = useState(null); // { parentType, parentId, vid, tpl }
+  const [tplKey, setTplKey] = useState("thanks");
+  const [senderKey, setSenderKey] = useState("");
+  const [to, setTo] = useState("");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const currentUser = getCurrentUser();
+  useEffect(() => {
+    const h = (e) => {
+      const d = e.detail || {};
+      setReq(d);
+      setTplKey(d.tpl || "thanks");
+      setSenderKey(vmailSenderFor(currentUser).key);
+      setSubject(""); setBody(""); setTo("");
+    };
+    window.addEventListener("hikari-vmail", h);
+    return () => window.removeEventListener("hikari-vmail", h);
+  }, []);
+  const key = req && req.parentType === "mediation" ? "mediations" : "stocks";
+  const parent = req ? (data[key] || []).find(p => p && p.id === req.parentId) : null;
+  // id で探す（古い反響で id が無い時は何番目かで探す）
+  const vIndex = !parent ? -1 : (() => {
+    const arr = parent.viewings || [];
+    const i = req.vid != null ? arr.findIndex(x => x && String(x.id) === String(req.vid)) : -1;
+    return i >= 0 ? i : (req.vi != null && arr[req.vi] ? req.vi : -1);
+  })();
+  const v = vIndex >= 0 ? parent.viewings[vIndex] : null;
+  const senders = OFFER_SENDERS.filter(s => !isRetiredMember(s.short));
+  const sender = senders.find(s => s.key === senderKey) || vmailSenderFor(currentUser);
+  const tpl = VMAIL_TEMPLATES.find(t => t.key === tplKey) || VMAIL_TEMPLATES[0];
+  const ctx = { name: (v && v.customer) || "", propName: parent ? (parent.name || "") : "", senderShort: sender.short, docs: (parent && parent.docs) || [] };
+  // 型・差出人・資料が変わったら文面を作り直す（その場で直した文も、作り直すと消える＝分かりやすさ優先）
+  const sig = `${tplKey}|${sender.key}|${ctx.docs.map(d => d.id).join(",")}|${req ? req.vid : ""}`;
+  const sigRef = React.useRef("");
+  useEffect(() => {
+    if (!req || !v) return;
+    if (sigRef.current === sig) return;
+    sigRef.current = sig;
+    setSubject(vmailFill(tpl.subject, ctx));
+    setBody(vmailFill(tpl.body, ctx));
+    setTo(prev => prev || v.email || "");
+  });
+  if (!req) return null;
+  const close = () => { setReq(null); sigRef.current = ""; };
+  if (!parent || !v) {
+    return <BottomSheet title="✉️ メールを作る" onClose={close}><div style={{ color: C.muted, fontSize: 13, padding: "10px 0 20px" }}>この反響が見つかりませんでした。いったん閉じて開き直してください。</div></BottomSheet>;
+  }
+  const smsText = vmailFill(tpl.sms, ctx);
+  const tel = String(v.contact || "").replace(/[^\d+]/g, "");
+  const record = (kindText) => {
+    setData(d => ({
+      ...d,
+      [key]: (d[key] || []).map(p => p.id !== parent.id ? p : {
+        ...p,
+        viewings: (p.viewings || []).map((x, i) => (!x || i !== vIndex) ? x : {
+          ...withViewingAttempt(x, "mail", currentUser),
+          comments: [...(x.comments || []), { id: Date.now(), member: currentUser || "", text: kindText, createdAt: new Date().toISOString(), updatedAt: Date.now() }],
+        }),
+      }),
+    }));
+  };
+  const send = async () => {
+    const addr = to.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr)) { alert("メールアドレスを確認してください"); return; }
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    if (!window.confirm(`このメールを送ります。\n\n宛先: ${v.customer || ""} 様（${addr}）\n差出人: ${sender.name}\n件名: ${subject}\n\nよろしいですか？`)) return;
+    setSending(true);
+    try {
+      const payload = {
+        status: "pending", subject, body,
+        sender_name: sender.name, sender_mail: sender.mail,
+        property: parent.name || "", price_text: "", doc_url: (ctx.docs[0] && ctx.docs[0].url) || "", memo: "",
+        recipients: [{ id: "v:" + (v.id || vIndex), email: addr, company: "", name: v.customer || "" }],
+        requested_by: currentUser || "",
+      };
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_queue`, {
+        method: "POST",
+        headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", "Prefer": "return=minimal" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`受付できませんでした（${res.status}）`);
+      if (addr !== (v.email || "")) {
+        setData(d => ({ ...d, [key]: (d[key] || []).map(p => p.id !== parent.id ? p : { ...p, viewings: (p.viewings || []).map((x, i) => (x && i === vIndex && !x.email) ? { ...x, email: addr, updatedAt: Date.now() } : x) }) }));
+      }
+      record(`📧 メール送信「${tpl.label}」（${sender.short}から）`);
+      alert("📨 送信を受け付けました。1分ほどで届きます。\n「📧メール送った」として記録しました。");
+      close();
+    } catch (e) {
+      alert(`送れませんでした。\n\n${e.message}\n\n電波の良いところでもう一度お試しください。`);
+    }
+    setSending(false);
+  };
+  const copy = async (txt, msg) => {
+    try { await navigator.clipboard.writeText(txt); alert(msg); }
+    catch (e) { alert("コピーできませんでした。長押しで選択してコピーしてください。"); }
+  };
+  const chip = (on) => ({ padding: "8px 12px", borderRadius: 999, border: `2px solid ${on ? C.accent : C.borderDim}`, background: on ? C.accentBg : C.cardBg, color: C.text, fontSize: 12, fontWeight: on ? 800 : 500, cursor: "pointer", fontFamily: "inherit" });
+  return (
+    <BottomSheet title={`✉️ ${v.customer || "お客様"} 様へ`} onClose={close}>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>{parent.name}{v.date ? `　反響 ${v.date}` : ""}</div>
+      <Field label="どんなメール？">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {VMAIL_TEMPLATES.map(t => <button key={t.key} onClick={() => setTplKey(t.key)} style={chip(tplKey === t.key)}>{t.label}</button>)}
+        </div>
+      </Field>
+      <PropertyDocsEditor parentType={req.parentType} parent={parent} setData={setData} currentUser={currentUser} compact />
+      <Field label="差出人（返信はこの人に届きます）">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {senders.map(s => <button key={s.key} onClick={() => setSenderKey(s.key)} style={chip(sender.key === s.key)}>{s.short}</button>)}
+        </div>
+      </Field>
+      <Field label="宛先">
+        <input value={to} onChange={e => setTo(e.target.value)} placeholder="メールアドレス（無ければ下のSMSで）" style={inp} inputMode="email" />
+      </Field>
+      <Field label="件名"><input value={subject} onChange={e => setSubject(e.target.value)} style={inp} /></Field>
+      <Field label="本文（そのまま直せます・署名は自動で付きます）">
+        <textarea value={body} onChange={e => setBody(e.target.value)} rows={14} style={{ ...inp, lineHeight: 1.6, fontSize: 13 }} />
+      </Field>
+      <button disabled={sending || !to.trim()} onClick={send} style={{ ...btnStyle("primary"), width: "100%", padding: "15px 0", fontSize: 15, opacity: to.trim() ? 1 : 0.5 }}>{sending ? "送信中…" : "📨 会社のアドレスから送信"}</button>
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+        <button onClick={() => copy(`${subject}\n\n${body}`, "件名と本文をコピーしました")} style={{ ...btnStyle("ghost"), flex: 1, padding: "11px 0", fontSize: 12 }}>📋 本文コピー</button>
+        <button onClick={() => copy(smsText, "SMS・LINE用の短い文をコピーしました")} style={{ ...btnStyle("ghost"), flex: 1, padding: "11px 0", fontSize: 12 }}>💬 短い文コピー</button>
+        {tel && <a href={`sms:${tel}?body=${encodeURIComponent(smsText)}`} onClick={() => setTimeout(() => { if (window.confirm("SMSを送りましたか？\n「📧メール送った」として記録します。")) { record(`💬 SMS送信「${tpl.label}」`); close(); } }, 800)} style={{ ...btnStyle("ghost"), flex: 1, padding: "11px 0", fontSize: 12, textAlign: "center", textDecoration: "none" }}>📱 SMS</a>}
+      </div>
+      <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginTop: 10 }}>短い文（SMS・LINE用）：{smsText}</div>
+    </BottomSheet>
+  );
+}
+
 // 🆕 v9.370: 反響リストを開いた時の「間延び」対策
 //   ・最初は5件だけ出す（「もっと見る」で全部）
 //   ・開いている間だけ画面上部に帯を固定し、どこまでスクロールしてもワンタップで閉じられる
@@ -802,8 +1117,22 @@ function viewingAttemptCaption(v) {
 const VIEWING_PREVIEW_COUNT = 5;
 
 // 🆕 v9.375: 反響カードの「当たる」ボタン。何をしたかまで1タップで残す。
-function ViewingActions({ v, onAttempt, onUnhandle }) {
+function ViewingActions({ v, onAttempt, onUnhandle, onCompose }) {
   const cap = viewingAttemptCaption(v);
+  const _att = (v && v.attempts) || [];
+  const _absentN = _att.filter(a => a && a.kind === "tel_absent").length;
+  const _mailed = _att.some(a => a && a.kind === "mail");
+  const composeBtn = onCompose ? (
+    _absentN >= 2 && !_mailed && !v.handled ? (
+      <button onClick={(e) => { e.stopPropagation(); onCompose("absent"); }} style={{ width: "100%", marginTop: 6, background: "#f59e0b", border: "none", color: "#fff", borderRadius: 8, padding: "10px 4px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 800 }}>
+        📵 {_absentN}回不在 → 資料つきメール・SMSを送る
+      </button>
+    ) : (
+      <button onClick={(e) => { e.stopPropagation(); onCompose(_mailed ? "follow" : "thanks"); }} style={{ width: "100%", marginTop: 6, background: C.accent + "14", border: `1.5px solid ${C.accent}88`, color: C.accent, borderRadius: 8, padding: "9px 4px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 800 }}>
+        ✉️ {_mailed ? "メール・SMSを作る（2通目）" : "資料つきメール・SMSを作る"}
+      </button>
+    )
+  ) : null;
   if (!v.handled) {
     return (
       <div style={{ marginTop: 8 }}>
@@ -818,6 +1147,7 @@ function ViewingActions({ v, onAttempt, onUnhandle }) {
             );
           })}
         </div>
+        {composeBtn}
         {cap && <div style={{ fontSize: 10, color: C.muted, marginTop: 5 }}>{cap}</div>}
       </div>
     );
@@ -827,6 +1157,7 @@ function ViewingActions({ v, onAttempt, onUnhandle }) {
       <span style={{ fontSize: 11, color: "#10b981", fontWeight: 700 }}>{cap || "✅ 対応済み"}</span>
       <button onClick={(e) => { e.stopPropagation(); onUnhandle(); }}
         style={{ marginLeft: "auto", background: "transparent", border: `1px solid ${C.muted}55`, color: C.muted, borderRadius: 999, padding: "3px 10px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700 }}>↩ 未対応に戻す</button>
+      {composeBtn && <div style={{ width: "100%" }}>{composeBtn}</div>}
     </div>
   );
 }
@@ -872,6 +1203,31 @@ function collectPendingViewings(data, user) {
   return out;
 }
 
+// 🆕 v9.479: 追いかけ漏れ対策 —「つながった（対応済み）」で一覧から消えた後、7日以上何もしていない人
+//   ・案内済み、または見込み「熱い・検討中」なのに放置＝一番もったいない
+//   ・申込・成約・見送り、見込み未入力・微妙・ダメ、売れ終わった物件は対象外
+const FOLLOW_DAYS = 7;
+const FOLLOW_MAX_AGE = 60; // 反響から60日を過ぎた古い人は出さない（昔の反響が山積みになって本当に追うべき人が埋もれるため）
+function collectFollowViewings(data, user) {
+  const out = [];
+  const limit = Date.now() - FOLLOW_DAYS * 86400000;
+  const oldest = Date.now() - FOLLOW_MAX_AGE * 86400000;
+  const push = (parentType, p, name) => (p.viewings || []).forEach((v, idx) => {
+    if (!v || !v.handled) return;
+    // 見込みのある人だけ（案内済み、または見込み「熱い・検討中」）。見込み未入力の昔の反響まで出すと山積みで埋もれる
+    const _r = v.result || "";
+    if (!(_r === "案内済" || ((_r === "未案内" || _r === "") && (v.prospect === "熱い" || v.prospect === "検討中")))) return;
+    if (viewingLastTouch(v) > limit) return;
+    const _d = new Date(String(v.date || "") + (String(v.date || "").length === 10 ? "T00:00:00" : ""));
+    if (isNaN(_d.getTime()) || _d.getTime() < oldest) return;
+    out.push({ parentType, parentId: p.id, parentName: name, assignee: p.assignee || "", idx, v, follow: true });
+  });
+  visibleToUser(data.stocks, user).forEach(s => { if (s && s.status !== "売決完了") push("stock", s, s.name || "(無題)"); });
+  visibleToUser(data.mediations, user).forEach(m => { if (m && m.status !== "決済完了") push("mediation", m, (m.name || "(無題)") + "（仲介）"); });
+  out.sort((a, b) => viewingLastTouch(a.v) - viewingLastTouch(b.v));
+  return out;
+}
+
 function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
   const [onlyMine, setOnlyMine] = useState(false);
   // 🆕 v9.406: 「まだ誰も触っていない(🔴未対応)」と「かけたが留守(📵不在留守電)」は掛け方が違う。分けて出せるようにする。
@@ -880,7 +1236,9 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
   const base = onlyMine ? all.filter(r => r.assignee === currentUser) : all;
   const stateCounts = { "未対応": 0, "不在留守電": 0 };
   base.forEach(r => { const k = viewingHandledKey(r.v); if (k in stateCounts) stateCounts[k]++; });
-  const rows = stateFilter === "all" ? base : base.filter(r => viewingHandledKey(r.v) === stateFilter);
+  const followAll = collectFollowViewings(data, currentUser);
+  const followRows = onlyMine ? followAll.filter(r => r.assignee === currentUser) : followAll;
+  const rows = stateFilter === "follow" ? followRows : stateFilter === "all" ? base : base.filter(r => viewingHandledKey(r.v) === stateFilter);
 
   const applyAttempt = (row, kind) => {
     if (!currentUser) { alert("先にログインしてください"); return; }
@@ -916,6 +1274,7 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
           ["all", `すべて ${base.length}`, C.accent],
           ["未対応", `🔴未対応 ${stateCounts["未対応"]}`, "#ef4444"],
           ["不在留守電", `📵不在・留守電 ${stateCounts["不在留守電"]}`, "#f59e0b"],
+          ["follow", `🔁 フォロー ${followRows.length}`, "#8b5cf6"],
         ].map(([val, label, col]) => {
           const active = stateFilter === val;
           return (
@@ -928,9 +1287,15 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
         })}
       </div>
 
+      {stateFilter === "follow" && (
+        <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginBottom: 10, background: "#8b5cf614", borderRadius: 8, padding: "8px 10px" }}>
+          🔁 一度つながったのに、<b style={{ color: C.text }}>{FOLLOW_DAYS}日以上なにもしていない</b>お客様です（案内済み、または見込みが「熱い・検討中」の人。反響から{FOLLOW_MAX_AGE}日以内）。電話か「その後いかがですか」メールで追いかけましょう。
+        </div>
+      )}
       {rows.length === 0 && (
         <div style={{ background: "#10b98114", border: `1.5px solid #10b98155`, borderRadius: 12, padding: 24, textAlign: "center", color: C.text, fontSize: 14, fontWeight: 700 }}>
-          {stateFilter === "未対応" ? "✅ まだ誰も触っていない反響はありません"
+          {stateFilter === "follow" ? "✅ 放置になっているお客様はいません"
+            : stateFilter === "未対応" ? "✅ まだ誰も触っていない反響はありません"
             : stateFilter === "不在留守電" ? "✅ かけ直し待ち（不在・留守電）はありません"
             : "✅ かけ直しの要る反響はありません"}
         </div>
@@ -970,7 +1335,9 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
                 {v.email && <a href={`mailto:${v.email}`} style={{ textDecoration: "none", background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "10px 14px", textAlign: "center", fontSize: 13, fontWeight: 800, flexShrink: 0 }}><NavIcon name="mail" size={13} /></a>}
               </div>
             )}
-            <ViewingActions v={v} onAttempt={(kind) => applyAttempt(row, kind)} onUnhandle={() => {}} />
+            {/* 🆕 v9.479: フォロー（対応済みで放置）の人も、かけた結果を1タップで残せるように */}
+            <ViewingActions v={row.follow ? { ...v, handled: false } : v} onAttempt={(kind) => applyAttempt(row, kind)} onUnhandle={() => {}}
+              onCompose={(tpl) => openViewingMail({ parentType: row.parentType, parentId: row.parentId, vid: v.id, vi: row.idx, tpl: row.follow ? "follow" : tpl })} />
           </div>
         );
       })}
@@ -6756,6 +7123,8 @@ function MainApp({ onLock, onSwitchUser }) {
         {page === "income" && <IncomePage data={data} setData={setData} currentUser={currentUser} />}
         {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} onSwitchUser={onSwitchUser} />}
       </div>
+      {/* 🆕 v9.479: 反響のお客様へのメール作成（どの画面からでも開ける） */}
+      <ViewingMailHost data={data} setData={setData} />
 
       {/* Bottom Navigation */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.cardBg, borderTop: `1px solid ${C.borderDim}`, display: "flex", zIndex: 200, paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -6849,6 +7218,15 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.479", date: "2026-10-07", title: "反響のお客様へ、資料つきメールを1タップで送れるように",
+    body: "物件に資料（マイソク・図面のPDFや、ドライブのリンク）を1回入れておくと、反響のお客様へ「お礼＋資料」「電話がつながらなかった」「案内の日程」「その後いかがですか」のメールが、名前と資料のリンク入りで自動でできます。中身を見て「送信」を押すだけで、自分の会社アドレスから届き、「📧メール送った」も自動で付きます。SMS・LINE用の短い文もコピーできます。反響を取り込んだ直後にも「メールを作りますか？」と出ます。",
+    where: "在庫（仲介）→ 物件の反響を開く → 上の「📎 物件資料」に資料を入れる → 反響カードの「✉️ 資料つきメール・SMSを作る」" },
+  { v: "9.479", date: "2026-10-07", title: "「今日かける反響」に、放置になっているお客様が出るように",
+    body: "「🔁 フォロー」を押すと、案内済み・見込みが「熱い／検討中」なのに7日以上なにもしていないお客様が出ます。2回不在のお客様には「資料つきメール・SMSを送る」ボタンがオレンジで出ます。毎朝9時に、自分の担当の件数（未対応・かけ直し・フォロー）だけスマホに届きます。",
+    where: "在庫 → 「📞 今日かける反響」→「🔁 フォロー」" },
+  { v: "9.479", date: "2026-10-07", title: "新しい物件を、過去の反響のお客様へまとめて案内できるように",
+    body: "先行打診で「過去の反響客へ」を選ぶと、前に問い合わせてくれたお客様（投資家以外）のうち、価格が近い人・同じ市の物件を問い合わせた人が自動で選ばれ、「新着物件のご案内」の文面で送れます。成約した人・見込み「ダメ」の人は入りません。物件に資料を入れてあれば、資料のリンクも自動で入ります。",
+    where: "その他 → 先行打診（一斉メール）→ 物件を選ぶ →「過去の反響客へ」" },
   { v: "9.477", date: "2026-10-02", title: "保有物件の諸費用に、自分で項目を足せるように",
     body: "仲介手数料・登記費用などの決まった項目のほかに、「伐採費用」「蜂の駆除スプレー代」のように名前をつけて金額を足せます。足した分は諸費用の合計と利回り・回収の計算にそのまま入ります。",
     where: "保有 → 物件を開く → 「■ 諸費用の内訳」の下の「＋ 諸費用の項目を足す」", who: ["下田"] },
@@ -13948,6 +14326,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
     setShowImport(false);
     setImportText("");
     setImportParsed(null);
+    const _vmTargetId = importTargetMedId;
     setImportTargetMedId(null);
     const _existing = (targetMed && targetMed.viewings) || [];
     const _tombs = (targetMed && targetMed.viewingTombstones) || {};
@@ -13956,7 +14335,13 @@ function MediationView({ data, setData, dealType, setDealType }) {
     const importMode = _alive ? "update" : (_tombed ? "resurrect" : "new");
     setTimeout(() => {
       if (importMode === "new") {
-        alert(`✅ 「${targetName}」に新しい反響を追加しました`);
+        if (newViewing.email || newViewing.contact) {
+          if (window.confirm(`✅ 「${targetName}」に新しい反響を追加しました\n\n${newViewing.customer || "お客様"}様へ、お礼＋資料のメールを作りますか？`)) {
+            openViewingMail({ parentType: "mediation", parentId: _vmTargetId, vid: newViewing.id, tpl: "thanks" });
+          }
+        } else {
+          alert(`✅ 「${targetName}」に新しい反響を追加しました`);
+        }
       } else if (importMode === "resurrect") {
         alert(`♻ 「${targetName}」で過去に削除されていた反響を復活させました`);
       } else {
@@ -14136,6 +14521,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   const _closeSection = () => { setViewingsExpandedByMed({}); setViewingShowAllByMed(p => { const n = { ...p }; delete n[m.id]; return n; }); scrollToCard(`mediation-item-${m.id}`); };
                   return (
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
+                    {/* 🆕 v9.479: 物件資料（反響のメールに自動で載る） */}
+                    <PropertyDocsEditor parentType="mediation" parent={m} setData={setData} currentUser={currentUser} compact />
                     {/* 🆕 v8.93: 顧客名検索ボックス */}
                     <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
                       <input
@@ -14290,7 +14677,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
                           {/* 🆕 v9.375: 何をしたかまで1タップで残す */}
                           <ViewingActions v={v}
                             onAttempt={(kind) => handleViewingAttempt(m.id, vi, kind)}
-                            onUnhandle={() => handleToggleViewingHandled(m.id, vi)} />
+                            onUnhandle={() => handleToggleViewingHandled(m.id, vi)}
+                            onCompose={(tpl) => openViewingMail({ parentType: "mediation", parentId: m.id, vid: v.id, vi, tpl })} />
                           {(() => {
                             const threadKey = `medview_${m.id}_${vi}`;
                             const cmtNewCount = countNewComments(comments, threadKey);
@@ -15524,6 +15912,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     setShowImport(false);
     setImportText("");
     setImportParsed(null);
+    const _vmTargetId = importTargetStockId;
     setImportTargetStockId(null);
     // 🆕 取り込みモード：setData 前に判定（new=新規 / resurrect=復活 / update=既存更新）
     const _existing = (targetStock && targetStock.viewings) || [];
@@ -15533,7 +15922,13 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     const importMode = _alive ? "update" : (_tombed ? "resurrect" : "new");
     setTimeout(() => {
       if (importMode === "new") {
-        alert(`✅ 「${targetName}」に新しい反響を追加しました`);
+        if (newViewing.email || newViewing.contact) {
+          if (window.confirm(`✅ 「${targetName}」に新しい反響を追加しました\n\n${newViewing.customer || "お客様"}様へ、お礼＋資料のメールを作りますか？`)) {
+            openViewingMail({ parentType: "stock", parentId: _vmTargetId, vid: newViewing.id, tpl: "thanks" });
+          }
+        } else {
+          alert(`✅ 「${targetName}」に新しい反響を追加しました`);
+        }
       } else if (importMode === "resurrect") {
         alert(`♻ 「${targetName}」で過去に削除されていた反響を復活させました`);
       } else {
@@ -15947,6 +16342,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     const _closeSection = () => { setViewingsExpandedByStock({}); setViewingShowAllByStock(p => { const n = { ...p }; delete n[s.id]; return n; }); scrollToCard(`stock-item-${s.id}`); };
                     return (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
+                      {/* 🆕 v9.479: 物件資料（反響のメールに自動で載る） */}
+                      <PropertyDocsEditor parentType="stock" parent={s} setData={setData} currentUser={currentUser} compact />
                       {/* 🆕 v8.93: 顧客名検索ボックス */}
                       <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
                         <input
@@ -16134,7 +16531,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                             {/* 🆕 v9.375: 何をしたかまで1タップで残す */}
                             <ViewingActions v={v}
                               onAttempt={(kind) => handleViewingAttempt(s.id, vi, kind)}
-                              onUnhandle={() => handleToggleViewingHandled(s.id, vi)} />
+                              onUnhandle={() => handleToggleViewingHandled(s.id, vi)}
+                              onCompose={(tpl) => openViewingMail({ parentType: "stock", parentId: s.id, vid: v.id, vi, tpl })} />
 
                             {/* 💬 コメント欄（折りたたみ式・新着指標つき） */}
                             {(() => {
@@ -37510,6 +37908,34 @@ const OFFER_PRESETS = [
 よろしくお願いいたします。`,
   },
   {
+    key: "kokyaku", name: "反響客：新着のご案内",
+    subject: "【新着物件のご案内】{{物件名}}（{{価格}}）",
+    body: `{{宛名}}
+
+お世話になっております。
+ひかり不動産の{{差出人}}でございます。
+
+以前は弊社の物件にお問い合わせいただき、ありがとうございました。
+ご希望に近い物件が新しく出ましたので、ご案内させていただきます。
+
+━━━━━━━━━━━━━━━
+■ 所在
+{{物件名}}
+■ 価格
+{{価格}}
+━━━━━━━━━━━━━━━
+
+■ 資料
+{{資料}}
+{{ひとこと}}
+現地のご案内も承っております。
+ご興味がございましたら、本メールにご返信ください。
+
+※今後このようなご案内がご不要の場合は、お手数ですがその旨ご返信ください。
+
+よろしくお願いいたします。`,
+  },
+  {
     key: "kuse", name: "業者：癖あり物件",
     subject: "【買取のご相談・要相談物件】{{物件名}}／{{価格}}",
     body: `{{宛名}}
@@ -37639,6 +38065,51 @@ function collectInvestorTargets(data) {
   return out;
 }
 
+// 🆕 v9.479: 過去の反響のお客様（投資家以外）へ「新着物件のご案内」を送れるようにする
+//   ・予算は「問い合わせた物件の価格」の±3割を目安にする（反響の予算欄＝問い合わせ物件の価格のことが多い）
+//   ・成約した人・見込み「ダメ」の人は外す。配信停止・最終案内日は投資家と同じく data.investorMail に持つ
+function vmCityOf(name) {
+  const m = String(name || "").replace(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/, "").match(/^(.+?[市区町村])/);
+  return m ? m[1] : "";
+}
+function collectBuyerTargets(data) {
+  if (!data || typeof data !== "object") return [];
+  const flags = {};
+  (data.investorMail || []).forEach(f => { if (f && f.id != null) flags[String(f.id)] = f; });
+  const groups = new Map();
+  const add = (v, from) => {
+    if (!v || v.purpose === "投資家") return;
+    const key = investorKeyOf(v);
+    if (!key) return;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ v, from });
+  };
+  (data.stocks || []).forEach(s => (s.viewings || []).forEach(v => add(v, s.name || "")));
+  (data.mediations || []).forEach(m => (m.viewings || []).forEach(v => add(v, m.name || "")));
+  const out = [];
+  groups.forEach((items, key) => {
+    if (items.some(it => it.v.result === "成約")) return;
+    items.sort((a, b) => String(b.v.date || "").localeCompare(String(a.v.date || "")));
+    if (items[0].v.prospect === "ダメ") return;
+    const pick = (fn) => { for (const it of items) { const x = fn(it.v); if (x) return String(x).trim(); } return ""; };
+    const b = String(pick(v => v.budget)).replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/,/g, "");
+    const mm = b.match(/(\d+(?:\.\d+)?)\s*(億|万)?/);
+    let man = mm ? parseFloat(mm[1]) * (mm[2] === "億" ? 10000 : 1) : 0;
+    if (man > 100000) man = man / 10000; // 円で入っている時
+    const f = flags[key] || {};
+    out.push({
+      id: "buy:" + key, kind: "反響のお客様", company: "",
+      name: pick(v => v.customer), email: pick(v => v.email), tel: pick(v => v.contact),
+      budgetMin: man ? String(Math.round(man * 0.7)) : "", budgetMax: man ? String(Math.round(man * 1.3)) : "",
+      optOut: !!f.optOut, lastSentAt: f.lastSentAt || "",
+      _investor: true, _key: key, _count: items.length, _date: items[0].v.date || "", _from: items[0].from || "",
+      _city: vmCityOf(items[0].from), _budget: b, _froms: items.map(it => it.from),
+    });
+  });
+  out.sort((a, b) => String(b._date).localeCompare(String(a._date)));
+  return out;
+}
+
 // 投資家の「送る／送らない」を切り替える（data.investorMail に持つ）
 function toggleInvestorOptOut(d, key, next) {
   const now = new Date().toISOString();
@@ -37716,7 +38187,8 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   // 🆕 v9.367: 買取業者＝名簿(hanro)、投資家＝反響から自動集約
   const hanro = useMemo(() => (data.hanro || []).filter(r => r && r.kind !== "投資家"), [data.hanro]);
   const investorRows = useMemo(() => collectInvestorTargets(data), [data.stocks, data.mediations, data.investorMail]);
-  const pool = useMemo(() => [...hanro, ...investorRows], [hanro, investorRows]);
+  const buyerRows = useMemo(() => collectBuyerTargets(data), [data.stocks, data.mediations, data.investorMail]);
+  const pool = useMemo(() => [...hanro, ...investorRows, ...buyerRows], [hanro, investorRows, buyerRows]);
 
   // 送信キュー（Supabase）の最近の状況
   const loadQueue = async () => {
@@ -37744,7 +38216,12 @@ function OfferPage({ data, setData, onBack, currentUser }) {
       if (lo && p < lo) priceOK = false;
       if (hi && p > hi) priceOK = false;
     }
-    return { priceOK, hit: priceOK };
+    // 🆕 v9.479: 過去の反響客は、前に問い合わせた物件と同じ市かも見る
+    const myCity = vmCityOf(propName);
+    const cityOK = r.kind !== "反響のお客様" || !myCity || !r._city || r._city === myCity;
+    // この物件そのものに問い合わせた人には「新着のご案内」は送らない（反響の追客は反響カードのメールで）
+    const sameProp = r.kind === "反響のお客様" && !!propName && (r._froms || []).includes(propName);
+    return { priceOK, cityOK, sameProp, hit: priceOK && cityOK && !sameProp };
   };
 
   const _senders = OFFER_SENDERS.filter(s => !isRetiredMember(s.short));   // 🆕 v9.416: 退職者は除く
@@ -37779,6 +38256,9 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     setPropName(s.name || s.address || "");
     const man = Math.round((Number(s.sellPrice) || 0) / 10000);
     if (man) setPriceMan(String(man));
+    // 🆕 v9.479: 物件資料が登録されていれば、資料URLに自動で入れる
+    const _doc = (s.docs || []).find(d => d && d.url);
+    if (_doc) setDocUrl(_doc.url);
     setShowStocks(false);
   };
 
@@ -37795,11 +38275,11 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   // 送り先の種別を切り替える（選び直し＋文面も用途に合わせる）
   const applyKind = (k) => {
     setKindSel(k);
-    setPicked(sendable.filter(r => (!k || r.kind === k) && priceOk(r)).map(r => r.id));
+    setPicked(sendable.filter(r => (!k ? r.kind !== "反響のお客様" : r.kind === k) && matchOf(r).hit).map(r => r.id));
     // 本文を触っていなければ、用途に合ったテンプレへ自動で切り替える
     const untouched = OFFER_PRESETS.some(t => t.body === body);
     if (untouched) {
-      const want = k === "投資家" ? "toushi" : "kaitori";
+      const want = k === "投資家" ? "toushi" : k === "反響のお客様" ? "kokyaku" : "kaitori";
       const t = OFFER_PRESETS.find(x => x.key === want);
       if (t && t.key !== tplKey) { setTplKey(t.key); setSubject(t.subject); setBody(t.body); }
     }
@@ -37814,7 +38294,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
       const next = cnt("買取業者") > 0 ? "買取業者" : (cnt("投資家") > 0 ? "投資家" : "");
       if (next !== kindSel) { applyKind(next); setStep("targets"); return; }
     }
-    setPicked(sendable.filter(r => (!kindSel || r.kind === kindSel) && priceOk(r)).map(r => r.id));
+    setPicked(sendable.filter(r => (!kindSel ? r.kind !== "反響のお客様" : r.kind === kindSel) && matchOf(r).hit).map(r => r.id));
     setStep("targets");
   };
 
@@ -37930,7 +38410,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         ) : (
           <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>
             送れる先：{sendable.length}件（メール登録あり・配信停止を除く）<br />
-            <span style={{ fontSize: 11 }}>買取業者 {hanro.filter(r => r.email && !r.optOut).length}件（名簿）／ 投資家 {investorRows.filter(r => r.email && !r.optOut).length}人（反響から自動）</span>
+            <span style={{ fontSize: 11 }}>買取業者 {hanro.filter(r => r.email && !r.optOut).length}件（名簿）／ 投資家 {investorRows.filter(r => r.email && !r.optOut).length}人（反響から自動）／ 過去の反響客 {buyerRows.filter(r => r.email && !r.optOut).length}人</span>
           </div>
         )}
 
@@ -38029,7 +38509,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
 
   // ===== STEP 2: 送る相手 =====
   if (step === "targets") {
-    const shown = sendable.filter(r => !kindSel || r.kind === kindSel);
+    const shown = sendable.filter(r => !kindSel ? r.kind !== "反響のお客様" : r.kind === kindSel);
     const hitCount = shown.filter(r => matchOf(r).hit).length;
     const excluded = pool.filter(r => !r.email || r.optOut);
     const noMailInvestors = investorRows.filter(r => !r.email && !r.optOut); // 🆕 メールが無い＝電話で当たる人
@@ -38050,16 +38530,17 @@ function OfferPage({ data, setData, onBack, currentUser }) {
         </div>
 
         <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>どちら向けに送りますか（文面も自動で切り替わります）</div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
           {[
             { k: "買取業者", label: "買取業者へ", sub: "買えるか確認" },
             { k: "投資家", label: "投資家へ", sub: "物件のご提案" },
-            { k: "", label: "両方", sub: "まとめて" },
+            { k: "反響のお客様", label: "過去の反響客へ", sub: "新着のご案内" },
+            { k: "", label: "業者＋投資家", sub: "まとめて" },
           ].map(o => (
             <button key={o.label} onClick={() => applyKind(o.k)} style={{ flex: 1, background: kindSel === o.k ? C.accentBg : C.cardBg, border: `2px solid ${kindSel === o.k ? C.accent : C.borderDim}`, borderRadius: 12, padding: "11px 4px", cursor: "pointer", fontFamily: "inherit" }}>
               <div style={{ color: C.text, fontWeight: 800, fontSize: 13 }}>{o.label}</div>
               <div style={{ color: C.muted, fontSize: 10, marginTop: 2 }}>{o.sub}</div>
-              <div style={{ color: kindSel === o.k ? C.accent : C.muted, fontSize: 11, fontWeight: 700, marginTop: 3 }}>{sendable.filter(r => !o.k || r.kind === o.k).length}件</div>
+              <div style={{ color: kindSel === o.k ? C.accent : C.muted, fontSize: 11, fontWeight: 700, marginTop: 3 }}>{sendable.filter(r => !o.k ? r.kind !== "反響のお客様" : r.kind === o.k).length}件</div>
             </button>
           ))}
         </div>
@@ -38086,7 +38567,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
               <span style={{ flex: 1 }}>
                 <span style={{ display: "block", color: C.text, fontWeight: 700, fontSize: 14 }}>
                   {r.company || r.name}{r.company && r.name ? `　${r.name}` : ""}
-                  {r._investor ? <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "#a855f722", color: "#a855f7", marginLeft: 6 }}>反響から</span> : null}
+                  {r._investor ? <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "#a855f722", color: "#a855f7", marginLeft: 6 }}>{r.kind === "反響のお客様" ? "過去の反響客" : "反響から"}</span> : null}
                 </span>
                 <span style={{ display: "block", color: C.muted, fontSize: 11, marginTop: 3 }}>{r.email}</span>
                 {/* 🆕 v9.367: 反響から来た投資家は、どの物件・何回・希望エリアが分かるようにする */}
@@ -38095,11 +38576,12 @@ function OfferPage({ data, setData, onBack, currentUser }) {
                     {r._from ? `${r._from} の反響` : "反響"}{r._date ? `（${r._date}）` : ""}
                     {r._count > 1 ? `　問合せ${r._count}回` : ""}
                     {r.areas ? `　希望:${r.areas}` : ""}
+                    {r._budget ? `　問合せ時の価格:${r._budget}` : ""}
                   </span>
                 ) : null}
                 <span style={{ display: "block", marginTop: 5 }}>
                   {m.hit ? <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.successBg, color: C.success }}>価格が合う</span>
-                    : <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.bgDark, color: C.muted }}>価格が範囲外</span>}
+                    : <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: C.bgDark, color: C.muted }}>{m.sameProp ? "この物件の反響（追客は反響カードから）" : !m.priceOK ? "価格が範囲外" : "前回と違う市"}</span>}
                   {r.lastSentAt ? <span style={{ fontSize: 10, color: C.muted, marginLeft: 8 }}>前回 {r.lastSentAt}</span> : null}
                 </span>
               </span>
