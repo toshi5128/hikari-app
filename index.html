@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.481-update";
+const APP_VERSION = "2026-10-08-v9.482-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1447,6 +1447,212 @@ function PropertyInfoHost({ data, setData }) {
           </div>
         ))}
       </>)}
+    </BottomSheet>
+  );
+}
+
+// 🆕 v9.482: 1つの物件に問い合わせてくれたお客様へ、まとめてメール（その後いかがですか 等）
+//   ・最近やり取りした人には送らない（反響日・最後の連絡日から N 日たった人だけ）
+//   ・成約・見送り・見込み「ダメ」・配信停止の人は最初から外す
+//   ・送信は先行打診と同じ mail_queue（1通ずつ個別に届く。{{宛名}} は送信側で「◯◯ 様」になる）
+//   ・送ったら一人ひとりの反響に「📧メール送った」とやり取り1行を残す
+const BULK_TEMPLATES = [
+  { key: "sonogo", label: "その後いかがですか",
+    subject: "【ひかり不動産】{{物件名}} その後のご検討状況について",
+    body: `{{宛名}}
+
+ひかり不動産の{{差出人}}でございます。
+先日は「{{物件名}}」にお問い合わせいただき、誠にありがとうございました。
+
+その後、ご検討の状況はいかがでしょうか。
+ご不明な点やご心配な点がございましたら、お気軽にご返信ください。
+{{概要}}
+現地のご案内も随時承っております。
+ご都合のよい日時をお知らせいただければ調整いたします。
+
+どうぞよろしくお願いいたします。` },
+  { key: "kengaku", label: "見学のおさそい",
+    subject: "【ひかり不動産】{{物件名}} ご見学のご案内",
+    body: `{{宛名}}
+
+ひかり不動産の{{差出人}}でございます。
+以前「{{物件名}}」にお問い合わせいただき、ありがとうございました。
+
+実際の日当たりや周りの雰囲気は、現地でご覧いただくのがいちばんです。
+平日・土日ともご案内できますので、ご都合のよい日時を2〜3つお知らせください。
+
+物件の資料はこちらです。
+{{資料}}
+
+ご見学だけでも大歓迎です。どうぞお気軽にお申し付けください。` },
+  { key: "soudan", label: "ご予算・条件のご相談",
+    subject: "【ひかり不動産】{{物件名}} ご購入条件のご相談について",
+    body: `{{宛名}}
+
+ひかり不動産の{{差出人}}でございます。
+先日は「{{物件名}}」にお問い合わせいただき、ありがとうございました。
+
+ご予算や資金計画、お引渡しの時期など、
+ご購入にあたって気になっている点がございましたら、お気軽にご相談ください。
+住宅ローンのご相談や、ほかの費用の目安についてもご案内いたします。
+
+ご返信いただければ、あらためてご連絡いたします。
+どうぞよろしくお願いいたします。` },
+  { key: "hoka", label: "ほかの物件もご紹介",
+    subject: "【ひかり不動産】ご希望に合う物件のご紹介について",
+    body: `{{宛名}}
+
+ひかり不動産の{{差出人}}でございます。
+以前「{{物件名}}」にお問い合わせいただき、ありがとうございました。
+
+もし今回の物件がご希望に合わなかった場合でも、
+エリア・ご予算・広さなどのご希望をお聞かせいただければ、
+条件に近い物件が出た際に、一般に公開する前にご案内いたします。
+
+ご希望をご返信いただければ幸いです。
+どうぞよろしくお願いいたします。` },
+];
+function openBulkViewingMail(detail) { try { window.dispatchEvent(new CustomEvent("hikari-bulkmail", { detail })); } catch (e) {} }
+const BULK_SKIP_RESULTS = ["成約", "見送り"];
+function BulkViewingMailHost({ data, setData }) {
+  const [req, setReq] = useState(null);
+  const [days, setDays] = useState(10);
+  const [tplKey, setTplKey] = useState("sonogo");
+  const [senderKey, setSenderKey] = useState("");
+  const [picked, setPicked] = useState(null); // null = 条件に合う人を全員
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const currentUser = getCurrentUser();
+  useEffect(() => {
+    const h = (e) => { setReq(e.detail || {}); setPicked(null); setTplKey("sonogo"); setSenderKey(vmailSenderFor(currentUser).key); setSubject(""); setBody(""); };
+    window.addEventListener("hikari-bulkmail", h);
+    return () => window.removeEventListener("hikari-bulkmail", h);
+  }, []);
+  const key = req && req.parentType === "mediation" ? "mediations" : "stocks";
+  const p = req ? (data[key] || []).find(x => x && x.id === req.parentId) : null;
+  const senders = OFFER_SENDERS.filter(s => !isRetiredMember(s.short));
+  const sender = senders.find(s => s.key === senderKey) || vmailSenderFor(currentUser);
+  const tpl = BULK_TEMPLATES.find(t => t.key === tplKey) || BULK_TEMPLATES[0];
+  // 文面：型・差出人・物件が変わったら作り直す（{{宛名}} は送信側で一人ずつ）
+  const sig = `${tplKey}|${sender.key}|${req ? req.parentId : ""}`;
+  const sigRef = React.useRef("");
+  useEffect(() => {
+    if (!p || sigRef.current === sig) return;
+    sigRef.current = sig;
+    const ctx = { propName: p.name || "", senderShort: sender.short, docs: p.docs || [], summary: propInfoSummary(p) };
+    setSubject(vmailFill(tpl.subject, ctx));
+    setBody(vmailFill(tpl.body, ctx).replace(/\{\{お名前\}\} 様/g, "{{宛名}}"));
+  });
+  if (!req) return null;
+  const close = () => { setReq(null); sigRef.current = ""; };
+  if (!p) return <BottomSheet title="📨 一括メール" onClose={close}><div style={{ color: C.muted, fontSize: 13, paddingBottom: 20 }}>この物件が見つかりませんでした。</div></BottomSheet>;
+
+  const optOut = {};
+  (data.investorMail || []).forEach(f => { if (f && f.optOut) optOut[String(f.id)] = true; });
+  const now = Date.now();
+  const lastTouchOf = (v) => { const t = viewingLastTouch(v); return t === Number.MAX_SAFE_INTEGER ? 0 : t; };
+  // 同じ人が何度も問い合わせていたら、いちばん新しい反響だけを残す
+  const byPerson = new Map();
+  (p.viewings || []).forEach((v, vi) => {
+    if (!v) return;
+    const k = investorKeyOf(v) || "i:" + vi;
+    const cur = byPerson.get(k);
+    if (!cur || String(v.date || "") > String(cur.v.date || "")) byPerson.set(k, { v, vi, k });
+  });
+  const rows = [...byPerson.values()].map(r => {
+    const lt = lastTouchOf(r.v);
+    const ago = lt ? Math.floor((now - lt) / 86400000) : 9999;
+    let why = "";
+    if (!String(r.v.email || "").trim()) why = "メールなし";
+    else if (BULK_SKIP_RESULTS.includes(r.v.result)) why = r.v.result;
+    else if (r.v.prospect === "ダメ") why = "見込みダメ";
+    else if (optOut[r.k]) why = "配信停止";
+    else if (ago < days) why = `${ago}日前にやり取り`;
+    return { ...r, ago, why };
+  }).sort((a, b) => b.ago - a.ago);
+  const okRows = rows.filter(r => !r.why);
+  const sel = picked || okRows.map(r => r.k);
+  const targets = okRows.filter(r => sel.includes(r.k));
+  const toggle = (k) => setPicked(prev => { const base = prev || okRows.map(r => r.k); return base.includes(k) ? base.filter(x => x !== k) : [...base, k]; });
+
+  const send = async () => {
+    if (!targets.length) { alert("送る相手がいません"); return; }
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    const over = targets.length > 100 ? `\n\n※1日に送れるのは100通までです。残りは明日以降に自動で送られます。` : "";
+    if (!window.confirm(`${targets.length}人に送ります。\n\n物件: ${p.name}\n差出人: ${sender.name}\n件名: ${subject}${over}\n\nよろしいですか？`)) return;
+    setSending(true);
+    try {
+      const payload = {
+        status: "pending", subject, body, sender_name: sender.name, sender_mail: sender.mail,
+        property: p.name || "", price_text: "", doc_url: ((p.docs || [])[0] || {}).url || "", memo: "反響へ一括",
+        recipients: targets.map(r => ({ id: "v:" + (r.v.id || r.vi), email: String(r.v.email).trim(), company: "", name: r.v.customer || "" })),
+        requested_by: currentUser || "",
+      };
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_queue`, {
+        method: "POST",
+        headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", "Prefer": "return=minimal" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`受付できませんでした（${res.status}）`);
+      const idxs = new Set(targets.map(r => r.vi));
+      const stamp = Date.now();
+      setData(d => ({ ...d, [key]: (d[key] || []).map(x => x.id !== p.id ? x : {
+        ...x,
+        viewings: (x.viewings || []).map((v, i) => !idxs.has(i) || !v ? v : {
+          ...withViewingAttempt(v, "mail", currentUser),
+          comments: [...(v.comments || []), { id: stamp + i, member: currentUser || "", text: `📧 一括メール「${tpl.label}」（${sender.short}から）`, createdAt: new Date().toISOString(), updatedAt: stamp }],
+        }),
+      }) }));
+      alert(`📨 ${targets.length}人への送信を受け付けました。1〜2分で順に届きます。\n一人ひとりの反響に「📧メール送った」を付けました。`);
+      close();
+    } catch (e) {
+      alert(`送れませんでした。\n\n${e.message}\n\n電波の良いところでもう一度お試しください。`);
+    }
+    setSending(false);
+  };
+  const chip = (on) => ({ padding: "8px 12px", borderRadius: 999, border: `2px solid ${on ? C.accent : C.borderDim}`, background: on ? C.accentBg : C.cardBg, color: C.text, fontSize: 12, fontWeight: on ? 800 : 500, cursor: "pointer", fontFamily: "inherit" });
+  return (
+    <BottomSheet title={`📨 ${p.name || "物件"} の反響へ一括メール`} onClose={close}
+      footer={<button disabled={sending || !targets.length} onClick={send} style={{ ...btnStyle("primary"), flex: 1, padding: "14px 0", fontSize: 15, opacity: targets.length ? 1 : 0.5 }}>{sending ? "送信中…" : `📨 ${targets.length}人に送信`}</button>}>
+      <Field label="最近やり取りした人は外す（反響日・最後の連絡から）">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {[[0, "外さない"], [5, "5日以内"], [10, "10日以内"], [14, "14日以内"], [30, "30日以内"]].map(([d, l]) => <button key={d} onClick={() => { setDays(d); setPicked(null); }} style={chip(days === d)}>{l}</button>)}
+        </div>
+      </Field>
+      <Field label="どんなメール？">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {BULK_TEMPLATES.map(t => <button key={t.key} onClick={() => setTplKey(t.key)} style={chip(tplKey === t.key)}>{t.label}</button>)}
+        </div>
+      </Field>
+      <Field label="差出人（返信はこの人に届きます）">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {senders.map(s => <button key={s.key} onClick={() => setSenderKey(s.key)} style={chip(sender.key === s.key)}>{s.short}</button>)}
+        </div>
+      </Field>
+      <Field label={`送る相手（${targets.length}人／問い合わせ ${rows.length}人）`}>
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          <button onClick={() => setPicked(null)} style={{ ...btnStyle("ghost"), flex: 1, padding: "8px 0", fontSize: 12 }}>送れる人を全員</button>
+          <button onClick={() => setPicked([])} style={{ ...btnStyle("ghost"), flex: 1, padding: "8px 0", fontSize: 12 }}>全部外す</button>
+        </div>
+        {rows.map(r => {
+          const on = !r.why && sel.includes(r.k);
+          return (
+            <button key={r.k} disabled={!!r.why} onClick={() => toggle(r.k)} style={{ width: "100%", textAlign: "left", display: "flex", gap: 10, alignItems: "center", background: on ? C.accentBg : C.cardBg, border: `1px solid ${on ? C.accent : C.borderDim}`, borderRadius: 10, padding: "9px 10px", marginBottom: 6, cursor: r.why ? "default" : "pointer", opacity: r.why ? 0.5 : 1, fontFamily: "inherit" }}>
+              <span style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${on ? C.accent : C.border}`, background: on ? C.accent : "transparent", color: "#fff", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{on ? "✓" : ""}</span>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 14, fontWeight: 700, color: C.text }}>{r.v.customer || "(名前なし)"} 様</span>
+                <span style={{ display: "block", fontSize: 11, color: C.muted }}>反響 {r.v.date || "?"}{r.ago < 9999 ? `・最後の連絡 ${r.ago}日前` : ""}{r.v.result ? `・${r.v.result}` : ""}</span>
+              </span>
+              {r.why && <span style={{ fontSize: 10, color: C.warn, fontWeight: 800, flexShrink: 0 }}>{r.why}</span>}
+            </button>
+          );
+        })}
+      </Field>
+      <Field label="件名"><input value={subject} onChange={e => setSubject(e.target.value)} style={inp} /></Field>
+      <Field label="本文（{{宛名}} は一人ずつ「◯◯ 様」に変わります・署名は自動）">
+        <textarea value={body} onChange={e => setBody(e.target.value)} rows={14} style={{ ...inp, lineHeight: 1.6, fontSize: 13 }} />
+      </Field>
     </BottomSheet>
   );
 }
@@ -7486,6 +7692,8 @@ function MainApp({ onLock, onSwitchUser }) {
       <MailHistoryHost />
       {/* 🆕 v9.481: 物件情報（物件カルテ） */}
       <PropertyInfoHost data={data} setData={setData} />
+      {/* 🆕 v9.482: 反響へ一括メール */}
+      <BulkViewingMailHost data={data} setData={setData} />
 
       {/* Bottom Navigation */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.cardBg, borderTop: `1px solid ${C.borderDim}`, display: "flex", zIndex: 200, paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -7579,6 +7787,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.482", date: "2026-10-08", title: "1つの物件に問い合わせた人へ、まとめてメールを送れるように",
+    body: "「その後いかがですか」「見学のおさそい」「ご予算・条件のご相談」「ほかの物件もご紹介」の4つの文面から選んで、その物件に問い合わせてくれた人全員へ一度に送れます。最近やり取りした人（5日・10日・14日・30日以内）は外せます。成約・見送り・見込み「ダメ」の人は最初から入りません。送った人の反響には「📧メール送った」が自動で付きます。",
+    where: "在庫（仲介）→ 物件の反響を開く →「📨 この物件の反響へ一括メール」" },
   { v: "9.481", date: "2026-10-08", title: "物件ごとに「📋 物件情報」を入れておけるように",
     body: "価格・面積・間取り・築年・駐車場・学区・周辺環境・おすすめポイント・注意点などを物件ごとに入れておけます。お客様と電話しながら開くと、入っている項目だけが大きな字で並ぶので、そのまま読み上げて答えられます。資料（マイソクのPDFなど）も同じ画面から開けます。お礼メールには、入れた項目の概要が自動で載ります。",
     where: "在庫（仲介）→ 物件カードの「📋 物件情報」／今日かける反響の物件名の横",
@@ -14891,6 +15102,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
                     {/* 🆕 v9.479: 物件資料（反響のメールに自動で載る） */}
                     <PropertyDocsEditor parentType="mediation" parent={m} setData={setData} currentUser={currentUser} compact />
+                    {/* 🆕 v9.482: この物件に問い合わせた人へまとめてメール */}
+                    <button onClick={() => openBulkViewingMail({ parentType: "mediation", parentId: m.id })} style={{ width: "100%", marginBottom: 10, padding: "10px", background: "#8b5cf618", border: "1.5px solid #8b5cf6", color: "#8b5cf6", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 800, fontFamily: "inherit" }}>📨 この物件の反響へ一括メール（その後いかがですか 等）</button>
                     {/* 🆕 v8.93: 顧客名検索ボックス */}
                     <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
                       <input
@@ -16716,6 +16929,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderDim}` }}>
                       {/* 🆕 v9.479: 物件資料（反響のメールに自動で載る） */}
                       <PropertyDocsEditor parentType="stock" parent={s} setData={setData} currentUser={currentUser} compact />
+                      {/* 🆕 v9.482: この物件に問い合わせた人へまとめてメール */}
+                      <button onClick={() => openBulkViewingMail({ parentType: "stock", parentId: s.id })} style={{ width: "100%", marginBottom: 10, padding: "10px", background: "#8b5cf618", border: "1.5px solid #8b5cf6", color: "#8b5cf6", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 800, fontFamily: "inherit" }}>📨 この物件の反響へ一括メール（その後いかがですか 等）</button>
                       {/* 🆕 v8.93: 顧客名検索ボックス */}
                       <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
                         <input
