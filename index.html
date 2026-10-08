@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.489-update";
+const APP_VERSION = "2026-10-08-v9.490-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2957,6 +2957,45 @@ const V9367_SAMPLE_HANRO_IDS = [
 //     なのでアプリ側で毎回チェックして直す。何度通しても同じ結果になる（冪等）ので安全。
 const V9386_PROSPECT_MAP = { "普通": "微妙", "冷たい": "ダメ" };
 const V9386_RESULT_MAP = { "未実施": "未案内", "好印象": "案内済", "普通": "案内済", "NG": "見送り" };
+// 🆕 v9.490: 小田原市小竹の物件カルテを、おだけドライブの資料（重要事項説明書・特約条項・販売図面）から一度だけ埋める。
+//   ・hikari_main は外から書き換えない決まりなので、アプリ内の移行で入れる（空欄だけ埋める＝人の入力は上書きしない）
+//   ・済みの印 propInfoSeed を物件に残す。人があとで消した項目は、印があるので埋め直さない
+const ODAKE_STOCK_ID_V9490 = "1785326847145";
+const ODAKE_PROPINFO_V9490 = {
+ "addr": "神奈川県小田原市小竹3-2（地番：小竹字長作3番2・2番2）",
+ "price": "598万円",
+ "access": "JR東海道本線「二宮」駅 バス10分「下中駐在所前」停 徒歩4分",
+ "land": "372.25㎡（約112.6坪）公簿／3番2：250.14㎡＋2番2：122.11㎡",
+ "chimoku": "宅地",
+ "road": "南側 公道 幅員約4.06m・接面約10m（建築基準法42条1項1号）。※道路との間に高低差あり。東側の道は建築基準法上の道路ではない（階段で出入り）",
+ "youto": "市街化調整区域（用途地域の指定なし）",
+ "kenpei": "50%／100%",
+ "bldg": "109.45㎡（約33.1坪）1階75.21㎡・2階34.24㎡。※南東側に未登記の古家（木造平家31.40㎡・表題登記のみ）も売買対象",
+ "madori": "5K（1階：DK・和室6帖×3・納戸3帖／2階：和室6帖・洋室6帖・バルコニー）",
+ "kozo": "木造瓦葺 2階建",
+ "chiku": "1983年1月（昭和58年1月新築・新耐震）",
+ "genkyo": "空家",
+ "hikiwatashi": "相談",
+ "setsubi": "水道：公営水道（東側道路の本管から引込20mm）／ガス：プロパン（前面道路に都市ガス管なし）／排水：集中浄化槽（点検・汲取り費用あり）・雨水は浸透式／電気：東京電力",
+ "kankyo": "周辺に神社・河川あり（風向きでにおいが出ることあり）。道路・高速道路の走行音や振動が出る場合あり",
+ "point": "土地112坪超で598万円／庭10坪以上／浴室に窓あり／トイレ2か所／全居室に収納",
+ "chui": "・市街化調整区域。建物に開発・建築許可の履歴なし→建て替え時は市への許可申請が必要になる場合あり\n・検査済証なし（違反建築の可能性）\n・南側道路と高低差があり直接出入りできない→建て替え時に階段・通路が必要な場合あり\n・がけ条例該当・擁壁あり→建て替えが制限される場合あり\n・境界の明示なし（公簿売買）／残置物ありの現況渡し\n・ハザードマップ：洪水・高潮の区域内（土砂災害警戒区域・津波は区域外）\n・埋蔵文化財包蔵地に近接、景観法・盛土規制法の届出が必要な場合あり",
+ "faq": "Q ガスは？→プロパンです\nQ 下水は？→浄化槽です（点検・汲取りの費用あり）\nQ 建て替えできる？→市街化調整区域のため、市の許可が必要になる場合があります\nQ 駐車場は？→資料に記載なし（現地で要確認）"
+};
+function seedOdakePropInfoV9490(d) {
+  if (!d || !Array.isArray(d.stocks)) return d;
+  const s = d.stocks.find(x => x && String(x.id) === ODAKE_STOCK_ID_V9490);
+  if (!s || s.propInfoSeed === "odake_v9490") return d;
+  const cur = s.propInfo || {};
+  const add = {};
+  Object.entries(ODAKE_PROPINFO_V9490).forEach(([k, v]) => { if (!String(cur[k] || "").trim()) add[k] = v; });
+  const now = Date.now();
+  const next = { ...s, propInfo: { ...cur, ...add, updatedBy: cur.updatedBy || "資料から自動入力", updatedAt: new Date(now).toISOString() }, propInfoSeed: "odake_v9490", updatedAt: now,
+    _fieldUpdatedAt: { ...(s._fieldUpdatedAt || {}), propInfo: now, propInfoSeed: now } };
+  console.log(`[v9.490] 小田原市小竹の物件カルテに ${Object.keys(add).length}項目 入れました`);
+  return { ...d, stocks: d.stocks.map(x => x === s ? next : x) };
+}
+
 function migrateViewingLabelsV9386(d) {
   if (!d || typeof d !== "object") return d;
   let n = 0;
@@ -7320,6 +7359,12 @@ function MainApp({ onLock, onSwitchUser }) {
   useEffect(() => {
     if (!data) return;
     if (migrateViewingLabelsV9386(data) !== data) setData(d => migrateViewingLabelsV9386(d));
+  }, [data]);
+
+  // 🆕 v9.490: 小田原市小竹の物件カルテを資料から埋める（済みの印があれば何もしない）
+  useEffect(() => {
+    if (!data) return;
+    if (seedOdakePropInfoV9490(data) !== data) setData(d => seedOdakePropInfoV9490(d));
   }, [data]);
 
   // 🆕 v9.407: 回った先／訪問の結果は訪問記録が正本。毎回数え直す（自己修復）。
