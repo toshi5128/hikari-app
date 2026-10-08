@@ -988,11 +988,12 @@ function ViewingMailHost({ data, setData }) {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
+  const [attSel, setAttSel] = useState(null);
   const currentUser = getCurrentUser();
   useEffect(() => {
     const h = (e) => {
       const d = e.detail || {};
-      setReq(d);
+      setReq(d); setAttSel(null);
       setTplKey(d.tpl || "thanks");
       setSenderKey(vmailSenderFor(currentUser).key);
       setSubject(""); setBody(""); setTo("");
@@ -1030,6 +1031,8 @@ function ViewingMailHost({ data, setData }) {
     return <BottomSheet title="✉️ メールを作る" onClose={close}><div style={{ color: C.muted, fontSize: 13, padding: "10px 0 20px" }}>この反響が見つかりませんでした。いったん閉じて開き直してください。</div></BottomSheet>;
   }
   const smsText = vmailFill(tpl.sms, ctx);
+  const attIds = attSel || attachableDocs(parent.docs).map(d => d.id);
+  const atts = attachPayload(parent.docs, attIds);
   const tel = String(v.contact || "").replace(/[^\d+]/g, "");
   const record = (kindText) => {
     setData(d => ({
@@ -1047,7 +1050,7 @@ function ViewingMailHost({ data, setData }) {
     const addr = to.trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr)) { alert("メールアドレスを確認してください"); return; }
     if (!currentUser) { alert("先にログインしてください"); return; }
-    if (!window.confirm(`このメールを送ります。\n\n宛先: ${v.customer || ""} 様（${addr}）\n差出人: ${sender.name}\n件名: ${subject}\n\nよろしいですか？`)) return;
+    if (!window.confirm(`このメールを送ります。\n\n宛先: ${v.customer || ""} 様（${addr}）\n差出人: ${sender.name}\n件名: ${subject}\n添付: ${atts.length ? atts.map(a => a.name).join("、") : "なし"}\n\nよろしいですか？`)) return;
     setSending(true);
     try {
       const payload = {
@@ -1055,6 +1058,7 @@ function ViewingMailHost({ data, setData }) {
         sender_name: sender.name, sender_mail: sender.mail,
         property: parent.name || "", price_text: "", doc_url: (ctx.docs[0] && ctx.docs[0].url) || "", memo: "",
         recipients: [{ id: "v:" + (v.id || vIndex), email: addr, company: "", name: v.customer || "" }],
+        attachments: atts,
         requested_by: currentUser || "",
       };
       const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_queue`, {
@@ -1097,6 +1101,7 @@ function ViewingMailHost({ data, setData }) {
       <Field label="宛先">
         <input value={to} onChange={e => setTo(e.target.value)} placeholder="メールアドレス（無ければ下のSMSで）" style={inp} inputMode="email" />
       </Field>
+      <AttachPicker docs={parent.docs} sel={attIds} setSel={setAttSel} />
       <Field label="件名"><input value={subject} onChange={e => setSubject(e.target.value)} style={inp} /></Field>
       <Field label="本文（そのまま直せます・署名は自動で付きます）">
         <textarea value={body} onChange={e => setBody(e.target.value)} rows={14} style={{ ...inp, lineHeight: 1.6, fontSize: 13 }} />
@@ -1467,6 +1472,9 @@ const BULK_TEMPLATES = [
 その後、ご検討の状況はいかがでしょうか。
 ご不明な点やご心配な点がございましたら、お気軽にご返信ください。
 {{概要}}
+物件の資料はこちらです（添付ファイルもご覧ください）。
+{{資料}}
+
 現地のご案内も随時承っております。
 ご都合のよい日時をお知らせいただければ調整いたします。
 
@@ -1512,6 +1520,28 @@ const BULK_TEMPLATES = [
 ご希望をご返信いただければ幸いです。
 どうぞよろしくお願いいたします。` },
 ];
+// 🆕 v9.483: メールに添付する資料を選ぶ（アップロードしたPDF・画像だけ添付できる。ドライブ等のリンクは本文に載る）
+function attachableDocs(docs) { return (docs || []).filter(d => d && d.url && d.path); }
+function AttachPicker({ docs, sel, setSel }) {
+  const list = attachableDocs(docs);
+  const links = (docs || []).filter(d => d && d.url && !d.path);
+  return (
+    <Field label="📎 添付するファイル（マイソクなど）">
+      {list.length === 0 && <div style={{ fontSize: 12, color: C.warn, lineHeight: 1.6 }}>添付できるファイルがありません。物件情報の「✏️ 編集」か反響欄の「📎 物件資料」でマイソクのPDFを入れると、ここで選べます。{links.length ? "（ドライブなどのリンクは本文に載ります）" : ""}</div>}
+      {list.map(d => {
+        const on = sel.includes(d.id);
+        return (
+          <button key={d.id} onClick={() => setSel(on ? sel.filter(x => x !== d.id) : [...sel, d.id])} style={{ width: "100%", textAlign: "left", display: "flex", gap: 10, alignItems: "center", background: on ? C.accentBg : C.cardBg, border: `1px solid ${on ? C.accent : C.borderDim}`, borderRadius: 10, padding: "9px 10px", marginBottom: 6, cursor: "pointer", fontFamily: "inherit" }}>
+            <span style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${on ? C.accent : C.border}`, background: on ? C.accent : "transparent", color: "#fff", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{on ? "✓" : ""}</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>📄 {d.label || "物件資料"}</span>
+          </button>
+        );
+      })}
+    </Field>
+  );
+}
+const attachPayload = (docs, sel) => attachableDocs(docs).filter(d => sel.includes(d.id)).map(d => ({ url: d.url, name: d.label || "物件資料" }));
+
 function openBulkViewingMail(detail) { try { window.dispatchEvent(new CustomEvent("hikari-bulkmail", { detail })); } catch (e) {} }
 const BULK_SKIP_RESULTS = ["成約", "見送り"];
 function BulkViewingMailHost({ data, setData }) {
@@ -1523,9 +1553,10 @@ function BulkViewingMailHost({ data, setData }) {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
+  const [attSel, setAttSel] = useState(null); // null = 添付できる資料を全部
   const currentUser = getCurrentUser();
   useEffect(() => {
-    const h = (e) => { setReq(e.detail || {}); setPicked(null); setTplKey("sonogo"); setSenderKey(vmailSenderFor(currentUser).key); setSubject(""); setBody(""); };
+    const h = (e) => { setReq(e.detail || {}); setPicked(null); setAttSel(null); setTplKey("sonogo"); setSenderKey(vmailSenderFor(currentUser).key); setSubject(""); setBody(""); };
     window.addEventListener("hikari-bulkmail", h);
     return () => window.removeEventListener("hikari-bulkmail", h);
   }, []);
@@ -1575,17 +1606,19 @@ function BulkViewingMailHost({ data, setData }) {
   const sel = picked || okRows.map(r => r.k);
   const targets = okRows.filter(r => sel.includes(r.k));
   const toggle = (k) => setPicked(prev => { const base = prev || okRows.map(r => r.k); return base.includes(k) ? base.filter(x => x !== k) : [...base, k]; });
+  const attIds = attSel || attachableDocs(p.docs).map(d => d.id);
+  const atts = attachPayload(p.docs, attIds);
 
   const send = async () => {
     if (!targets.length) { alert("送る相手がいません"); return; }
     if (!currentUser) { alert("先にログインしてください"); return; }
     const over = targets.length > 100 ? `\n\n※1日に送れるのは100通までです。残りは明日以降に自動で送られます。` : "";
-    if (!window.confirm(`${targets.length}人に送ります。\n\n物件: ${p.name}\n差出人: ${sender.name}\n件名: ${subject}${over}\n\nよろしいですか？`)) return;
+    if (!window.confirm(`${targets.length}人に送ります。\n\n物件: ${p.name}\n差出人: ${sender.name}\n件名: ${subject}\n添付: ${atts.length ? atts.map(a => a.name).join("、") : "なし"}${over}\n\nよろしいですか？`)) return;
     setSending(true);
     try {
       const payload = {
         status: "pending", subject, body, sender_name: sender.name, sender_mail: sender.mail,
-        property: p.name || "", price_text: "", doc_url: ((p.docs || [])[0] || {}).url || "", memo: "反響へ一括",
+        property: p.name || "", price_text: "", doc_url: ((p.docs || [])[0] || {}).url || "", memo: "反響へ一括", attachments: atts,
         recipients: targets.map(r => ({ id: "v:" + (r.v.id || r.vi), email: String(r.v.email).trim(), company: "", name: r.v.customer || "" })),
         requested_by: currentUser || "",
       };
@@ -1649,6 +1682,7 @@ function BulkViewingMailHost({ data, setData }) {
           );
         })}
       </Field>
+      <AttachPicker docs={p.docs} sel={attIds} setSel={setAttSel} />
       <Field label="件名"><input value={subject} onChange={e => setSubject(e.target.value)} style={inp} /></Field>
       <Field label="本文（{{宛名}} は一人ずつ「◯◯ 様」に変わります・署名は自動）">
         <textarea value={body} onChange={e => setBody(e.target.value)} rows={14} style={{ ...inp, lineHeight: 1.6, fontSize: 13 }} />
@@ -7787,6 +7821,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.483", date: "2026-10-08", title: "メールにマイソクなどのファイルを添付できるように",
+    body: "反響のお客様へのメール（1人へ・一括どちらも）に、物件に入れておいたマイソクのPDFや画像がそのまま添付されます。送る前に、付けるファイルを選んだり外したりできます。ドライブなどのリンクは本文に載ります。",
+    where: "反響カードの「✉️ 資料つきメール」／反響欄の「📨 この物件の反響へ一括メール」→「📎 添付するファイル」" },
   { v: "9.482", date: "2026-10-08", title: "1つの物件に問い合わせた人へ、まとめてメールを送れるように",
     body: "「その後いかがですか」「見学のおさそい」「ご予算・条件のご相談」「ほかの物件もご紹介」の4つの文面から選んで、その物件に問い合わせてくれた人全員へ一度に送れます。最近やり取りした人（5日・10日・14日・30日以内）は外せます。成約・見送り・見込み「ダメ」の人は最初から入りません。送った人の反響には「📧メール送った」が自動で付きます。",
     where: "在庫（仲介）→ 物件の反響を開く →「📨 この物件の反響へ一括メール」" },
