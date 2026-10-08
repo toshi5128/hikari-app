@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.491-update";
+const APP_VERSION = "2026-10-08-v9.492-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3024,6 +3024,20 @@ function seedPropInfoOne(d, seed) {
   const next = { ...s, propInfo: { ...cur, ...add, updatedBy: cur.updatedBy || "資料から自動入力", updatedAt: new Date(now).toISOString() }, propInfoSeed: seed.tag, updatedAt: now,
     _fieldUpdatedAt: { ...(s._fieldUpdatedAt || {}), propInfo: now, propInfoSeed: now } };
   console.log(`[v9.491] ${seed.name}の物件カルテに ${Object.keys(add).length}項目 入れました`);
+  return { ...d, stocks: d.stocks.map(x => x === s ? next : x) };
+}
+
+// 🆕 v9.492: 町田市山崎町のキーボックス（物件注意点まとめより）。空のときだけ1回入れる
+function seedKeyBoxV9492(d) {
+  if (!d || !Array.isArray(d.stocks)) return d;
+  const s = d.stocks.find(x => x && String(x.id) === "1784094187802");
+  if (!s || s.keyBoxSeed === "v9492") return d;
+  const now = Date.now();
+  const fu = { ...(s._fieldUpdatedAt || {}), keyBoxSeed: now };
+  const next = { ...s, keyBoxSeed: "v9492", updatedAt: now };
+  if (!String(s.keyBoxNumber || "").trim()) { next.keyBoxNumber = "0227"; fu.keyBoxNumber = now; }
+  if (!String(s.keyBoxLocation || "").trim()) { next.keyBoxLocation = "玄関横の窓格子"; fu.keyBoxLocation = now; }
+  next._fieldUpdatedAt = fu;
   return { ...d, stocks: d.stocks.map(x => x === s ? next : x) };
 }
 
@@ -7396,6 +7410,7 @@ function MainApp({ onLock, onSwitchUser }) {
   useEffect(() => {
     if (!data) return;
     if (seedOdakePropInfoV9490(data) !== data) setData(d => seedOdakePropInfoV9490(d));
+    else if (seedKeyBoxV9492(data) !== data) setData(d => seedKeyBoxV9492(d));
   }, [data]);
 
   // 🆕 v9.407: 回った先／訪問の結果は訪問記録が正本。毎回数え直す（自己修復）。
@@ -16906,6 +16921,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
             <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
               <StatusTag status={s.status} /><MemberTag name={s.assignee} />
               {sinfo && <Tag label={`${sinfo.level} 仕入${sinfo.days}日経過`} color={sinfo.color} />}
+              {/* 🆕 v9.492: 現地にキーボックスがあれば番号を物件名の上に出す（内見の前にすぐ見られる） */}
+              {String(s.keyBoxNumber || "").trim() && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: C.purple + "18", border: `1.5px solid ${C.purple}`, color: C.purple, borderRadius: 999, padding: "2px 10px", fontSize: 12, fontWeight: 800 }}>
+                  🔑 {String(s.keyBoxNumber).trim()}{String(s.keyBoxLocation || "").trim() && <span style={{ fontWeight: 600, fontSize: 11 }}>（{String(s.keyBoxLocation).trim()}）</span>}
+                </span>
+              )}
             </div>
             <div style={{ color: C.text, fontWeight: 600, fontSize: 16, marginBottom: 10 }}>{s.name}</div>
             {/* 写真サムネイル */}
