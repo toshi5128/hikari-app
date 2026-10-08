@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.493-update";
+const APP_VERSION = "2026-10-08-v9.494-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1013,7 +1013,8 @@ function ViewingMailHost({ data, setData }) {
   const senders = OFFER_SENDERS.filter(s => !isRetiredMember(s.short));
   const sender = senders.find(s => s.key === senderKey) || vmailSenderFor(currentUser);
   const tpl = VMAIL_TEMPLATES.find(t => t.key === tplKey) || VMAIL_TEMPLATES[0];
-  const ctx = { name: (v && v.customer) || "", propName: parent ? (parent.name || "") : "", senderShort: sender.short, docs: (parent && parent.docs) || [], summary: propInfoSummary(parent) };
+  const attIds = attSel || defaultDocSel(parent && parent.docs);
+  const ctx = { name: (v && v.customer) || "", propName: parent ? (parent.name || "") : "", senderShort: sender.short, docs: pickedDocs(parent && parent.docs, attIds), summary: propInfoSummary(parent) };
   // 型・差出人・資料が変わったら文面を作り直す（その場で直した文も、作り直すと消える＝分かりやすさ優先）
   const sig = `${tplKey}|${sender.key}|${ctx.docs.map(d => d.id).join(",")}|${req ? req.vid : ""}`;
   const sigRef = React.useRef("");
@@ -1031,7 +1032,6 @@ function ViewingMailHost({ data, setData }) {
     return <BottomSheet title="✉️ メールを作る" onClose={close}><div style={{ color: C.muted, fontSize: 13, padding: "10px 0 20px" }}>この反響が見つかりませんでした。いったん閉じて開き直してください。</div></BottomSheet>;
   }
   const smsText = vmailFill(tpl.sms, ctx);
-  const attIds = attSel || attachableDocs(parent.docs).map(d => d.id);
   const atts = attachPayload(parent.docs, attIds);
   const tel = String(v.contact || "").replace(/[^\d+]/g, "");
   const record = (kindText) => {
@@ -1522,18 +1522,23 @@ const BULK_TEMPLATES = [
 ];
 // 🆕 v9.483: メールに添付する資料を選ぶ（アップロードしたPDF・画像だけ添付できる。ドライブ等のリンクは本文に載る）
 function attachableDocs(docs) { return (docs || []).filter(d => d && d.url && d.path); }
+// 🆕 v9.494: チェックを外した資料は、添付だけでなく本文のリンクからも消す（下田さん「外しても本文に乗ってくる」）
+//   ・社内向けの資料（注意点まとめ・原価・ドライブのフォルダ等）は最初からチェックを外しておく＝お客様に出さない
+function isInternalDoc(d) { return /注意点|社内|原価|メモ|ドライブ|価格交渉/.test(String(d.label || "")) || /drive\.google\.com\/drive\//.test(String(d.url || "")); }
+function sendableDocs(docs) { return (docs || []).filter(d => d && d.url); }
+function defaultDocSel(docs) { return sendableDocs(docs).filter(d => !isInternalDoc(d)).map(d => d.id); }
+function pickedDocs(docs, sel) { return sendableDocs(docs).filter(d => sel.includes(d.id)); }
 function AttachPicker({ docs, sel, setSel }) {
-  const list = attachableDocs(docs);
-  const links = (docs || []).filter(d => d && d.url && !d.path);
+  const list = sendableDocs(docs);
   return (
-    <Field label="📎 添付するファイル（マイソクなど）">
+    <Field label="📎 お客様に送る資料（チェックしたものだけ添付・本文に載ります）">
       {list.length === 0 && <div style={{ fontSize: 12, color: C.warn, lineHeight: 1.6 }}>添付できるファイルがありません。物件情報の「✏️ 編集」か反響欄の「📎 物件資料」でマイソクのPDFを入れると、ここで選べます。{links.length ? "（ドライブなどのリンクは本文に載ります）" : ""}</div>}
       {list.map(d => {
         const on = sel.includes(d.id);
         return (
           <button key={d.id} onClick={() => setSel(on ? sel.filter(x => x !== d.id) : [...sel, d.id])} style={{ width: "100%", textAlign: "left", display: "flex", gap: 10, alignItems: "center", background: on ? C.accentBg : C.cardBg, border: `1px solid ${on ? C.accent : C.borderDim}`, borderRadius: 10, padding: "9px 10px", marginBottom: 6, cursor: "pointer", fontFamily: "inherit" }}>
             <span style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${on ? C.accent : C.border}`, background: on ? C.accent : "transparent", color: "#fff", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{on ? "✓" : ""}</span>
-            <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>📄 {d.label || "物件資料"}</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{d.path ? "📄" : "🔗"} {d.label || "物件資料"}{isInternalDoc(d) && <span style={{ fontSize: 11, color: C.danger, fontWeight: 800, marginLeft: 6 }}>社内用</span>}</span>
           </button>
         );
       })}
@@ -1566,12 +1571,13 @@ function BulkViewingMailHost({ data, setData }) {
   const sender = senders.find(s => s.key === senderKey) || vmailSenderFor(currentUser);
   const tpl = BULK_TEMPLATES.find(t => t.key === tplKey) || BULK_TEMPLATES[0];
   // 文面：型・差出人・物件が変わったら作り直す（{{宛名}} は送信側で一人ずつ）
-  const sig = `${tplKey}|${sender.key}|${req ? req.parentId : ""}`;
+  const attIds = attSel || defaultDocSel(p && p.docs);
+  const sig = `${tplKey}|${sender.key}|${req ? req.parentId : ""}|${attIds.join(",")}`;
   const sigRef = React.useRef("");
   useEffect(() => {
     if (!p || sigRef.current === sig) return;
     sigRef.current = sig;
-    const ctx = { propName: p.name || "", senderShort: sender.short, docs: p.docs || [], summary: propInfoSummary(p) };
+    const ctx = { propName: p.name || "", senderShort: sender.short, docs: pickedDocs(p.docs, attIds), summary: propInfoSummary(p) };
     setSubject(vmailFill(tpl.subject, ctx));
     setBody(vmailFill(tpl.body, ctx).replace(/\{\{お名前\}\} 様/g, "{{宛名}}"));
   });
@@ -1606,7 +1612,6 @@ function BulkViewingMailHost({ data, setData }) {
   const sel = picked || okRows.map(r => r.k);
   const targets = okRows.filter(r => sel.includes(r.k));
   const toggle = (k) => setPicked(prev => { const base = prev || okRows.map(r => r.k); return base.includes(k) ? base.filter(x => x !== k) : [...base, k]; });
-  const attIds = attSel || attachableDocs(p.docs).map(d => d.id);
   const atts = attachPayload(p.docs, attIds);
 
   const send = async () => {
