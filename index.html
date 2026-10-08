@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.507-update";
+const APP_VERSION = "2026-10-08-v9.508-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1792,6 +1792,20 @@ function ReplyCard({ r, w, data, setData, onDone }) {
   const [senderKey, setSenderKey] = useState(vmailSenderFor(currentUser).key);
   const [busy, setBusy] = useState(false);
   useEffect(() => { if (r.draft_body && !body) { setBody(r.draft_body); setSubject(r.draft_subject || subject); } }, [r.draft_body]);
+  // 🆕 v9.508: 「こんな雰囲気で」と頼んで書き直してもらう（PCの下書き係が5分以内に作り直す）
+  const [ask, setAsk] = useState("");
+  const [rewriting, setRewriting] = useState(!!(r.rewrite_request && (!r.draft_at || String(r.rewrite_at) > String(r.draft_at))));
+  useEffect(() => { if (rewriting && r.draft_at && String(r.draft_at) > String(r.rewrite_at || "")) { setBody(r.draft_body || ""); setSubject(r.draft_subject || subject); setRewriting(false); } }, [r.draft_at]);
+  useEffect(() => { if (!rewriting) return; const t = setInterval(() => refreshInbox(true), 30000); return () => clearInterval(t); }, [rewriting]);
+  const requestRewrite = async () => {
+    if (!ask.trim()) { alert("どんな雰囲気・内容にしたいかを書いてください"); return; }
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_inbox?msg_id=eq.${encodeURIComponent(r.msg_id)}`, { method: "PATCH", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ rewrite_request: ask.trim(), rewrite_at: new Date().toISOString() }) });
+      if (!res.ok) throw new Error(`受付できませんでした（${res.status}）`);
+      setRewriting(true); setAsk("");
+    } catch (e) { alert("頼めませんでした。\n\n" + e.message); }
+  };
   useEffect(() => { setCloseLost(r.draft_intent === "不要"); }, [r.draft_intent]);
   const senders = OFFER_SENDERS.filter(s => !isRetiredMember(s.short));
   const sender = senders.find(s => s.key === senderKey) || vmailSenderFor(currentUser);
@@ -1865,6 +1879,13 @@ function ReplyCard({ r, w, data, setData, onDone }) {
       {r.draft_error && !r.draft_body && <div style={{ fontSize: 12, color: C.warn, marginBottom: 6 }}>下書きを作れませんでした。自分で書いて送ってください。</div>}
       <input value={subject} onChange={e => setSubject(e.target.value)} style={{ ...inp, marginBottom: 6 }} />
       <textarea value={body} onChange={e => setBody(e.target.value)} rows={10} style={{ ...inp, lineHeight: 1.6, fontSize: 13 }} />
+      <div style={{ margin: "8px 0", padding: "8px 10px", border: `1.5px solid ${C.purple}`, borderRadius: 10, background: C.purple + "0d" }}>
+        <div style={{ fontSize: 11, color: C.purple, fontWeight: 800, marginBottom: 4 }}>🪄 こんな雰囲気で書き直してほしい</div>
+        {rewriting ? <div style={{ fontSize: 12, color: C.purple, lineHeight: 1.6 }}>書き直しています…（5分ほど。できたら通知が届き、上の本文が入れ替わります）</div> : (<>
+          <textarea value={ask} onChange={e => setAsk(e.target.value)} rows={2} placeholder="例）もっと短く／値下げはできないと丁寧に断る／今週末の見学を提案して" style={{ ...inp, fontSize: 13, marginBottom: 6 }} />
+          <button onClick={requestRewrite} style={{ ...btnStyle("ghost"), width: "100%", padding: "10px 0", border: `1.5px solid ${C.purple}`, color: C.purple, fontWeight: 800 }}>🪄 この雰囲気で書き直してもらう</button>
+        </>)}
+      </div>
       {replyDocs.length > 0 && (<div style={{ margin: "8px 0", padding: "8px 10px", border: `1.5px solid ${C.accent}`, borderRadius: 10, background: C.accent + "10" }}>
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 800, marginBottom: 4 }}>📎 添付する資料（お客様が頼んだ資料をドライブから用意しました）</div>
         {replyDocs.map(d => (<label key={d.url} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, padding: "4px 0" }}>
@@ -8241,6 +8262,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.508", date: "2026-10-08", title: "返事の下書きを「こんな雰囲気で」と書き直してもらえるように",
+    body: "お客様からの返信の画面に「🪄 こんな雰囲気で書き直してほしい」が増えました。「もっと短く」「値下げはできないと丁寧に断る」「今週末の見学を提案」などと書いて押すと、5分ほどで下書きが書き直され、通知が届きます。送るのは今までどおり自分で確認してからです。",
+    where: "「📩 お客様から返信」→ 下書きの下" },
   { v: "9.506", date: "2026-10-08", title: "社内用の資料は、お客様へのメールに絶対に載らないように",
     body: "物件資料を入れる時に「お客様に送ってよい資料ですか？」と聞かれます。「キャンセル」を選ぶと🔒社内用になり、メール・SMS・一括メールのどれにも載りません（チェックも付けられません）。名前に「注意点・原価・契約・謄本」などが入っている資料や、ドライブのフォルダも自動で社内用になります。物件資料の一覧で「🔒社内用／送ってOK」を押すと切り替えられます。",
     where: "物件の「📋 物件情報」→ 物件資料／反響のメール作成の「📎 お客様に送る資料」" },

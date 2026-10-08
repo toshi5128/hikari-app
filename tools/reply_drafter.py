@@ -13,6 +13,7 @@
 ・契約書・重説・謄本・覚書・注意点まとめ等の社内資料は送らない（名前で弾く）。社内資料のリンクはAIにも渡さない
 2026-10-08 追加（下田さん「メールが来ても通知が無いから気づけない。下書きを作ったらそれも知らせて」）
 ・返信を読んで下書きを作ったら、アプリの通知（send-push）で知らせる。相手＝下田＋物件の担当＋前にメールを送った人
+・アプリで「こんな雰囲気で」と頼まれたら（rewrite_request）、その指示どおりに下書きを作り直して通知する
 ・通知に出すのは物件名と「下書きができた／資料を添付した」だけ。お客様の名前やメール本文は出さない（ロック画面に出るため）
 """
 import json, re, subprocess, sys, tempfile, urllib.request, urllib.parse
@@ -210,7 +211,9 @@ def notify(msg, hits, sent, patch):
             who.append(m)
     who = [m for m in who if m not in RETIRED]
     place = f"（{p.get('name')}）" if p.get("name") else ""
-    if patch.get("draft_body"):
+    if patch.get("draft_body") and msg.get("rewrite_request"):
+        body = "頼まれた雰囲気で下書きを書き直しました。アプリの「📩 お客様から返信」から確認して送ってください"
+    elif patch.get("draft_body"):
         body = "返事の下書きを作りました" + ("。頼まれた資料も添付しています" if patch.get("draft_docs") else "") + "。アプリの「📩 お客様から返信」から確認して送ってください"
     else:
         body = "下書きは作れませんでした。アプリの「📩 お客様から返信」から中身を見て返事してください"
@@ -255,6 +258,11 @@ def main():
     try:
         since = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         rows = api("GET", "/rest/v1/mail_inbox?select=*&status=eq.new&draft_at=is.null&received_at=gte." + since + "&order=received_at.asc&limit=5")
+        # 担当者から「こんな雰囲気で」と書き直しを頼まれたもの（頼まれた後にまだ作り直していない分）
+        asked = api("GET", "/rest/v1/mail_inbox?select=*&status=eq.new&rewrite_request=not.is.null&order=rewrite_at.asc&limit=5")
+        asked = [m for m in asked if m.get("rewrite_at") and (not m.get("draft_at") or str(m["rewrite_at"]) > str(m["draft_at"]))]
+        ids = {m["msg_id"] for m in rows}
+        rows = asked + [m for m in rows if m["msg_id"] not in {a["msg_id"] for a in asked}]
         if not rows:
             return
         data = api("GET", "/rest/v1/app_data?id=eq.hikari_main&select=data")[0]["data"]
@@ -267,12 +275,19 @@ def main():
                        + urllib.parse.quote(json.dumps([{"email": em}])) + "&order=id.desc&limit=1")
             sent = sent[0] if sent else None
             try:
-                j = ask_claude(build_prompt(msg, hits, sent))
+                prompt = build_prompt(msg, hits, sent)
+                if msg.get("rewrite_request"):  # 担当者の指示は最優先（お客様の文と違い、こちらは社内の人の指示）
+                    prompt += ("\n\n# 担当者からの指示（最優先。この雰囲気・内容で書き直すこと）\n" + str(msg["rewrite_request"])[:1000]
+                               + "\n\n# 今の下書き（これを指示どおりに直す）\n" + str(msg.get("draft_body") or "（まだ無し）")[:3000])
+                j = ask_claude(prompt)
                 patch = {"draft_subject": str(j.get("subject") or ("Re: " + (msg.get("subject") or "")))[:300],
                          "draft_body": str(j["body"]).strip(), "draft_summary": str(j.get("summary") or "")[:120],
                          "draft_intent": str(j.get("intent") or "")[:20], "draft_at": datetime.now(timezone.utc).isoformat(), "draft_error": None}
+                if msg.get("rewrite_request"):
+                    patch["draft_docs"] = msg.get("draft_docs")  # 書き直しでは添付はそのまま
                 try:
-                    attach_requested_doc(msg, hits, j, patch)
+                    if not msg.get("rewrite_request"):
+                        attach_requested_doc(msg, hits, j, patch)
                 except Exception as e:  # 資料が付かなくても下書きは残す
                     patch["draft_summary"] = (patch.get("draft_summary") or "") + f"／資料の添付に失敗: {str(e)[:60]}"
             except Exception as e:  # 失敗しても次の回にもう一度（3回目以降は諦めて印だけ）
