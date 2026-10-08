@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.480-update";
+const APP_VERSION = "2026-10-08-v9.481-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -811,7 +811,7 @@ const VMAIL_TEMPLATES = [
 
 物件の資料をお送りいたします。
 {{資料}}
-
+{{概要}}
 現地のご案内はいつでも承っております。
 ご都合のよい日時を2〜3つほどお知らせいただけましたら、こちらで調整いたします。
 
@@ -895,6 +895,7 @@ function vmailFill(text, ctx) {
     .replace(/\{\{差出人\}\}/g, ctx.senderShort || "")
     .replace(/\{\{資料\}\}/g, propertyDocsBlock(ctx.docs))
     .replace(/\{\{資料URL\}\}/g, first ? `資料はこちらです ${first.url} ` : "")
+    .replace(/\{\{概要\}\}/g, ctx.summary ? "\n" + ctx.summary + "\n" : "")
     .replace(/\n{3,}/g, "\n\n");
 }
 // どこからでも「この反響のメールを作る」画面を開く（画面の一番外側の ViewingMailHost が受け取る）
@@ -1011,7 +1012,7 @@ function ViewingMailHost({ data, setData }) {
   const senders = OFFER_SENDERS.filter(s => !isRetiredMember(s.short));
   const sender = senders.find(s => s.key === senderKey) || vmailSenderFor(currentUser);
   const tpl = VMAIL_TEMPLATES.find(t => t.key === tplKey) || VMAIL_TEMPLATES[0];
-  const ctx = { name: (v && v.customer) || "", propName: parent ? (parent.name || "") : "", senderShort: sender.short, docs: (parent && parent.docs) || [] };
+  const ctx = { name: (v && v.customer) || "", propName: parent ? (parent.name || "") : "", senderShort: sender.short, docs: (parent && parent.docs) || [], summary: propInfoSummary(parent) };
   // 型・差出人・資料が変わったら文面を作り直す（その場で直した文も、作り直すと消える＝分かりやすさ優先）
   const sig = `${tplKey}|${sender.key}|${ctx.docs.map(d => d.id).join(",")}|${req ? req.vid : ""}`;
   const sigRef = React.useRef("");
@@ -1080,7 +1081,8 @@ function ViewingMailHost({ data, setData }) {
   const chip = (on) => ({ padding: "8px 12px", borderRadius: 999, border: `2px solid ${on ? C.accent : C.borderDim}`, background: on ? C.accentBg : C.cardBg, color: C.text, fontSize: 12, fontWeight: on ? 800 : 500, cursor: "pointer", fontFamily: "inherit" });
   return (
     <BottomSheet title={`✉️ ${v.customer || "お客様"} 様へ`} onClose={close}>
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>{parent.name}{v.date ? `　反響 ${v.date}` : ""}</div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>{parent.name}{v.date ? `　反響 ${v.date}` : ""}
+        <button onClick={() => openPropInfo({ parentType: req.parentType, parentId: parent.id })} style={{ marginLeft: "auto", background: C.accent + "18", border: `1px solid ${C.accent}`, color: C.accent, borderRadius: 999, padding: "3px 10px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>📋 物件情報</button></div>
       <Field label="どんなメール？">
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {VMAIL_TEMPLATES.map(t => <button key={t.key} onClick={() => setTplKey(t.key)} style={chip(tplKey === t.key)}>{t.label}</button>)}
@@ -1289,6 +1291,163 @@ function MailHistoryPage({ data, onBack }) {
         ) : null} />;
       })}
     </div>
+  );
+}
+
+// 🆕 v9.481: 物件情報（物件カルテ）— お客様と電話しながら開いて、そのまま読み上げられる1枚
+//   ・物件ごとに propInfo（項目の箱）を持つ。資料（docs）も同じ画面に並べる
+//   ・空の項目は表示しない（電話中に探さなくていいように）。編集は同じ画面の「✏️ 編集」から
+//   ・Geminiのキーが入っている端末なら、マイソク・レインズのPDFから空欄を自動で埋められる
+const PROP_INFO_GROUPS = [
+  { title: "基本", items: [["addr", "所在地"], ["price", "価格"], ["access", "交通（最寄駅・徒歩）"]] },
+  { title: "土地", items: [["land", "土地面積"], ["chimoku", "地目"], ["road", "接道（方位・幅員）"], ["youto", "用途地域"], ["kenpei", "建ぺい率／容積率"]] },
+  { title: "建物", items: [["bldg", "建物面積"], ["madori", "間取り"], ["kozo", "構造・階数"], ["chiku", "築年月"], ["parking", "駐車場"]] },
+  { title: "状態・設備", items: [["genkyo", "現況（空家・居住中・賃貸中）"], ["hikiwatashi", "引渡し時期"], ["reform", "リフォーム"], ["setsubi", "設備（水道・下水・ガス）"]] },
+  { title: "周辺・その他", items: [["gakku", "学区"], ["kankyo", "周辺環境（スーパー・病院など）"], ["point", "おすすめポイント"], ["chui", "注意点・告知事項"], ["faq", "よく聞かれること・答え方メモ"]] },
+];
+const PROP_INFO_KEYS = PROP_INFO_GROUPS.flatMap(g => g.items.map(i => i[0]));
+const PROP_INFO_LONG = new Set(["kankyo", "point", "chui", "faq", "reform", "setsubi"]);
+function propInfoCount(p) { const i = (p && p.propInfo) || {}; return PROP_INFO_KEYS.filter(k => String(i[k] || "").trim()).length; }
+function openPropInfo(detail) { try { window.dispatchEvent(new CustomEvent("hikari-propinfo", { detail })); } catch (e) {} }
+// メール用の短い概要（入っている項目だけ）
+function propInfoSummary(p) {
+  const i = (p && p.propInfo) || {};
+  const rows = [["所在地", i.addr], ["価格", i.price], ["交通", i.access], ["土地", i.land], ["建物", i.bldg], ["間取り", i.madori], ["築年月", i.chiku], ["駐車場", i.parking]].filter(r => String(r[1] || "").trim());
+  return rows.length ? "━━━━━━━━━━━━━━━\n" + rows.map(r => `■ ${r[0]}：${String(r[1]).trim()}`).join("\n") + "\n━━━━━━━━━━━━━━━" : "";
+}
+// マイソク・レインズのPDF（または画像）から項目を読む。Geminiのキーがある端末だけ
+async function propInfoFromFile(blob, mime) {
+  const apiKey = localStorage.getItem("hikari_gemini_api_key");
+  if (!apiKey) throw new Error("この端末にはGeminiのキーが入っていません");
+  const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = () => rej(new Error("読み込めませんでした")); r.readAsDataURL(blob); });
+  const keys = PROP_INFO_GROUPS.flatMap(g => g.items).map(([k, l]) => `"${k}": ${l}`).join("\n");
+  const prompt = `これは日本の不動産の販売図面（マイソク）またはレインズの物件資料です。次の項目を読み取り、JSONだけを返してください。書かれていない項目は空文字。数字・単位は資料のとおり（例 "120.50㎡（36.45坪）"、"1,980万円"）。推測で埋めないこと。\n${keys}`;
+  let lastErr = null;
+  for (const model of ["gemini-2.5-flash", "gemini-2.0-flash"]) {
+    try {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime || blob.type || "application/pdf", data: b64 } }] }], generationConfig: { responseMimeType: "application/json", temperature: 0 } }),
+      });
+      if (!resp.ok) { lastErr = new Error(`読み取りに失敗しました（${resp.status}）`); continue; }
+      const j = await resp.json();
+      const text = j?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("") || "";
+      const obj = JSON.parse(text.replace(/^```json|```$/g, "").trim());
+      const out = {};
+      PROP_INFO_KEYS.forEach(k => { const v = obj && obj[k]; if (v != null && String(v).trim()) out[k] = String(v).trim(); });
+      return out;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("読み取れませんでした");
+}
+
+function PropertyInfoHost({ data, setData }) {
+  const [req, setReq] = useState(null);
+  const [edit, setEdit] = useState(false);
+  const [form, setForm] = useState({});
+  const [busy, setBusy] = useState("");
+  const fileRef = React.useRef(null);
+  const currentUser = getCurrentUser();
+  useEffect(() => {
+    const h = (e) => { setReq(e.detail || {}); setEdit(!!(e.detail && e.detail.edit)); setBusy(""); };
+    window.addEventListener("hikari-propinfo", h);
+    return () => window.removeEventListener("hikari-propinfo", h);
+  }, []);
+  const key = req && req.parentType === "mediation" ? "mediations" : "stocks";
+  const p = req ? (data[key] || []).find(x => x && x.id === req.parentId) : null;
+  useEffect(() => { if (p && edit) setForm({ ...(p.propInfo || {}) }); }, [edit, req && req.parentId]);
+  if (!req) return null;
+  const close = () => { setReq(null); setEdit(false); };
+  if (!p) return <BottomSheet title="📋 物件情報" onClose={close}><div style={{ color: C.muted, fontSize: 13, paddingBottom: 20 }}>この物件が見つかりませんでした。</div></BottomSheet>;
+  const info = p.propInfo || {};
+  const save = () => {
+    const clean = {};
+    PROP_INFO_KEYS.forEach(k => { clean[k] = String(form[k] || "").trim(); });
+    setData(d => ({ ...d, [key]: (d[key] || []).map(x => x.id !== p.id ? x : { ...x, propInfo: { ...clean, updatedBy: currentUser || "", updatedAt: new Date().toISOString() } }) }));
+    setEdit(false);
+  };
+  // 資料（PDF・画像）から空欄だけ埋める
+  const autoFill = async (blob, mime) => {
+    setBusy("資料を読み取っています…（10〜30秒）");
+    try {
+      const got = await propInfoFromFile(blob, mime);
+      const n = Object.keys(got).filter(k => !String(form[k] || "").trim()).length;
+      setForm(f => { const nf = { ...f }; Object.keys(got).forEach(k => { if (!String(nf[k] || "").trim()) nf[k] = got[k]; }); return nf; });
+      setBusy("");
+      alert(n ? `${n}項目を埋めました。中身を確かめてから「保存」を押してください。` : "新しく埋められる項目はありませんでした。");
+    } catch (e) { setBusy(""); alert("⚠️ " + e.message); }
+  };
+  const fromDoc = async (d) => {
+    try { const r = await fetch(d.url); if (!r.ok) throw new Error("資料を開けませんでした"); const b = await r.blob(); await autoFill(b, b.type); }
+    catch (e) { setBusy(""); alert("⚠️ " + e.message); }
+  };
+  const hasKey = (() => { try { return !!localStorage.getItem("hikari_gemini_api_key"); } catch (e) { return false; } })();
+  const docs = (p.docs || []).filter(d => d && d.url);
+  const pdfDocs = docs.filter(d => d.path);
+  const filled = propInfoCount(p);
+  return (
+    <BottomSheet title={`📋 ${p.name || "物件"}`} onClose={close}
+      footer={edit ? (<>
+        <button onClick={() => setEdit(false)} style={{ ...btnStyle("ghost"), flex: 1, padding: "13px 0" }}>やめる</button>
+        <button onClick={save} style={{ ...btnStyle("primary"), flex: 2, padding: "13px 0" }}>保存</button>
+      </>) : null}>
+      {!edit && (<>
+        {filled === 0 && <div style={{ background: C.warn + "18", border: `1px solid ${C.warn}66`, borderRadius: 10, padding: 12, fontSize: 13, color: C.text, lineHeight: 1.7, marginBottom: 12 }}>まだ物件情報が入っていません。「✏️ 編集」から入れておくと、お客様との電話中にここを見ながら答えられます。{hasKey && pdfDocs.length ? "マイソクのPDFから自動で埋めることもできます。" : ""}</div>}
+        {PROP_INFO_GROUPS.map(g => {
+          const rows = g.items.filter(([k]) => String(info[k] || "").trim());
+          if (!rows.length) return null;
+          return (
+            <div key={g.title} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: C.accent, marginBottom: 4 }}>{g.title}</div>
+              <div style={{ background: C.inset, borderRadius: 10, padding: "4px 12px" }}>
+                {rows.map(([k, l], i) => (
+                  <div key={k} style={{ padding: "8px 0", borderTop: i ? `1px solid ${C.borderDim}` : "none", display: PROP_INFO_LONG.has(k) ? "block" : "flex", gap: 10 }}>
+                    <div style={{ fontSize: 12, color: C.muted, width: 92, flexShrink: 0, lineHeight: 1.5, paddingTop: 2 }}>{l}</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: k === "chui" ? C.danger : C.text, whiteSpace: "pre-wrap", lineHeight: 1.6, overflowWrap: "anywhere" }}>{info[k]}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        {docs.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.accent, marginBottom: 4 }}>資料</div>
+            {docs.map(d => <a key={d.id} href={d.url} target="_blank" rel="noopener noreferrer" style={{ display: "block", background: C.cardBg, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "11px 12px", marginBottom: 6, color: C.accent, fontWeight: 800, fontSize: 14, textDecoration: "none" }}>{d.path ? "📄" : "🔗"} {d.label || "物件資料"} を開く</a>)}
+          </div>
+        )}
+        {!docs.length && <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>資料（マイソクのPDFなど）は「✏️ 編集」から入れられます。</div>}
+        {info.updatedAt && <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>最終更新 {new Date(info.updatedAt).toLocaleDateString("ja-JP")} {info.updatedBy || ""}</div>}
+        <button onClick={() => setEdit(true)} style={{ ...btnStyle("primary"), width: "100%", padding: "13px 0", fontSize: 15 }}>✏️ 物件情報を編集</button>
+      </>)}
+      {edit && (<>
+        <PropertyDocsEditor parentType={req.parentType} parent={p} setData={setData} currentUser={currentUser} compact />
+        {hasKey && (
+          <div style={{ background: C.accent + "12", border: `1px solid ${C.accent}55`, borderRadius: 10, padding: 10, marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.text, marginBottom: 6 }}>🤖 資料から自動で埋める（空欄だけ）</div>
+            {busy ? <div style={{ fontSize: 12, color: C.accent }}>{busy}</div> : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {pdfDocs.map(d => <button key={d.id} onClick={() => fromDoc(d)} style={{ ...btnStyle("ghost"), padding: "8px 10px", fontSize: 12 }}>📄 {d.label || "資料"}</button>)}
+                <button onClick={() => fileRef.current && fileRef.current.click()} style={{ ...btnStyle("ghost"), padding: "8px 10px", fontSize: 12 }}>📎 ファイルを選ぶ</button>
+                <input ref={fileRef} type="file" accept="application/pdf,image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) autoFill(f, f.type); }} />
+              </div>
+            )}
+          </div>
+        )}
+        {PROP_INFO_GROUPS.map(g => (
+          <div key={g.title} style={{ marginBottom: 6 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.accent, margin: "4px 0 8px" }}>{g.title}</div>
+            {g.items.map(([k, l]) => (
+              <Field key={k} label={l}>
+                {PROP_INFO_LONG.has(k)
+                  ? <textarea value={form[k] || ""} onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))} rows={3} style={{ ...inp, lineHeight: 1.6 }} />
+                  : <input value={form[k] || ""} onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))} style={inp} />}
+              </Field>
+            ))}
+          </div>
+        ))}
+      </>)}
+    </BottomSheet>
   );
 }
 
@@ -1522,6 +1681,7 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
             </div>
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.6 }}>
               <span onClick={() => onJump && onJump(row)} style={{ color: C.accent, textDecoration: "underline", cursor: "pointer" }}>{row.parentName}</span>
+              <button onClick={() => openPropInfo({ parentType: row.parentType, parentId: row.parentId })} style={{ marginLeft: 8, background: C.accent + "18", border: `1px solid ${C.accent}`, color: C.accent, borderRadius: 999, padding: "2px 9px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>📋 物件情報</button>
               {row.assignee ? <span style={{ marginLeft: 8 }}>担当:{row.assignee}</span> : null}
               {v.date ? <span style={{ marginLeft: 8 }}>反響 {v.date}</span> : null}
               {v.visitDate ? <span style={{ marginLeft: 8, color: "#06b6d4", fontWeight: 700 }}>→ 案内 {v.visitDate}{v.visitTime ? " " + v.visitTime : ""}</span> : null}
@@ -7324,6 +7484,8 @@ function MainApp({ onLock, onSwitchUser }) {
       <ViewingMailHost data={data} setData={setData} />
       {/* 🆕 v9.480: メールのやり取り（送った・届いた） */}
       <MailHistoryHost />
+      {/* 🆕 v9.481: 物件情報（物件カルテ） */}
+      <PropertyInfoHost data={data} setData={setData} />
 
       {/* Bottom Navigation */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.cardBg, borderTop: `1px solid ${C.borderDim}`, display: "flex", zIndex: 200, paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -7417,6 +7579,10 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.481", date: "2026-10-08", title: "物件ごとに「📋 物件情報」を入れておけるように",
+    body: "価格・面積・間取り・築年・駐車場・学区・周辺環境・おすすめポイント・注意点などを物件ごとに入れておけます。お客様と電話しながら開くと、入っている項目だけが大きな字で並ぶので、そのまま読み上げて答えられます。資料（マイソクのPDFなど）も同じ画面から開けます。お礼メールには、入れた項目の概要が自動で載ります。",
+    where: "在庫（仲介）→ 物件カードの「📋 物件情報」／今日かける反響の物件名の横",
+    note: "Geminiのキーが入っている端末なら、編集画面の「🤖 資料から自動で埋める」でマイソクのPDFから空欄を埋められます。" },
   { v: "9.480", date: "2026-10-08", title: "送ったメールと、お客様からの返信がアプリで見られるように",
     body: "アプリから送ったメールの中身と、送った相手から届いた返信を、アプリの中で読めます。返信が届くと、送った人のスマホに通知が来て、反響カードに「📩 返信が届いています」とピンクのボタンが出ます。そこから続けてメールも作れます。",
     where: "反響カードの「📨 送ったメールを見る」／その他 →「📨 メールの履歴」" },
@@ -14981,6 +15147,10 @@ function MediationView({ data, setData, dealType, setDealType }) {
             );
           })()}
           {m.memo && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{m.memo}</div>}
+          {/* 🆕 v9.481: 物件情報（電話しながら見る1枚） */}
+            <button onClick={() => openPropInfo({ parentType: "mediation", parentId: m.id })} style={{ width: "100%", marginBottom: 8, padding: "11px", background: C.accent + "14", border: `1.5px solid ${C.accent}88`, color: C.accent, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 800, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              📋 物件情報{propInfoCount(m) ? `（${propInfoCount(m)}項目` : "（まだ空"}{(m.docs || []).length ? `・資料${(m.docs || []).length}` : ""}）
+            </button>
           <div style={{ display: "flex", gap: 8 }}>
             {canEdit(m) ? (
               <>
@@ -16863,6 +17033,10 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               );
             })()}
             {s.memo && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{s.memo}</div>}
+            {/* 🆕 v9.481: 物件情報（電話しながら見る1枚） */}
+            <button onClick={() => openPropInfo({ parentType: "stock", parentId: s.id })} style={{ width: "100%", marginBottom: 8, padding: "11px", background: C.accent + "14", border: `1.5px solid ${C.accent}88`, color: C.accent, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 800, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              📋 物件情報{propInfoCount(s) ? `（${propInfoCount(s)}項目` : "（まだ空"}{(s.docs || []).length ? `・資料${(s.docs || []).length}` : ""}）
+            </button>
             <div style={{ display: "flex", gap: 8 }}>
               {canEdit(s) ? (
                 <>
