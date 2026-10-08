@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-07-v9.479-update";
+const APP_VERSION = "2026-10-08-v9.480-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1110,6 +1110,188 @@ function ViewingMailHost({ data, setData }) {
   );
 }
 
+// 🆕 v9.480: メールの履歴 —「どんなメールを送ったか」「お客様から何が届いたか」をアプリで見る
+//   ・送った分 = mail_queue（アプリから送ったメールの控え）
+//   ・届いた分 = mail_inbox（送信係のGASが、送った相手から届いたメールを5分ごとに saboten のGmailから写す）
+//   ・どちらもクラウドの別テーブル。みんなの入力データ(data)には触らない
+async function _mailGet(path) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } });
+  if (!r.ok) throw new Error("読み込めませんでした（" + r.status + "）");
+  return r.json();
+}
+const MAIL_SENT_COLS = "id,created_at,status,subject,body,sender_name,requested_by,property,processed_at,recipients";
+async function loadMailHistory(emails) {
+  const raw = (emails || []).map(e => String(e || "").trim()).filter(Boolean);
+  const es = [...new Set([...raw, ...raw.map(e => e.toLowerCase())])];
+  if (!es.length) {
+    const [sent, got] = await Promise.all([
+      _mailGet(`mail_queue?select=${MAIL_SENT_COLS}&order=id.desc&limit=60`),
+      _mailGet(`mail_inbox?select=*&order=received_at.desc&limit=80`),
+    ]);
+    return { sent, got };
+  }
+  const sentLists = await Promise.all(es.map(e => _mailGet(`mail_queue?select=${MAIL_SENT_COLS}&recipients=cs.${encodeURIComponent(JSON.stringify([{ email: e }]))}&order=id.desc&limit=50`)));
+  const seen = new Set();
+  const sent = sentLists.flat().filter(r => r && !seen.has(r.id) && seen.add(r.id));
+  const inList = [...new Set(es.map(e => e.toLowerCase()))].map(e => `"${e}"`).join(",");
+  const got = await _mailGet(`mail_inbox?select=*&from_email=in.(${encodeURIComponent(inList)})&order=received_at.desc&limit=100`);
+  return { sent, got };
+}
+// 送った・届いたを1本の時系列にする
+function mailTimeline(h) {
+  const out = [];
+  (h.sent || []).forEach(r => out.push({ dir: "out", key: "o" + r.id, at: r.processed_at || r.created_at, subject: r.subject, body: r.body, who: r.sender_name || r.requested_by || "", n: (r.recipients || []).length, status: r.status, property: r.property, to: (r.recipients || []).map(x => x && (x.name || x.email)).filter(Boolean) }));
+  (h.got || []).forEach(r => out.push({ dir: "in", key: "i" + r.msg_id, at: r.received_at, subject: r.subject, body: r.body, who: r.from_name || r.from_email, email: r.from_email }));
+  out.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  return out;
+}
+const _mailWhen = (s) => { const d = new Date(s || ""); return isNaN(d.getTime()) ? "" : d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }); };
+
+// 1通ぶんのカード（タップで本文を開く）
+// 返信メールの下に付いてくる「前のやり取りの引用」を分ける（読みやすさのため。全文も見られる）
+function splitQuoted(body) {
+  const lines = String(body || "").split(/\r?\n/);
+  const i = lines.findIndex(l => /^\s*>/.test(l) || /^\s*\d{4}年\d{1,2}月\d{1,2}日.*(<[^>]+>|wrote|書きました).*:?\s*$/.test(l) || /^\s*On .+wrote:\s*$/.test(l) || /^-{2,}\s*Original Message/i.test(l));
+  if (i <= 0) return [String(body || "").trim(), ""];
+  return [lines.slice(0, i).join("\n").replace(/\n?null\s*$/, "").trim(), lines.slice(i).join("\n")];
+}
+function MailItem({ m, extra }) {
+  const [open, setOpen] = useState(false);
+  const [showQ, setShowQ] = useState(false);
+  const [mainText, quoted] = m.dir === "in" ? splitQuoted(m.body) : [m.body || "", ""];
+  const out = m.dir === "out";
+  const col = out ? C.success : C.accent;
+  const st = out && m.status !== "done" ? (m.status === "pending" ? "順番待ち" : m.status === "working" ? "送信中" : m.status) : "";
+  return (
+    <div style={{ background: C.cardBg, border: `1px solid ${C.borderDim}`, borderLeft: `4px solid ${col}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+      <div onClick={() => setOpen(o => !o)} style={{ cursor: "pointer" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ background: col + "22", color: col, borderRadius: 999, padding: "2px 9px", fontSize: 11, fontWeight: 800 }}>{out ? "📤 送った" : "📩 届いた"}</span>
+          {st && <span style={{ background: C.warn + "22", color: C.warn, borderRadius: 999, padding: "2px 8px", fontSize: 10, fontWeight: 800 }}>{st}</span>}
+          <span style={{ fontSize: 11, color: C.muted, marginLeft: "auto" }}>{_mailWhen(m.at)}</span>
+        </div>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.text, marginTop: 5, lineHeight: 1.4 }}>{m.subject || "(件名なし)"}</div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+          {out ? `${m.who}から → ${m.n > 1 ? `${m.n}人（一斉）` : (m.to[0] || "")}` : `${m.who}${m.email && m.who !== m.email ? `（${m.email}）` : ""}`}
+        </div>
+        {!open && <div style={{ fontSize: 12, color: C.muted, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(mainText || "").replace(/\s+/g, " ").slice(0, 80)}</div>}
+      </div>
+      {open && <div style={{ whiteSpace: "pre-wrap", fontSize: 13, color: C.text, lineHeight: 1.7, marginTop: 8, padding: "8px 10px", background: C.inset, borderRadius: 8, maxHeight: 420, overflowY: "auto", overflowWrap: "anywhere" }}>
+        {mainText}
+        {quoted && (showQ
+          ? <div style={{ color: C.muted, fontSize: 12, marginTop: 10, borderTop: `1px dashed ${C.borderDim}`, paddingTop: 8 }}>{quoted}</div>
+          : <div><button onClick={() => setShowQ(true)} style={{ marginTop: 8, background: "transparent", border: `1px solid ${C.borderDim}`, color: C.muted, borderRadius: 999, padding: "3px 10px", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>…前のやり取りも表示</button></div>)}
+      </div>}
+      <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+        <button onClick={() => setOpen(o => !o)} style={{ background: "transparent", border: "none", color: C.accent, fontSize: 12, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit" }}>{open ? "▲ 閉じる" : "▼ 本文を見る"}</button>
+        {extra}
+      </div>
+    </div>
+  );
+}
+
+// 反響1件（＝お客様1人）とのメールのやり取り。どこからでも開けるように画面の一番外側に1つ置く
+function openMailHistory(detail) { try { window.dispatchEvent(new CustomEvent("hikari-mailhist", { detail })); } catch (e) {} }
+function MailHistoryHost() {
+  const [req, setReq] = useState(null);
+  const [hist, setHist] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    const h = (e) => { setReq(e.detail || {}); setHist(null); setErr(""); };
+    window.addEventListener("hikari-mailhist", h);
+    return () => window.removeEventListener("hikari-mailhist", h);
+  }, []);
+  useEffect(() => {
+    if (!req) return;
+    let alive = true;
+    loadMailHistory(req.emails).then(r => { if (alive) setHist(r); }).catch(e => { if (alive) setErr(e.message); });
+    return () => { alive = false; };
+  }, [req]);
+  if (!req) return null;
+  const tl = hist ? mailTimeline(hist) : [];
+  return (
+    <BottomSheet title={`📨 ${req.title || "メール"} とのやり取り`} onClose={() => setReq(null)}>
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.6 }}>アプリから送ったメールと、相手から届いたメールです（届いたメールは5分ごとに取り込み）。{(req.emails || []).filter(Boolean).join(" / ")}</div>
+      {err && <div style={{ color: C.danger, fontSize: 13, marginBottom: 10 }}>⚠️ {err}</div>}
+      {!hist && !err && <div style={{ color: C.muted, fontSize: 13, padding: "10px 0" }}>読み込み中…</div>}
+      {hist && !tl.length && <div style={{ color: C.muted, fontSize: 13, padding: "10px 0 20px" }}>まだやり取りはありません。</div>}
+      {tl.map(m => <MailItem key={m.key} m={m} />)}
+      {req.onReply && <button onClick={() => { const f = req.onReply; setReq(null); setTimeout(f, 50); }} style={{ ...btnStyle("primary"), width: "100%", padding: "13px 0", marginTop: 6 }}>✉️ このお客様へメールを作る</button>}
+    </BottomSheet>
+  );
+}
+
+// 届いたメールの目印（反響カードに「📩 返信あり」を出す）。3分ごとに軽く読み直す
+const _replyIdx = { map: {}, at: 0, subs: new Set(), busy: false };
+async function _refreshReplyIdx() {
+  if (_replyIdx.busy || Date.now() - _replyIdx.at < 170000) return;
+  _replyIdx.busy = true;
+  try {
+    const rows = await _mailGet("mail_inbox?select=from_email,received_at&order=received_at.desc&limit=1000");
+    const m = {};
+    rows.forEach(r => { const k = String(r.from_email || "").toLowerCase(); if (k && !m[k]) m[k] = r.received_at; });
+    _replyIdx.map = m; _replyIdx.at = Date.now();
+    _replyIdx.subs.forEach(f => { try { f(m); } catch (e) {} });
+  } catch (e) { /* 電波が無くても画面は壊さない */ }
+  _replyIdx.busy = false;
+}
+function useReplyIndex() {
+  const [m, setM] = useState(_replyIdx.map);
+  useEffect(() => {
+    _replyIdx.subs.add(setM);
+    _refreshReplyIdx();
+    const t = setInterval(_refreshReplyIdx, 180000);
+    return () => { _replyIdx.subs.delete(setM); clearInterval(t); };
+  }, []);
+  return m;
+}
+
+// その他 →「📨 メールの履歴」：送った・届いたの全体
+function MailHistoryPage({ data, onBack }) {
+  const [tab, setTab] = useState("in");
+  const [hist, setHist] = useState(null);
+  const [err, setErr] = useState("");
+  const load = () => { setErr(""); loadMailHistory([]).then(setHist).catch(e => setErr(e.message)); };
+  useEffect(load, []);
+  // 届いたメールの差出人が、どの反響のお客様かを探す
+  const who = useMemo(() => {
+    const m = {};
+    const add = (parentType, p, name) => (p.viewings || []).forEach((v, vi) => {
+      const k = String((v && v.email) || "").trim().toLowerCase();
+      if (k && !m[k]) m[k] = { parentType, parentId: p.id, vid: v.id, vi, customer: v.customer || "", prop: name };
+    });
+    (data.stocks || []).forEach(s => s && add("stock", s, s.name || ""));
+    (data.mediations || []).forEach(x => x && add("mediation", x, (x.name || "") + "（仲介）"));
+    return m;
+  }, [data.stocks, data.mediations]);
+  const list = hist ? mailTimeline(tab === "in" ? { got: hist.got } : { sent: hist.sent }) : [];
+  return (
+    <div>
+      <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 14, cursor: "pointer", padding: "4px 0 12px", fontFamily: "inherit" }}>← 戻る</button>
+      <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 6 }}>📨 メールの履歴</div>
+      <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 12 }}>アプリから送ったメールと、送った相手から届いた返信です。返信は5分ごとに取り込まれ、届くと送った人のスマホに通知が行きます。</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[["in", `📩 届いた ${hist ? hist.got.length : ""}`], ["out", `📤 送った ${hist ? hist.sent.length : ""}`]].map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)} style={{ flex: 1, padding: "11px 4px", borderRadius: 10, cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 800, background: tab === k ? C.accent : C.cardBg, color: tab === k ? "#fff" : C.muted, border: `1.5px solid ${tab === k ? C.accent : C.borderDim}` }}>{l}</button>
+        ))}
+        <button onClick={load} style={{ padding: "11px 12px", borderRadius: 10, cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 800, background: C.cardBg, color: C.muted, border: `1.5px solid ${C.borderDim}` }}>↻</button>
+      </div>
+      {err && <div style={{ color: C.danger, fontSize: 13, marginBottom: 10 }}>⚠️ {err}</div>}
+      {!hist && !err && <div style={{ color: C.muted, fontSize: 13 }}>読み込み中…</div>}
+      {hist && !list.length && <div style={{ color: C.muted, fontSize: 13, padding: "10px 0" }}>{tab === "in" ? "まだ届いたメールはありません。" : "まだ送ったメールはありません。"}</div>}
+      {list.map(m => {
+        const w = m.dir === "in" ? who[String(m.email || "").toLowerCase()] : null;
+        return <MailItem key={m.key} m={m} extra={w ? (
+          <span style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: C.muted }}>{w.prop}・{w.customer}様</span>
+            <button onClick={() => openViewingMail({ parentType: w.parentType, parentId: w.parentId, vid: w.vid, vi: w.vi, tpl: "follow" })} style={{ background: C.accent + "18", border: `1px solid ${C.accent}`, color: C.accent, borderRadius: 999, padding: "4px 10px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✉️ 返信を作る</button>
+          </span>
+        ) : null} />;
+      })}
+    </div>
+  );
+}
+
 // 🆕 v9.370: 反響リストを開いた時の「間延び」対策
 //   ・最初は5件だけ出す（「もっと見る」で全部）
 //   ・開いている間だけ画面上部に帯を固定し、どこまでスクロールしてもワンタップで閉じられる
@@ -1118,6 +1300,7 @@ const VIEWING_PREVIEW_COUNT = 5;
 
 // 🆕 v9.375: 反響カードの「当たる」ボタン。何をしたかまで1タップで残す。
 function ViewingActions({ v, onAttempt, onUnhandle, onCompose }) {
+  const replyIdx = useReplyIndex(); // 🆕 v9.480: お客様から返信が届いているか
   const cap = viewingAttemptCaption(v);
   const _att = (v && v.attempts) || [];
   const _absentN = _att.filter(a => a && a.kind === "tel_absent").length;
@@ -1132,6 +1315,18 @@ function ViewingActions({ v, onAttempt, onUnhandle, onCompose }) {
         ✉️ {_mailed ? "メール・SMSを作る（2通目）" : "資料つきメール・SMSを作る"}
       </button>
     )
+  ) : null;
+  // 🆕 v9.480: 送ったメール・届いた返信を見るボタン（メールアドレスがあるお客様だけ）
+  const _em = String((v && v.email) || "").trim().toLowerCase();
+  const _lastReply = _em ? replyIdx[_em] : "";
+  const _lastOut = Math.max(0, ..._att.filter(a => a && a.kind === "mail").map(a => new Date(a.at).getTime() || 0));
+  const _newReply = !!_lastReply && new Date(_lastReply).getTime() > _lastOut;
+  const _rd = _lastReply ? new Date(_lastReply).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) : "";
+  const histBtn = _em ? (
+    <button onClick={(e) => { e.stopPropagation(); openMailHistory({ emails: [v.email], title: (v.customer || "お客様") + " 様", onReply: onCompose ? () => onCompose("follow") : null }); }}
+      style={{ width: "100%", marginTop: 6, background: _newReply ? "#ec4899" : "transparent", border: `1.5px solid ${_newReply ? "#ec4899" : C.borderDim}`, color: _newReply ? "#fff" : C.muted, borderRadius: 8, padding: "8px 4px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 800 }}>
+      {_newReply ? `📩 返信が届いています（${_rd}）→ 読む` : _lastReply ? `📨 メールのやり取りを見る（最後の返信 ${_rd}）` : "📨 送ったメールを見る"}
+    </button>
   ) : null;
   if (!v.handled) {
     return (
@@ -1148,6 +1343,7 @@ function ViewingActions({ v, onAttempt, onUnhandle, onCompose }) {
           })}
         </div>
         {composeBtn}
+        {histBtn}
         {cap && <div style={{ fontSize: 10, color: C.muted, marginTop: 5 }}>{cap}</div>}
       </div>
     );
@@ -1158,6 +1354,7 @@ function ViewingActions({ v, onAttempt, onUnhandle, onCompose }) {
       <button onClick={(e) => { e.stopPropagation(); onUnhandle(); }}
         style={{ marginLeft: "auto", background: "transparent", border: `1px solid ${C.muted}55`, color: C.muted, borderRadius: 999, padding: "3px 10px", cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: 700 }}>↩ 未対応に戻す</button>
       {composeBtn && <div style={{ width: "100%" }}>{composeBtn}</div>}
+      {histBtn && <div style={{ width: "100%" }}>{histBtn}</div>}
     </div>
   );
 }
@@ -7125,6 +7322,8 @@ function MainApp({ onLock, onSwitchUser }) {
       </div>
       {/* 🆕 v9.479: 反響のお客様へのメール作成（どの画面からでも開ける） */}
       <ViewingMailHost data={data} setData={setData} />
+      {/* 🆕 v9.480: メールのやり取り（送った・届いた） */}
+      <MailHistoryHost />
 
       {/* Bottom Navigation */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.cardBg, borderTop: `1px solid ${C.borderDim}`, display: "flex", zIndex: 200, paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -7218,6 +7417,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.480", date: "2026-10-08", title: "送ったメールと、お客様からの返信がアプリで見られるように",
+    body: "アプリから送ったメールの中身と、送った相手から届いた返信を、アプリの中で読めます。返信が届くと、送った人のスマホに通知が来て、反響カードに「📩 返信が届いています」とピンクのボタンが出ます。そこから続けてメールも作れます。",
+    where: "反響カードの「📨 送ったメールを見る」／その他 →「📨 メールの履歴」" },
   { v: "9.479", date: "2026-10-07", title: "反響のお客様へ、資料つきメールを1タップで送れるように",
     body: "物件に資料（マイソク・図面のPDFや、ドライブのリンク）を1回入れておくと、反響のお客様へ「お礼＋資料」「電話がつながらなかった」「案内の日程」「その後いかがですか」のメールが、名前と資料のリンク入りで自動でできます。中身を見て「送信」を押すだけで、自分の会社アドレスから届き、「📧メール送った」も自動で付きます。SMS・LINE用の短い文もコピーできます。反響を取り込んだ直後にも「メールを作りますか？」と出ます。",
     where: "在庫（仲介）→ 物件の反響を開く → 上の「📎 物件資料」に資料を入れる → 反響カードの「✉️ 資料つきメール・SMSを作る」" },
@@ -35221,6 +35423,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
   if (subPage === "investors") return <InvestorListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "hanro") return <HanroListPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "offer") return <OfferPage data={data} setData={setData} onBack={() => setSubPage(null)} currentUser={currentUser} />;
+  if (subPage === "mailhist") return <MailHistoryPage data={data} onBack={() => setSubPage(null)} />;
   if (subPage === "shorui") return <ShoruiPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "dm") return <DMPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "whatsnew") return <WhatsNewPage currentUser={currentUser} onBack={() => setSubPage(null)} />;
@@ -35462,6 +35665,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
         { key: "yakusho", icon: "landmark", title: "役所調査シート", desc: "用途地域・建ぺい率・ライフライン・ハザードを記録", count: data.yakusho.length },
         { key: "investors", icon: "gem", title: "投資家リスト", desc: "反響で「投資家」を選んだ顧客を自動集約（先行打診の送り先にも自動で入る）", count: collectInvestorTargets(data).length }, // 🆕 v9.369: 問合せ件数ではなく「人数」
         { key: "offer", icon: "mail", title: "先行打診（一斉メール）", desc: "市場に出す前に、買取業者・投資家へまとめてご案内", count: (data.offers || []).length },
+        { key: "mailhist", icon: "mail", title: "📨 メールの履歴", desc: "アプリから送ったメールと、お客様・業者から届いた返信を見る", count: null }, // 🆕 v9.480
         { key: "hanro", icon: "handshake", title: "買取業者リスト", desc: "物件を市場に出す前に声をかける買取業者の名簿", count: (data.hanro || []).filter(r => r && r.kind !== "投資家").length },
         { key: "shorui", icon: "folder", title: "書類関係", desc: "精算書ひな形・各種テンプレート", count: null },
         { key: "keiyaku", icon: "clipboard", title: "契約書自動作成ツール", desc: "重要事項説明書＋売買契約書をExcelで自動生成（会社PCで起動中のとき）", count: null, action: openKeiyakuTool },
