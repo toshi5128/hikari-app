@@ -11,6 +11,9 @@
 ・お客様が資料を頼んでいたら、その物件に貼ってあるドライブのフォルダから該当ファイルを探す（このPCの claude -p の Google Drive 読み取り）
 ・見つかったファイル1つだけを rclone（読み取り専用）で取り出し、アプリの保管場所に置いて draft_docs に入れる＝ドライブ自体は共有しない
 ・契約書・重説・謄本・覚書・注意点まとめ等の社内資料は送らない（名前で弾く）。社内資料のリンクはAIにも渡さない
+2026-10-08 追加（下田さん「メールが来ても通知が無いから気づけない。下書きを作ったらそれも知らせて」）
+・返信を読んで下書きを作ったら、アプリの通知（send-push）で知らせる。相手＝下田＋物件の担当＋前にメールを送った人
+・通知に出すのは物件名と「下書きができた／資料を添付した」だけ。お客様の名前やメール本文は出さない（ロック画面に出るため）
 """
 import json, re, subprocess, sys, tempfile, urllib.request, urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -22,6 +25,10 @@ URL = re.search(r'const SUPABASE_URL = "([^"]+)"', SRC).group(1)
 KEY = re.search(r'const SUPABASE_KEY = "([^"]+)"', SRC).group(1)
 DRY = "--dry" in sys.argv
 LOCK = Path(tempfile.gettempdir()) / "hikari_reply_drafter.lock"
+RETIRED = set(json.loads((re.search(r"const RETIRED_MEMBERS = (\[[^\]]*\])", SRC) or [None, "[]"])[1]))
+ALWAYS_NOTIFY = ["下田"]
+# 下田さんにはアプリの通知に加えて ntfy（スマホのntfyアプリ・いつもの作業通知と同じトピック）でも送る＝アプリ通知を許可していない端末でも必ず届く
+NTFY_TOPIC_FILE = Path.home() / ".claude" / "ntfy_topic.txt"
 RCLONE_REMOTE = "gdrive:"  # rclone config create gdrive drive scope=drive.readonly（1回だけ）
 # お客様に送ってよい資料（役所・水道局などの公開資料や図面）と、送ってはいけない社内資料
 SENDABLE_RE = re.compile(r"水道|上水|下水|管路|台帳|ガス|都市計画|用途|ハザード|洪水|土砂|津波|浸水|公図|測量|地積|建物図面|間取|図面|マイソク|販売|道路|指定道路|写真|配置|浄化槽|境界|風致|高度地区|計画道路")
@@ -193,6 +200,38 @@ def attach_requested_doc(msg, hits, j, patch):
         patch["draft_body"] = str(patch.get("draft_body") or "").rstrip() + f"\n\n▼ {want}（PDF）\n{url}"
 
 
+def notify(msg, hits, sent, patch):
+    """返信が届いて下書きを作った（または作れなかった）ことを、担当者のスマホに知らせる。"""
+    p = hits[0][0] if hits else {}
+    who = list(ALWAYS_NOTIFY)
+    for m in re.split(r"[・,、/／&＆\s]+", str(p.get("assignee") or "")) + [str((sent or {}).get("requested_by") or "")]:
+        if m and m not in who:
+            who.append(m)
+    who = [m for m in who if m not in RETIRED]
+    place = f"（{p.get('name')}）" if p.get("name") else ""
+    if patch.get("draft_body"):
+        body = "返事の下書きを作りました" + ("。頼まれた資料も添付しています" if patch.get("draft_docs") else "") + "。アプリの「📩 お客様から返信」から確認して送ってください"
+    else:
+        body = "下書きは作れませんでした。アプリの「📩 お客様から返信」から中身を見て返事してください"
+    req = urllib.request.Request(URL + "/functions/v1/send-push", method="POST",
+                                 data=json.dumps({"targets": who, "title": f"📩 お客様から返信{place}", "body": body}).encode(),
+                                 headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=30).read()
+    except Exception as e:  # 通知に失敗しても下書きは残っている
+        print("  通知失敗:", e)
+    if "下田" in who and NTFY_TOPIC_FILE.exists():
+        try:
+            topic = NTFY_TOPIC_FILE.read_text(encoding="utf-8").strip()
+            nreq = urllib.request.Request("https://ntfy.sh/", method="POST", headers={"Content-Type": "application/json"},
+                                          data=json.dumps({"topic": topic, "title": f"📩 お客様から返信{place}", "message": body,
+                                                           "click": "https://toshi5128.github.io/hikari-app/", "tags": ["envelope"]}).encode())
+            urllib.request.urlopen(nreq, timeout=30).read()
+        except Exception as e:
+            print("  ntfy失敗:", e)
+    return who
+
+
 def ask_claude(prompt):
     with tempfile.TemporaryDirectory() as d:
         r = subprocess.run(["claude", "-p", "--setting-sources", "project,local"],
@@ -223,7 +262,7 @@ def main():
         for msg in rows:
             em = str(msg.get("from_email") or "")
             hits = find_customer(data, em)
-            sent = api("GET", "/rest/v1/mail_queue?select=subject,body,sender_name&status=eq.done&recipients=cs."
+            sent = api("GET", "/rest/v1/mail_queue?select=subject,body,sender_name,requested_by&status=eq.done&recipients=cs."
                        + urllib.parse.quote(json.dumps([{"email": em}])) + "&order=id.desc&limit=1")
             sent = sent[0] if sent else None
             try:
@@ -240,6 +279,7 @@ def main():
             print(em[:3] + "…", patch.get("draft_summary") or patch.get("draft_error"))
             if not DRY:
                 api("PATCH", "/rest/v1/mail_inbox?msg_id=eq." + urllib.parse.quote(msg["msg_id"]), patch, prefer="return=minimal")
+                print("  通知:", notify(msg, hits, sent, patch))
     finally:
         LOCK.unlink(missing_ok=True)
 
