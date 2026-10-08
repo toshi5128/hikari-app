@@ -112,7 +112,8 @@ def build_prompt(msg, hits, sent):
 
 
 def is_internal_doc(d):
-    return bool(re.search(r"注意点|社内|原価|メモ|ドライブ|価格交渉", str(d.get("label") or ""))) or "drive.google.com/drive/" in str(d.get("url") or "")
+    # アプリの isInternalDoc と同じ決まり（🔒社内用の印・名前・ドライブのフォルダ）
+    return bool(d.get("internal")) or bool(re.search(r"注意点|社内|原価|利益|交渉|メモ|内部|ドライブ|契約|重説|重要事項|謄本|覚書|特約|買付|仕入", str(d.get("label") or ""))) or "drive.google.com/drive/" in str(d.get("url") or "")
 
 
 def drive_folders(p):

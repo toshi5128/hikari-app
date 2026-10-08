@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.505-update";
+const APP_VERSION = "2026-10-08-v9.506-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -947,16 +947,21 @@ function PropertyDocsEditor({ parentType, parent, setData, currentUser, compact 
     const nm = window.prompt("資料の名前（メールにこの名前で載ります）", (f.name || "物件資料").replace(/\.[^.]+$/, "")) ;
     if (nm === null) return;
     setBusy(true);
-    try { const r = await uploadPropertyDoc(parent.id, f); add({ label: nm.trim() || "物件資料", url: r.url, path: r.path }); }
+    const ok = window.confirm(`「${nm.trim() || "物件資料"}」はお客様に送ってよい資料ですか？
+
+OK＝送ってよい（マイソク・図面など）
+キャンセル＝社内用（原価・注意点・契約書など。メールに絶対に載りません）`);
+    try { const r = await uploadPropertyDoc(parent.id, f); add({ label: nm.trim() || "物件資料", url: r.url, path: r.path, internal: !ok }); }
     catch (er) { alert("⚠️ " + er.message); }
     setBusy(false);
   };
   const addLink = () => {
     const u = url.trim();
     if (!/^https?:\/\//.test(u)) { alert("https:// から始まるリンクを貼ってください"); return; }
-    add({ label: label.trim() || "物件資料", url: u });
+    add({ label: label.trim() || "物件資料", url: u, internal: !window.confirm("このリンクはお客様に送ってよい資料ですか？\n\nOK＝送ってよい\nキャンセル＝社内用（ドライブのフォルダなど。メールに絶対に載りません）") });
     setLabel(""); setUrl(""); setLinkOpen(false);
   };
+  const toggleInternal = (d) => setParentDocs(setData, parentType, parent.id, arr => arr.map(x => x.id !== d.id ? x : { ...x, internal: !isInternalDoc(x) }));
   const remove = (d) => {
     if (!window.confirm(`資料「${d.label}」を外しますか？\n（これからのメールに載らなくなります）`)) return;
     setParentDocs(setData, parentType, parent.id, arr => arr.filter(x => x.id !== d.id));
@@ -968,6 +973,7 @@ function PropertyDocsEditor({ parentType, parent, setData, currentUser, compact 
       {docs.map(d => (
         <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, background: C.cardBg, borderRadius: 8, padding: "7px 9px", marginBottom: 5 }}>
           <a href={d.url} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 0, color: C.accent, fontSize: 13, fontWeight: 700, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.path ? "📄" : "🔗"} {d.label || "物件資料"}</a>
+          <button onClick={() => toggleInternal(d)} title="社内用（お客様に送らない）の切り替え" style={{ background: isInternalDoc(d) ? C.danger + "18" : "transparent", border: `1px solid ${isInternalDoc(d) ? C.danger : C.muted + "55"}`, color: isInternalDoc(d) ? C.danger : C.muted, borderRadius: 999, padding: "3px 9px", fontSize: 10, cursor: "pointer", fontFamily: "inherit", fontWeight: 800, whiteSpace: "nowrap" }}>{isInternalDoc(d) ? "🔒社内用" : "送ってOK"}</button>
           <button onClick={() => remove(d)} style={{ background: "transparent", border: `1px solid ${C.muted}55`, color: C.muted, borderRadius: 999, padding: "3px 9px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>外す</button>
         </div>
       ))}
@@ -1550,28 +1556,30 @@ const BULK_TEMPLATES = [
 function attachableDocs(docs) { return (docs || []).filter(d => d && d.url && d.path); }
 // 🆕 v9.494: チェックを外した資料は、添付だけでなく本文のリンクからも消す（下田さん「外しても本文に乗ってくる」）
 //   ・社内向けの資料（注意点まとめ・原価・ドライブのフォルダ等）は最初からチェックを外しておく＝お客様に出さない
-function isInternalDoc(d) { return /注意点|社内|原価|メモ|ドライブ|価格交渉/.test(String(d.label || "")) || /drive\.google\.com\/drive\//.test(String(d.url || "")); }
+// 🆕 v9.506: 社内資料を誤送付した事故（2026-10-08・一括メール2通・74人）を受けて、社内用は「印」でも「名前」でも弾き、チェックしても送れないようにした
+function isInternalDoc(d) { return !!(d && d.internal) || /注意点|社内|原価|利益|交渉|メモ|内部|ドライブ|契約|重説|重要事項|謄本|覚書|特約|買付|仕入/.test(String((d && d.label) || "")) || /drive\.google\.com\/drive\//.test(String((d && d.url) || "")); }
 function sendableDocs(docs) { return (docs || []).filter(d => d && d.url); }
 function defaultDocSel(docs) { return sendableDocs(docs).filter(d => !isInternalDoc(d)).map(d => d.id); }
-function pickedDocs(docs, sel) { return sendableDocs(docs).filter(d => sel.includes(d.id)); }
+function pickedDocs(docs, sel) { return sendableDocs(docs).filter(d => sel.includes(d.id) && !isInternalDoc(d)); } // 社内用はチェックが付いていても絶対に出さない
 function AttachPicker({ docs, sel, setSel }) {
   const list = sendableDocs(docs);
   return (
     <Field label="📎 お客様に送る資料（チェックしたものだけ添付・本文に載ります）">
       {list.length === 0 && <div style={{ fontSize: 12, color: C.warn, lineHeight: 1.6 }}>添付できるファイルがありません。物件情報の「✏️ 編集」か反響欄の「📎 物件資料」でマイソクのPDFを入れると、ここで選べます。{links.length ? "（ドライブなどのリンクは本文に載ります）" : ""}</div>}
       {list.map(d => {
-        const on = sel.includes(d.id);
+        const internal = isInternalDoc(d);
+        const on = sel.includes(d.id) && !internal;
         return (
-          <button key={d.id} onClick={() => setSel(on ? sel.filter(x => x !== d.id) : [...sel, d.id])} style={{ width: "100%", textAlign: "left", display: "flex", gap: 10, alignItems: "center", background: on ? C.accentBg : C.cardBg, border: `1px solid ${on ? C.accent : C.borderDim}`, borderRadius: 10, padding: "9px 10px", marginBottom: 6, cursor: "pointer", fontFamily: "inherit" }}>
+          <button key={d.id} disabled={internal} onClick={() => { if (internal) return; setSel(on ? sel.filter(x => x !== d.id) : [...sel, d.id]); }} style={{ width: "100%", textAlign: "left", display: "flex", gap: 10, alignItems: "center", background: on ? C.accentBg : C.cardBg, border: `1px solid ${on ? C.accent : C.borderDim}`, borderRadius: 10, padding: "9px 10px", marginBottom: 6, cursor: "pointer", fontFamily: "inherit" }}>
             <span style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${on ? C.accent : C.border}`, background: on ? C.accent : "transparent", color: "#fff", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{on ? "✓" : ""}</span>
-            <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{d.path ? "📄" : "🔗"} {d.label || "物件資料"}{isInternalDoc(d) && <span style={{ fontSize: 11, color: C.danger, fontWeight: 800, marginLeft: 6 }}>社内用</span>}</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{d.path ? "📄" : "🔗"} {d.label || "物件資料"}{internal && <span style={{ fontSize: 11, color: C.danger, fontWeight: 800, marginLeft: 6 }}>🔒社内用・お客様には送れません</span>}</span>
           </button>
         );
       })}
     </Field>
   );
 }
-const attachPayload = (docs, sel) => attachableDocs(docs).filter(d => sel.includes(d.id)).map(d => ({ url: d.url, name: d.label || "物件資料" }));
+const attachPayload = (docs, sel) => attachableDocs(docs).filter(d => sel.includes(d.id) && !isInternalDoc(d)).map(d => ({ url: d.url, name: d.label || "物件資料" }));
 
 function openBulkViewingMail(detail) { try { window.dispatchEvent(new CustomEvent("hikari-bulkmail", { detail })); } catch (e) {} }
 const BULK_SKIP_RESULTS = ["成約", "見送り"];
@@ -1660,7 +1668,7 @@ function BulkViewingMailHost({ data, setData }) {
     try {
       const payload = {
         status: "pending", subject, body, sender_name: sender.name, sender_mail: sender.mail,
-        property: p.name || "", price_text: "", doc_url: ((p.docs || [])[0] || {}).url || "", memo: "反響へ一括", attachments: atts,
+        property: p.name || "", price_text: "", doc_url: (pickedDocs(p.docs, attIds)[0] || {}).url || "", memo: "反響へ一括", attachments: atts,
         recipients: targets.map(r => ({ id: "v:" + (r.v.id || r.vi), email: String(r.v.email).trim(), company: "", name: r.v.customer || "" })),
         requested_by: currentUser || "",
       };
@@ -8201,6 +8209,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.506", date: "2026-10-08", title: "社内用の資料は、お客様へのメールに絶対に載らないように",
+    body: "物件資料を入れる時に「お客様に送ってよい資料ですか？」と聞かれます。「キャンセル」を選ぶと🔒社内用になり、メール・SMS・一括メールのどれにも載りません（チェックも付けられません）。名前に「注意点・原価・契約・謄本」などが入っている資料や、ドライブのフォルダも自動で社内用になります。物件資料の一覧で「🔒社内用／送ってOK」を押すと切り替えられます。",
+    where: "物件の「📋 物件情報」→ 物件資料／反響のメール作成の「📎 お客様に送る資料」" },
   { v: "9.505", date: "2026-10-08", title: "電話代行の「応対記録」を貼るだけで反響に",
     body: "LINEで届く電話代行の「応対記録」（応対日・相手先氏名・着歴・用件）をコピーして、反響取込の欄に貼り「解析する」を押すと、名前・電話番号・日付・用件が自動で入り、文中の住所から物件も自動で選ばれます。",
     where: "在庫（仲介）→「反響取込」→ 応対記録を貼って「解析する」" },
@@ -39354,7 +39365,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
     const man = Math.round((Number(s.sellPrice) || 0) / 10000);
     if (man) setPriceMan(String(man));
     // 🆕 v9.479: 物件資料が登録されていれば、資料URLに自動で入れる
-    const _doc = (s.docs || []).find(d => d && d.url);
+    const _doc = (s.docs || []).find(d => d && d.url && !isInternalDoc(d)); // 🆕 v9.506: 社内用の資料は入れない
     if (_doc) setDocUrl(_doc.url);
     setShowStocks(false);
   };
