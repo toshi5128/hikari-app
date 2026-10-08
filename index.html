@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.503-update";
+const APP_VERSION = "2026-10-08-v9.504-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1917,6 +1917,35 @@ function ReplyInboxButton({ data }) {
 //   ・開いている間だけ画面上部に帯を固定し、どこまでスクロールしてもワンタップで閉じられる
 //     （このアプリは親要素の overflow-x:hidden の影響で position:sticky が効かないため fixed で作る）
 const VIEWING_PREVIEW_COUNT = 5;
+
+// 🆕 v9.504: 電話でかかってきた反響を手で入れる（下田さん「電話の反響も入ることがあるから追加できるように」）
+//   入れた内容はメールの取り込みと同じ「解析結果」になり、そのあと物件を選んで追加する（重複チェック・お礼メールも同じ流れ）
+function PhoneInquiryForm({ onDone }) {
+  const today = new Date().toLocaleDateString("sv-SE");
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ customer: "", contact: "", email: "", date: today, note: "" });
+  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
+  const ok = f.customer.trim() && (f.contact.trim() || f.email.trim());
+  if (!open) return (
+    <button onClick={() => setOpen(true)} style={{ ...btnStyle("ghost"), width: "100%", padding: "12px", fontSize: 14, marginBottom: 14, border: `2px solid ${C.success}`, color: C.success, fontWeight: 800 }}>📞 電話の反響を入れる</button>
+  );
+  return (
+    <div style={{ border: `2px solid ${C.success}`, borderRadius: 12, padding: 12, marginBottom: 14, background: C.success + "0d" }}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.success, marginBottom: 8 }}>📞 電話の反響</div>
+      <Field label="お名前（必須）"><input style={inp} value={f.customer} onChange={set("customer")} placeholder="例）山田 太郎" /></Field>
+      <Field label="電話番号"><input style={inp} value={f.contact} onChange={set("contact")} placeholder="例）090-1234-5678" inputMode="tel" /></Field>
+      <Field label="メールアドレス（分かれば）"><input style={inp} value={f.email} onChange={set("email")} placeholder="資料をメールで送る時に使います" inputMode="email" /></Field>
+      <Field label="電話があった日"><input type="date" style={inp} value={f.date} onChange={set("date")} /></Field>
+      <Field label="聞かれたこと・メモ"><textarea style={{ ...inp, minHeight: 70, resize: "vertical" }} value={f.note} onChange={set("note")} placeholder="例）見学したい・駐車場は何台か など" /></Field>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={() => setOpen(false)} style={{ ...btnStyle("ghost"), flex: 1, padding: "12px" }}>やめる</button>
+        <button disabled={!ok} onClick={() => onDone({ channel: "電話", customer: f.customer.trim(), contact: f.contact.trim(), email: f.email.trim(), inquiryDate: f.date, note: ["📞 電話での反響", f.note.trim()].filter(Boolean).join("\n") })}
+          style={{ ...btnStyle("success"), flex: 2, padding: "12px", opacity: ok ? 1 : 0.5 }}>この内容で次へ（物件を選ぶ）</button>
+      </div>
+      {!ok && <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>お名前と、電話番号かメールのどちらかを入れてください</div>}
+    </div>
+  );
+}
 
 // 🆕 v9.375: 反響カードの「当たる」ボタン。何をしたかまで1タップで残す。
 function ViewingActions({ v, onAttempt, onUnhandle, onCompose }) {
@@ -8172,6 +8201,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.504", date: "2026-10-08", title: "電話の反響も入れられるように",
+    body: "反響の取り込み画面に「📞 電話の反響を入れる」が増えました。お名前・電話番号（メールが分かればメールも）・聞かれたことを入れて、物件を選ぶと反響に追加されます。メールの反響と同じく、重複チェックやお礼メールの作成もできます。",
+    where: "在庫（仲介）→「反響取込」→「📞 電話の反響を入れる」" },
   { v: "9.503", date: "2026-10-08", title: "メールでやり取りしているお客様を絞り込めるように",
     body: "反響一覧の絞り込みに「メール」の段が増えました。「📩 返信あり」でお客様から返信が来ている人だけ、「📧 メール送った」でこちらからメールを送った人だけを出せます。もう一度押すと元に戻ります。",
     where: "在庫（仲介）→ 物件の反響を開く → 絞り込みの「メール」" },
@@ -15814,12 +15846,13 @@ function MediationView({ data, setData, dealType, setDealType }) {
         </div>
       )}
       {showImport && (
-        <BottomSheet title="📥 SUUMO/アットホーム反響取り込み" onClose={() => { setShowImport(false); setImportText(""); setImportParsed(null); setImportTargetMedId(null); }}>
+        <BottomSheet title="📥 反響の取り込み（メール・電話）" onClose={() => { setShowImport(false); setImportText(""); setImportParsed(null); setImportTargetMedId(null); }}>
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>SUUMO / アットホーム のお問合せメール本文を貼り付け</div>
             <textarea value={importText} onChange={e => setImportText(e.target.value)} placeholder={"メール本文をそのまま貼り付け…"} style={{ ...inp, minHeight: 200, resize: "vertical", fontFamily: "monospace", fontSize: 12 }} />
             <button onClick={handleParseImport} disabled={!importText.trim()} style={{ ...btnStyle(), width: "100%", marginTop: 8, padding: "12px", fontSize: 14, opacity: importText.trim() ? 1 : 0.5 }}><NavIcon name="search" size={14} /> 解析する</button>
           </div>
+          {!importParsed && <PhoneInquiryForm onDone={setImportParsed} />}
           {importParsed && (
             <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, marginBottom: 10 }}><NavIcon name="check" size={13} /> 解析結果（{importParsed.channel}）</div>
@@ -17733,7 +17766,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         </div>
       )}
       {showImport && (
-        <BottomSheet title="📥 SUUMO/アットホーム反響取り込み" onClose={() => { setShowImport(false); setImportText(""); setImportParsed(null); setImportTargetStockId(null); }}>
+        <BottomSheet title="📥 反響の取り込み（メール・電話）" onClose={() => { setShowImport(false); setImportText(""); setImportParsed(null); setImportTargetStockId(null); }}>
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>
               SUUMO / アットホーム のお問合せメール本文を貼り付け
@@ -17754,6 +17787,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               }}><NavIcon name="search" size={15} /> 解析する</button>
           </div>
 
+          {!importParsed && <PhoneInquiryForm onDone={setImportParsed} />}
           {/* 解析結果 */}
           {importParsed && (
             <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
