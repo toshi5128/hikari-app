@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.495-update";
+const APP_VERSION = "2026-10-08-v9.496-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1276,6 +1276,7 @@ function MailHistoryPage({ data, onBack }) {
     <div>
       <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 14, cursor: "pointer", padding: "4px 0 12px", fontFamily: "inherit" }}>← 戻る</button>
       <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 6 }}>📨 メールの履歴</div>
+      <ReplyInboxButton data={data} />
       <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 12 }}>アプリから送ったメールと、送った相手から届いた返信です。返信は5分ごとに取り込まれ、届くと送った人のスマホに通知が行きます。</div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
         {[["in", `📩 届いた ${hist ? hist.got.length : ""}`], ["out", `📤 送った ${hist ? hist.sent.length : ""}`]].map(([k, l]) => (
@@ -1707,6 +1708,175 @@ function BulkViewingMailHost({ data, setData }) {
   );
 }
 
+// 🆕 v9.490: 📩 返信の受信箱 — お客様から届いた返信と、PCのClaudeが作った「返事の下書き」を並べ、見て1タップで返す
+//   ・mail_inbox（GASが写した返信）の status: new=未対応 / sent=返事した / done=返事しないで終わり
+//   ・下書きは PC の tools/reply_drafter.py が5分ごとに作る（draft_subject / draft_body / draft_summary / draft_intent）
+//   ・返事は元のメールへの「返信」として送る（mail_queue.reply_msg_id → GAS が同じやり取りの続きで送る）
+const _inbox = { rows: [], at: 0, subs: new Set(), busy: false };
+async function refreshInbox(force) {
+  if (_inbox.busy || (!force && Date.now() - _inbox.at < 110000)) return;
+  _inbox.busy = true;
+  try {
+    const since = new Date(Date.now() - 14 * 86400000).toISOString();
+    _inbox.rows = await _mailGet(`mail_inbox?select=*&status=eq.new&received_at=gte.${encodeURIComponent(since)}&order=received_at.desc&limit=200`);
+    _inbox.at = Date.now();
+    _inbox.subs.forEach(f => { try { f(_inbox.rows); } catch (e) {} });
+  } catch (e) { /* 電波が無くても画面は壊さない */ }
+  _inbox.busy = false;
+}
+function useInbox() {
+  const [rows, setRows] = useState(_inbox.rows);
+  useEffect(() => {
+    _inbox.subs.add(setRows);
+    refreshInbox();
+    const t = setInterval(() => refreshInbox(), 120000);
+    return () => { _inbox.subs.delete(setRows); clearInterval(t); };
+  }, []);
+  return rows;
+}
+// 返信の差出人を、見える範囲の反響（お客様）に結びつける
+function inboxMatches(rows, data, user) {
+  const m = {};
+  const add = (parentType, p, name) => (p.viewings || []).forEach((v, vi) => {
+    const k = String((v && v.email) || "").trim().toLowerCase();
+    if (!k) return;
+    if (!m[k] || String(v.date || "") > String(m[k].v.date || "")) m[k] = { parentType, parentId: p.id, parentName: name, assignee: p.assignee || "", v, vi };
+  });
+  visibleToUser(data.stocks, user).forEach(s => s && add("stock", s, s.name || ""));
+  visibleToUser(data.mediations, user).forEach(x => x && add("mediation", x, (x.name || "") + "（仲介）"));
+  return rows.map(r => ({ r, w: m[String(r.from_email || "").toLowerCase()] || null })).filter(x => x.w);
+}
+function openReplyInbox(detail) { try { window.dispatchEvent(new CustomEvent("hikari-replyinbox", { detail: detail || {} })); } catch (e) {} }
+const INTENT_COLOR = { "見学希望": "#10b981", "質問": "#0ea5e9", "検討中": "#f59e0b", "不要": "#94a3b8", "その他": "#a855f7" };
+
+function ReplyCard({ r, w, data, setData, onDone }) {
+  const currentUser = getCurrentUser();
+  const [subject, setSubject] = useState(r.draft_subject || ("Re: " + (r.subject || "")));
+  const [body, setBody] = useState(r.draft_body || "");
+  const [showMail, setShowMail] = useState(false);
+  const [closeLost, setCloseLost] = useState(r.draft_intent === "不要");
+  const [senderKey, setSenderKey] = useState(vmailSenderFor(currentUser).key);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (r.draft_body && !body) { setBody(r.draft_body); setSubject(r.draft_subject || subject); } }, [r.draft_body]);
+  useEffect(() => { setCloseLost(r.draft_intent === "不要"); }, [r.draft_intent]);
+  const senders = OFFER_SENDERS.filter(s => !isRetiredMember(s.short));
+  const sender = senders.find(s => s.key === senderKey) || vmailSenderFor(currentUser);
+  const [mainText] = splitQuoted(r.body);
+  const key = w.parentType === "mediation" ? "mediations" : "stocks";
+  const patchInbox = (obj) => fetch(`${SUPABASE_URL}/rest/v1/mail_inbox?msg_id=eq.${encodeURIComponent(r.msg_id)}`, {
+    method: "PATCH", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(obj),
+  });
+  // 反響に「やったこと」を残す（送った・終わりにした・見送りにした）
+  const touchViewing = (text, mailed) => setData(d => ({ ...d, [key]: (d[key] || []).map(p => p.id !== w.parentId ? p : {
+    ...p,
+    viewings: (p.viewings || []).map((v, i) => {
+      const same = w.v.id ? (v && v.id === w.v.id) : i === w.vi;
+      if (!same || !v) return v;
+      let nv = mailed ? withViewingAttempt(v, "mail", currentUser) : { ...v };
+      if (closeLost) nv = { ...nv, result: "見送り", lostReason: nv.lostReason || "お客様からお断り（メール）" };
+      return { ...nv, comments: [...(v.comments || []), { id: Date.now(), member: currentUser || "", text, createdAt: new Date().toISOString(), updatedAt: Date.now() }], updatedAt: Date.now() };
+    }),
+  }) }));
+  const send = async () => {
+    if (!body.trim()) { alert("本文が空です"); return; }
+    if (!currentUser) { alert("先にログインしてください"); return; }
+    if (!window.confirm(`${w.v.customer || r.from_name || ""} 様へ返信します。\n\n差出人: ${sender.name}\n件名: ${subject}${closeLost ? "\n\n※この反響を「見送り」にします" : ""}\n\nよろしいですか？`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_queue`, {
+        method: "POST", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ status: "pending", subject, body, sender_name: sender.name, sender_mail: sender.mail, property: w.parentName || "", price_text: "", doc_url: "", memo: "返信への返事",
+          recipients: [{ id: "v:" + (w.v.id || w.vi), email: r.from_email, company: "", name: w.v.customer || "" }], reply_msg_id: r.msg_id, requested_by: currentUser }),
+      });
+      if (!res.ok) throw new Error(`受付できませんでした（${res.status}）`);
+      await patchInbox({ status: "sent", handled_by: currentUser, handled_at: new Date().toISOString() });
+      touchViewing(`📧 返信に返事（${sender.short}から）：${(r.draft_summary || mainText).replace(/\s+/g, " ").slice(0, 40)}`, true);
+      refreshInbox(true); onDone && onDone();
+      alert("📨 返事を受け付けました。1分ほどで、お客様のメールへの返信として届きます。");
+    } catch (e) { alert("送れませんでした。\n\n" + e.message); }
+    setBusy(false);
+  };
+  const finish = async () => {
+    if (!window.confirm(`返事をしないで「対応済み」にしますか？${closeLost ? "\n※この反響を「見送り」にします" : ""}`)) return;
+    setBusy(true);
+    try {
+      await patchInbox({ status: "done", handled_by: currentUser, handled_at: new Date().toISOString() });
+      touchViewing(`📩 返信を確認（返事なし）：${(r.draft_summary || mainText).replace(/\s+/g, " ").slice(0, 40)}`, false);
+      refreshInbox(true); onDone && onDone();
+    } catch (e) { alert("できませんでした。\n\n" + e.message); }
+    setBusy(false);
+  };
+  const ic = INTENT_COLOR[r.draft_intent] || C.muted;
+  const chip = (on) => ({ padding: "6px 11px", borderRadius: 999, border: `2px solid ${on ? C.accent : C.borderDim}`, background: on ? C.accentBg : C.cardBg, color: C.text, fontSize: 12, fontWeight: on ? 800 : 500, cursor: "pointer", fontFamily: "inherit" });
+  return (
+    <div style={{ background: C.cardBg, border: `2px solid #ec4899`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 16, fontWeight: 800, color: C.text }}>{w.v.customer || r.from_name} 様</span>
+        {r.draft_intent && <span style={{ background: ic, color: "#fff", borderRadius: 999, padding: "2px 9px", fontSize: 11, fontWeight: 800 }}>{r.draft_intent}</span>}
+        <span style={{ marginLeft: "auto", fontSize: 11, color: C.muted }}>{_mailWhen(r.received_at)}</span>
+      </div>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{w.parentName}{w.assignee ? `・担当 ${w.assignee}` : ""}</div>
+      <div style={{ background: "#ec489914", borderRadius: 8, padding: "8px 10px", marginTop: 8 }}>
+        <div style={{ fontSize: 11, color: "#ec4899", fontWeight: 800 }}>📩 お客様から</div>
+        <div style={{ fontSize: 15, fontWeight: 800, color: C.text, marginTop: 2, lineHeight: 1.5 }}>{r.draft_summary || mainText.replace(/\s+/g, " ").slice(0, 60)}</div>
+        <button onClick={() => setShowMail(o => !o)} style={{ background: "transparent", border: "none", color: C.accent, fontSize: 12, fontWeight: 700, cursor: "pointer", padding: "4px 0 0", fontFamily: "inherit" }}>{showMail ? "▲ メール本文を閉じる" : "▼ メール本文をそのまま見る"}</button>
+        {showMail && <div style={{ whiteSpace: "pre-wrap", fontSize: 13, color: C.text, lineHeight: 1.7, marginTop: 6, overflowWrap: "anywhere" }}>{mainText}</div>}
+      </div>
+      <div style={{ fontSize: 11, color: C.success, fontWeight: 800, margin: "12px 0 4px" }}>✍️ 返事の下書き（そのまま直せます・署名は自動）</div>
+      {!r.draft_body && !r.draft_error && <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>下書きを作っています…（届いてから5〜10分）。自分で書いて送ることもできます。</div>}
+      {r.draft_error && !r.draft_body && <div style={{ fontSize: 12, color: C.warn, marginBottom: 6 }}>下書きを作れませんでした。自分で書いて送ってください。</div>}
+      <input value={subject} onChange={e => setSubject(e.target.value)} style={{ ...inp, marginBottom: 6 }} />
+      <textarea value={body} onChange={e => setBody(e.target.value)} rows={10} style={{ ...inp, lineHeight: 1.6, fontSize: 13 }} />
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+        <span style={{ fontSize: 11, color: C.muted, alignSelf: "center" }}>差出人</span>
+        {senders.map(s => <button key={s.key} onClick={() => setSenderKey(s.key)} style={chip(sender.key === s.key)}>{s.short}</button>)}
+      </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.text, margin: "4px 0 10px", cursor: "pointer" }}>
+        <input type="checkbox" checked={closeLost} onChange={e => setCloseLost(e.target.checked)} style={{ width: 18, height: 18 }} />
+        この反響を「見送り」にする（お断りの返信のとき）
+      </label>
+      <button disabled={busy} onClick={send} style={{ ...btnStyle("primary"), width: "100%", padding: "14px 0", fontSize: 15 }}>{busy ? "送信中…" : "📨 この内容で返信する"}</button>
+      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+        <button disabled={busy} onClick={finish} style={{ ...btnStyle("ghost"), flex: 1, padding: "10px 0", fontSize: 12 }}>✅ 返事しないで対応済み</button>
+        <button onClick={() => openViewingMail({ parentType: w.parentType, parentId: w.parentId, vid: w.v.id, vi: w.vi, tpl: "follow" })} style={{ ...btnStyle("ghost"), flex: 1, padding: "10px 0", fontSize: 12 }}>📋 物件・資料つきで書く</button>
+      </div>
+    </div>
+  );
+}
+
+function ReplyInboxHost({ data, setData }) {
+  const [req, setReq] = useState(null);
+  const rows = useInbox();
+  useEffect(() => {
+    const h = (e) => { setReq(e.detail || {}); refreshInbox(true); };
+    window.addEventListener("hikari-replyinbox", h);
+    return () => window.removeEventListener("hikari-replyinbox", h);
+  }, []);
+  if (!req) return null;
+  const user = getCurrentUser();
+  let list = inboxMatches(rows, data, user);
+  if (req.email) list = list.filter(x => String(x.r.from_email).toLowerCase() === String(req.email).toLowerCase());
+  return (
+    <BottomSheet title={`📩 お客様からの返信（${list.length}件）`} onClose={() => setReq(null)}>
+      <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 12 }}>まだ対応していない返信です。AIが作った返事の下書きを確かめて「返信する」か、返事が要らなければ「対応済み」にしてください。</div>
+      {list.length === 0 && <div style={{ background: "#10b98114", border: `1.5px solid #10b98155`, borderRadius: 12, padding: 20, textAlign: "center", fontSize: 14, fontWeight: 700, color: C.text }}>✅ 対応待ちの返信はありません</div>}
+      {list.map(({ r, w }) => <ReplyCard key={r.msg_id} r={r} w={w} data={data} setData={setData} onDone={() => { if (req.email) setReq(null); }} />)}
+      <button onClick={() => { setReq(null); openMailHistory({ emails: req.email ? [req.email] : [], title: req.email ? "このお客様" : "全体" }); }} style={{ ...btnStyle("ghost"), width: "100%", padding: "12px 0", marginTop: 4 }}>📨 これまでのやり取りを見る</button>
+    </BottomSheet>
+  );
+}
+// 在庫タブ・ホームなどに出す「📩 返信 N件」ボタン（0件なら出さない）
+function ReplyInboxButton({ data }) {
+  const rows = useInbox();
+  const n = inboxMatches(rows, data, getCurrentUser()).length;
+  if (!n) return null;
+  return (
+    <button onClick={() => openReplyInbox()} style={{ width: "100%", background: "#ec4899", border: "none", color: "#fff", borderRadius: 12, padding: "13px 10px", fontSize: 15, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", marginBottom: 10, boxShadow: "0 2px 8px rgba(236,72,153,.35)" }}>
+      📩 お客様から返信 {n}件（返事の下書きあり）›
+    </button>
+  );
+}
+
 // 🆕 v9.370: 反響リストを開いた時の「間延び」対策
 //   ・最初は5件だけ出す（「もっと見る」で全部）
 //   ・開いている間だけ画面上部に帯を固定し、どこまでスクロールしてもワンタップで閉じられる
@@ -1738,9 +1908,9 @@ function ViewingActions({ v, onAttempt, onUnhandle, onCompose }) {
   const _newReply = !!_lastReply && new Date(_lastReply).getTime() > _lastOut;
   const _rd = _lastReply ? new Date(_lastReply).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) : "";
   const histBtn = _em ? (
-    <button onClick={(e) => { e.stopPropagation(); openMailHistory({ emails: [v.email], title: (v.customer || "お客様") + " 様", onReply: onCompose ? () => onCompose("follow") : null }); }}
+    <button onClick={(e) => { e.stopPropagation(); if (_newReply) openReplyInbox({ email: v.email }); else openMailHistory({ emails: [v.email], title: (v.customer || "お客様") + " 様", onReply: onCompose ? () => onCompose("follow") : null }); }}
       style={{ width: "100%", marginTop: 6, background: _newReply ? "#ec4899" : "transparent", border: `1.5px solid ${_newReply ? "#ec4899" : C.borderDim}`, color: _newReply ? "#fff" : C.muted, borderRadius: 8, padding: "8px 4px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 800 }}>
-      {_newReply ? `📩 返信が届いています（${_rd}）→ 読む` : _lastReply ? `📨 メールのやり取りを見る（最後の返信 ${_rd}）` : "📨 送ったメールを見る"}
+      {_newReply ? `📩 返信が届いています（${_rd}）→ 読んで返事する` : _lastReply ? `📨 メールのやり取りを見る（最後の返信 ${_rd}）` : "📨 送ったメールを見る"}
     </button>
   ) : null;
   if (!v.handled) {
@@ -7872,6 +8042,8 @@ function MainApp({ onLock, onSwitchUser }) {
       <PropertyInfoHost data={data} setData={setData} />
       {/* 🆕 v9.482: 反響へ一括メール */}
       <BulkViewingMailHost data={data} setData={setData} />
+      {/* 🆕 v9.496: 📩 返信の受信箱（返事の下書きつき） */}
+      <ReplyInboxHost data={data} setData={setData} />
 
       {/* Bottom Navigation */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.cardBg, borderTop: `1px solid ${C.borderDim}`, display: "flex", zIndex: 200, paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -7965,6 +8137,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.496", date: "2026-10-08", title: "お客様からの返信に、返事の下書きが自動でつくように",
+    body: "お客様からメールの返信が届くと、AIが中身を読んで「何と言っているか」を1行にまとめ、返事の下書きを作ります（届いてから5〜10分）。ピンクの「📩 お客様から返信」から開いて、下書きを直して「返信する」を押すだけ。返事はお客様のメールへの返信として届きます。お断りの返信なら、その反響を「見送り」にもできます。",
+    where: "在庫タブ・ホームの一番上の「📩 お客様から返信 N件」／反響カードの「📩 返信が届いています」" },
   { v: "9.483", date: "2026-10-08", title: "メールにマイソクなどのファイルを添付できるように",
     body: "反響のお客様へのメール（1人へ・一括どちらも）に、物件に入れておいたマイソクのPDFや画像がそのまま添付されます。送る前に、付けるファイルを選んだり外したりできます。ドライブなどのリンクは本文に載ります。",
     where: "反響カードの「✉️ 資料つきメール」／反響欄の「📨 この物件の反響へ一括メール」→「📎 添付するファイル」" },
@@ -12765,6 +12940,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 14 }}>
+      {/* 🆕 v9.496: お客様からの返信があればホームの一番上に */}
+      <ReplyInboxButton data={data} />
 
       {/* ============== 📅 カレンダー（最上段・Googleカレンダー風） ============== */}
       <div style={{ background: C.cardBg, border: `2px solid ${C.muted + "aa"}`, boxShadow: "0 2px 8px rgba(0,0,0,.12)", borderRadius: 14, padding: 0, overflow: "hidden", position: "relative" }}>
@@ -15131,6 +15308,8 @@ function MediationView({ data, setData, dealType, setDealType }) {
           }}>{t.label}</button>;
         })}
       </div>
+      {/* 🆕 v9.496: お客様からの返信（返事の下書きあり） */}
+      <ReplyInboxButton data={data} />
       {/* 🆕 v9.375: 物件をまたいだ「今日かける反響」への入口 */}
       {(() => {
         const n = collectPendingViewings(data, getCurrentUser()).length;
@@ -16828,6 +17007,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         })}
       </div>
 
+      {/* 🆕 v9.496: お客様からの返信（返事の下書きあり） */}
+      <ReplyInboxButton data={data} />
       {/* 🆕 v9.375: 物件をまたいだ「今日かける反響」への入口 */}
       {(() => {
         const n = collectPendingViewings(data, getCurrentUser()).length;
