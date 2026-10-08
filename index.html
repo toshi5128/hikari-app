@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.502-update";
+const APP_VERSION = "2026-10-08-v9.503-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1255,6 +1255,15 @@ async function _refreshReplyIdx() {
   } catch (e) { /* 電波が無くても画面は壊さない */ }
   _replyIdx.busy = false;
 }
+// 🆕 v9.503: 反響一覧の「メール」絞り込み用。replied=お客様から返信が届いている / mailed=こちらからメールを送った
+function viewingMailTags(v, idx) {
+  const t = [];
+  const em = String((v && v.email) || "").trim().toLowerCase();
+  if (em && idx && idx[em]) t.push("replied");
+  if (((v && v.attempts) || []).some(a => a && a.kind === "mail")) t.push("mailed");
+  return t;
+}
+const VIEWING_MAIL_FILTERS = [["replied", "📩", "返信あり", "#db2777"], ["mailed", "📧", "メール送った", "#0ea5e9"]];
 function useReplyIndex() {
   const [m, setM] = useState(_replyIdx.map);
   useEffect(() => {
@@ -8163,6 +8172,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.503", date: "2026-10-08", title: "メールでやり取りしているお客様を絞り込めるように",
+    body: "反響一覧の絞り込みに「メール」の段が増えました。「📩 返信あり」でお客様から返信が来ている人だけ、「📧 メール送った」でこちらからメールを送った人だけを出せます。もう一度押すと元に戻ります。",
+    where: "在庫（仲介）→ 物件の反響を開く → 絞り込みの「メール」" },
   { v: "9.501", date: "2026-10-08", title: "SMSでも資料が送りやすく（短いリンク・文字数の表示）",
     body: "メールアドレスが無いお客様に「📱 SMS」で送る時、資料のリンクが短くなりました（約130字→約70字）。下に文字数が出て、SMSで送れる長さかどうかが分かります。お客様がリンクを押すと、そのまま資料が開きます。",
     where: "反響カードの「✉️ 資料つきメール・SMSを作る」→ 下の「📱 SMS」" },
@@ -14871,6 +14883,7 @@ function DupWarnBanner({ info, onClose }) {
 }
 // ===================== 仲介案件ビュー（在庫タブ内・仕入案件と切替）=====================
 function MediationView({ data, setData, dealType, setDealType }) {
+  const replyIdxAll = useReplyIndex(); // 🆕 v9.503: 反響の「メール」絞り込み
   // 🆕 v9.402: 仲介案件も、下田・比嘉 以外は自分の担当分だけ
   const visibleMediations = useMemo(
     () => visibleToUser(data.mediations, getCurrentUser()),
@@ -15478,7 +15491,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                   // フィルタ適用（元 index 保持）
                   const _indexed = viewings.map((v, idx) => ({ v, idx }));
                   let _shown = _filter
-                    ? _indexed.filter(({ v }) => (
+                    ? _filter.type === "mail" ? _indexed.filter(({ v }) => viewingMailTags(v, replyIdxAll).includes(_filter.value)) : _indexed.filter(({ v }) => (
                         _filter.type === "handled" ? viewingHandledKey(v)
                         : _filter.type === "result" ? (v.result || "未案内")
                         : v[_filter.type]
@@ -15565,6 +15578,16 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             opacity: dim ? 0.35 : 1,
                           }}>{info.icon}{p}({c})</button>
                         );
+                      })}
+                    </div>
+                    {/* 🆕 v9.503: メールでやり取りしているお客様だけを出す */}
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4, alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>メール</span>
+                      {VIEWING_MAIL_FILTERS.map(([key, icon, label, color]) => {
+                        const c = viewings.filter(v => viewingMailTags(v, replyIdxAll).includes(key)).length;
+                        const active = _filter && _filter.type === "mail" && _filter.value === key;
+                        const dim = c === 0;
+                        return (<button key={key} onClick={() => !dim && _setFilter("mail", key)} disabled={dim} style={{ padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700, border: active ? `1.5px solid ${color}` : `1px solid ${color}55`, background: active ? color : color + "11", color: active ? "#fff" : color, cursor: dim ? "not-allowed" : "pointer", opacity: dim ? 0.35 : 1 }}>{icon}{label}({c})</button>);
                       })}
                     </div>
                     <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
@@ -16254,6 +16277,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
 }
 
 function StockPage({ data, setData, pendingNav, onConsumeNav }) {
+  const replyIdxAll = useReplyIndex(); // 🆕 v9.503: 反響の「メール」絞り込み
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
@@ -17315,7 +17339,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                     const _searchText = (viewingSearchByStock[s.id] || "").trim().toLowerCase();
                     const _indexed = viewings.map((v, idx) => ({ v, idx }));
                     let _shown = _filter
-                      ? _indexed.filter(({ v }) => (
+                      ? _filter.type === "mail" ? _indexed.filter(({ v }) => viewingMailTags(v, replyIdxAll).includes(_filter.value)) : _indexed.filter(({ v }) => (
                           _filter.type === "handled" ? viewingHandledKey(v)
                           : _filter.type === "result" ? (v.result || "未案内")
                           : v[_filter.type]
@@ -17402,6 +17426,16 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                               opacity: dim ? 0.35 : 1,
                             }}>{info.icon}{p}({c})</button>
                           );
+                        })}
+                      </div>
+                      {/* 🆕 v9.503: メールでやり取りしているお客様だけを出す */}
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4, alignItems: "center" }}>
+                        <span style={{ fontSize: 10, color: C.muted, marginRight: 2 }}>メール</span>
+                        {VIEWING_MAIL_FILTERS.map(([key, icon, label, color]) => {
+                          const c = viewings.filter(v => viewingMailTags(v, replyIdxAll).includes(key)).length;
+                          const active = _filter && _filter.type === "mail" && _filter.value === key;
+                          const dim = c === 0;
+                          return (<button key={key} onClick={() => !dim && _setFilter("mail", key)} disabled={dim} style={{ padding: "3px 9px", borderRadius: 12, fontSize: 11, fontFamily: "inherit", fontWeight: 700, border: active ? `1.5px solid ${color}` : `1px solid ${color}55`, background: active ? color : color + "11", color: active ? "#fff" : color, cursor: dim ? "not-allowed" : "pointer", opacity: dim ? 0.35 : 1 }}>{icon}{label}({c})</button>);
                         })}
                       </div>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
