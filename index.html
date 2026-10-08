@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.500-update";
+const APP_VERSION = "2026-10-08-v9.501-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -887,6 +887,14 @@ function propertyDocsBlock(docs) {
   if (!arr.length) return "（資料は準備ができ次第お送りいたします）";
   return arr.map(d => `■ ${d.label || "物件資料"}\n${d.url}`).join("\n\n");
 }
+// 🆕 v9.501: SMS用の短いリンク。アプリの資料置き場（docs/<物件id>/<時刻>_<乱数>.<拡張子>）だけを d.html で転送する
+//   長いURL（約130字）→ 約70字。形が違う資料（ドライブ等のリンク）は元のURLのまま
+function shortDocUrl(d) {
+  const u = String((d && d.url) || "");
+  const m = u.match(/\/hikari-photos\/docs\/(\d{1,15})\/(\d{10,15})_([0-9a-z]{1,12})\.(pdf|jpg|jpeg|png|webp|heic|gif)$/i);
+  if (!m) return u;
+  return `https://toshi5128.github.io/hikari-app/d.html?${Number(m[1]).toString(36)}.${Number(m[2]).toString(36)}.${m[3].toLowerCase()}.${m[4].toLowerCase()}`;
+}
 function vmailFill(text, ctx) {
   const first = (ctx.docs || []).find(d => d && d.url);
   return String(text || "")
@@ -894,7 +902,7 @@ function vmailFill(text, ctx) {
     .replace(/\{\{物件名\}\}/g, ctx.propName || "物件")
     .replace(/\{\{差出人\}\}/g, ctx.senderShort || "")
     .replace(/\{\{資料\}\}/g, propertyDocsBlock(ctx.docs))
-    .replace(/\{\{資料URL\}\}/g, first ? `資料はこちらです ${first.url} ` : "")
+    .replace(/\{\{資料URL\}\}/g, first ? (ctx.sms ? `資料はこちら ${shortDocUrl(first)} ` : `資料はこちらです ${first.url} `) : "")
     .replace(/\{\{概要\}\}/g, ctx.summary ? "\n" + ctx.summary + "\n" : "")
     .replace(/\n{3,}/g, "\n\n");
 }
@@ -1031,7 +1039,8 @@ function ViewingMailHost({ data, setData }) {
   if (!parent || !v) {
     return <BottomSheet z={600} title="✉️ メールを作る" onClose={close}><div style={{ color: C.muted, fontSize: 13, padding: "10px 0 20px" }}>この反響が見つかりませんでした。いったん閉じて開き直してください。</div></BottomSheet>;
   }
-  const smsText = vmailFill(tpl.sms, ctx);
+  const smsText = vmailFill(tpl.sms, { ...ctx, sms: true });
+  const smsLen = [...smsText].length;
   const atts = attachPayload(parent.docs, attIds);
   const tel = String(v.contact || "").replace(/[^\d+]/g, "");
   const record = (kindText) => {
@@ -1113,6 +1122,10 @@ function ViewingMailHost({ data, setData }) {
         {tel && <a href={`sms:${tel}?body=${encodeURIComponent(smsText)}`} onClick={() => setTimeout(() => { if (window.confirm("SMSを送りましたか？\n「📧メール送った」として記録します。")) { record(`💬 SMS送信「${tpl.label}」`); close(); } }, 800)} style={{ ...btnStyle("ghost"), flex: 1, padding: "11px 0", fontSize: 12, textAlign: "center", textDecoration: "none" }}>📱 SMS</a>}
       </div>
       <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginTop: 10 }}>短い文（SMS・LINE用）：{smsText}</div>
+      {/* 🆕 v9.501: SMSは全角70字ごとに分割・670字が上限。長い時は知らせる */}
+      <div style={{ fontSize: 11, fontWeight: 800, marginTop: 4, color: smsLen > 670 ? C.danger : smsLen > 200 ? C.warn : C.success }}>
+        {smsLen}文字{smsLen > 670 ? "：SMSでは送れない長さです。短くするか、メールで送ってください" : smsLen > 200 ? "：少し長め（分割して届きます）" : "：SMSで送れる長さです"}
+      </div>
     </BottomSheet>
   );
 }
@@ -8150,6 +8163,15 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.501", date: "2026-10-08", title: "SMSでも資料が送りやすく（短いリンク・文字数の表示）",
+    body: "メールアドレスが無いお客様に「📱 SMS」で送る時、資料のリンクが短くなりました（約130字→約70字）。下に文字数が出て、SMSで送れる長さかどうかが分かります。お客様がリンクを押すと、そのまま資料が開きます。",
+    where: "反響カードの「✉️ 資料つきメール・SMSを作る」→ 下の「📱 SMS」" },
+  { v: "9.494", date: "2026-10-08", title: "メールに載せる資料を、チェックで選べるように",
+    body: "チェックを外した資料は、添付からも本文のリンクからも消えます。「物件注意点まとめ」やドライブのリンクなど社内用の資料には赤い「社内用」が付き、最初からチェックが外れています。",
+    where: "反響のメール作成・一括メールの「📎 お客様に送る資料」" },
+  { v: "9.492", date: "2026-10-08", title: "在庫カードにキーボックスの番号が出るように",
+    body: "物件の編集画面の「キーボックス情報」に番号と設置場所を入れておくと、在庫カードの一番上に紫の「🔑 番号（場所）」が出ます。内見の前にすぐ確認できます。",
+    where: "在庫 → 物件カードの上の札／編集 →「キーボックス情報」" },
   { v: "9.496", date: "2026-10-08", title: "お客様からの返信に、返事の下書きが自動でつくように",
     body: "お客様からメールの返信が届くと、AIが中身を読んで「何と言っているか」を1行にまとめ、返事の下書きを作ります（届いてから5〜10分）。ピンクの「📩 お客様から返信」から開いて、下書きを直して「返信する」を押すだけ。返事はお客様のメールへの返信として届きます。お断りの返信なら、その反響を「見送り」にもできます。",
     where: "在庫タブ・ホームの一番上の「📩 お客様から返信 N件」／反響カードの「📩 返信が届いています」" },
