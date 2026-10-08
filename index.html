@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.506-update";
+const APP_VERSION = "2026-10-08-v9.507-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1587,6 +1587,7 @@ const BULK_SKIP_RESULTS = ["成約", "見送り"];
 const BULK_DECLINE_RE = /断|見送|不要|結構です|検討しない|購入しない|辞退|いらない|配信停止|連絡不要|他で決|他決|キャンセル|興味(が)?ない|迷惑|やめ(ます|る|た)/;
 function viewingDeclineWhy(v) {
   if (!v) return "";
+  if (v.leak) return "社内資料を誤送付済み"; // 🆕 v9.507
   if (BULK_SKIP_RESULTS.includes(v.result)) return v.result;
   if (v.prospect === "ダメ") return "見込みダメ";
   const text = [v.memo, v.lostReason, ...(v.comments || []).map(c => c && c.text)].filter(Boolean).join(" ");
@@ -2092,7 +2093,11 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
   base.forEach(r => { const k = viewingHandledKey(r.v); if (k in stateCounts) stateCounts[k]++; });
   const followAll = collectFollowViewings(data, currentUser);
   const followRows = onlyMine ? followAll.filter(r => r.assignee === currentUser) : followAll;
-  const rows = stateFilter === "follow" ? followRows : stateFilter === "all" ? base : base.filter(r => viewingHandledKey(r.v) === stateFilter);
+  const rows0 = stateFilter === "follow" ? followRows : stateFilter === "all" ? base : base.filter(r => viewingHandledKey(r.v) === stateFilter);
+  // 🆕 v9.507: これからのお客様を優先。3日以内の新しい反響を一番上（新しい順）、社内資料を誤送付した人は一番下
+  const _newSince = new Date(Date.now() - 3 * 86400000).toLocaleDateString("sv-SE");
+  const _rank = (r) => r.v && r.v.leak ? 2 : (String((r.v && r.v.date) || "") >= _newSince ? 0 : 1);
+  const rows = rows0.map((r, i) => ({ r, i })).sort((a, b) => _rank(a.r) - _rank(b.r) || (_rank(a.r) === 0 ? String(b.r.v.date || "").localeCompare(String(a.r.v.date || "")) : a.i - b.i)).map(x => x.r);
 
   const applyAttempt = (row, kind) => {
     if (!currentUser) { alert("先にログインしてください"); return; }
@@ -2166,7 +2171,7 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
               {ag && <span style={{ background: ag.color, color: "#fff", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{ag.label}</span>}
-              <span style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{v.customer || "(名前未入力)"}</span>
+              <span style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{v.customer || "(名前未入力)"}</span>{v.leak && <span title="この方には社内用の資料（値下げの下限など）が誤って届いています" style={{ background: "#dc2626", color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>⚠️ 社内資料誤送付</span>}
               {/* 🆕 v9.384: 🔴未対応 / 📵不在留守電（回数・最終日）を出す */}
               <span style={{ background: viewingHandledInfo(v).color, color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>
                 {viewingStateLabel(v)}
@@ -3319,6 +3324,32 @@ function updatePropInfoFromNotesV9493(d) {
     out = { ...out, stocks: out.stocks.map(x => x === s ? next : x) };
   });
   return out;
+}
+
+// 🆕 v9.507: 2026-10-08 11:40/11:42 の一括メール（町田市山崎町30人・小田原市小竹44人）に社内用の「物件注意点まとめ」を誤って添付した。
+//   受け取った人の反響に印（v.leak）を付ける＝電話する時に「値下げの下限を知っているかも」と分かる・今後の一括メールから外す。
+//   ここに置くのは反響の番号（id）だけ。名前やメールアドレスは書かない（このファイルは公開されているため）。同じ人の別の反響にも付ける。
+const LEAK_V9507 = { "1784094187802": "v_15pu210,v_12to02s,v_cd6wn8,v_1k0bebj,v_d07b7y,v_qns6vh,v_17zs37y,v_6vgwle,v_1xuecok,v_1jq2wwd,v_1hkdqsn,v_1rthp91,v_1d0dz4a,v_5jkwqr,v_1t3e8g2,v_1lj5phk,v_ezp696,v_zuc5fj,v_1jxzst1,v_ive0jy,v_16udksr,v_2nmjwx,v_t5auqu,v_16z3pxt,v_vn12uo,v_swi6io,v_1h78jm9,v_1mz1bhy,v_16ihdnp,v_1m9r46o".split(","), "1785326847145": "v_uc12qr,v_1d8v4al,v_8gb2ds,v_zwrzl9,v_1ms2hyh,v_z9yw8u,v_pf78qz,v_mn9tf7,v_1fvohmv,v_1xor31x,v_11caurp,v_cqrmit,v_q7b3af,v_dtudpu,v_g745tf,v_1m4ys81,v_11l4smo,v_1aoe1ro,v_15risnr,v_s3vndo,v_1l22l4p,v_1y4zwoc,v_yusp8b,v_1wu4b9,v_1sig3x3,v_1ec0rvi,v_113ur3c,v_5auc8o,v_hwujam,v_by4wxa,v_1pzjs2n,v_s6qzmw,v_1u0v03z,v_1nocqnh,v_10l6gis,v_nng5bc,v_ddgz5j,v_1whys6v,v_1hw4rb3,v_oyrpxp,v_1wce1s4,v_1g8vzxm,v_18093xg,v_1oy7acp".split(",") };
+const LEAK_LABEL_V9507 = "2026-10-08 社内資料誤送付";
+function markLeakV9507(d) {
+  if (!d || !Array.isArray(d.stocks)) return d;
+  let n = 0;
+  const stocks = d.stocks.map(s => {
+    const ids = s && LEAK_V9507[String(s.id)];
+    if (!ids || !Array.isArray(s.viewings)) return s;
+    const keys = new Set(s.viewings.filter(v => v && ids.includes(String(v.id))).map(v => investorKeyOf(v)).filter(Boolean));
+    let touched = false;
+    const viewings = s.viewings.map(v => {
+      if (!v || v.leak) return v;
+      if (!ids.includes(String(v.id)) && !keys.has(investorKeyOf(v))) return v;
+      touched = true; n++;
+      return { ...v, leak: LEAK_LABEL_V9507, updatedAt: Date.now() };
+    });
+    return touched ? { ...s, viewings } : s;
+  });
+  if (!n) return d;
+  console.log(`[v9.507] 誤送付を受け取った反響 ${n}件に印を付けました`);
+  return { ...d, stocks };
 }
 
 // 🆕 v9.492: 町田市山崎町のキーボックス（物件注意点まとめより）。空のときだけ1回入れる
@@ -7706,6 +7737,7 @@ function MainApp({ onLock, onSwitchUser }) {
     if (seedOdakePropInfoV9490(data) !== data) setData(d => seedOdakePropInfoV9490(d));
     else if (seedKeyBoxV9492(data) !== data) setData(d => seedKeyBoxV9492(d));
     else if (updatePropInfoFromNotesV9493(data) !== data) setData(d => updatePropInfoFromNotesV9493(d));
+    else if (markLeakV9507(data) !== data) setData(d => markLeakV9507(d));
   }, [data]);
 
   // 🆕 v9.407: 回った先／訪問の結果は訪問記録が正本。毎回数え直す（自己修復）。
@@ -15708,7 +15740,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             <span style={{ background: unhandled ? _hColor : "#10b98133", color: unhandled ? "#fff" : "#10b981", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
                               {viewingStateLabel(v)}
                             </span>
-                            <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
+                            <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>{v.leak && <span title="この方には社内用の資料（値下げの下限など）が誤って届いています" style={{ background: "#dc2626", color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>⚠️ 社内資料誤送付</span>}
                             {rep && rep.total > 1 && (
                               <span style={{
                                 background: repeatColor + "33", color: repeatColor,
@@ -16035,7 +16067,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                         <span style={{ background: v.handled ? "#10b98133" : viewingHandledInfo(v).color, color: v.handled ? "#10b981" : "#fff", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
                           {viewingStateLabel(v)}
                         </span>
-                        <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
+                        <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>{v.leak && <span title="この方には社内用の資料（値下げの下限など）が誤って届いています" style={{ background: "#dc2626", color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>⚠️ 社内資料誤送付</span>}
                         {rep && rep.total > 1 && (
                           <span style={{
                             background: repeatColor + "33", color: repeatColor,
@@ -17558,7 +17590,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                               <span style={{ background: unhandled ? _hColor : "#10b98133", color: unhandled ? "#fff" : "#10b981", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
                                 {viewingStateLabel(v)}
                               </span>
-                              <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
+                              <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>{v.leak && <span title="この方には社内用の資料（値下げの下限など）が誤って届いています" style={{ background: "#dc2626", color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>⚠️ 社内資料誤送付</span>}
                               {rep && rep.total > 1 && (
                                 <span style={{
                                   background: repeatColor + "33", color: repeatColor,
@@ -18011,7 +18043,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                         <span style={{ background: v.handled ? "#10b98133" : viewingHandledInfo(v).color, color: v.handled ? "#10b981" : "#fff", padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
                           {viewingStateLabel(v)}
                         </span>
-                        <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>
+                        <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>{v.customer || "(名前未入力)"}</span>{v.leak && <span title="この方には社内用の資料（値下げの下限など）が誤って届いています" style={{ background: "#dc2626", color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>⚠️ 社内資料誤送付</span>}
                         {rep && rep.total > 1 && (
                           <span style={{
                             background: repeatColor + "33", color: repeatColor,
