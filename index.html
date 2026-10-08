@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.494-update";
+const APP_VERSION = "2026-10-08-v9.495-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1549,6 +1549,15 @@ const attachPayload = (docs, sel) => attachableDocs(docs).filter(d => sel.includ
 
 function openBulkViewingMail(detail) { try { window.dispatchEvent(new CustomEvent("hikari-bulkmail", { detail })); } catch (e) {} }
 const BULK_SKIP_RESULTS = ["成約", "見送り"];
+// 🆕 v9.495: 断った人に送るとクレームになる（下田さん）。メモ・やり取りに断りの言葉がある人も外す
+const BULK_DECLINE_RE = /断|見送|不要|結構です|検討しない|購入しない|辞退|いらない|配信停止|連絡不要|他で決|他決|キャンセル|興味(が)?ない|迷惑|やめ(ます|る|た)/;
+function viewingDeclineWhy(v) {
+  if (!v) return "";
+  if (BULK_SKIP_RESULTS.includes(v.result)) return v.result;
+  if (v.prospect === "ダメ") return "見込みダメ";
+  const text = [v.memo, v.lostReason, ...(v.comments || []).map(c => c && c.text)].filter(Boolean).join(" ");
+  return BULK_DECLINE_RE.test(text) ? "断りのメモあり" : "";
+}
 function BulkViewingMailHost({ data, setData }) {
   const [req, setReq] = useState(null);
   const [days, setDays] = useState(10);
@@ -1597,13 +1606,15 @@ function BulkViewingMailHost({ data, setData }) {
     const cur = byPerson.get(k);
     if (!cur || String(v.date || "") > String(cur.v.date || "")) byPerson.set(k, { v, vi, k });
   });
+  // 同じ人の古い反響で断っていても外す（いちばん新しい反響だけ見ると漏れる）
+  const declined = new Map();
+  (p.viewings || []).forEach((v, vi) => { const w = viewingDeclineWhy(v); if (w) { const k = investorKeyOf(v) || "i:" + vi; if (!declined.has(k)) declined.set(k, w); } });
   const rows = [...byPerson.values()].map(r => {
     const lt = lastTouchOf(r.v);
     const ago = lt ? Math.floor((now - lt) / 86400000) : 9999;
     let why = "";
     if (!String(r.v.email || "").trim()) why = "メールなし";
-    else if (BULK_SKIP_RESULTS.includes(r.v.result)) why = r.v.result;
-    else if (r.v.prospect === "ダメ") why = "見込みダメ";
+    else if (declined.has(r.k)) why = declined.get(r.k);
     else if (optOut[r.k]) why = "配信停止";
     else if (ago < days) why = `${ago}日前にやり取り`;
     return { ...r, ago, why };
