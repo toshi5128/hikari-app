@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-08-v9.504-update";
+const APP_VERSION = "2026-10-08-v9.505-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8201,6 +8201,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.505", date: "2026-10-08", title: "電話代行の「応対記録」を貼るだけで反響に",
+    body: "LINEで届く電話代行の「応対記録」（応対日・相手先氏名・着歴・用件）をコピーして、反響取込の欄に貼り「解析する」を押すと、名前・電話番号・日付・用件が自動で入り、文中の住所から物件も自動で選ばれます。",
+    where: "在庫（仲介）→「反響取込」→ 応対記録を貼って「解析する」" },
   { v: "9.504", date: "2026-10-08", title: "電話の反響も入れられるように",
     body: "反響の取り込み画面に「📞 電話の反響を入れる」が増えました。お名前・電話番号（メールが分かればメールも）・聞かれたことを入れて、物件を選ぶと反響に追加されます。メールの反響と同じく、重複チェックやお礼メールの作成もできます。",
     where: "在庫（仲介）→「反響取込」→「📞 電話の反響を入れる」" },
@@ -14761,6 +14764,8 @@ function parseInquiryDate(raw) {
 
 function parseInquiryEmail(text) {
   if (!text || typeof text !== "string") return null;
+  // 🆕 v9.505: 電話代行の「応対記録」（LINEで届く文をそのまま貼る）
+  if (/応対記録|相手先氏名|着歴/.test(text)) return parseCallLog(text);
   // SUUMO判定（特徴的なキーワード）
   if (text.includes("お客様プロフィール") || text.includes("問合せ物件")) {
     return parseSUUMO(text);
@@ -14770,6 +14775,30 @@ function parseInquiryEmail(text) {
     return parseAtHome(text);
   }
   return null;
+}
+
+// 🆕 v9.505: 電話代行の「応対記録」を反響に（下田さん「LINEで来る応対記録を貼ったら自動で入るように」）
+//   例）応対日：2026/10/08 時刻：14:04 相手先会社名：(株)エルオーシー 相手先氏名：スズキ 着歴：080… の後に用件の文
+function parseCallLog(text) {
+  const t = String(text).replace(/\r/g, "");
+  const grab = (label) => { const m = t.match(new RegExp(label + "\s*[：:]\s*([^\n]*)")); return m ? m[1].trim() : ""; };
+  const result = { channel: "電話（応対記録）" };
+  const date = grab("応対日"), time = grab("時刻");
+  if (date) result.inquiryDate = date;
+  const company = grab("相手先会社名"), name = grab("相手先氏名").replace(/様$/, "");
+  const who = [company, name].filter(Boolean).join(" ");
+  if (who) result.customer = who;
+  // 用件 = ラベルの行・区切り線・見出しを除いた残り
+  const skip = /^(件名|応対日|時刻|相手先会社名|相手先氏名|性別|宛先|着歴)\s*[：:]|^応対記録|^[―ー\-－=＝_\s]+$/;
+  const msg = t.split("\n").map(l => l.trim()).filter(l => l && !skip.test(l)).join("\n");
+  const phones = (msg.match(/0\d{1,4}-?\d{1,4}-?\d{3,4}/g) || []);
+  result.contact = phones[0] || grab("着歴");
+  const addr = msg.match(/([^\s、。,，「」]{1,6}?[都道府県]?[^\s、。,，「」]{1,6}?[市区町村][^\s、。,，「」の]{0,10}?\d+(?:[-－ー]\d+)*)/);
+  if (addr) result.propertyAddress = addr[1];
+  const price = msg.match(/(\d[\d,，]*万円)/);
+  if (price) result.propertyPrice = price[1];
+  result.note = ["📞 電話（応対記録）" + (time ? ` ${time}` : "") + (grab("着歴") ? ` 着歴 ${grab("着歴")}` : ""), msg].filter(Boolean).join("\n");
+  return result.customer || result.contact ? result : null;
 }
 
 // SUUMO 形式パース（ラベル[空白/タブ]値）
@@ -15248,7 +15277,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const handleParseImport = () => {
     const parsed = parseInquiryEmail(importText);
     if (!parsed) {
-      alert("⚠️ メール本文の形式を認識できませんでした\n\nSUUMO・アットホームのお問合せメールをそのまま貼り付けてください。");
+      alert("⚠️ 文の形式を認識できませんでした\n\nSUUMO・アットホームのお問合せメール、または電話代行の「応対記録」をそのまま貼り付けてください。");
       return;
     }
     setImportParsed(parsed);
@@ -16809,7 +16838,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const handleParseImport = () => {
     const parsed = parseInquiryEmail(importText);
     if (!parsed) {
-      alert("⚠️ メール本文の形式を認識できませんでした\n\nSUUMO・アットホームのお問合せメールをそのまま貼り付けてください。");
+      alert("⚠️ 文の形式を認識できませんでした\n\nSUUMO・アットホームのお問合せメール、または電話代行の「応対記録」をそのまま貼り付けてください。");
       return;
     }
     setImportParsed(parsed);
