@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-09-v9.522-update";
+const APP_VERSION = "2026-10-09-v9.523-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1003,11 +1003,15 @@ function ViewingMailHost({ data, setData }) {
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [attSel, setAttSel] = useState(null);
+  // 🆕 v9.523: 「どんな雰囲気で？」を書くと、PCの下書き係（Claude）が文章を考えて本文に入れる
+  const [mood, setMood] = useState("");
+  const [composeId, setComposeId] = useState(null);
+  const [aiSms, setAiSms] = useState("");
   const currentUser = getCurrentUser();
   useEffect(() => {
     const h = (e) => {
       const d = e.detail || {};
-      setReq(d); setAttSel(null);
+      setReq(d); setAttSel(null); setMood(""); setComposeId(null); setAiSms("");
       setTplKey(d.tpl || "thanks");
       setSenderKey(vmailSenderFor(currentUser).key);
       setSubject(""); setBody(""); setTo("");
@@ -1036,16 +1040,58 @@ function ViewingMailHost({ data, setData }) {
     if (!req || !v) return;
     if (sigRef.current === sig) return;
     sigRef.current = sig;
+    setAiSms("");
     setSubject(vmailFill(tpl.subject, ctx));
     setBody(vmailFill(tpl.body, ctx));
     setTo(prev => prev || v.email || "");
   });
+  useEffect(() => {
+    if (!composeId) return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_compose?id=eq.${composeId}&select=status,result_subject,result_body,result_sms,error`, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } });
+        const r = (await res.json())[0];
+        if (stop || !r || r.status === "new") return;
+        setComposeId(null);
+        if (r.status === "done" && r.result_body) {
+          if (r.result_subject) setSubject(r.result_subject);
+          setBody(r.result_body);
+          setAiSms(r.result_sms || "");
+        } else alert("文章を作れませんでした。もう一度お試しください。\n\n" + (r.error || ""));
+      } catch (e) { /* 電波が悪い時は次の回に */ }
+    };
+    const t = setInterval(tick, 5000);
+    return () => { stop = true; clearInterval(t); };
+  }, [composeId]);
   if (!req) return null;
-  const close = () => { setReq(null); sigRef.current = ""; };
+  const close = () => { setReq(null); sigRef.current = ""; setComposeId(null); };
   if (!parent || !v) {
     return <BottomSheet z={600} title="✉️ メールを作る" onClose={close}><div style={{ color: C.muted, fontSize: 13, padding: "10px 0 20px" }}>この反響が見つかりませんでした。いったん閉じて開き直してください。</div></BottomSheet>;
   }
-  const smsText = vmailFill(tpl.sms, { ...ctx, sms: true });
+  const smsText = aiSms || vmailFill(tpl.sms, { ...ctx, sms: true });
+  const askCompose = async () => {
+    if (!mood.trim()) { alert("どんな雰囲気・内容のメールにしたいかを書いてください\n（例：電話がつながらなかったので、明るく短めに。週末の内見をすすめて）"); return; }
+    const pi = parent.propInfo || {};
+    const SAFE = ["addr", "price", "access", "land", "chimoku", "road", "youto", "kenpei", "bldg", "madori", "kozo", "chiku", "parking", "setsubi", "point", "hikiwatashi"];
+    const payload = {
+      requested_by: currentUser || "", mood: mood.trim(),
+      ctx: {
+        parentType: req.parentType, parentId: parent.id, vid: v.id || null,
+        customer: v.customer || "", propName: parent.name || "", senderShort: sender.short, tplLabel: tpl.label,
+        subject, body, docs: ctx.docs.map(d => d.label || "物件資料"),
+        propInfo: Object.fromEntries(SAFE.filter(k => pi[k]).map(k => [k, pi[k]])),
+        viewing: { date: v.date || "", source: v.source || "", prospect: v.prospect || "", result: v.result || "",
+          comments: (v.comments || []).slice(-6).map(c => `${c.member || ""}：${c.text || ""}`) },
+      },
+    };
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_compose`, { method: "POST", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error(`受付できませんでした（${res.status}）`);
+      const row = (await res.json())[0];
+      setComposeId(row.id);
+    } catch (e) { alert("頼めませんでした。\n\n" + e.message); }
+  };
   const smsLen = [...smsText].length;
   const atts = attachPayload(parent.docs, attIds);
   const tel = String(v.contact || "").replace(/[^\d+]/g, "");
@@ -1107,6 +1153,16 @@ function ViewingMailHost({ data, setData }) {
           {VMAIL_TEMPLATES.map(t => <button key={t.key} onClick={() => setTplKey(t.key)} style={chip(tplKey === t.key)}>{t.label}</button>)}
         </div>
       </Field>
+      <div style={{ border: `2px solid ${C.purple}`, borderRadius: 12, padding: 12, marginBottom: 14, background: C.purple + "0d" }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.purple, marginBottom: 6 }}>🪄 どんな雰囲気で送りたい？（AIが文章を考えます）</div>
+        <textarea value={mood} onChange={e => setMood(e.target.value)} rows={3} disabled={!!composeId}
+          placeholder={"例：電話がつながらなかったので、明るく短めに。週末の内見をすすめて\n例：ローンの相談にも乗れることを伝えて、押しつけがましくなく"}
+          style={{ ...inp, lineHeight: 1.6, fontSize: 13, marginBottom: 8 }} />
+        <button onClick={askCompose} disabled={!!composeId} style={{ ...btnStyle("ghost"), width: "100%", padding: "11px 0", border: `1.5px solid ${C.purple}`, color: C.purple, fontWeight: 800, opacity: composeId ? 0.6 : 1 }}>
+          {composeId ? "⏳ 文章を考えています…（1〜2分。この画面のままお待ちください）" : "🪄 この雰囲気で書いてもらう"}
+        </button>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>できあがると下の件名・本文・短い文に自動で入ります。送る前に中身を確かめてください。</div>
+      </div>
       <PropertyDocsEditor parentType={req.parentType} parent={parent} setData={setData} currentUser={currentUser} compact />
       <Field label="差出人（返信はこの人に届きます）">
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -8315,6 +8371,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.523", date: "2026-10-09", title: "メールを作る画面で、雰囲気を書くとAIが文章を考えてくれるように",
+    body: "「メール・SMSを作る」の画面に「🪄 どんな雰囲気で送りたい？」の欄ができました。「明るく短めに」「週末の内見をすすめて」などと書いてボタンを押すと、1〜2分で件名・本文・SMS用の短い文が入ります。中身を確かめてから送ってください。",
+    where: "反響カード →「メール・SMSを作る」→ 🪄 どんな雰囲気で送りたい？" },
   { v: "9.522", date: "2026-10-09", title: "反響カードの名前を押すと、その方のヒアリング欄が開くように",
     body: "物件の反響一覧で、お客様の名前（青い下線つき）を押すと、その方の聞き取り内容（希望・予算・メモ・やり取り）を書く画面だけが開きます（スクロール不要）。お客様カードの「編集」ボタンはなくしました（物件の編集は物件カードの「編集」から）。",
     where: "在庫（仲介）→ 物件の「反響」→ お客様の名前" },

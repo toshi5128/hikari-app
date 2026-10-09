@@ -14,6 +14,7 @@
 2026-10-08 追加（下田さん「メールが来ても通知が無いから気づけない。下書きを作ったらそれも知らせて」）
 ・返信を読んで下書きを作ったら、アプリの通知（send-push）で知らせる。相手＝下田＋物件の担当＋前にメールを送った人
 ・アプリで「こんな雰囲気で」と頼まれたら（rewrite_request）、その指示どおりに下書きを作り直して通知する
+・2026-10-09 追加: メールを作る画面の「どんな雰囲気で？」（mail_compose）から、こちらから送るメールの文章を考えて返す
 ・通知に出すのは物件名と「下書きができた／資料を添付した」だけ。お客様の名前やメール本文は出さない（ロック画面に出るため）
 """
 import json, re, subprocess, sys, tempfile, urllib.request, urllib.parse
@@ -251,11 +252,74 @@ def ask_claude(prompt):
     return j
 
 
+# お客様向けに書いてよい物件情報（注意点・よくある質問・周辺環境のメモは社内向けの事が混ざるので渡さない）
+COMPOSE_SAFE_KEYS = ["addr", "price", "access", "land", "chimoku", "road", "youto", "kenpei", "bldg", "madori", "kozo", "chiku",
+                     "parking", "setsubi", "point", "hikiwatashi"]
+
+
+def compose_prompt(c, mood):
+    info = c.get("propInfo") or {}
+    info_txt = "\n".join(f"- {k}: {info[k]}" for k in COMPOSE_SAFE_KEYS if info.get(k)) or "（物件情報は未入力）"
+    vw = c.get("viewing") or {}
+    notes = "\n".join(f"- {t}" for t in (vw.get("comments") or [])[-6:]) or "（なし）"
+    docs = "、".join(c.get("docs") or []) or "なし"
+    staff = c.get("senderShort") or "下田"
+    return f"""あなたは埼玉・東京の不動産会社「ひかり不動産」の営業担当「{staff}」です。
+物件に問い合わせてくれたお客様へ、こちらから送るメールの文章を作ってください。
+
+# 担当者からの注文（最優先。この雰囲気・内容で書くこと）
+{mood[:1000]}
+
+# 守ること
+- 丁寧で温かい日本語。注文に「短く」とあれば短く、口調の注文があればそれに合わせる。
+- 下の「物件情報」に無いことは断定しない（値下げ・空き状況・設備の有無などは「確認してご連絡します」）。
+- 宛名は「{c.get('customer') or 'お客'} 様」で始める。署名は書かない（自動で付く）。
+- 添付する資料は「{docs}」。資料のリンクは自動で本文の下に付くので、本文にURLは書かない（「資料をお送りします」等の一言はよい）。
+- 社内の事情（原価・値引きの下限・キーボックスの番号・近所の人の名前など）は書かない。
+
+# お客様
+- お名前: {c.get('customer') or '不明'}
+- 問い合わせ物件: {c.get('propName') or '不明'}（反響日 {vw.get('date') or '不明'}・{vw.get('source') or ''}）
+- 見込み: {vw.get('prospect') or '未設定'}／結果: {vw.get('result') or '未案内'}
+- これまでのやり取り・メモ:
+{notes}
+
+# 物件情報（{c.get('propName') or ''}）
+{info_txt}
+
+# 今の下書き（「{c.get('tplLabel') or ''}」のひな形。参考にしてよいが、注文を優先して書き直す）
+件名: {c.get('subject') or ''}
+{str(c.get('body') or '')[:2500]}
+
+# 出力
+次のJSONだけを出力してください（前後に説明文を付けない）。
+{{"subject": "件名", "body": "本文", "sms": "SMS・LINE用の短い文（120字以内・宛名と挨拶から・改行あり・URLなし）"}}"""
+
+
+def run_compose():
+    """メール作成画面の「🪄 この雰囲気で書いてもらう」を処理する（来ていなければ何もしない）。"""
+    rows = api("GET", "/rest/v1/mail_compose?select=*&status=eq.new&order=id.asc&limit=5")
+    for r in rows:
+        try:
+            j = ask_claude(compose_prompt(r.get("ctx") or {}, str(r.get("mood") or "")))
+            patch = {"status": "done", "result_subject": str(j.get("subject") or "")[:300], "result_body": str(j["body"]).strip(),
+                     "result_sms": str(j.get("sms") or "").strip()[:400], "error": None, "done_at": datetime.now(timezone.utc).isoformat()}
+        except Exception as e:
+            patch = {"status": "error", "error": str(e)[:300], "done_at": datetime.now(timezone.utc).isoformat()}
+        print("compose", r.get("id"), patch["status"])
+        if not DRY:
+            api("PATCH", f"/rest/v1/mail_compose?id=eq.{r['id']}", patch, prefer="return=minimal")
+
+
 def main():
     if LOCK.exists() and (datetime.now().timestamp() - LOCK.stat().st_mtime) < 1200:
         return  # 前の回がまだ動いている
     LOCK.write_text("1")
     try:
+        try:
+            run_compose()  # 画面で待っている人がいるので先に
+        except Exception as e:
+            print("compose失敗:", e)
         since = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         rows = api("GET", "/rest/v1/mail_inbox?select=*&status=eq.new&draft_at=is.null&received_at=gte." + since + "&order=received_at.asc&limit=5")
         # 担当者から「こんな雰囲気で」と書き直しを頼まれたもの（頼まれた後にまだ作り直していない分）
