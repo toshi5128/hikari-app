@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-09-v9.525-update";
+const APP_VERSION = "2026-10-09-v9.526-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -794,6 +794,8 @@ function withViewingAttempt(v, kind, who) {
   const now = new Date().toISOString();
   const entry = { id: Date.now() + Math.floor(Math.random() * 1000), kind, by: who || "", at: now };
   const next = { ...v, attempts: [...(v.attempts || []), entry], updatedAt: Date.now() };
+  // 🆕 v9.526: メールだけで対応済みだった人に電話して不在なら、かけ直しリストに戻す
+  if (kind === "tel_absent" && v.handled && !(v.attempts || []).some(a => a && a.kind === "tel_ok")) next.handled = false;
   if (def.handled) {
     next.handled = true;
     next.handledBy = who || "";
@@ -2082,11 +2084,12 @@ function ViewingActions({ v, onAttempt, onUnhandle, onCompose }) {
       {_newReply ? `📩 返信が届いています（${_rd}）→ 読んで返事する` : _lastReply ? `📨 メールのやり取りを見る（最後の返信 ${_rd}）` : "📨 送ったメールを見る"}
     </button>
   ) : null;
-  if (!v.handled) {
+  // 🆕 v9.526: メールだけで電話まだの人にも、電話の結果ボタンを出す（押すと「電話まだ」の印が消える）
+  if (!v.handled || viewingNeedsCall(v)) {
     return (
       <div style={{ marginTop: 8 }}>
         <div style={{ display: "flex", gap: 6 }}>
-          {[["tel_ok", "#10b981"], ["tel_absent", "#f59e0b"], ["mail", "#0ea5e9"]].map(([k, c]) => {
+          {(v.handled ? [["tel_ok", "#10b981"], ["tel_absent", "#f59e0b"]] : [["tel_ok", "#10b981"], ["tel_absent", "#f59e0b"], ["mail", "#0ea5e9"]]).map(([k, c]) => {
             const d = VIEWING_ATTEMPT_KINDS[k];
             return (
               <button key={k} onClick={(e) => { e.stopPropagation(); onAttempt(k); }}
