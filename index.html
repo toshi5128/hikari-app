@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-09-v9.509-update";
+const APP_VERSION = "2026-10-09-v9.510-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2057,12 +2057,15 @@ function viewingLastTouch(v) {
 }
 // 🆕 v9.509: 今日の反響を物件に関係なくまとめて出す（下田さん「今日の反響だけ纏めて出せたら対応しやすい」）
 //   対応済みかどうかに関係なく、反響日が今日のものを全部。新しく入った順
+//   🆕 v9.510: 昨日（夜など）入って、まだ対応していない反響も一緒に出す。未対応を上に
 function collectTodayViewings(data, user) {
   const today = new Date().toLocaleDateString("sv-SE");
+  const yday = new Date(Date.now() - 86400000).toLocaleDateString("sv-SE");
+  const hit = (v) => v && (v.date === today || (v.date === yday && !v.handled));
   const out = [];
-  visibleToUser(data.stocks, user).forEach(s => (s && s.viewings || []).forEach((v, idx) => { if (v && v.date === today) out.push({ parentType: "stock", parentId: s.id, parentName: s.name || "(無題)", assignee: s.assignee || "", idx, v }); }));
-  visibleToUser(data.mediations, user).forEach(m => (m && m.viewings || []).forEach((v, idx) => { if (v && v.date === today) out.push({ parentType: "mediation", parentId: m.id, parentName: (m.name || "(無題)") + "（仲介）", assignee: m.assignee || "", idx, v }); }));
-  out.sort((a, b) => (Number(b.v.updatedAt) || 0) - (Number(a.v.updatedAt) || 0));
+  visibleToUser(data.stocks, user).forEach(s => (s && s.viewings || []).forEach((v, idx) => { if (hit(v)) out.push({ parentType: "stock", parentId: s.id, parentName: s.name || "(無題)", assignee: s.assignee || "", idx, v }); }));
+  visibleToUser(data.mediations, user).forEach(m => (m && m.viewings || []).forEach((v, idx) => { if (hit(v)) out.push({ parentType: "mediation", parentId: m.id, parentName: (m.name || "(無題)") + "（仲介）", assignee: m.assignee || "", idx, v }); }));
+  out.sort((a, b) => (a.v.handled ? 1 : 0) - (b.v.handled ? 1 : 0) || String(b.v.date || "").localeCompare(String(a.v.date || "")) || (Number(b.v.updatedAt) || 0) - (Number(a.v.updatedAt) || 0));
   return out;
 }
 function collectPendingViewings(data, user) {
@@ -2163,7 +2166,7 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
       {/* 🆕 v9.406: 🔴未対応 / 📵不在・留守電 の切り替え（件数つき） */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
         {[
-          ["today", `🆕今日 ${todayRows.length}`, "#0891b2"],
+          ["today", `🆕今日・昨日の未対応 ${todayRows.length}`, "#0891b2"],
           ["all", `すべて ${base.length}`, C.accent],
           ["未対応", `🔴未対応 ${stateCounts["未対応"]}`, "#ef4444"],
           ["不在留守電", `📵不在・留守電 ${stateCounts["不在留守電"]}`, "#f59e0b"],
@@ -2187,7 +2190,7 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
       )}
       {rows.length === 0 && (
         <div style={{ background: "#10b98114", border: `1.5px solid #10b98155`, borderRadius: 12, padding: 24, textAlign: "center", color: C.text, fontSize: 14, fontWeight: 700 }}>
-          {stateFilter === "today" ? "今日の反響はまだありません"
+          {stateFilter === "today" ? "今日の反響・昨日の未対応はありません"
             : stateFilter === "follow" ? "✅ 放置になっているお客様はいません"
             : stateFilter === "未対応" ? "✅ まだ誰も触っていない反響はありません"
             : stateFilter === "不在留守電" ? "✅ かけ直し待ち（不在・留守電）はありません"
@@ -8276,9 +8279,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
-  { v: "9.509", date: "2026-10-09", title: "今日の反響だけを、物件に関係なくまとめて見られるように",
-    body: "「📞 今日かける反響」に「🆕今日」ボタンが増えました。押すと、今日入った反響を物件に関係なく全部（対応済みも含めて）新しい順に並べます。電話・メール・資料送りをその場でできます。",
-    where: "在庫 →「📞 今日かける反響」→「🆕今日」" },
+  { v: "9.510", date: "2026-10-09", title: "今日の反響＋昨日の未対応を、物件に関係なくまとめて見られるように",
+    body: "「📞 今日かける反響」に「🆕今日」ボタンが増えました。押すと、今日入った反響（対応済みも含む）と、昨日入ってまだ対応していない反響を、物件に関係なくまとめて並べます。まだの人が上に来ます。電話・メール・資料送りをその場でできます。",
+    where: "在庫 →「📞 今日かける反響」→「🆕今日・昨日の未対応」" },
   { v: "9.508", date: "2026-10-08", title: "返事の下書きを「こんな雰囲気で」と書き直してもらえるように",
     body: "お客様からの返信の画面に「🪄 こんな雰囲気で書き直してほしい」が増えました。「もっと短く」「値下げはできないと丁寧に断る」「今週末の見学を提案」などと書いて押すと、5分ほどで下書きが書き直され、通知が届きます。送るのは今までどおり自分で確認してからです。",
     where: "「📩 お客様から返信」→ 下書きの下" },
