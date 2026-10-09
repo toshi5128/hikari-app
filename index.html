@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-09-v9.513-update";
+const APP_VERSION = "2026-10-09-v9.514-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2055,6 +2055,33 @@ function viewingLastTouch(v) {
   const d = new Date(s + (s.length === 10 ? "T00:00:00" : ""));
   return isNaN(d.getTime()) ? Number.MAX_SAFE_INTEGER : d.getTime();
 }
+// 🆕 v9.514: カレンダーの内見予定を押した時に「どんなお客様か」を最初から見せる（下田さん「詳細が足りない。どんなお客さんだったか見たい」）
+//   問い合わせの日・経由・見込み・予算など・メモ・これまでの連絡（電話・メール）・最近のやり取りを1枚に
+function ViewingProfile({ v }) {
+  if (!v) return null;
+  const ago = (d) => { if (!d) return ""; const n = Math.floor((Date.now() - new Date(d + "T00:00:00").getTime()) / 86400000); return n <= 0 ? "今日" : `${n}日前`; };
+  const att = ((v.attempts || []).filter(Boolean)).slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  const cm = (v.comments || []).filter(Boolean).slice(-3).reverse();
+  const row = (label, val) => val ? <div style={{ display: "flex", gap: 8 }}><span style={{ color: C.muted, minWidth: 64, flexShrink: 0 }}>{label}</span><span style={{ color: C.text, fontWeight: 600, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{val}</span></div> : null;
+  const wish = [v.funding && `資金:${v.funding}`, v.purpose && `目的:${v.purpose}`, v.budget && `予算:${v.budget}`, v.people && `人数:${v.people}`, v.investArea && `エリア:${v.investArea}`, v.investType && `種類:${v.investType}`, v.investBudget && `価格帯:${v.investBudget}`].filter(Boolean).join("　");
+  const state = [v.prospect && `見込み:${v.prospect}`, v.result && `結果:${v.result}${v.lostReason ? `（${v.lostReason}）` : ""}`].filter(Boolean).join("　");
+  return (
+    <div onClick={ev => ev.stopPropagation()} style={{ margin: "0 12px 10px", padding: "10px 12px", background: C.cardBg, border: `1.5px solid #06b6d4`, borderRadius: 10, fontSize: 12, lineHeight: 1.7, display: "grid", gap: 2 }}>
+      <div style={{ fontSize: 14, fontWeight: 800, color: C.text, marginBottom: 2 }}>👤 {v.customer || "(名前未入力)"}{v.leak && <span style={{ marginLeft: 6, background: "#dc2626", color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10 }}>⚠️ 社内資料誤送付</span>}</div>
+      {(v.contact || v.email) && <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {v.contact && <a href={`tel:${v.contact}`} style={{ color: C.success, fontWeight: 800 }}>📞 {v.contact}</a>}
+        {v.email && <a href={`mailto:${v.email}`} style={{ color: C.accent, fontWeight: 700, overflowWrap: "anywhere" }}>📧 {v.email}</a>}
+      </div>}
+      {row("問い合わせ", [v.date && `${v.date}（${ago(v.date)}）`, v.channel && `${v.channel}から`].filter(Boolean).join("・"))}
+      {row("状況", state)}
+      {row("希望", wish)}
+      {row("メモ", v.note)}
+      {att.length > 0 && row("連絡の記録", att.slice(0, 5).map(a => `${String(a.at || "").slice(5, 10).replace("-", "/")} ${(VIEWING_ATTEMPT_KINDS[a.kind] || {}).short || a.kind}${a.by ? `（${a.by}）` : ""}`).join("\n"))}
+      {cm.length > 0 && row("やり取り", cm.map(c => `${c.member ? c.member + "：" : ""}${c.text}`).join("\n"))}
+    </div>
+  );
+}
+
 // 🆕 v9.509: 今日の反響を物件に関係なくまとめて出す（下田さん「今日の反響だけ纏めて出せたら対応しやすい」）
 //   対応済みかどうかに関係なく、反響日が今日のものを全部。新しく入った順
 //   🆕 v9.510: 昨日（夜など）入って、まだ対応していない反響も一緒に出す。未対応を上に
@@ -8281,6 +8308,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.514", date: "2026-10-09", title: "カレンダーの内見予定で「どんなお客様か」がすぐ分かるように",
+    body: "カレンダーの日付を押すと、内見（👀）の予定の下に、お客様の名前・電話・メール・問い合わせた日と経由・見込み・予算などの希望・メモ・これまでの電話やメールの記録・最近のやり取りがまとめて出ます。電話番号を押せばそのまま電話できます。",
+    where: "ホームのカレンダー → 日付を押す → 👀の予定" },
   { v: "9.512", date: "2026-10-09", title: "カレンダーの内見予定に、お客様の名前が出るように",
     body: "反響から入れた内見（案内）の予定が、カレンダーで「14:00 山田様／町田市山崎町」のように、時間・お客様の名前・物件名で表示されます。誰の内見かがすぐ分かります。",
     where: "ホームのカレンダー（👀の予定）" },
@@ -13609,6 +13639,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                         })()}
                   </div>
                 </div>
+                {e.type === "viewing" && viewItem && <ViewingProfile v={viewItem} />}
                 {cmtTarget && cmtExpanded && (
                   <div style={{ padding: "10px 12px 12px", borderTop: `1px solid ${C.borderDim}`, background: C.bgDark }}>
                     {/* 🆕 viewing event の場合は反響の詳細も表示 */}
