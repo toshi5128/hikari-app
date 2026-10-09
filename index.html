@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-09-v9.514-update";
+const APP_VERSION = "2026-10-09-v9.515-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2057,7 +2057,7 @@ function viewingLastTouch(v) {
 }
 // 🆕 v9.514: カレンダーの内見予定を押した時に「どんなお客様か」を最初から見せる（下田さん「詳細が足りない。どんなお客さんだったか見たい」）
 //   問い合わせの日・経由・見込み・予算など・メモ・これまでの連絡（電話・メール）・最近のやり取りを1枚に
-function ViewingProfile({ v }) {
+function ViewingProfile({ v, onOpen }) {
   if (!v) return null;
   const ago = (d) => { if (!d) return ""; const n = Math.floor((Date.now() - new Date(d + "T00:00:00").getTime()) / 86400000); return n <= 0 ? "今日" : `${n}日前`; };
   const att = ((v.attempts || []).filter(Boolean)).slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
@@ -2078,6 +2078,7 @@ function ViewingProfile({ v }) {
       {row("メモ", v.note)}
       {att.length > 0 && row("連絡の記録", att.slice(0, 5).map(a => `${String(a.at || "").slice(5, 10).replace("-", "/")} ${(VIEWING_ATTEMPT_KINDS[a.kind] || {}).short || a.kind}${a.by ? `（${a.by}）` : ""}`).join("\n"))}
       {cm.length > 0 && row("やり取り", cm.map(c => `${c.member ? c.member + "：" : ""}${c.text}`).join("\n"))}
+      {onOpen && <button onClick={onOpen} style={{ ...btnStyle("ghost"), width: "100%", marginTop: 6, padding: "10px 0", border: "1.5px solid #06b6d4", color: "#06b6d4", fontWeight: 800 }}>👀 この方の反響カードを開く（電話・メール・編集・やり取り）</button>}
     </div>
   );
 }
@@ -8308,8 +8309,8 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
-  { v: "9.514", date: "2026-10-09", title: "カレンダーの内見予定で「どんなお客様か」がすぐ分かるように",
-    body: "カレンダーの日付を押すと、内見（👀）の予定の下に、お客様の名前・電話・メール・問い合わせた日と経由・見込み・予算などの希望・メモ・これまでの電話やメールの記録・最近のやり取りがまとめて出ます。電話番号を押せばそのまま電話できます。",
+  { v: "9.515", date: "2026-10-09", title: "カレンダーの内見予定で「どんなお客様か」がすぐ分かるように",
+    body: "カレンダーの日付を押すと、内見（👀）の予定の下に、お客様の名前・電話・メール・問い合わせた日と経由・見込み・予算などの希望・メモ・これまでの電話やメールの記録・最近のやり取りがまとめて出ます。電話番号を押せばそのまま電話できます。下の「👀 この方の反響カードを開く」で、在庫のその人の反響カード（電話・メール・編集・やり取り）に飛べます。",
     where: "ホームのカレンダー → 日付を押す → 👀の予定" },
   { v: "9.512", date: "2026-10-09", title: "カレンダーの内見予定に、お客様の名前が出るように",
     body: "反響から入れた内見（案内）の予定が、カレンダーで「14:00 山田様／町田市山崎町」のように、時間・お客様の名前・物件名で表示されます。誰の内見かがすぐ分かります。",
@@ -13639,7 +13640,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                         })()}
                   </div>
                 </div>
-                {e.type === "viewing" && viewItem && <ViewingProfile v={viewItem} />}
+                {e.type === "viewing" && viewItem && <ViewingProfile v={viewItem} onOpen={() => { setPendingNav({ tab: "stock", stockLinkId: e.rawId, viewingCustomer: viewItem.customer || "" }); setPage("stock"); }} />}
                 {cmtTarget && cmtExpanded && (
                   <div style={{ padding: "10px 12px 12px", borderTop: `1px solid ${C.borderDim}`, background: C.bgDark }}>
                     {/* 🆕 viewing event の場合は反響の詳細も表示 */}
@@ -16541,6 +16542,11 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         setFilterMember("__ALL__");
         setSearch("");
         setStockViewingState("all");   // 🆕 v9.406: 反響の絞り込みも解除
+        // 🆕 v9.515: カレンダーの「この方の反響カードを開く」から来たら、その物件の反響を開いて、その人だけに絞る
+        if (pendingNav.viewingCustomer != null) {
+          setViewingsExpandedByStock({ [targetId]: true });
+          setViewingSearchByStock(p => ({ ...p, [targetId]: String(pendingNav.viewingCustomer || "").trim() }));
+        }
         // ハイライト
         setHighlightId(targetId);
 
