@@ -274,7 +274,7 @@ def compose_prompt(c, mood):
 - 丁寧で温かい日本語。注文に「短く」とあれば短く、口調の注文があればそれに合わせる。
 - 下の「物件情報」に無いことは断定しない（値下げ・空き状況・設備の有無などは「確認してご連絡します」）。
 - 宛名は「{c.get('customer') or 'お客'} 様」で始める。署名は書かない（自動で付く）。
-- 添付する資料は「{docs}」。資料のリンクは自動で本文の下に付くので、本文にURLは書かない（「資料をお送りします」等の一言はよい）。
+- 添付する資料は「{docs}」。資料のリンクは自動で本文の一番下に付くので、本文にURLは書かない（「資料をお送りします」等の一言はよい）。
 - 社内の事情（原価・値引きの下限・キーボックスの番号・近所の人の名前など）は書かない。
 
 # お客様
@@ -302,7 +302,11 @@ def run_compose():
     for r in rows:
         try:
             j = ask_claude(compose_prompt(r.get("ctx") or {}, str(r.get("mood") or "")))
-            patch = {"status": "done", "result_subject": str(j.get("subject") or "")[:300], "result_body": str(j["body"]).strip(),
+            body = str(j["body"]).strip()
+            links = [d for d in ((r.get("ctx") or {}).get("docLinks") or []) if d.get("url") and not is_internal_doc(d)]
+            if links:  # 選んだ資料のリンクは、AIに書かせず決まった形で下に付ける
+                body += "\n\n" + "\n".join(f"▼ {d.get('label')}\n{d.get('url')}" for d in links)
+            patch = {"status": "done", "result_subject": str(j.get("subject") or "")[:300], "result_body": body,
                      "result_sms": str(j.get("sms") or "").strip()[:400], "error": None, "done_at": datetime.now(timezone.utc).isoformat()}
         except Exception as e:
             patch = {"status": "error", "error": str(e)[:300], "done_at": datetime.now(timezone.utc).isoformat()}
