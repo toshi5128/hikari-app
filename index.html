@@ -236,7 +236,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-09-v9.521-update";
+const APP_VERSION = "2026-10-09-v9.522-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2078,7 +2078,7 @@ function ViewingProfile({ v, onOpen }) {
       {row("メモ", v.note)}
       {att.length > 0 && row("連絡の記録", att.slice(0, 5).map(a => `${String(a.at || "").slice(5, 10).replace("-", "/")} ${(VIEWING_ATTEMPT_KINDS[a.kind] || {}).short || a.kind}${a.by ? `（${a.by}）` : ""}`).join("\n"))}
       {cm.length > 0 && row("やり取り", cm.map(c => `${c.member ? c.member + "：" : ""}${c.text}`).join("\n"))}
-      {onOpen && <button onClick={onOpen} style={{ ...btnStyle("ghost"), width: "100%", marginTop: 6, padding: "10px 0", border: "1.5px solid #06b6d4", color: "#06b6d4", fontWeight: 800 }}>👀 この方の反響カードを開く（電話・メール・編集・やり取り）</button>}
+      {onOpen && <button onClick={onOpen} style={{ ...btnStyle("ghost"), width: "100%", marginTop: 6, padding: "10px 0", border: "1.5px solid #06b6d4", color: "#06b6d4", fontWeight: 800 }}>👀 この方のヒアリング画面を開く（電話・メール・編集・やり取り）</button>}
     </div>
   );
 }
@@ -8315,8 +8315,8 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
-  { v: "9.521", date: "2026-10-09", title: "反響カードの名前を押すと、その方のヒアリング欄が開くように",
-    body: "物件の反響一覧で、お客様の名前（青い下線つき）を押すと、その方の聞き取り内容（希望・予算・メモなど）を書く欄がすぐ開きます。お客様カードの「編集」ボタンはなくしました（物件の編集は物件カードの「編集」から）。",
+  { v: "9.522", date: "2026-10-09", title: "反響カードの名前を押すと、その方のヒアリング欄が開くように",
+    body: "物件の反響一覧で、お客様の名前（青い下線つき）を押すと、その方の聞き取り内容（希望・予算・メモ・やり取り）を書く画面だけが開きます（スクロール不要）。お客様カードの「編集」ボタンはなくしました（物件の編集は物件カードの「編集」から）。",
     where: "在庫（仲介）→ 物件の「反響」→ お客様の名前" },
   { v: "9.517", date: "2026-10-09", title: "今日かける反響で、名前を押すとお客様の詳しい情報が見られるように",
     body: "「📞 今日かける反響」の一覧で、お客様の名前（青い下線つき）を押すと、問い合わせの日・経由・見込み・希望・メモ・連絡の記録・やり取りがその場で開きます。もう一度押すと閉じます。",
@@ -15112,9 +15112,11 @@ function MediationView({ data, setData, dealType, setDealType }) {
   const [form, setForm] = useState(empty);
   // 🆕 反響（viewings）関連の state
   const [expandedViewings, setExpandedViewings] = useState({});
+  const [focusVi, setFocusVi] = useState(null); // 🆕 v9.522: ヒアリングだけ表示する反響の番号（null=物件全体の編集）
+  useEffect(() => { if (!showForm) setFocusVi(null); }, [showForm]);
   const [viewingsExpandedByMed, setViewingsExpandedByMed] = useState({});
   // 🆕 v9.518: その仲介案件の反響を開いて、その人だけに絞って見せる
-  const openMedViewing = (id, customer) => {
+  const openMedViewing = (id, customer, vIdx) => {
     const m = (data.mediations || []).find(x => x && String(x.id) === String(id));
     if (!m) return;
     setSearch(""); setFilterStatus("__ALL__"); setFilterMember("__ALL__");
@@ -15123,10 +15125,11 @@ function MediationView({ data, setData, dealType, setDealType }) {
     setViewingsExpandedByMed({ [m.id]: true });
     setViewingSearchByMed(p => ({ ...p, [m.id]: String(customer || "").trim() }));
     scrollToCard(`mediation-item-${m.id}`);
+    if (vIdx != null && (m.viewings || [])[vIdx]) setTimeout(() => openEdit(m, vIdx), 120);
   };
   useEffect(() => {
     const j = _viewingJump;
-    if (j && j.type === "mediation") { _viewingJump = null; setTimeout(() => openMedViewing(j.id, j.customer), 0); }
+    if (j && j.type === "mediation") { _viewingJump = null; setTimeout(() => openMedViewing(j.id, j.customer, j.idx), 0); }
   }, []);
   // 🆕 v8.85: 反響フィルター（物件ごと） { [m.id]: { type: "prospect"|"result", value: string } }
   const [viewingFiltersByMed, setViewingFiltersByMed] = useState({});
@@ -15172,6 +15175,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
     setShowForm(true);
     // 🆕 反響の編集ボタンから開いた場合は、該当反響を展開状態にする＋自動スクロール
     setExpandedViewings(expandViewingIdx != null ? { [expandViewingIdx]: true } : {});
+    setFocusVi(expandViewingIdx != null ? expandViewingIdx : null); // 🆕 v9.522: 名前から開いたら、その方のヒアリング欄だけを出す
     if (expandViewingIdx != null) {
       setTimeout(() => {
         const el = document.getElementById(`viewing-edit-${expandViewingIdx}`);
@@ -16037,9 +16041,9 @@ function MediationView({ data, setData, dealType, setDealType }) {
               const cust = (row.v && row.v.customer) || "";
               if (row.parentType === "mediation") {
                 setDealType("mediation");
-                openMedViewing(row.parentId, cust);
+                openMedViewing(row.parentId, cust, row.idx);
               } else {
-                _viewingJump = { type: "stock", id: row.parentId, customer: cust };
+                _viewingJump = { type: "stock", id: row.parentId, customer: cust, idx: row.idx };
                 setDealType("stock");
               }
             }} />
@@ -16094,7 +16098,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
         </BottomSheet>
       )}
       {showForm && (
-        <BottomSheet title={editItem ? (canEdit(editItem) ? "仲介案件を編集" : `👁 仲介案件詳細（${editItem.assignee}さん担当）`) : "仲介案件を追加"} onClose={() => { setShowForm(false); setEditItem(null); }}
+        <BottomSheet title={editItem && focusVi != null ? `👤 ${((form.viewings || [])[focusVi] || {}).customer || "お客様"}のヒアリング` : editItem ? (canEdit(editItem) ? "仲介案件を編集" : `👁 仲介案件詳細（${editItem.assignee}さん担当）`) : "仲介案件を追加"} onClose={() => { setShowForm(false); setEditItem(null); }}
           footer={editItem && !canEdit(editItem) ? (
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowForm(false); setEditItem(null); }}>閉じる</button>
           ) : (
@@ -16103,6 +16107,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
               <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
             </>
           )}>
+          {focusVi == null && (<>
           <Field label="物件名 *"><input style={inp} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="〇〇市〇〇" /></Field>
           <Field label="担当者"><select style={inp} value={form.assignee} onChange={e => setForm(p => ({ ...p, assignee: e.target.value }))}>{memberOptions(form.assignee).map(mm => <option key={mm}>{mm}</option>)}</select></Field>
           <Field label="売主"><input style={inp} value={form.seller} onChange={e => setForm(p => ({ ...p, seller: e.target.value }))} /></Field>
@@ -16134,9 +16139,10 @@ function MediationView({ data, setData, dealType, setDealType }) {
               <NavIcon name="navigation" size={15} /> レインズ登録期限・<NavIcon name="phone" size={15} /> 売主への業務報告予定が、保存時に自動でカレンダーに登録されます（{form.mediationType}媒介・宅建業法準拠／報告は売買契約日まで・未入力なら3ヶ月分）
             </div>
           )}
+          </>)}
           {/* 👀 反響（複数登録可・サマリー1行＋詳細展開式） */}
           <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ display: focusVi == null ? "flex" : "none", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#06b6d4" }}><NavIcon name="eye" size={12} /> 反響（{(form.viewings || []).length}件）</div>
               <button onClick={() => {
                 const newItem = {
@@ -16169,7 +16175,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
               // 🆕 v8.72: 同名顧客のリピート判定（form.viewings の元 index で参照可能なマップ）
               const repeatMap = computeViewingRepeats(form.viewings || []);
               // 🆕 反響日が新しい順にソート（元の index は内部処理用に保持）
-              const arr = sortViewingsByDateDesc((form.viewings || []).map((vv, originalIdx) => ({ v: vv, originalIdx })), true);
+              const arr = sortViewingsByDateDesc((form.viewings || []).map((vv, originalIdx) => ({ v: vv, originalIdx })), true).filter(x => focusVi == null || x.originalIdx === focusVi);
               return arr.map(({ v, originalIdx: i }) => {
               const isExpanded = !!expandedViewings[i];
               const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val, updatedAt: Date.now() } : vv) }));
@@ -16502,7 +16508,9 @@ function MediationView({ data, setData, dealType, setDealType }) {
             });
             })()}
           </div>
+          {focusVi == null && (<>
           <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={e => setForm(p => ({ ...p, memo: e.target.value }))} /></Field>
+          </>)}
         </BottomSheet>
       )}
     </div>
@@ -16527,10 +16535,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [expandedViewings, setExpandedViewings] = useState({}); // {index: true/false}
+  const [focusVi, setFocusVi] = useState(null); // 🆕 v9.522: ヒアリングだけ表示する反響の番号（null=物件全体の編集）
+  useEffect(() => { if (!showAdd) setFocusVi(null); }, [showAdd]);
   // 🆕 通知タップでハイライトする物件ID
   const [highlightId, setHighlightId] = useState(null);
   // 🆕 v9.518: 今日かける反響から飛んできた時、その物件の反響を開いてその人だけに絞る（カレンダーと同じ動き）
-  const openStockViewing = (id, customer) => {
+  const openStockViewing = (id, customer, vIdx) => {
     const t = data.stocks.find(x => x && String(x.id) === String(id));
     if (!t) return;
     setViewMode(t.status === "売決完了" ? "completed" : "active");
@@ -16543,10 +16553,12 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     let n = 0;
     const go = () => { const el = document.getElementById(`stock-item-${t.id}`); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); else if (n++ < 10) setTimeout(go, 150); };
     setTimeout(go, 50);
+    // 🆕 v9.522: そのままその方のヒアリング画面を開く
+    if (vIdx != null && (t.viewings || [])[vIdx]) setTimeout(() => openEdit(t, vIdx), 120);
   };
   useEffect(() => {
     const j = _viewingJump;
-    if (dealType === "stock" && j && j.type === "stock") { _viewingJump = null; setTimeout(() => openStockViewing(j.id, j.customer), 0); }
+    if (dealType === "stock" && j && j.type === "stock") { _viewingJump = null; setTimeout(() => openStockViewing(j.id, j.customer, j.idx), 0); }
   }, [dealType]);
 
   // 🆕 反響セクション折りたたみ（在庫カード単位）
@@ -16599,6 +16611,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         if (pendingNav.viewingCustomer != null) {
           setViewingsExpandedByStock({ [targetId]: true });
           setViewingSearchByStock(p => ({ ...p, [targetId]: String(pendingNav.viewingCustomer || "").trim() }));
+          // 🆕 v9.522: そのままその方のヒアリング画面も開く
+          const _vi = (target.viewings || []).findIndex(x => x && (x.customer || "").trim() === String(pendingNav.viewingCustomer || "").trim());
+          if (_vi >= 0) setTimeout(() => openEdit(target, _vi), 400);
         }
         // ハイライト
         setHighlightId(targetId);
@@ -16882,6 +16897,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     setShowAdd(true);
     // 🆕 反響の編集ボタンから開いた場合は、該当反響を展開状態にする＋自動スクロール
     setExpandedViewings(expandViewingIdx != null ? { [expandViewingIdx]: true } : {});
+    setFocusVi(expandViewingIdx != null ? expandViewingIdx : null); // 🆕 v9.522: 名前から開いたら、その方のヒアリング欄だけを出す
     if (expandViewingIdx != null) {
       // BottomSheet の表示アニメーション（〜300ms）と DOM 描画を待ってからスクロール
       setTimeout(() => {
@@ -17990,9 +18006,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               const cust = (row.v && row.v.customer) || "";
               if (row.parentType === "stock") {
                 setDealType("stock");
-                openStockViewing(row.parentId, cust);   // 🆕 v9.518: その人だけに絞って開く
+                openStockViewing(row.parentId, cust, row.idx);   // 🆕 v9.518: その人だけに絞って開く
               } else {
-                _viewingJump = { type: "mediation", id: row.parentId, customer: cust };
+                _viewingJump = { type: "mediation", id: row.parentId, customer: cust, idx: row.idx };
                 setDealType("mediation");
               }
             }} />
@@ -18080,7 +18096,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         </BottomSheet>
       )}
       {showAdd && (
-        <BottomSheet title={editItem ? (canEdit(editItem) ? "物件編集" : `👁 物件詳細（${editItem.assignee}さん担当・閲覧のみ）`) : "新規物件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}
+        <BottomSheet title={editItem && focusVi != null ? `👤 ${((form.viewings || [])[focusVi] || {}).customer || "お客様"}のヒアリング` : editItem ? (canEdit(editItem) ? "物件編集" : `👁 物件詳細（${editItem.assignee}さん担当・閲覧のみ）`) : "新規物件登録"} onClose={() => { setShowAdd(false); setEditItem(null); }}
           footer={editItem && !canEdit(editItem) ? (
             <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>閉じる</button>
           ) : (
@@ -18088,7 +18104,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowAdd(false); setEditItem(null); }}>キャンセル</button>
               <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
             </>
-          )}>          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{memberOptions(form.assignee).map(m => <option key={m}>{m}</option>)}</select></Field>
+          )}>
+          {focusVi == null && (<>
+          <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{memberOptions(form.assignee).map(m => <option key={m}>{m}</option>)}</select></Field>
           <Field label="物件名"><input style={inp} value={form.name} onChange={f("name")} placeholder="川越市木野目" /></Field>
           <Field label="ステータス">
             <select style={inp} value={form.status} onChange={f("status")}>
@@ -18143,9 +18161,10 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
             </Field>
           </div>
 
+          </>)}
           {/* 👀 反響（複数登録可・サマリー1行＋詳細展開式） */}
           <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ display: focusVi == null ? "flex" : "none", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#06b6d4" }}><NavIcon name="eye" size={12} /> 反響（{(form.viewings || []).length}件）</div>
               <button onClick={() => {
                 const newItem = {
@@ -18178,7 +18197,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               // 🆕 v8.72: 同名顧客のリピート判定（form.viewings の元 index で参照可能なマップ）
               const repeatMap = computeViewingRepeats(form.viewings || []);
               // 🆕 反響日が新しい順にソート（元の index は内部処理用に保持）
-              const arr = sortViewingsByDateDesc((form.viewings || []).map((vv, originalIdx) => ({ v: vv, originalIdx })), true);
+              const arr = sortViewingsByDateDesc((form.viewings || []).map((vv, originalIdx) => ({ v: vv, originalIdx })), true).filter(x => focusVi == null || x.originalIdx === focusVi);
               return arr.map(({ v, originalIdx: i }) => {
               const isExpanded = !!expandedViewings[i];
               const updateV = (key, val) => setForm(p => ({ ...p, viewings: p.viewings.map((vv, j) => j === i ? { ...vv, [key]: val, updatedAt: Date.now() } : vv) }));
@@ -18512,6 +18531,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
             })()}
           </div>
 
+          {focusVi == null && (<>
           <Field label="メモ"><textarea style={{ ...inp, height: 80, resize: "vertical" }} value={form.memo} onChange={f("memo")} /></Field>
 
           {/* 写真添付 */}
@@ -18543,6 +18563,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               ※ 自動で800px・JPEG圧縮されて保存されます（1枚あたり約50KB）
             </div>
           </Field>
+          </>)}
         </BottomSheet>
       )}
 
