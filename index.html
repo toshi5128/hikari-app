@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-10-v9.531-update";
+const APP_VERSION = "2026-10-10-v9.532-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -963,6 +963,189 @@ function setParentDocs(setData, parentType, parentId, fn) {
   setData(d => ({ ...d, [key]: (d[key] || []).map(p => p.id !== parentId ? p : { ...p, docs: fn(p.docs || []) }) }));
 }
 
+// 🆕 v9.532: ドライブの中から資料を1つ選んで添付（2026-10-10 下田さん「ドライブを丸ごと共有ではなく、中の資料を選んで添付したい」）
+//   アプリ → GAS（一斉送信の Apps Script のウェブアプリ doPost）→ マイドライブ/ひかり不動産 の中だけ見る
+//   ・選んだファイル1つだけを資料置き場（hikari-photos/docs/<物件id>/）へコピーして、物件資料に足す＝ドライブ自体は共有しない
+//   ・契約・重説・謄本・注意点などは名前で弾く（アプリでも GAS でも二重に）
+//   ・一度開いたフォルダは物件に覚えておく（driveFolder）＝次からはすぐ開く
+const DRIVE_API_URL = "https://script.google.com/macros/s/AKfycbzAJ3eY-PRQFejP9ChRj0mPr3NLi4RAvr8RxSTuoyGY6LOeefJkEWUvVno9BFx5Q6k/exec"; // GAS ウェブアプリの /exec（一斉送信の Apps Script・saboten）
+const DRIVE_API_TOKEN = "hkd-dPX9MTHBumbVZkdni-yKxvck";
+const DRIVE_NG_RE = /注意点|社内|原価|利益|交渉|内部|契約|重説|重要事項|謄本|覚書|特約|買付|委任|印鑑|身分証|免許証|住民票|戸籍|領収|請求|精算|見積|査定|仕入|告知|捺印|押印|署名|本人確認|同意書|申込|個人情報|固定資産|評価証明|名寄|納税|源泉|清算|振込|口座|支払|入金|決済|明細|通帳|ローン|融資|試算|取得税|固都|金種|収支|販売計画/;
+async function driveApi(body) {
+  if (!DRIVE_API_URL) throw new Error("ドライブの窓口がまだ準備中です");
+  // text/plain にすると事前確認(CORS)なしで GAS に届く
+  const r = await fetch(DRIVE_API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ token: DRIVE_API_TOKEN, ...body }) });
+  if (!r.ok) throw new Error("ドライブにつながりませんでした（" + r.status + "）");
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || "ドライブの読み込みに失敗しました");
+  return j;
+}
+// 物件名・住所から、ドライブのフォルダを探す言葉を作る（「東松山市市ノ川199-161」→「東松山市市ノ川」「市ノ川」）
+function driveSearchWords(parent) {
+  const out = [];
+  [parent && parent.name, parent && parent.address].forEach(s => {
+    const t = String(s || "").replace(/^(埼玉県|東京都|神奈川県|千葉県|群馬県|栃木県|茨城県|静岡県)/, "").replace(/[（(【].*$/, "").trim();
+    const head = t.replace(/[0-9０-９].*$/, "").replace(/(丁目|番地|番|号|-|－|ー|−|\s)+$/, "").trim();
+    const town = head.replace(/^.*?(市|区|町(?=.)|村|郡)/, "").replace(/^大字/, "").trim();
+    [head, town].forEach(w => { if (w && w.length >= 2 && !out.includes(w)) out.push(w); });
+  });
+  return out.slice(0, 4);
+}
+function driveFolderFromDocs(docs) {
+  const m = (docs || []).map(d => String((d && d.url) || "")).join(" ").match(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\/([\w-]+)/);
+  return m ? m[1] : "";
+}
+function setParentFields(setData, parentType, parentId, fn) {
+  const key = parentType === "mediation" ? "mediations" : "stocks";
+  setData(d => ({ ...d, [key]: (d[key] || []).map(p => {
+    if (p.id !== parentId) return p;
+    const patch = fn(p) || {};
+    const now = Date.now();
+    const fu = { ...(p._fieldUpdatedAt || {}) };
+    Object.keys(patch).forEach(k => { fu[k] = now; });
+    return { ...p, ...patch, updatedAt: new Date(now).toISOString(), _fieldUpdatedAt: fu };
+  }) }));
+}
+function openDrivePicker(detail) { try { window.dispatchEvent(new CustomEvent("hikari-drivepick", { detail })); } catch (e) {} }
+function DrivePickButton({ parentType, parent, label }) {
+  if (!parent || parent.id == null) return null;
+  return (
+    <button onClick={() => openDrivePicker({ parentType, parentId: parent.id })} style={{ width: "100%", background: "#1a73e818", border: "1.5px solid #1a73e8", color: "#1a73e8", borderRadius: 8, padding: "10px 4px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", marginTop: 6 }}>
+      {label || "📁 ドライブの中から資料を選んで入れる"}
+    </button>
+  );
+}
+const driveSize = (n) => !n ? "" : n >= 1048576 ? (n / 1048576).toFixed(1) + "MB" : Math.max(1, Math.round(n / 1024)) + "KB";
+const driveIcon = (mime) => /pdf/.test(mime || "") ? "📄" : /image/.test(mime || "") ? "🖼️" : /google-apps\.(document|spreadsheet|presentation)/.test(mime || "") ? "📝" : "📎";
+const driveSendable = (f) => /pdf|image\/|google-apps\.(document|spreadsheet|presentation|drawing)/.test(f.mime || "");
+// 画面の一番外側に1つだけ置く
+function DrivePickerHost({ data, setData }) {
+  const [req, setReq] = useState(null);
+  const [view, setView] = useState(null); // { folder, path, folders, files }
+  const [cands, setCands] = useState(null); // 物件名で見つけたフォルダ候補
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const [added, setAdded] = useState([]);
+  const currentUser = getCurrentUser();
+  const key = req && req.parentType === "mediation" ? "mediations" : "stocks";
+  const parent = req ? (data[key] || []).find(x => x && x.id === req.parentId) : null;
+  const open = async (folderId) => {
+    setBusy("開いています…"); setErr("");
+    try { const j = await driveApi({ action: "list", folderId: folderId || "" }); setView(j); }
+    catch (e) { setErr(e.message); }
+    setBusy("");
+  };
+  const search = async (words) => {
+    setBusy("ドライブで探しています…"); setErr("");
+    try { const j = await driveApi({ action: "search", q: words }); setCands(j.folders || []); }
+    catch (e) { setErr(e.message); setCands([]); }
+    setBusy("");
+  };
+  useEffect(() => {
+    const h = (e) => { setReq(e.detail || {}); setView(null); setCands(null); setErr(""); setBusy(""); setAdded([]); setQ(""); };
+    window.addEventListener("hikari-drivepick", h);
+    return () => window.removeEventListener("hikari-drivepick", h);
+  }, []);
+  useEffect(() => {
+    if (!req || !parent) return;
+    const remembered = (parent.driveFolder && parent.driveFolder.id) || driveFolderFromDocs(parent.docs);
+    const words = driveSearchWords(parent);
+    setQ(words[0] || "");
+    if (remembered) open(remembered);
+    if (words.length) search(words); else if (!remembered) open("");
+    // eslint-disable-next-line
+  }, [req]);
+  if (!req) return null;
+  const close = () => setReq(null);
+  const goFolder = (f) => {
+    setCands(null);
+    open(f.id);
+  };
+  const pick = async (f) => {
+    if (f.ng || DRIVE_NG_RE.test(f.name)) { alert(`🔒「${f.name}」は社内用の書類なので、お客様には送れません。`); return; }
+    if (!driveSendable(f)) { alert("PDF・画像（またはGoogleドキュメント）だけ送れます。"); return; }
+    if (!window.confirm(`「${f.name}」を、この物件の資料に入れますか？\n\nこのファイル1つだけがメールに添付されます（ドライブは共有されません）。`)) return;
+    setBusy("ファイルを取り出しています…（数秒〜20秒）"); setErr("");
+    try {
+      const r = await driveApi({ action: "import", fileId: f.id, propId: req.parentId });
+      const id = Date.now();
+      const doc = { id, label: r.name || f.name, url: r.url, path: r.path, internal: false, addedAt: new Date().toISOString(), by: currentUser || "", driveId: f.id };
+      const folder = view && view.folder ? { id: view.folder.id, name: view.folder.name } : null;
+      setParentFields(setData, req.parentType, req.parentId, p => ({ docs: [...(p.docs || []), doc], ...(folder ? { driveFolder: folder } : {}) }));
+      setAdded(a => [...a, doc.label]);
+      try { window.dispatchEvent(new CustomEvent("hikari-doc-added", { detail: { parentId: req.parentId, id } })); } catch (e) {}
+    } catch (e) { setErr(e.message); }
+    setBusy("");
+  };
+  const row = { width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 10, background: C.cardBg, border: `2px solid ${C.muted + "aa"}`, borderRadius: 10, padding: "11px 12px", marginBottom: 7, cursor: "pointer", fontFamily: "inherit", color: C.text, boxShadow: "0 2px 8px rgba(0,0,0,.12)" };
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 10050, background: "rgba(0,0,0,.45)", display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={close}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.bg, width: "100%", maxWidth: 560, height: "92vh", borderRadius: "16px 16px 0 0", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "14px 14px 8px", borderBottom: `1px solid ${C.borderDim}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ flex: 1, fontSize: 17, fontWeight: 800, color: C.text }}>📁 ドライブから資料を選ぶ</div>
+            <button onClick={close} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: 999, padding: "5px 12px", color: C.text, fontFamily: "inherit", cursor: "pointer" }}>閉じる</button>
+          </div>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>{parent ? (parent.name || "") : ""}　選んだファイル1つだけがメールに付きます。ドライブ自体は共有されません。</div>
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && q.trim()) search([q.trim()]); }} placeholder="フォルダ名で探す（例：市ノ川）" style={{ ...inp, flex: 1, marginBottom: 0 }} />
+            <button onClick={() => q.trim() && search([q.trim()])} style={{ ...btnStyle("primary"), padding: "0 14px", whiteSpace: "nowrap" }}>探す</button>
+          </div>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
+          {added.length > 0 && <div style={{ background: C.accentBg, border: `2px solid ${C.accent}`, borderRadius: 10, padding: 10, marginBottom: 10, fontSize: 13, fontWeight: 700, color: C.text, lineHeight: 1.6 }}>✅ 物件資料に入れました：{added.join("、")}<br /><span style={{ fontSize: 11, color: C.muted, fontWeight: 500 }}>メール画面の「📎 お客様に送る資料」にチェック付きで出ます。続けて選ぶか、「閉じる」で戻ってください。</span></div>}
+          {busy && <div style={{ fontSize: 13, color: C.muted, padding: "8px 2px" }}>⏳ {busy}</div>}
+          {err && <div style={{ fontSize: 13, color: C.danger, fontWeight: 700, padding: "8px 2px", lineHeight: 1.6 }}>⚠️ {err}</div>}
+          {cands && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: C.muted, margin: "2px 0 6px" }}>🔎 この物件らしいフォルダ（{cands.length}件）</div>
+              {cands.length === 0 && !busy && <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>見つかりませんでした。上の欄で地名を変えて探すか、下の「ひかり不動産」から開いてください。</div>}
+              {cands.map(f => (
+                <button key={f.id} onClick={() => goFolder(f)} style={row}>
+                  <span style={{ fontSize: 20 }}>📁</span>
+                  <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: "block", fontSize: 14, fontWeight: 800 }}>{f.name}</span><span style={{ display: "block", fontSize: 11, color: C.muted }}>{f.where || "ひかり不動産"}</span></span>
+                  <span style={{ color: C.muted }}>›</span>
+                </button>
+              ))}
+              {!view && <button onClick={() => open("")} style={{ ...row, justifyContent: "center", color: C.accent, fontWeight: 800, fontSize: 13 }}>ひかり不動産のフォルダを最初から開く</button>}
+            </div>
+          )}
+          {view && (
+            <div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", fontSize: 12, marginBottom: 8 }}>
+                {(view.path || []).map((x, i) => (
+                  <React.Fragment key={x.id}>
+                    {i > 0 && <span style={{ color: C.muted }}>›</span>}
+                    <button onClick={() => open(x.id)} style={{ background: i === view.path.length - 1 ? C.accentBg : "transparent", border: `1px solid ${C.borderDim}`, borderRadius: 6, padding: "3px 7px", fontSize: 12, color: C.text, cursor: "pointer", fontFamily: "inherit", fontWeight: i === view.path.length - 1 ? 800 : 500 }}>{x.name}</button>
+                  </React.Fragment>
+                ))}
+              </div>
+              {view.folders.map(f => (
+                <button key={f.id} onClick={() => open(f.id)} style={row}><span style={{ fontSize: 20 }}>📁</span><span style={{ flex: 1, fontSize: 14, fontWeight: 700 }}>{f.name}</span><span style={{ color: C.muted }}>›</span></button>
+              ))}
+              {view.files.map(f => {
+                const ng = f.ng || DRIVE_NG_RE.test(f.name);
+                const ok = !ng && driveSendable(f);
+                return (
+                  <button key={f.id} onClick={() => pick(f)} disabled={!!busy} style={{ ...row, opacity: ok ? 1 : 0.55, background: ok ? C.cardBg : C.inset }}>
+                    <span style={{ fontSize: 20 }}>{ng ? "🔒" : driveIcon(f.mime)}</span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 14, fontWeight: 700, wordBreak: "break-all" }}>{f.name}</span>
+                      <span style={{ display: "block", fontSize: 11, color: ng ? C.danger : C.muted, fontWeight: ng ? 800 : 500 }}>{ng ? "社内用・お客様には送れません" : ok ? `${driveSize(f.size)}　押すと添付に入れます` : "この形式は送れません（PDF・画像のみ）"}</span>
+                    </span>
+                  </button>
+                );
+              })}
+              {view.folders.length === 0 && view.files.length === 0 && <div style={{ fontSize: 12, color: C.muted }}>このフォルダは空です。</div>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // 物件資料の一覧＋追加（在庫・仲介の編集画面と、メール作成画面の両方で使う）
 function PropertyDocsEditor({ parentType, parent, setData, currentUser, compact }) {
   const docs = (parent && parent.docs) || [];
@@ -1015,6 +1198,8 @@ OK＝送ってよい（マイソク・図面など）
         <button disabled={busy} onClick={() => fileRef.current && fileRef.current.click()} style={{ flex: 1, background: C.accent + "18", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, padding: "9px 4px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>{busy ? "送信中…" : "📄 PDF・画像を入れる"}</button>
         <button onClick={() => setLinkOpen(o => !o)} style={{ flex: 1, background: C.cardBg, border: `1.5px solid ${C.borderDim}`, color: C.text, borderRadius: 8, padding: "9px 4px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>🔗 リンクを貼る</button>
       </div>
+      {/* 🆕 v9.532: ドライブの中のファイルを1つ選んで入れる（ドライブは共有しない） */}
+      <DrivePickButton parentType={parentType} parent={parent} />
       {linkOpen && (
         <div style={{ marginTop: 8 }}>
           <input value={label} onChange={e => setLabel(e.target.value)} placeholder="名前（例：販売図面）" style={{ ...inp, marginBottom: 6 }} />
@@ -1041,6 +1226,11 @@ function ViewingMailHost({ data, setData }) {
   const [composeId, setComposeId] = useState(null);
   const [aiSms, setAiSms] = useState("");
   const currentUser = getCurrentUser();
+  useEffect(() => { // 🆕 v9.532: ドライブから入れた資料は最初からチェック
+    const h2 = (e) => { const id = e.detail && e.detail.id; if (id != null) setAttSel(a => a ? [...a, id] : a); };
+    window.addEventListener("hikari-doc-added", h2);
+    return () => window.removeEventListener("hikari-doc-added", h2);
+  }, []);
   useEffect(() => {
     const h = (e) => {
       const d = e.detail || {};
@@ -1654,7 +1844,7 @@ function AttachPicker({ docs, sel, setSel }) {
   const list = sendableDocs(docs);
   return (
     <Field label="📎 お客様に送る資料（チェックしたものだけ添付・本文に載ります）">
-      {list.length === 0 && <div style={{ fontSize: 12, color: C.warn, lineHeight: 1.6 }}>添付できるファイルがありません。物件情報の「✏️ 編集」か反響欄の「📎 物件資料」でマイソクのPDFを入れると、ここで選べます。{links.length ? "（ドライブなどのリンクは本文に載ります）" : ""}</div>}
+      {list.length === 0 && <div style={{ fontSize: 12, color: C.warn, lineHeight: 1.6 }}>添付できるファイルがありません。物件情報の「✏️ 編集」か反響欄の「📎 物件資料」でマイソクのPDFを入れると、ここで選べます。「📁 ドライブの中から資料を選ぶ」でも入れられます。</div>}
       {list.map(d => {
         const internal = isInternalDoc(d);
         const on = sel.includes(d.id) && !internal;
@@ -1695,8 +1885,10 @@ function BulkViewingMailHost({ data, setData }) {
   const currentUser = getCurrentUser();
   useEffect(() => {
     const h = (e) => { setReq(e.detail || {}); setPicked(null); setAttSel(null); setTplKey("sonogo"); setSenderKey(vmailSenderFor(currentUser).key); setSubject(""); setBody(""); };
+    const h2 = (e) => { const id = e.detail && e.detail.id; if (id != null) setAttSel(a => a ? [...a, id] : a); };
     window.addEventListener("hikari-bulkmail", h);
-    return () => window.removeEventListener("hikari-bulkmail", h);
+    window.addEventListener("hikari-doc-added", h2);
+    return () => { window.removeEventListener("hikari-bulkmail", h); window.removeEventListener("hikari-doc-added", h2); };
   }, []);
   const key = req && req.parentType === "mediation" ? "mediations" : "stocks";
   const p = req ? (data[key] || []).find(x => x && x.id === req.parentId) : null;
@@ -1823,6 +2015,7 @@ function BulkViewingMailHost({ data, setData }) {
         })}
       </Field>
       <AttachPicker docs={p.docs} sel={attIds} setSel={setAttSel} />
+      <div style={{ marginTop: -6, marginBottom: 12 }}><DrivePickButton parentType={req.parentType} parent={p} label="📁 ドライブの中から資料を足す" /></div>
       <Field label="件名"><input value={subject} onChange={e => setSubject(e.target.value)} style={inp} /></Field>
       <Field label="本文（{{宛名}} は一人ずつ「◯◯ 様」に変わります・署名は自動）">
         <textarea value={body} onChange={e => setBody(e.target.value)} rows={14} style={{ ...inp, lineHeight: 1.6, fontSize: 13 }} />
@@ -8318,6 +8511,8 @@ function MainApp({ onLock, onSwitchUser }) {
       <BulkViewingMailHost data={data} setData={setData} />
       {/* 🆕 v9.496: 📩 返信の受信箱（返事の下書きつき） */}
       <ReplyInboxHost data={data} setData={setData} />
+      {/* 🆕 v9.532: 📁 ドライブから資料を1つ選ぶ */}
+      <DrivePickerHost data={data} setData={setData} />
 
       {/* Bottom Navigation */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.cardBg, borderTop: `1px solid ${C.borderDim}`, display: "flex", zIndex: 200, paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -8411,6 +8606,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.532", date: "2026-10-10", title: "ドライブの中から資料を1つ選んで、メールに添付できるように",
+    body: "物件資料の欄の「📁 ドライブの中から資料を選んで入れる」を押すと、その物件のドライブのフォルダを自動で探して開きます。中のファイル（図面・公図・水道管図など）を押すと、そのファイル1つだけがメールに添付されます。ドライブ自体は共有されません。契約書・重説・謄本・注意点などの社内用は🔒で選べません。一度開いたフォルダは物件に覚えるので、次からはすぐ開きます。",
+    where: "反響のメール画面・一括メール画面・在庫/仲介の編集の「📎 物件資料」" },
   { v: "9.529", date: "2026-10-09", title: "反響の日付の横に、問い合わせの時刻も出るように",
     body: "SUUMO・アットホームのメールや電話の応対記録を取り込むと、問い合わせてきた時刻（例 22:21）も残り、反響カード・今日かける反響・お客様の詳しい情報に「反響 2026-10-09 22:21」のように出ます。これから取り込む反響から入ります。",
     where: "反響カードの「反響:」の横／今日かける反響" },
