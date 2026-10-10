@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-10-v9.532-update";
+const APP_VERSION = "2026-10-10-v9.533-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1840,10 +1840,10 @@ function isInternalDoc(d) { return !!(d && d.internal) || /注意点|社内|原�
 function sendableDocs(docs) { return (docs || []).filter(d => d && d.url); }
 function defaultDocSel(docs) { return sendableDocs(docs).filter(d => !isInternalDoc(d)).map(d => d.id); }
 function pickedDocs(docs, sel) { return sendableDocs(docs).filter(d => sel.includes(d.id) && !isInternalDoc(d)); } // 社内用はチェックが付いていても絶対に出さない
-function AttachPicker({ docs, sel, setSel }) {
+function AttachPicker({ docs, sel, setSel, label }) {
   const list = sendableDocs(docs);
   return (
-    <Field label="📎 お客様に送る資料（チェックしたものだけ添付・本文に載ります）">
+    <Field label={label || "📎 お客様に送る資料（チェックしたものだけ添付・本文に載ります）"}>
       {list.length === 0 && <div style={{ fontSize: 12, color: C.warn, lineHeight: 1.6 }}>添付できるファイルがありません。物件情報の「✏️ 編集」か反響欄の「📎 物件資料」でマイソクのPDFを入れると、ここで選べます。「📁 ドライブの中から資料を選ぶ」でも入れられます。</div>}
       {list.map(d => {
         const internal = isInternalDoc(d);
@@ -2095,6 +2095,15 @@ function ReplyCard({ r, w, data, setData, onDone }) {
   const replyDocs = Array.isArray(r.draft_docs) ? r.draft_docs : [];
   const [docOff, setDocOff] = useState({});
   const key = w.parentType === "mediation" ? "mediations" : "stocks";
+  // 🆕 v9.533: 返信にも物件資料を付ける（下田さん「この流れからのメール作成にも資料を添付できるように」）
+  //   返信は話の流れがあるので、物件資料は最初はチェックなし。ドライブから入れた物だけ自動でチェック
+  const parent = (data[key] || []).find(p => p && p.id === w.parentId) || null;
+  const [propSel, setPropSel] = useState([]);
+  useEffect(() => {
+    const h = (e) => { const d = e.detail || {}; if (d.parentId === w.parentId && d.id != null) setPropSel(a => a.includes(d.id) ? a : [...a, d.id]); };
+    window.addEventListener("hikari-doc-added", h);
+    return () => window.removeEventListener("hikari-doc-added", h);
+  }, [w.parentId]);
   const patchInbox = (obj) => fetch(`${SUPABASE_URL}/rest/v1/mail_inbox?msg_id=eq.${encodeURIComponent(r.msg_id)}`, {
     method: "PATCH", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(obj),
   });
@@ -2112,14 +2121,16 @@ function ReplyCard({ r, w, data, setData, onDone }) {
   const send = async () => {
     if (!body.trim()) { alert("本文が空です"); return; }
     if (!currentUser) { alert("先にログインしてください"); return; }
-    if (!window.confirm(`${w.v.customer || r.from_name || ""} 様へ返信します。\n\n差出人: ${sender.name}\n件名: ${subject}${closeLost ? "\n\n※この反響を「見送り」にします" : ""}\n\nよろしいですか？`)) return;
+    const _attN = replyDocs.filter(d => d && d.url && !docOff[d.url]).length + attachPayload(parent && parent.docs, propSel).length;
+    if (!window.confirm(`${w.v.customer || r.from_name || ""} 様へ返信します。\n\n差出人: ${sender.name}\n件名: ${subject}${_attN ? `\n添付: ${_attN}件` : ""}${closeLost ? "\n\n※この反響を「見送り」にします" : ""}\n\nよろしいですか？`)) return;
     setBusy(true);
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/mail_queue`, {
         method: "POST", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
         body: JSON.stringify({ status: "pending", subject, body, sender_name: sender.name, sender_mail: sender.mail, property: w.parentName || "", price_text: "", doc_url: "", memo: "返信への返事",
           // 🆕 v9.498: 下書きが資料（水道管図など）を用意していれば添付する（本文にもリンクあり＝添付が届かなくても見られる）
-          attachments: replyDocs.filter(d => d && d.url && !docOff[d.url]).map(d => ({ url: d.url, name: d.name || "資料" })),
+          attachments: [...replyDocs.filter(d => d && d.url && !docOff[d.url]).map(d => ({ url: d.url, name: d.name || "資料" })),
+            ...attachPayload(parent && parent.docs, propSel)].filter((a, i, arr) => arr.findIndex(x => x.url === a.url) === i),
           recipients: [{ id: "v:" + (w.v.id || w.vi), email: r.from_email, company: "", name: w.v.customer || "" }], reply_msg_id: r.msg_id, requested_by: currentUser }),
       });
       if (!res.ok) throw new Error(`受付できませんでした（${res.status}）`);
@@ -2173,6 +2184,12 @@ function ReplyCard({ r, w, data, setData, onDone }) {
         {replyDocs.map(d => (<label key={d.url} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, padding: "4px 0" }}>
           <input type="checkbox" checked={!docOff[d.url]} onChange={() => setDocOff(o => ({ ...o, [d.url]: !o[d.url] }))} style={{ width: 18, height: 18 }} />
           <a href={d.url} target="_blank" rel="noopener" style={{ color: C.text }}>📄 {d.name || "資料"}</a></label>))}
+      </div>)}
+      {parent && (<div style={{ margin: "8px 0" }}>
+        {sendableDocs(parent.docs).length > 0
+          ? <AttachPicker docs={parent.docs} sel={propSel} setSel={setPropSel} label="📎 この物件の資料（チェックしたものだけ返事に添付）" />
+          : <div style={{ fontSize: 11, color: C.muted, marginBottom: 2 }}>📎 この物件の資料はまだありません。下のボタンでドライブから選べます。</div>}
+        <DrivePickButton parentType={w.parentType} parent={parent} label="📁 ドライブの中から資料を選んで添付する" />
       </div>)}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
         <span style={{ fontSize: 11, color: C.muted, alignSelf: "center" }}>差出人</span>
@@ -8606,6 +8623,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.533", date: "2026-10-10", title: "お客様からの返信への返事にも、資料を添付できるように",
+    body: "「📩 お客様から返信」の返事の画面に、その物件の資料の一覧と「📁 ドライブの中から資料を選んで添付する」が出ます。チェックした資料だけが返事に添付されます。ドライブから選んだ資料は最初からチェックが付きます。",
+    where: "在庫タブ・ホームの「📩 お客様から返信」→ 返事の下書きの下" },
   { v: "9.532", date: "2026-10-10", title: "ドライブの中から資料を1つ選んで、メールに添付できるように",
     body: "物件資料の欄の「📁 ドライブの中から資料を選んで入れる」を押すと、その物件のドライブのフォルダを自動で探して開きます。中のファイル（図面・公図・水道管図など）を押すと、そのファイル1つだけがメールに添付されます。ドライブ自体は共有されません。契約書・重説・謄本・注意点などの社内用は🔒で選べません。一度開いたフォルダは物件に覚えるので、次からはすぐ開きます。",
     where: "反響のメール画面・一括メール画面・在庫/仲介の編集の「📎 物件資料」" },

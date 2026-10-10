@@ -17,7 +17,7 @@
 ・2026-10-09 追加: メールを作る画面の「どんな雰囲気で？」（mail_compose）から、こちらから送るメールの文章を考えて返す
 ・通知に出すのは物件名と「下書きができた／資料を添付した」だけ。お客様の名前やメール本文は出さない（ロック画面に出るため）
 """
-import json, re, subprocess, sys, tempfile, urllib.request, urllib.parse
+import json, random, re, subprocess, sys, tempfile, urllib.request, urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -154,8 +154,9 @@ def drive_fetch(file_id, title):
 
 
 def store_doc(stock_id, path, title):
-    name = re.sub(r"[^\w.\-]", "_", Path(title).stem)[:40] or "doc"
-    key = f"docs/{stock_id}/{int(datetime.now().timestamp() * 1000)}_{name}{path.suffix.lower() or '.pdf'}"
+    # 2026-10-10: 日本語のファイル名をURLに入れると 'ascii' codec エラーで止まっていた → 英数字だけの名前にする（アプリと同じ形）
+    rnd = "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(6))
+    key = f"docs/{re.sub(r'[^A-Za-z0-9_-]', '_', str(stock_id))}/{int(datetime.now().timestamp() * 1000)}_{rnd}{path.suffix.lower() or '.pdf'}"
     mime = "application/pdf" if path.suffix.lower() == ".pdf" else "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png" if path.suffix.lower() == ".png" else "application/octet-stream"
     req = urllib.request.Request(f"{URL}/storage/v1/object/hikari-photos/{key}", data=path.read_bytes(), method="POST",
                                  headers={"apikey": KEY, "Authorization": "Bearer " + KEY, "Content-Type": mime})
