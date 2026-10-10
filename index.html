@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-09-v9.530-update";
+const APP_VERSION = "2026-10-10-v9.531-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -735,6 +735,20 @@ function collectNoCallViewings(data, user) {
 }
 function viewingHandledInfo(v) { return HANDLED_INFO[viewingHandledKey(v)] || HANDLED_INFO["未対応"]; }
 // カード先頭のバッジ文字（📵不在留守電 2回 8/11 下田 のように回数と最終日まで）
+// 🆕 v9.497: かけた日時を「10/6 14:05」の形で（下田さん「不在の時、日付だけでなく何時にかけたか分かるように」）
+function viewingWhen(at) {
+  const d = new Date(at || "");
+  if (isNaN(d.getTime())) return "";
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+// 不在・留守電にかけた日時の一覧（新しい3回分。古い分は「ほかN回」）
+function viewingAbsentTimes(v) {
+  const arr = ((v && v.attempts) || []).filter(a => a && a.kind === "tel_absent");
+  const ts = arr.map(a => viewingWhen(a.at)).filter(Boolean);
+  if (!ts.length) return "";
+  const shown = ts.slice(-3).join("・");
+  return ts.length > 3 ? `${shown}（ほか${ts.length - 3}回）` : shown;
+}
 function viewingStateLabel(v) {
   const key = viewingHandledKey(v);
   if (key === "対応済") {
@@ -744,11 +758,7 @@ function viewingStateLabel(v) {
   if (key === "不在留守電") {
     const arr = ((v && v.attempts) || []).filter(a => a && a.kind === "tel_absent");
     const last = arr[arr.length - 1];
-    let when = "";
-    if (last) {
-      const d = new Date(last.at);
-      if (!isNaN(d.getTime())) when = d.toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" });
-    }
+    const when = last ? viewingWhen(last.at) : "";
     return "📵不在留守電" + (arr.length > 1 ? " " + arr.length + "回" : "")
       + (when ? " " + when : "") + (last && last.by ? " " + last.by : "");
   }
@@ -811,10 +821,11 @@ function viewingAttemptCaption(v) {
   const last = arr[arr.length - 1];
   const def = VIEWING_ATTEMPT_KINDS[last.kind];
   const cnt = arr.filter(a => a.kind === last.kind).length;
-  let when = "";
-  const d = new Date(last.at);
-  if (!isNaN(d.getTime())) when = d.toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" });
-  return `${def ? def.short : "記録"}${cnt > 1 ? ` ${cnt}回` : ""}${when ? ` ${when}` : ""}${last.by ? " " + last.by : ""}`;
+  const when = viewingWhen(last.at);
+  const absent = viewingAbsentTimes(v);
+  const base = `${def ? def.short : "記録"}${cnt > 1 ? ` ${cnt}回` : ""}${when ? ` ${when}` : ""}${last.by ? " " + last.by : ""}`;
+  // 不在が1回以上あれば、かけた時刻を全部並べる（何時台がつながりやすいかの目安に）
+  return absent && last.kind === "tel_absent" ? `📵不在 ${absent}${last.by ? " " + last.by : ""}` : (absent ? `${base}／📵不在 ${absent}` : base);
 }
 
 // 🆕 v9.479: 反響のお客様へ「資料つきメール」を1タップで作って会社アドレスから送る
