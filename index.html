@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-10-v9.533-update";
+const APP_VERSION = "2026-10-11-v9.534-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8623,6 +8623,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.534", date: "2026-10-11", title: "地図で「用途地域」が色で見られるように",
+    body: "熊谷・行田・秩父・本庄・東松山・深谷・上里の用途地域（第一種低層住居専用地域・商業地域など）を地図に色で塗れます。色の所やピンを押すと、用途地域・建ぺい率/容積率・「何が建てられるか」の目安が出ます。現場で「ここにアパートは建つ？」をすぐ判断できます。最終確認は役所で。",
+    where: "地上げ → 地図 → 表示の切り替え「🏙 用途地域」→「表示する」（ピンの吹き出しには常に出ます）" },
   { v: "9.533", date: "2026-10-10", title: "お客様からの返信への返事にも、資料を添付できるように",
     body: "「📩 お客様から返信」の返事の画面に、その物件の資料の一覧と「📁 ドライブの中から資料を選んで添付する」が出ます。チェックした資料だけが返事に添付されます。ドライブから選んだ資料は最初からチェックが付きます。",
     where: "在庫タブ・ホームの「📩 お客様から返信」→ 返事の下書きの下" },
@@ -9754,6 +9757,101 @@ function _chikaPopupHtml(p) {
     + `</div>`;
 }
 
+// 🆕 v9.534: 用途地域の色塗り。国土数値情報 A29 用途地域の担当エリア分を tools/make-youto.py で軽くして youto-area.json に同梱。
+//   色は役所の都市計画図と同じ系統（緑＝低層住宅／黄〜橙＝住居／桃＝商業／紫・青＝工業）。
+//   ピンの吹き出しにも、その場所の用途地域・建ぺい/容積・建てられる物の目安を出す。
+const YOUTO_ZONES = {   // 番号: [正式名, 短い名, 色, 建てられる物の目安]
+  1:  ["第一種低層住居専用地域", "一低層", "#15803d", "低い家・アパートと小さな店付き住宅だけ（高さ10〜12mまで）"],
+  2:  ["第二種低層住居専用地域", "二低層", "#4ade80", "低い家・アパート＋150㎡までの小さな店（高さ10〜12mまで）"],
+  3:  ["第一種中高層住居専用地域", "一中高", "#84cc16", "マンション・500㎡までの店。事務所・工場は不可"],
+  4:  ["第二種中高層住居専用地域", "二中高", "#bef264", "マンション・1,500㎡までの店や事務所"],
+  5:  ["第一種住居地域", "一住居", "#facc15", "住宅・3,000㎡までの店・事務所・ホテル"],
+  6:  ["第二種住居地域", "二住居", "#fdba74", "住宅・店・事務所・ホテル・カラオケなど"],
+  7:  ["準住居地域", "準住居", "#fb923c", "道路沿いの車関係・小さな倉庫も建つ住宅地"],
+  8:  ["近隣商業地域", "近商", "#f9a8d4", "住宅・店・事務所なんでも。小さな工場も"],
+  9:  ["商業地域", "商業", "#e11d48", "ほぼ何でも建つ（大きな工場以外）"],
+  10: ["準工業地域", "準工", "#a78bfa", "住宅も工場も建つ（危険な工場以外）"],
+  11: ["工業地域", "工業", "#7dd3fc", "工場なんでも。住宅は建つが学校・病院・ホテルは不可"],
+  12: ["工業専用地域", "工専", "#2563eb", "工場専用。住宅は建てられない"],
+  21: ["田園住居地域", "田園住居", "#d6a96b", "低い家＋農産物の直売所・農家レストラン"],
+};
+const YOUTO_LEGEND = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+let _youtoPromise = null;
+function loadYouto() {
+  if (_youtoPromise) return _youtoPromise;
+  _youtoPromise = fetch("youto-area.json")
+    .then(r => { if (!r.ok) throw new Error("youto " + r.status); return r.json(); })
+    .then(raw => {
+      const sc = raw.scale || 100000;
+      let S = 99, W = 999, N = -99, E = -999;
+      const zones = (raw.z || []).map(a => {
+        let s = 99, w = 999, n = -99, e = -999;
+        // 座標は「前の点との差」の整数で入っている → [lat, lng] に戻す
+        const rings = a[4].map(flat => {
+          const pts = [];
+          let x = 0, y = 0;
+          for (let i = 0; i + 1 < flat.length; i += 2) {
+            x += flat[i]; y += flat[i + 1];
+            const lng = x / sc, lat = y / sc;
+            if (lat < s) s = lat; if (lat > n) n = lat;
+            if (lng < w) w = lng; if (lng > e) e = lng;
+            pts.push([lat, lng]);
+          }
+          return pts;
+        });
+        if (s < S) S = s; if (n > N) N = n; if (w < W) W = w; if (e > E) E = e;
+        return { code: a[0], bcr: a[1], far: a[2], city: (raw.cities || [])[a[3]] || "", rings, bbox: [s, w, n, e] };
+      });
+      // 色塗りが入っている市町（「熊谷」「東松山」のように市・町を外した形）
+      const cityKeys = [...new Set(zones.map(z => z.city.replace(/[市町村]$/, "")).filter(Boolean))];
+      return { year: raw.year || "", zones, bbox: [S, W, N, E], cityKeys };
+    })
+    .catch(e => { _youtoPromise = null; throw e; });
+  return _youtoPromise;
+}
+function _youtoInRing(ring, lat, lng) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][0], xi = ring[i][1], yj = ring[j][0], xj = ring[j][1];
+    if ((yi > lat) !== (yj > lat) && lng < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+// その地点の用途地域。見つからなければ null（＝用途地域の外）
+function _youtoAt(data, lat, lng) {
+  if (!data || typeof lat !== "number" || typeof lng !== "number") return null;
+  for (const z of data.zones) {
+    const b = z.bbox;
+    if (lat < b[0] || lat > b[2] || lng < b[1] || lng > b[3]) continue;
+    if (!_youtoInRing(z.rings[0], lat, lng)) continue;
+    let inHole = false;
+    for (let k = 1; k < z.rings.length; k++) if (_youtoInRing(z.rings[k], lat, lng)) { inHole = true; break; }
+    if (!inHole) return z;
+  }
+  return null;
+}
+// 吹き出しに差し込む1〜2行。
+//   色塗りの外の時は、住所が色塗りの入っている市町の時だけ「用途地域なし」と出す
+//   （隣の市町＝データが無い所で「なし」と言い切らないため）。それ以外は何も出さない。
+function _youtoInfoHtml(data, lat, lng, addr) {
+  if (!data || typeof lat !== "number" || typeof lng !== "number") return "";
+  const B = data.bbox;
+  if (lat < B[0] || lat > B[2] || lng < B[1] || lng > B[3]) return "";
+  const z = _youtoAt(data, lat, lng);
+  if (!z) {
+    const a = String(addr || "");
+    if (!a || !data.cityKeys.some(k => a.includes(k))) return "";
+    return `<div style="margin-top:5px;font-size:11px;color:#64748b;">🏙 用途地域なし`
+      + `<span style="font-size:10px;">（市街化調整区域など・役所で確認）</span></div>`;
+  }
+  const d = YOUTO_ZONES[z.code] || ["不明", "", "#94a3b8", ""];
+  return `<div style="margin-top:5px;font-size:11px;line-height:1.5;color:#334155;">`
+    + `<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${d[2]};margin-right:4px;vertical-align:middle;"></span>`
+    + `<b>${_hkEsc(d[0])}</b>${z.bcr && z.far ? `　${z.bcr}/${z.far}` : ""}`
+    + (d[3] ? `<div style="font-size:10px;color:#64748b;">${_hkEsc(d[3])}</div>` : "")
+    + `</div>`;
+}
+
 // 🆕 v9.443: ヘディングアップ（進行方向が上）で地図を傾けた時のタップ位置ズレを補正
 //   地図コンテナに CSS transform:rotate(-bearing) を掛けているが Leaflet は回転を知らない。
 //   そのため「画面の指の位置 → 地図コンテナ内の座標」の変換で回転を打ち消す必要がある。
@@ -9781,7 +9879,7 @@ if (typeof L !== "undefined" && L.Map && !L.Map.prototype._hkRotPatched) {
   L.Map.prototype._hkRotPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -10122,6 +10220,64 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     map.on("moveend", drawLabels);
     return () => { alive = false; try { map.off("moveend", drawLabels); } catch (e) {} drop(); };
   }, [ckShow, ckResOnly]);
+
+  // 🆕 v9.534: 用途地域の色塗り。面は一番下に敷き、押すとその場所の用途地域を吹き出しで出す。
+  const youtoLayerRef = React.useRef(null);
+  const yzShow = !!showYouto;
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    const drop = () => {
+      if (youtoLayerRef.current) {
+        try { map.removeLayer(youtoLayerRef.current); } catch (e) {}
+        youtoLayerRef.current = null;
+      }
+    };
+    if (!yzShow) { drop(); return; }
+    let alive = true;
+    let data = null;
+    const grp = L.layerGroup();
+    const rend = L.canvas({ padding: 0.2 });
+    loadYouto()
+      .then(d => {
+        if (!alive) return;
+        data = d;
+        // 同じ色(用途地域)ごとに1枚の多角形にまとめる＝図形13個。指の動きで重くならない。
+        const byCode = {};
+        for (const z of d.zones) (byCode[z.code] = byCode[z.code] || []).push(z.rings);
+        Object.keys(byCode).forEach(code => {
+          const col = (YOUTO_ZONES[code] || [])[2] || "#94a3b8";
+          L.polygon(byCode[code], { renderer: rend, interactive: false,
+                                    color: col, weight: 1, opacity: 0.7,
+                                    fillColor: col, fillOpacity: 0.28 }).addTo(grp);
+        });
+        grp.addTo(map);
+        try { grp.bringToBack(); } catch (e) {}
+        youtoLayerRef.current = grp;
+      })
+      .catch(e => { console.warn("用途地域の読み込みに失敗", e); });
+
+    // 他の面レイヤー（宅地化3・密集2・空き家1）より弱い 0.5。そちらが答える時は譲る。
+    const onTap = (ev) => {
+      if (!data || !ev || !ev.latlng) return;
+      const la = ev.latlng.lat, lo = ev.latlng.lng;
+      const z = _youtoAt(data, la, lo);
+      if (!z || !_tapClaim(ev, 0.5)) return;
+      const d = YOUTO_ZONES[z.code] || ["不明", "", "#94a3b8", ""];
+      L.popup({ autoPan: true }).setLatLng(ev.latlng).setContent(
+        `<div style="font-size:12px;line-height:1.7;min-width:190px;max-width:250px;">`
+        + `<div style="font-size:10px;color:#64748b;">🏙 用途地域　${_hkEsc(z.city)}</div>`
+        + `<div><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${d[2]};margin-right:4px;vertical-align:middle;"></span>`
+        + `<b style="font-size:14px;">${_hkEsc(d[0])}</b></div>`
+        + (z.bcr && z.far ? `<div>建ぺい率 <b>${z.bcr}%</b>　容積率 <b>${z.far}%</b></div>` : "")
+        + (d[3] ? `<div style="color:#475569;font-size:11px;">${_hkEsc(d[3])}</div>` : "")
+        + `<div style="color:#94a3b8;font-size:10px;margin-top:4px;">${data.year}年度時点の国のデータ。境目・最新の変更・角地緩和などは役所で確認を。出典: 国土数値情報（国土交通省）を加工</div>`
+        + `</div>`
+      ).openOn(map);
+    };
+    map.on("click", onTap);
+    return () => { alive = false; try { map.off("click", onTap); } catch (e) {} drop(); };
+  }, [yzShow]);
 
   // 🆕 v9.440: 空き家が出やすいエリア（紫の面）。ストリートビュー範囲と同じ見た目。
   const akiyaLayerRef = React.useRef(null);
@@ -10867,6 +11023,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           ${it.ownerName ? `<div style="font-size:11px;color:#64748b;">${(it.ownerKana || (it.raw && it.raw.ownerKana)) ? `<div style="font-size:9px;color:#0ea5e9;line-height:1;margin-bottom:1px;">${it.ownerKana || it.raw.ownerKana}</div>` : ""}👤 ${it.ownerName}</div>` : ""}
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
           <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_addrChkPopupHtml}${_excludedBadgeHtml}${_giveUpBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
+          <div class="hk-youto-slot"></div>
           <button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を見る</button>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
@@ -10894,6 +11051,15 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           if (photoBtn) photoBtn.onclick = fire;
           return !!btn;
         };
+        // 🆕 v9.534: 吹き出しに、ピンの場所の用途地域（色塗りの表示中でなくても出す）
+        try {
+          const ll = marker.getLatLng();
+          const yAddr = pinTarget === "ownerAddr" ? (it.ownerAddr || (it.raw && it.raw.ownerAddr)) : it.address;
+          loadYouto().then(d => {
+            const slot = rootEl && rootEl.querySelector ? rootEl.querySelector(".hk-youto-slot") : null;
+            if (slot) slot.innerHTML = _youtoInfoHtml(d, ll.lat, ll.lng, yAddr);
+          }).catch(() => {});
+        } catch (er) {}
         wire();                 // 開いた瞬間に同期で配線（10msの隙をなくす）
         setTimeout(wire, 10);   // フォールバック（DOM未準備・再描画後の再配線）
         setTimeout(wire, 120);  // さらに保険（再描画が連続した時の取りこぼし防止）
@@ -22830,6 +22996,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [chikaResOnly, setChikaResOnly] = useState(() => {
     try { return localStorage.getItem("hikari_chika_res") !== "0"; } catch (e) { return true; }
   });
+  // 🆕 v9.534: 用途地域の色塗り。この端末だけの表示設定。
+  const [showYouto, setShowYouto] = useState(() => {
+    try { return localStorage.getItem("hikari_show_youto") === "1"; } catch (e) { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hikari_show_youto", showYouto ? "1" : "0"); } catch (e) {}
+  }, [showYouto]);
   useEffect(() => {
     try {
       localStorage.setItem("hikari_show_akiya", showAkiya ? "1" : "0");
@@ -27951,6 +28124,31 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         色は<b>坪単価</b>。地図を寄せると「坪◯万」の札が出ます。ピンを押すと前年比・5年前比・駅距離・用途地域。
                       </div>
                     </div>
+                    {/* 🆕 v9.534: 用途地域 */}
+                    <div style={{ marginTop: 6, marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>🏙 用途地域（何が建てられるか）</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                        <button onClick={() => setShowYouto(v => !v)} style={{
+                          padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontFamily: "inherit",
+                          background: showYouto ? "#0f766e" : "transparent",
+                          color: showYouto ? "#fff" : "#0f766e",
+                          border: "1.5px solid #0f766e", fontWeight: showYouto ? 700 : 400,
+                        }}>{showYouto ? "✓ 表示中" : "表示する"}</button>
+                      </div>
+                      {showYouto && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: 4 }}>
+                          {YOUTO_LEGEND.map(k => (
+                            <span key={k} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: C.muted }}>
+                              <span style={{ width: 10, height: 10, borderRadius: 2, background: YOUTO_ZONES[k][2], display: "inline-block" }} />{YOUTO_ZONES[k][1]}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.5 }}>
+                        熊谷・行田・秩父・本庄・東松山・深谷・上里の用途地域を色で塗ります（小川町は国のデータが無く出ません）。
+                        色の所を押すと<b>用途地域・建ぺい率/容積率・建てられる物の目安</b>。ピンの吹き出しにも出ます。色の無い所は市街化調整区域など。最終確認は役所で。
+                      </div>
+                    </div>
                     {/* 🆕 v9.419: ストリートビューで見た範囲（面）の表示切替 */}
                     <div style={{ marginTop: 6, marginBottom: 4 }}>
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 3, fontWeight: 700 }}>🖥 ストリートビューで見た範囲</div>
@@ -28868,6 +29066,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       showAkiya={showAkiya}
                       akiyaMode={akiyaMode}
                       showMitsu={showMitsu}
+                      showYouto={showYouto}
                       chika={{ show: showChika, resOnly: chikaResOnly }}
                       takuchi={{ show: showTakuchi, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
                                  onlyStar: takuchiOnlyStar,
