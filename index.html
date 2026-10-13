@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-13-v9.535-update";
+const APP_VERSION = "2026-10-13-v9.536-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8623,6 +8623,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.536", date: "2026-10-13", title: "「地上げした人」と「訪問した人」が分けて見えるように",
+    body: "ピンの詳細に「🏷 地上げした人」（そのピンを立てた人）と「🚶 前回訪問」（前回だれが行ったか）が並んで出ます。訪問記録では「🚶 今回訪問した人」を選んで記録します。訪問履歴にも「🚶 下田 が訪問」「🚶 谷津 が訪問」と出るので、前回はだれが行ったかがすぐ分かります。昔のピンで地上げした人が分からない時は、詳細でえらび直せます。",
+    where: "地上げ → 地図 → ピン → 詳細（訪問結果を記録するボタンの上）" },
   { v: "9.534", date: "2026-10-11", title: "地図で「用途地域」が色で見られるように",
     body: "熊谷・行田・秩父・本庄・東松山・深谷・上里の用途地域（第一種低層住居専用地域・商業地域など）を地図に色で塗れます。色の所やピンを押すと、用途地域・建ぺい率/容積率・「何が建てられるか」の目安が出ます。現場で「ここにアパートは建つ？」をすぐ判断できます。最終確認は役所で。",
     where: "地上げ → 地図 → 表示の切り替え「🏙 用途地域」→「表示する」（ピンの吹き出しには常に出ます）" },
@@ -12140,6 +12143,28 @@ function StatusTag({ status }) {
   return <Tag label={status} color={map[status] || C.muted} />;
 }
 function MemberTag({ name }) { return <Tag label={name} color={MEMBER_COLORS[name] || C.muted} />; }
+
+// 🆕 v9.536: このピンを「新規地上げした人」。訪問した人（visitLog[].recordedBy）とは別に持つ。
+//   ・jiageBy があればそれ（ピンを立てた時に自動で入る／詳細で選び直せる）
+//   ・無い古いピン：訪問記録がまだ無ければ担当者＝立てた人
+//   ・訪問記録があるピンは担当が訪問で上書きされている可能性があるので、立てた日の「新規地上」を
+//     付けたのが1人だけならその人を「たぶん」として出す。分からなければ null。
+function jiageFinderOf(j, approaches) {
+  if (!j) return { name: null, guessed: false };
+  if (j.jiageBy) return { name: j.jiageBy, guessed: false };
+  const log = Array.isArray(j.visitLog) ? j.visitLog : [];
+  if (log.length === 0 && j.assignee) return { name: j.assignee, guessed: false };
+  const ca = Number(j.createdAt) || Number(j.id) || 0;
+  if (ca > 1e12 && Array.isArray(approaches)) {
+    const d = new Date(ca);
+    const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const who = Array.from(new Set(approaches
+      .filter(a => a && a.date === ds && (Number((a.values || {})["新規地上"]) || 0) > 0)
+      .map(a => a.member).filter(Boolean)));
+    if (who.length === 1) return { name: who[0], guessed: true };
+  }
+  return { name: null, guessed: false };
+}
 
 function BottomSheet({ title, onClose, children, footer, z }) {
   // 🆕 v9.499: z＝重なり順。どこからでも開く画面（メール作成など）は600＝「今日かける反響」(520)の上に出す
@@ -24075,6 +24100,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       lat: pendingPin.lat,
       lng: pendingPin.lng,
       assignee: pinForm.assignee || currentUser || MEMBERS[0],
+      // 🆕 v9.536: 新規地上げした人（訪問で担当が変わっても残る）
+      jiageBy: pinForm.assignee || currentUser || MEMBERS[0],
       memo: pinForm.memo || "",
       status: "未訪問",
       dm: "未",
@@ -25584,8 +25611,12 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
             const _fua = { ...(j._fieldUpdatedAt || {}), visitLog: _now, status: _now };
             if (visitForm.assignee) _fua.assignee = _now;
             Object.keys(_ban).forEach(k => { _fua[k] = _now; });
+            // 🆕 v9.536: 初めての訪問記録の前に、今の担当＝地上げした人を固定（訪問で担当が上書きされても残す）
+            const _jb = (!j.jiageBy && (j.visitLog || []).length === 0 && j.assignee) ? { jiageBy: j.assignee } : {};
+            if (_jb.jiageBy) _fua.jiageBy = _now;
             return {
               ...j,
+              ..._jb,
               visitLog: [...(j.visitLog || []), newEntry],
               status: _st,
               assignee: visitForm.assignee || j.assignee,
@@ -30619,6 +30650,48 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             );
           })()}
 
+          {/* 🆕 v9.536: 地上げした人（ピンを立てた人）と、前回訪問した人を分けて表示 */}
+          {selected.item.type === "jiage" && selected.item.raw && (() => {
+            const r = selected.item.raw;
+            const f = jiageFinderOf(r, data.approaches);
+            const lg = Array.isArray(r.visitLog) ? r.visitLog : [];
+            const last = lg.length ? [...lg].sort((a, b) => ((b.date || "") + (b.time || "")).localeCompare((a.date || "") + (a.time || "")))[0] : null;
+            const setFinder = (name) => {
+              const jid = r.id;
+              const now = Date.now();
+              setData(d => ({
+                ...d,
+                jiage: (d.jiage || []).map(j => j.id !== jid ? j : {
+                  ...j, jiageBy: name, updatedAt: now,
+                  _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), jiageBy: now },
+                }),
+              }));
+              setSelected(sel => (sel && sel.item && sel.item.raw && sel.item.raw.id === jid)
+                ? { ...sel, item: { ...sel.item, raw: { ...sel.item.raw, jiageBy: name } } } : sel);
+            };
+            return (
+              <div style={{ background: C.panelBg, border: `2px solid ${C.muted + "77"}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10, fontSize: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontWeight: 800, color: C.text, minWidth: 92 }}>🏷 地上げした人</span>
+                  <select value={r.jiageBy || ""} onChange={e => setFinder(e.target.value)} style={{ ...inp, flex: 1, padding: "6px 8px", fontSize: 13, fontWeight: 700, color: f.name ? (MEMBER_COLORS[f.name] || C.text) : C.muted }}>
+                    <option value="">{f.name ? `${f.name}${f.guessed ? "（たぶん）" : ""}` : "不明（選んでください）"}</option>
+                    {memberOptions(r.jiageBy || "").filter(m => !m.includes("・")).map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                  <span style={{ fontWeight: 800, color: C.text, minWidth: 92 }}>🚶 前回訪問</span>
+                  {last ? (
+                    <span>
+                      <b style={{ color: MEMBER_COLORS[last.recordedBy] || C.text }}>{last.recordedBy || "不明"}</b>
+                      {Array.isArray(last.withMembers) && last.withMembers.length > 0 && <span style={{ color: "#7c3aed" }}>（同行 {last.withMembers.join("・")}）</span>}
+                      <span style={{ color: C.muted, marginLeft: 6 }}>{String(last.date || "").slice(5)} {(VISIT_RESULTS.find(x => x.key === last.result) || {}).short || ""}</span>
+                    </span>
+                  ) : <span style={{ color: C.muted }}>まだ訪問していません</span>}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* 📍 訪問記録ボタン */}
           <button onClick={() => openVisitRecord(selected.item)} style={{
             width: "100%", padding: "12px", background: "#fbbf24", color: "#000",
@@ -30690,8 +30763,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         )}
                         {v.memo && <div style={{ marginTop: 4, fontSize: 10, color: C.muted, paddingLeft: 4 }}><NavIcon name="filetext" size={12} /> {v.memo}</div>}
                         {v.recordedBy && (
-                          <div style={{ marginTop: 2, fontSize: 9, color: "#475569", paddingLeft: 4 }}>
-                            記録: {v.recordedBy}
+                          <div style={{ marginTop: 3, fontSize: 11, color: "#475569", paddingLeft: 4 }}>
+                            {/* 🆕 v9.536: 「記録」→ だれが訪問したかをはっきり */}
+                            <span style={{ background: (MEMBER_COLORS[v.recordedBy] || C.muted) + "22", color: MEMBER_COLORS[v.recordedBy] || C.text, border: `1px solid ${(MEMBER_COLORS[v.recordedBy] || C.muted)}66`, borderRadius: 6, padding: "1px 7px", fontWeight: 800 }}>🚶 {v.recordedBy} が訪問</span>
                             {Array.isArray(v.withMembers) && v.withMembers.length > 0 && (
                               <span style={{ marginLeft: 4, color: "#7c3aed" }}><NavIcon name="users" size={15} /> 同行: {v.withMembers.join("・")}</span>
                             )}
@@ -32067,8 +32141,21 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       const lastResult = VISIT_RESULTS.find(r => r.key === currentLog[currentLog.length - 1].result);
                       return lastResult && <span style={{ color: lastResult.color, marginLeft: 6, fontWeight: 700 }}>{lastResult.short}</span>;
                     })()}
+                    {/* 🆕 v9.536: 前回だれが行ったか */}
+                    {currentLog[currentLog.length - 1].recordedBy && (
+                      <span style={{ marginLeft: 6, fontWeight: 800, color: MEMBER_COLORS[currentLog[currentLog.length - 1].recordedBy] || C.text }}>🚶{currentLog[currentLog.length - 1].recordedBy}</span>
+                    )}
                   </div>
                 )}
+                {/* 🆕 v9.536: このピンを地上げした人 */}
+                {visitRecordTarget.type === "jiage" && (() => {
+                  const f = jiageFinderOf(visitRecordTarget.raw || visitRecordTarget, data.approaches);
+                  return (
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
+                      🏷 地上げした人: <b style={{ color: f.name ? (MEMBER_COLORS[f.name] || C.text) : C.muted }}>{f.name || "不明"}</b>{f.guessed ? "（たぶん）" : ""}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })()}
@@ -32207,7 +32294,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 borderRadius: 999, padding: "3px 10px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700,
               }}>❓ 判断に迷ったら</button>
             </Field>
-            <Field label="👤 担当者">
+            <Field label="🚶 今回訪問した人">
               <select style={inp} value={visitForm.assignee || ""} onChange={e => setVisitForm({ ...visitForm, assignee: e.target.value })}>
                 {memberOptions(visitForm.assignee || "").map(m => <option key={m} value={m}>{m}</option>)}
               </select>
