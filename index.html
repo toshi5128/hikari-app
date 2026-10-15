@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-16-v9.564-ui";
+const APP_VERSION = "2026-10-16-v9.565-ui";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -24198,6 +24198,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const kohoResult = useMemo(() => kohoRaw
     ? computeKoho(kohoRaw, { jiage: data.jiage, tracks: data.tracks, tansaku: tansakuResult, conf: tansakuConf, weights: kohoW })
     : null, [kohoRaw, data.jiage, data.tracks, tansakuResult, tansakuConf, kohoW]);
+  // 🆕 v9.565: 「現地ピンの状況」は折りたたみ（最初は閉じる・開閉は端末ごとに覚える）
+  const [pinSumOpen, setPinSumOpenRaw] = useState(() => { try { return localStorage.getItem("hikari_pin_sum_open") === "1"; } catch (e) { return false; } });
+  const setPinSumOpen = (v) => { setPinSumOpenRaw(v); try { localStorage.setItem("hikari_pin_sum_open", v ? "1" : "0"); } catch (e) {} };
   // 🆕 v9.43: scroll 位置を保存・復元 ( DOM 高さが追いつくまで polling 待機 )
   //   ・v9.42: 段階的リトライ ( 30/100/250/500/1000ms ) → DOM 高さが間に合わない端末で失敗
   //   ・v9.43: DOM 高さが目標 scrollY を超えるまで 100ms 間隔で polling ( 最大 3秒 )
@@ -29125,8 +29128,20 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     const isTodayOn = quickFilter === "today_new" && filterMember === "__ALL__";
                     return (
                       <div style={{ marginTop: 10, background: C.cardBg, border: `2px solid ${C.borderDim}`, borderRadius: 12, overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: `1px solid ${C.borderDim}` }}>
-                          <span style={{ fontSize: 13, fontWeight: 900, color: C.text, flex: 1 }}>📍 現地ピンの状況</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: pinSumOpen ? `1px solid ${C.borderDim}` : "none" }}>
+                          <button onClick={() => setPinSumOpen(!pinSumOpen)} style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+                            <span style={{ fontSize: 12, color: C.muted, width: 12 }}>{pinSumOpen ? "▼" : "▶"}</span>
+                            <span style={{ flex: 1, minWidth: 0 }}>
+                              <span style={{ fontSize: 13, fontWeight: 900, color: C.text }}>📍 現地ピンの状況</span>
+                              {!pinSumOpen && (
+                                <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: C.muted, marginTop: 2 }}>
+                                  手が必要 <b style={{ color: "#dc2626" }}>{((S.total || 0) + (S.lookupFailedTotal || 0) + (S.addrNgTotal || 0)).toLocaleString()}</b>件
+                                  　訪問OK <b style={{ color: "#16a34a" }}>{(S.dmReadyTotal || 0).toLocaleString()}</b>件
+                                  {S.todayTotal > 0 ? <>　今日 <b style={{ color: "#0891b2" }}>{S.todayTotal}</b>件</> : null}
+                                </span>
+                              )}
+                            </span>
+                          </button>
                           {anyFilter && (
                             <button onClick={() => { setFilterMember("__ALL__"); setQuickFilter(null); }} style={{
                               background: C.inset, color: C.text, border: `1px solid ${C.borderDim}`, borderRadius: 8,
@@ -29134,7 +29149,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             }}>✕ 絞り込みを解除</button>
                           )}
                         </div>
-                        {S.todayTotal > 0 && (
+                        {pinSumOpen && S.todayTotal > 0 && (
                           <button onClick={() => toggle("today_new")} style={{
                             display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
                             padding: "8px 10px", border: "none", borderBottom: `1px solid ${C.borderDim}`, cursor: "pointer", fontFamily: "inherit",
@@ -29150,7 +29165,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {isTodayOn && <span style={{ fontSize: 12, color: "#0891b2", fontWeight: 900 }}>✓</span>}
                           </button>
                         )}
-                        {groups.map(g => {
+                        {pinSumOpen && groups.map(g => {
                           const rows = g.rows.filter(r => r.n > 0);
                           if (!rows.length) return null;
                           return (
@@ -29192,9 +29207,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             </div>
                           );
                         })}
-                        <div style={{ fontSize: 10, color: C.muted, padding: "6px 10px", lineHeight: 1.5 }}>
+                        {pinSumOpen && <div style={{ fontSize: 10, color: C.muted, padding: "6px 10px", lineHeight: 1.5 }}>
                           行をタップ＝その状態のピンだけ表示／名前をタップ＝その人の分だけ表示（もう一度タップで解除）
-                        </div>
+                        </div>}
                       </div>
                     );
                   })()}
