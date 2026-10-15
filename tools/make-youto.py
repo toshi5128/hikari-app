@@ -23,12 +23,9 @@ YEAR = sys.argv[1] if len(sys.argv) > 1 else "19"   # 令和元年度 = 19
 OUT = "youto-area.json"
 URL = f"https://nlftp.mlit.go.jp/ksj/gml/data/A29/A29-{YEAR}/A29-{YEAR}_{PREF}_GML.zip"
 
-# 担当エリア（index.html の JIAGE_AREAS）の市町コード
-#   小川町(11343)は国のデータに用途地域が入っていないので出ない
-CITIES = {
-    "11202": "熊谷市", "11206": "行田市", "11207": "秩父市", "11211": "本庄市",
-    "11212": "東松山市", "11218": "深谷市", "11343": "小川町", "11385": "上里町",
-}
+# 🆕 v9.560: 埼玉県の全市町村（国のデータに用途地域が入っている56市町）を入れる。
+#   以前は担当エリアの8市町だけだった。名前は国のデータ（A29_003）から取る。
+CITIES = {}
 TOL = 0.00002   # 間引きの細かさ（度）≒ 2m。これ以下のでこぼこは省く
 SCALE = 100000  # 座標は 1/10万度（≒1m）単位の整数にして、前の点との差だけ持つ
 
@@ -45,15 +42,21 @@ def enc_ring(coords):
 print("download", URL)
 b = urllib.request.urlopen(URL, timeout=300).read()
 z = zipfile.ZipFile(io.BytesIO(b))
-city_list = list(CITIES.values())
 zones = []
-for n in z.namelist():
+city_list = []
+for n in sorted(z.namelist()):
     code = n[-13:-8]
-    if not n.endswith(".geojson") or code not in CITIES:
+    if not n.endswith(".geojson"):
         continue
     feats = json.loads(z.read(n).decode("utf-8"))["features"]
+    if not feats:
+        continue
+    CITIES[code] = feats[0]["properties"]["A29_003"]
+    city_list.append(CITIES[code])
     for f in feats:
         p = f["properties"]
+        if not f.get("geometry"):
+            continue   # 形の無いデータが少し混じっている
         g = shape(f["geometry"]).simplify(TOL, preserve_topology=True)
         polys = [g] if isinstance(g, Polygon) else list(g.geoms) if isinstance(g, MultiPolygon) else []
         for pg in polys:
