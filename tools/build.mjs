@@ -14,7 +14,7 @@
 //   ・全端末で爆速（Android低スペックでも即起動）
 //   ・Babel-standalone (3MB) の読み込みが不要
 
-import { readFileSync, writeFileSync, mkdirSync, statSync, copyFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, statSync, copyFileSync, existsSync, readdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import babel from "@babel/core";
@@ -105,6 +105,19 @@ for (const f of STATIC_ASSETS) {
     console.warn(`⚠️  ${f} が見つからない（スキップ）`);
   }
 }
+
+// 🆕 v9.558: 探索候補エリアの区画データ（areas/ フォルダ丸ごと）
+const AREAS_DIR = join(ROOT, "areas");
+let areaCount = 0;
+if (existsSync(AREAS_DIR)) {
+  mkdirSync(join(DIST_DIR, "areas"), { recursive: true });
+  for (const f of readdirSync(AREAS_DIR)) {
+    if (!/\.(geojson|json)$/.test(f)) continue;
+    copyFileSync(join(AREAS_DIR, f), join(DIST_DIR, "areas", f));
+    areaCount++;
+  }
+}
+console.log(`区画データコピー: ${areaCount}ファイル`);
 
 console.log(`\n=== 完了 ===`);
 console.log(`出力: ${DIST}`);

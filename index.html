@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-15-v9.557-update";
+const APP_VERSION = "2026-10-16-v9.558-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8690,6 +8690,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.558", date: "2026-10-16", title: "次に回る場所が、地図で点滅して分かるように",
+    body: "地上げの地図の左下に「🎯 探索候補」ボタンを足しました。市町村を選ぶと、町丁・字ごとに区切った地図が出て、まだ回っていない区画のうち、お年寄りが多い・一戸建てが多い・近くに未訪問の所有者が多い順に、上位3つが点滅します。区画をタップすると理由が見られ、「今日ここを回る」を押すとその区画だけが点滅します。灰色は回ったことがある区画です。",
+    where: "地上げ → 地図 → 左下「🎯 探索候補」" },
   { v: "9.557", date: "2026-10-15", title: "町ごとに「最後に回った日」と「次に回る目安」が分かるように",
     body: "地上げの上の切り替えに「🧭 エリア」を足しました。ピンを打った時刻から、町ごとに最後に探索した日・その時1時間に何件ピンが立ったか・次に回る目安の日を出します。よく見つかった町は半年後、ふつうの町は1年後、少なかった町は2年後が目安です。町をタップすると、日ごとの探索の記録が見られます。地図でも「🧭 探索エリアの時期を丸で出す」をONにすると、時期を過ぎた町が赤で出ます。",
     where: "地上げ → 右上「🧭 エリア」／地図 →「🧭 探索エリアの時期を丸で出す」" },
@@ -9976,7 +9979,7 @@ if (typeof L !== "undefined" && L.Map && !L.Map.prototype._hkRotPatched) {
   L.Map.prototype._hkRotPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -10212,6 +10215,79 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     areaLayerRef.current = grp;
     return () => { try { map.removeLayer(grp); } catch (e) {} };
   }, [areaCircles]);
+
+  // 🆕 v9.558: 探索候補エリア（町丁・字の区画）。上位3区画（「今日ここを回る」を押したらその1区画だけ）を点滅。
+  const kohoLayerRef = React.useRef(null);
+  const kohoTapRef = React.useRef(null);
+  kohoTapRef.current = koho && koho.onTap;
+  const kohoAreas = koho && koho.areas;
+  const kohoTopSig = koho ? (koho.top || []).join(",") : "";
+  const kohoPinned = koho ? koho.pinnedKey || "" : "";
+  const kohoOutside = !!(koho && koho.outside);
+  const kohoSel = koho ? koho.selKey || "" : "";
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (kohoLayerRef.current) { try { map.removeLayer(kohoLayerRef.current); } catch (e) {} kohoLayerRef.current = null; }
+    if (!Array.isArray(kohoAreas) || !kohoAreas.length) return;
+    if (!document.getElementById("koho-style")) {
+      const st = document.createElement("style");
+      st.id = "koho-style";
+      st.textContent = "@keyframes kohoBlink{0%,100%{fill-opacity:.15}50%{fill-opacity:.55}}"
+        + ".koho-blink{animation:kohoBlink 1.2s ease-in-out infinite;stroke-width:4px}"
+        + ".koho-out{stroke-dasharray:10 6;stroke-width:6px}"
+        + "@media (prefers-reduced-motion: reduce){.koho-blink{animation:none;fill-opacity:.55}}"
+        + ".koho-num{background:#e11d48;color:#fff;border:2px solid #fff;border-radius:50%;width:30px;height:30px;line-height:26px;text-align:center;font-weight:900;font-size:16px;box-shadow:0 2px 6px rgba(0,0,0,.4);font-family:inherit}"
+        + ".koho-num.pin{background:#2563eb}";
+      document.head.appendChild(st);
+    }
+    const renderer = L.svg({ padding: 0.3 });
+    const grp = L.layerGroup();
+    const top = kohoTopSig ? kohoTopSig.split(",") : [];
+    const blink = kohoPinned ? [kohoPinned] : top;
+    const STY = {
+      none:  { color: "#0284c7", fillColor: "#38bdf8", fillOpacity: 0.10 },
+      again: { color: "#d97706", fillColor: "#fbbf24", fillOpacity: 0.16 },
+      done:  { color: "#64748b", fillColor: "#94a3b8", fillOpacity: 0.32 },
+    };
+    const toLL = polys => polys.map(p => p.map(r => r.map(([x, y]) => [y, x])));
+    // 点滅する区画は最後に描いて上に重ねる
+    const order = kohoAreas.slice().sort((a, b) => (blink.includes(a.k) ? 1 : 0) - (blink.includes(b.k) ? 1 : 0));
+    order.forEach(a => {
+      const on = blink.includes(a.k);
+      const s = STY[a.state] || STY.none;
+      const cls = [on ? "koho-blink" : "", on && kohoPinned && kohoOutside ? "koho-out" : ""].filter(Boolean).join(" ");
+      const pg = L.polygon(toLL(a.polys), {
+        renderer, color: on ? "#e11d48" : (a.k === kohoSel ? "#111827" : s.color), weight: on ? 4 : (a.k === kohoSel ? 3 : 1.2),
+        fillColor: on ? "#e11d48" : s.fillColor, fillOpacity: on ? 0.35 : s.fillOpacity, className: cls || undefined,
+      });
+      // ピンを置くモード中は区画のタップを地図に素通しする（区画の上にもピンを置けるように）
+      pg.on("click", e => { if (!kohoTapRef.current) return; try { L.DomEvent.stopPropagation(e); } catch (er) {} kohoTapRef.current(a.k); });
+      pg.addTo(grp);
+    });
+    // 順位の番号（区画の内側の点に出す）
+    const labels = kohoPinned ? [kohoPinned] : top;
+    labels.forEach((k, i) => {
+      const a = kohoAreas.find(x => x.k === k);
+      if (!a) return;
+      L.marker(a.lp, { interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "", html: `<div class="koho-num${kohoPinned ? " pin" : ""}">${kohoPinned ? "★" : i + 1}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }),
+      }).addTo(grp);
+    });
+    grp.addTo(map);
+    kohoLayerRef.current = grp;
+    return () => { try { map.removeLayer(grp); } catch (e) {} };
+  }, [kohoAreas, kohoTopSig, kohoPinned, kohoOutside, kohoSel]);
+  // 市町村を選んだら、その範囲にズーム
+  const kohoFitKey = koho ? koho.fitKey : 0;
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !kohoFitKey || !Array.isArray(kohoAreas) || !kohoAreas.length) return;
+    let s = 90, w = 180, n = -90, e = -180;
+    kohoAreas.forEach(a => { s = Math.min(s, a.bb[0]); w = Math.min(w, a.bb[1]); n = Math.max(n, a.bb[2]); e = Math.max(e, a.bb[3]); });
+    try { map.fitBounds([[s, w], [n, e]], { padding: [20, 20] }); } catch (er) {}
+    // eslint-disable-next-line
+  }, [kohoFitKey]);
 
   // 🆕 v9.441: 密集市街地（再建築不可が集中する古い戸建地帯）
   const mitsuLayerRef = React.useRef(null);
@@ -22971,6 +23047,163 @@ function tansakuStateColor(untilNext) {
   return "#16a34a";                            // まだ先
 }
 
+// 🆕 v9.558: 探索候補エリア。市町村を選ぶと町丁・字ごとの区画を出し、次に回るべき上位3区画を点滅させる。
+//   区画データは静的ファイル areas/<市区町村コード>.geojson（scripts/build-area-geojson.py で作成・e-Stat 令和2年国勢調査）。
+//   計算は画面上だけ。jiage には一切書かない。重みだけ app_data の別行 kohoconf::main（全員共有）。
+const KOHO_DEFAULT_W = { aging: 40, detached: 30, setai: 10, near: 20 };
+const KOHO_NEAR_KM = 15;          // 30分圏内の目安（直線15km）
+const KOHO_MIN_SETAI = 30;        // これ未満の世帯数は回る価値が低い→減点
+const KOHO_TRACK_MIN_MS = 3 * 60000; // 探索ルートが区画の中に合計3分以上いた日だけ「通った」とみなす（車で通過しただけは数えない）
+const KOHO_CLOSED_STATUS = ["対象外", "訪問禁止", "見込無し", "仕入", "失注"];
+const _kohoCache = {};
+function loadKohoFile(name) {
+  if (!_kohoCache[name]) {
+    _kohoCache[name] = fetch("areas/" + name).then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .catch(e => { delete _kohoCache[name]; throw e; });
+  }
+  return _kohoCache[name];
+}
+function kohoPrepare(fc) {
+  // 区画ごとに外接矩形を持たせておく（内外判定の足切り）
+  return ((fc && fc.features) || []).map(f => {
+    const polys = (f.geometry && f.geometry.coordinates) || [];
+    let s = 90, w = 180, n = -90, e = -180;
+    polys.forEach(p => (p[0] || []).forEach(([x, y]) => { if (y < s) s = y; if (y > n) n = y; if (x < w) w = x; if (x > e) e = x; }));
+    return { ...f.properties, polys, bb: [s, w, n, e] };
+  });
+}
+function _kohoInRing(lat, lng, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if ((yi > lat) !== (yj > lat) && lng < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function kohoContains(a, lat, lng) {
+  if (lat < a.bb[0] || lat > a.bb[2] || lng < a.bb[1] || lng > a.bb[3]) return false;
+  for (const p of a.polys) {
+    if (!_kohoInRing(lat, lng, p[0])) continue;
+    let hole = false;
+    for (let h = 1; h < p.length; h++) if (_kohoInRing(lat, lng, p[h])) { hole = true; break; }
+    if (!hole) return true;
+  }
+  return false;
+}
+function _kohoKm(a1, o1, a2, o2) {
+  const r = Math.PI / 180, dLa = (a2 - a1) * r, dLo = (o2 - o1) * r;
+  const h = Math.sin(dLa / 2) ** 2 + Math.cos(a1 * r) * Math.cos(a2 * r) * Math.sin(dLo / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
+// 値の大きい順の「順位」を 0〜1 に（1が一番良い）。同点は平均。
+function _kohoPct(list, get) {
+  const vals = list.map(get);
+  const idx = vals.map((v, i) => i).filter(i => vals[i] != null).sort((x, y) => vals[x] - vals[y]);
+  const out = vals.map(() => null);
+  const n = idx.length;
+  for (let i = 0; i < n;) {
+    let j = i;
+    while (j + 1 < n && vals[idx[j + 1]] === vals[idx[i]]) j++;
+    const pr = n > 1 ? ((i + j) / 2) / (n - 1) : 1;
+    for (let t = i; t <= j; t++) out[idx[t]] = pr;
+    i = j + 1;
+  }
+  return out;
+}
+// 所有者住所が埼玉県内か（謄本の住所は「東松山市…」のように県名が無いことが多い→県名が無ければ県内とみなす）
+function _kohoSaitama(addr) {
+  const s = String(addr || "").normalize("NFKC").replace(/^[\s　〒0-9-]+/, "");
+  if (!s) return false;
+  const m = /^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/.exec(s);
+  return !m || m[1] === "埼玉県";
+}
+function computeKoho(areas, ctx) {
+  const { jiage, tracks, tansaku, conf, weights } = ctx;
+  const W = { ...KOHO_DEFAULT_W, ...(weights || {}) };
+  const today = tansakuJstDate(Date.now());
+  const res = areas.map(a => ({ ...a, pins: 0, lastPin: null, trackDays: {}, lastDate: null, state: "none", next: null, near: 0, score: null, rank: null, reasons: [] }));
+  // 町全体の外接矩形（ここに入らないピン・軌跡は最初から捨てる）
+  let S = 90, Wst = 180, N = -90, E = -180;
+  res.forEach(a => { S = Math.min(S, a.bb[0]); Wst = Math.min(Wst, a.bb[1]); N = Math.max(N, a.bb[2]); E = Math.max(E, a.bb[3]); });
+  const inCity = (la, lo) => la >= S && la <= N && lo >= Wst && lo <= E;
+  const find = (la, lo, hint) => {
+    if (hint && kohoContains(hint, la, lo)) return hint;
+    for (const a of res) if (kohoContains(a, la, lo)) return a;
+    return null;
+  };
+  // ① 現地ピン
+  (jiage || []).forEach(j => {
+    if (!j || j.source !== "現地ピン" || typeof j.lat !== "number" || typeof j.lng !== "number") return;
+    if (!inCity(j.lat, j.lng)) return;
+    const a = find(j.lat, j.lng);
+    if (!a) return;
+    a.pins++;
+    const t = Number(j.createdAt);
+    if (isFinite(t) && t > 0) { const d = tansakuJstDate(t); if (!a.lastPin || d > a.lastPin) a.lastPin = d; }
+  });
+  // ② 探索ルート（軌跡）。点と点の間の時間を、その区画にいた時間として足す（10分以上空いたら途切れ）
+  Object.values(tracks || {}).forEach(pts => {
+    let prev = null, prevA = null;
+    (pts || []).forEach(p => {
+      if (!p || typeof p.lat !== "number" || typeof p.lng !== "number" || !p.ts) { prev = null; return; }
+      const a = inCity(p.lat, p.lng) ? find(p.lat, p.lng, prevA) : null;
+      if (a && prev && prevA === a && p.ts - prev.ts > 0 && p.ts - prev.ts < 10 * 60000) {
+        const d = tansakuJstDate(p.ts);
+        a.trackDays[d] = (a.trackDays[d] || 0) + (p.ts - prev.ts);
+      }
+      prev = p; prevA = a;
+    });
+  });
+  // ③ 状態：未探索／再探索時期／探索済み
+  const byArea = {};
+  ((tansaku && tansaku.areas) || []).forEach(x => { byArea[x.area] = x; });
+  res.forEach(a => {
+    let last = a.lastPin;
+    Object.entries(a.trackDays).forEach(([d, ms]) => { if (ms >= KOHO_TRACK_MIN_MS && (!last || d > last)) last = d; });
+    a.lastDate = last;
+    if (!last) return;
+    const key = tansakuAreaOf(a.cn + String(a.n).replace(/[①-⑳]|\(\d+\)$/g, ""));
+    const t = key && byArea[key];
+    a.next = tansakuAddMonths(last, tansakuMonthsFor(t ? t.lastRate : null, conf || TANSAKU_DEFAULT));
+    a.state = a.next <= today ? "again" : "done";
+  });
+  // ④ 30分圏内の未訪問の所有者
+  const owners = (jiage || []).filter(j => j && typeof j.ownerLat === "number" && typeof j.ownerLng === "number"
+    && !j.excluded && _kohoSaitama(j.ownerAddr || j.ownerAddress)
+    && !(Array.isArray(j.visitLog) && j.visitLog.length) && !KOHO_CLOSED_STATUS.includes(j.status));
+  res.forEach(a => {
+    const [la, lo] = a.lp;
+    let n = 0;
+    for (const o of owners) if (Math.abs(o.ownerLat - la) < 0.15 && Math.abs(o.ownerLng - lo) < 0.19 && _kohoKm(la, lo, o.ownerLat, o.ownerLng) <= KOHO_NEAR_KM) n++;
+    a.near = n;
+  });
+  // ⑤ おすすめ度（未探索・再探索時期だけ）。各要素は町の中での順位(0〜1)×重み
+  const cand = res.filter(a => a.state !== "done" && a.h > 0);
+  const pO = _kohoPct(cand, a => a.o), pD = _kohoPct(cand, a => a.d), pH = _kohoPct(cand, a => a.h), pN = _kohoPct(cand, a => a.near);
+  cand.forEach((a, i) => {
+    const setai = a.h < KOHO_MIN_SETAI ? -W.setai : (pH[i] || 0) * W.setai;
+    a.score = (pO[i] || 0) * W.aging + (pD[i] || 0) * W.detached + setai + (pN[i] || 0) * W.near;
+  });
+  cand.sort((x, y) => y.score - x.score).forEach((a, i) => { a.rank = i + 1; });
+  // ⑥ 理由の文（町の中での順位で）
+  const rankOf = (get) => {
+    const l = res.filter(a => get(a) != null && a.h > 0).sort((x, y) => get(y) - get(x));
+    const m = {}; l.forEach((a, i) => { m[a.k] = i + 1; }); return [m, l.length];
+  };
+  const [rO, nO] = rankOf(a => a.o), [rD, nD] = rankOf(a => a.d);
+  res.forEach(a => {
+    const r = [];
+    if (a.o != null && rO[a.k]) r.push(`高齢化率が町内${rO[a.k]}位（${nO}区画中）`);
+    if (a.d != null && rD[a.k]) r.push(`一戸建てが${Math.round(a.d * 100)}%（町内${rD[a.k]}位）`);
+    r.push(`30分圏内に未訪問の所有者${a.near}件`);
+    if (a.h < KOHO_MIN_SETAI) r.push(`世帯が${a.h}世帯と少ない（減点）`);
+    a.reasons = r;
+  });
+  const top = cand.slice(0, 3).map(a => a.k);
+  return { areas: res, top, owners: owners.length,
+    counts: { none: res.filter(a => a.state === "none").length, again: res.filter(a => a.state === "again").length, done: res.filter(a => a.state === "done").length } };
+}
+
 // 🆕 v9.557: 「🧭 エリア」画面（一覧 → タップで探索履歴・設定）
 function TansakuAreaPanel({ result, conf, onSaveConf }) {
   const [city, setCity] = useState("");
@@ -23888,6 +24121,56 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     ? tansakuResult.areas.filter(a => a.lat != null).map(a => ({ lat: a.lat, lng: a.lng, color: tansakuStateColor(a.untilNext),
         label: `${a.area}<br>最終 ${a.lastDate}（${a.lastRate == null ? "—" : a.lastRate.toFixed(1)}件/時）<br>次の目安 ${a.next}` }))
     : [], [showTansakuCircles, tansakuResult]);
+  // 🆕 v9.558: 探索候補エリア（市町村を選ぶ → 区画を表示 → 上位3区画が点滅）
+  const [kohoIndex, setKohoIndex] = useState(null);       // 市区町村の一覧（開いた時だけ読む）
+  const [kohoPicker, setKohoPicker] = useState(false);
+  const [kohoQuery, setKohoQuery] = useState("");
+  const [kohoCity, setKohoCity] = useState(null);         // { c, n }
+  const [kohoRaw, setKohoRaw] = useState(null);           // 区画（kohoPrepare 済み）
+  const [kohoLoading, setKohoLoading] = useState(false);
+  const [kohoFitKey, setKohoFitKey] = useState(0);
+  const [kohoSelKey, setKohoSelKey] = useState(null);
+  const [kohoShowConf, setKohoShowConf] = useState(false);
+  const kohoToday = tansakuJstDate(Date.now());
+  const [kohoPin, setKohoPinRaw] = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem("hikari_koho_pin") || "null"); return v && v.date === tansakuJstDate(Date.now()) ? v : null; } catch (e) { return null; }
+  });
+  const setKohoPin = (v) => { setKohoPinRaw(v); try { localStorage.setItem("hikari_koho_pin", JSON.stringify(v)); } catch (e) {} };
+  const [kohoW, setKohoW] = useState(KOHO_DEFAULT_W);
+  const kohoConfLoaded = React.useRef(false);
+  const openKohoPicker = () => {
+    setKohoPicker(true);
+    if (!kohoIndex) loadKohoFile("index.json").then(d => setKohoIndex(d.cities || [])).catch(() => alert("市町村の一覧を読み込めませんでした（通信）"));
+    if (!kohoConfLoaded.current) {
+      kohoConfLoaded.current = true;
+      fetch(`${SUPABASE_URL}/rest/v1/app_data?select=data&id=eq.kohoconf::main`, { headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY } })
+        .then(r => r.ok ? r.json() : []).then(rows => { if (rows && rows[0] && rows[0].data) setKohoW({ ...KOHO_DEFAULT_W, ...rows[0].data }); })
+        .catch(() => {});
+    }
+  };
+  const chooseKohoCity = (city) => {
+    setKohoPicker(false); setKohoSelKey(null); setKohoLoading(true); setKohoCity(city);
+    try { localStorage.setItem("hikari_koho_city", JSON.stringify(city)); } catch (e) {}
+    loadKohoFile(city.c + ".geojson")
+      .then(fc => { setKohoRaw(kohoPrepare(fc)); setKohoFitKey(Date.now()); })
+      .catch(() => { alert("区画データを読み込めませんでした（通信）"); setKohoCity(null); })
+      .finally(() => setKohoLoading(false));
+  };
+  const closeKoho = () => { setKohoCity(null); setKohoRaw(null); setKohoSelKey(null); };
+  const saveKohoW = (w) => {
+    const clean = {};
+    Object.keys(KOHO_DEFAULT_W).forEach(k => { const v = Number(w[k]); clean[k] = isFinite(v) && v >= 0 ? v : KOHO_DEFAULT_W[k]; });
+    setKohoW(clean);
+    fetch(`${SUPABASE_URL}/rest/v1/app_data`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: "kohoconf::main", data: clean }),
+    }).then(r => { if (!r.ok) alert("保存できませんでした（" + r.status + "）"); else alert("保存しました。全員のおすすめ順に反映されます。"); })
+      .catch(() => alert("保存できませんでした（通信）"));
+  };
+  const kohoResult = useMemo(() => kohoRaw
+    ? computeKoho(kohoRaw, { jiage: data.jiage, tracks: data.tracks, tansaku: tansakuResult, conf: tansakuConf, weights: kohoW })
+    : null, [kohoRaw, data.jiage, data.tracks, tansakuResult, tansakuConf, kohoW]);
   // 🆕 v9.43: scroll 位置を保存・復元 ( DOM 高さが追いつくまで polling 待機 )
   //   ・v9.42: 段階的リトライ ( 30/100/250/500/1000ms ) → DOM 高さが間に合わない端末で失敗
   //   ・v9.43: DOM 高さが目標 scrollY を超えるまで 100ms 間隔で polling ( 最大 3秒 )
@@ -29464,6 +29747,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       items={itemsWithCoord}
                       ghostPins={donePins}
                       areaCircles={tansakuCircles}
+                      koho={kohoResult ? (() => {
+                        const pinnedKey = kohoPin && kohoPin.date === kohoToday && kohoResult.areas.some(a => a.k === kohoPin.k) ? kohoPin.k : "";
+                        const pa = pinnedKey && kohoResult.areas.find(a => a.k === pinnedKey);
+                        return { areas: kohoResult.areas, top: kohoResult.top, pinnedKey, selKey: kohoSelKey, fitKey: kohoFitKey,
+                          outside: !!(pa && currentLoc && typeof currentLoc.lat === "number" && !kohoContains(pa, currentLoc.lat, currentLoc.lng)),
+                          onTap: placementMode ? null : (k) => setKohoSelKey(k) };
+                      })() : null}
                       onPinClick={(it) => setSelected({ item: it })}
                       pinTarget={mapPinTarget}
                       height="82vh"
@@ -29550,6 +29840,136 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         </div>
                       </div>
                     )}
+                    {/* 🆕 v9.558: 探索候補エリア（FAB・上の帯・市町村選び・区画のシート） */}
+                    {!(selected || showAdd || assessmentTarget || pinEdit) && (
+                      <button onClick={openKohoPicker} title="探索候補" style={{
+                        position: "absolute", left: 12, bottom: 218, zIndex: 601,
+                        width: 56, height: 56, borderRadius: "50%",
+                        background: kohoCity ? "#e11d48" : "#fff", color: kohoCity ? "#fff" : "#e11d48",
+                        border: "1px solid rgba(0,0,0,0.12)", boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                        cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "inherit", padding: 0,
+                      }}>
+                        <span style={{ fontSize: 20, lineHeight: 1 }}>🎯</span>
+                        <span style={{ fontSize: 8, marginTop: 1, fontWeight: 800, color: kohoCity ? "#ffe4e6" : C.muted }}>探索候補</span>
+                      </button>
+                    )}
+                    {(kohoCity || kohoLoading) && !(selected || showAdd || assessmentTarget || pinEdit) && (
+                      <div style={{ position: "absolute", left: 10, right: 66, top: 62, zIndex: 602, background: "rgba(255,255,255,0.96)", color: "#0f172a",
+                        border: "2px solid #e11d48", borderRadius: 12, padding: "7px 10px", boxShadow: "0 3px 10px rgba(0,0,0,0.25)", fontSize: 11 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <b style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>🎯 {kohoCity ? kohoCity.n : ""}{kohoLoading ? " 読み込み中…" : ""}</b>
+                          <button onClick={() => setKohoShowConf(v => !v)} style={{ border: "1px solid #cbd5e1", background: kohoShowConf ? "#e11d48" : "#fff", color: kohoShowConf ? "#fff" : "#334155", borderRadius: 8, padding: "3px 7px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>⚙ 重み</button>
+                          <button onClick={openKohoPicker} style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 8, padding: "3px 7px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>変更</button>
+                          <button onClick={closeKoho} style={{ border: "none", background: "#f1f5f9", color: "#475569", borderRadius: 8, width: 26, height: 24, fontSize: 13, cursor: "pointer" }}>×</button>
+                        </div>
+                        {kohoResult && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px", marginTop: 4, color: "#334155" }}>
+                            <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#38bdf8", border: "1px solid #0284c7", marginRight: 3, verticalAlign: "middle" }} />未探索 {kohoResult.counts.none}</span>
+                            <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#fbbf24", border: "1px solid #d97706", marginRight: 3, verticalAlign: "middle" }} />再探索時期 {kohoResult.counts.again}</span>
+                            <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#94a3b8", border: "1px solid #64748b", marginRight: 3, verticalAlign: "middle" }} />探索済み {kohoResult.counts.done}</span>
+                            <span style={{ color: "#e11d48", fontWeight: 800 }}>{kohoPin && kohoPin.date === kohoToday && kohoResult.areas.some(a => a.k === kohoPin.k) ? "★ 今日回る区画を表示中" : "点滅＝おすすめ上位3"}</span>
+                          </div>
+                        )}
+                        {kohoShowConf && (() => {
+                          const rows = [["aging", "高齢化率"], ["detached", "一戸建て割合"], ["setai", "世帯数（30未満は減点）"], ["near", "30分圏内の未訪問の所有者"]];
+                          return (
+                            <div style={{ marginTop: 6, borderTop: "1px solid #e2e8f0", paddingTop: 6 }}>
+                              <div style={{ color: "#64748b", marginBottom: 4 }}>おすすめ度の重み（大きいほど重視。全員で共通）</div>
+                              {rows.map(([k, l]) => (
+                                <label key={k} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                                  <span style={{ flex: 1 }}>{l}</span>
+                                  <input type="number" inputMode="numeric" min="0" value={kohoW[k]} onChange={e => setKohoW(w => ({ ...w, [k]: e.target.value === "" ? "" : Number(e.target.value) }))}
+                                    style={{ width: 64, padding: "4px 6px", fontSize: 13, border: "1px solid #cbd5e1", borderRadius: 6, fontFamily: "inherit" }} />
+                                </label>
+                              ))}
+                              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                                <button onClick={() => { saveKohoW(kohoW); setKohoShowConf(false); }} style={{ flex: 1, border: "none", background: "#e11d48", color: "#fff", borderRadius: 8, padding: "7px 0", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>保存</button>
+                                <button onClick={() => setKohoW(KOHO_DEFAULT_W)} style={{ flex: 1, border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 8, padding: "7px 0", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>初期値に戻す</button>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+                    {kohoPicker && (() => {
+                      let last = null;
+                      try { last = JSON.parse(localStorage.getItem("hikari_koho_city") || "null"); } catch (e) {}
+                      const q = kohoQuery.trim();
+                      const list = (kohoIndex || []).filter(c => !q || c.n.includes(q));
+                      return (
+                        <div onClick={() => setKohoPicker(false)} style={{ position: "absolute", inset: 0, zIndex: 720, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "flex-end" }}>
+                          <div onClick={e => e.stopPropagation()} style={{ background: C.cardBg, width: "100%", maxHeight: "75%", borderTopLeftRadius: 16, borderTopRightRadius: 16, display: "flex", flexDirection: "column", boxShadow: "0 -8px 32px rgba(0,0,0,0.45)" }}>
+                            <div style={{ padding: "12px 16px 8px", display: "flex", alignItems: "center", gap: 8 }}>
+                              <b style={{ flex: 1, fontSize: 15, color: C.text }}>🎯 どの市町村を回る？</b>
+                              <button onClick={() => setKohoPicker(false)} style={{ background: C.inset, border: "none", color: C.muted, width: 30, height: 30, borderRadius: 8, fontSize: 16, cursor: "pointer" }}>×</button>
+                            </div>
+                            <div style={{ padding: "0 16px 8px" }}>
+                              <input value={kohoQuery} onChange={e => setKohoQuery(e.target.value)} placeholder="市町村名で探す（例：伊奈）"
+                                style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", fontSize: 15, borderRadius: 10, border: `1.5px solid ${C.borderDim}`, background: C.inset, color: C.text, fontFamily: "inherit" }} />
+                              {last && last.c && !q && (
+                                <button onClick={() => chooseKohoCity(last)} style={{ marginTop: 8, width: "100%", padding: "10px 12px", borderRadius: 10, border: "2px solid #e11d48", background: "#e11d4814", color: C.text, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+                                  前回：{last.n}
+                                </button>
+                              )}
+                            </div>
+                            <div style={{ overflowY: "auto", padding: "0 16px 16px" }}>
+                              {!kohoIndex && <div style={{ color: C.muted, fontSize: 13, padding: 12 }}>読み込み中…</div>}
+                              {kohoIndex && list.length === 0 && <div style={{ color: C.muted, fontSize: 13, padding: 12 }}>見つかりません</div>}
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 6 }}>
+                                {list.map(c => (
+                                  <button key={c.c} onClick={() => chooseKohoCity({ c: c.c, n: c.n })} style={{ padding: "10px 10px", borderRadius: 10, border: `2px solid ${C.borderDim}`, background: C.inset, color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+                                    {c.n}<span style={{ display: "block", fontSize: 10, color: C.muted, fontWeight: 400 }}>{c.count}区画</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    {kohoResult && kohoSelKey && !(selected || showAdd || assessmentTarget || pinEdit) && (() => {
+                      const a = kohoResult.areas.find(x => x.k === kohoSelKey);
+                      if (!a) return null;
+                      const pinned = kohoPin && kohoPin.date === kohoToday && kohoPin.k === a.k;
+                      const pct = v => v == null ? "—" : Math.round(v * 100) + "%";
+                      const fd = s => s ? s.replace(/-/g, "/") : "";
+                      const stTxt = a.state === "none" ? "未探索" : a.state === "again" ? `再探索時期（最終 ${fd(a.lastDate)}・目安 ${fd(a.next)}）` : `探索済み（最終 ${fd(a.lastDate)}・次の目安 ${fd(a.next)}）`;
+                      const stC = a.state === "none" ? "#0284c7" : a.state === "again" ? "#d97706" : "#64748b";
+                      const cell = (l, v) => (
+                        <div style={{ background: C.inset, borderRadius: 8, padding: "6px 8px" }}>
+                          <div style={{ fontSize: 10, color: C.muted }}>{l}</div>
+                          <div style={{ fontSize: 15, fontWeight: 800, color: C.text }}>{v}</div>
+                        </div>
+                      );
+                      return (
+                        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 700, background: C.cardBg, borderTopLeftRadius: 16, borderTopRightRadius: 16,
+                          boxShadow: "0 -8px 32px rgba(0,0,0,0.45)", padding: "12px 16px 16px", maxHeight: "62%", overflowY: "auto" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 11, color: C.muted }}>{a.cn}</div>
+                              <div style={{ fontSize: 17, fontWeight: 900, color: C.text }}>{a.n}{a.rank ? <span style={{ marginLeft: 8, fontSize: 12, background: a.rank <= 3 ? "#e11d48" : C.inset, color: a.rank <= 3 ? "#fff" : C.text, borderRadius: 6, padding: "2px 8px" }}>おすすめ {a.rank}位</span> : null}</div>
+                            </div>
+                            <button onClick={() => setKohoSelKey(null)} style={{ background: C.inset, border: "none", color: C.muted, width: 30, height: 30, borderRadius: 8, fontSize: 16, cursor: "pointer" }}>×</button>
+                          </div>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: stC, marginBottom: 8 }}>● {stTxt}{a.pins ? `・ピン${a.pins}件` : ""}</div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}>
+                            {cell("世帯数", a.h.toLocaleString() + "世帯")}
+                            {cell("高齢化率（65歳以上）", pct(a.o))}
+                            {cell("一戸建て割合", pct(a.d))}
+                            {cell("30分圏内の未訪問の所有者", a.near + "件")}
+                          </div>
+                          <div style={{ fontSize: 12, color: C.text, lineHeight: 1.7, background: C.inset, borderRadius: 8, padding: "6px 10px", marginBottom: 10 }}>
+                            <div style={{ fontWeight: 800, marginBottom: 2 }}>{a.state === "done" ? "探索済みなので、おすすめからは外しています" : "おすすめの理由"}</div>
+                            {a.reasons.map((r, i) => <div key={i}>・{r}</div>)}
+                          </div>
+                          <button onClick={() => setKohoPin(pinned ? null : { date: kohoToday, k: a.k, n: a.n, c: a.c })} style={{
+                            width: "100%", border: "none", borderRadius: 10, padding: 12, fontSize: 14, fontWeight: 900, cursor: "pointer", fontFamily: "inherit",
+                            background: pinned ? C.inset : "#e11d48", color: pinned ? C.text : "#fff",
+                          }}>{pinned ? "★ 今日ここを回る（解除する）" : "★ 今日ここを回る"}</button>
+                          <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>出典：令和2年国勢調査（町丁・字）。押すとこの区画だけ点滅し、他の点滅は止まります。今日いっぱい有効です。</div>
+                        </div>
+                      );
+                    })()}
                     {/* 🆕 v9.51: 訪問ルート提案（FAB + パネル + ゴール演出）※ピン位置修正中は隠す */}
                     {!(selected || showAdd || assessmentTarget || pinEdit) && (
                       <>
