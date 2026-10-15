@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-16-v9.561-update";
+const APP_VERSION = "2026-10-16-v9.562-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -4734,6 +4734,10 @@ async function compressImageFile(file, maxEdge = 1600, quality = 0.7) {
   });
 }
 
+// 🆕 v9.562: 2026-10-15 に Claude が足した「地図スクショ＋赤丸」の写真（takenBy＝地番地図照合／ブルーマップ照合）は
+//   下田さんの判断で撤去（2026-10-16「正確じゃなかった」）。写真には削除の印(tombstone)が無く、端末のキャッシュから
+//   復活するため、この2種類は合流でも表示でも捨てる。
+function isRetiredPinPhoto(p) { return !!p && (p.takenBy === "地番地図照合" || p.takenBy === "ブルーマップ照合"); }
 // Supabase Storage に upload。 success 時は { url, path } を返す
 async function uploadPinPhoto(pinId, file) {
   if (!pinId) throw new Error("pinId required");
@@ -7577,6 +7581,7 @@ function MainApp({ onLock, onSwitchUser }) {
         [...l, ...r].forEach(p => {
           const key = p && (p.path || p.url);
           if (!key || seen.has(key)) return;
+          if (isRetiredPinPhoto(p)) return; // 🆕 v9.562: 撤去した地図スクショは端末のキャッシュからも戻さない
           seen.add(key);
           out.push(p);
         });
@@ -31102,7 +31107,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               <div style={{ background: C.inset, border: `1.5px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
                 <PinPhotoSection
                   pinId={_pid}
-                  photos={((data.pinPhotos || {})[_pid]) || []}
+                  photos={(((data.pinPhotos || {})[_pid]) || []).filter(p => !isRetiredPinPhoto(p))}
                   viewer={(typeof getCurrentUser === "function" && getCurrentUser()) || ""}
                   viewOnly={false}
                   onAdded={(p) => {
