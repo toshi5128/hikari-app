@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-16-v9.570-fix";
+const APP_VERSION = "2026-10-16-v9.571-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -28429,9 +28429,17 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               ].map(t => {
                 const active = mapPinTarget === t.key;
                 // 🆕 v9.570: 地図に実際に出せる（座標がある）件数。以前は地番の有無で数えていて、地番待ちの現地ピンが漏れていた
-                const count = filtered.filter(i => t.key === "address"
-                  ? (typeof i.lat === "number" && typeof i.lng === "number")
-                  : (typeof i.ownerLat === "number" && typeof i.ownerLng === "number")).length;
+                //   🆕 v9.571: 所有者住所も、地図に出す時（itemsWithCoord）と同じ除外をかけて数える
+                const count = filtered.filter(i => {
+                  if (t.key === "address") return typeof i.lat === "number" && typeof i.lng === "number";
+                  if (typeof i.ownerLat !== "number" || typeof i.ownerLng !== "number") return false;
+                  if (i.raw && i.raw.ownerSameAsProperty === true) return false;
+                  if (isOwnerResident(i)) return false;
+                  if (isCorporateOwner(i.owner || i.ownerName)) return false;
+                  if (quickFilter !== "addr_ng" && addrCheckOf(i.raw || i) === "ng") return false;
+                  if (typeof i.lat === "number" && typeof i.lng === "number" && i.ownerLat === i.lat && i.ownerLng === i.lng) return false;
+                  return true;
+                }).length;
                 return (
                   <button key={t.key} onClick={() => setMapPinTarget(t.key)} style={{
                     flex: 1, padding: "8px 10px", borderRadius: 8, cursor: "pointer",
@@ -29806,7 +29814,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     {/* 🆕 v9.41→v9.46.1: 地図内フローティング絞り込み ( FAB + 展開パネル ) ・ BottomSheet 表示中は非表示 */}
                     {(() => {
                       // 🆕 v9.46.1: ピン詳細 ・ 新規登録 ・ 査定書作成モーダル表示中は FAB を隠す ( 地図にのみ表示するため )
-                      if (selected || showAdd || assessmentTarget || pinEdit) return null;
+                      if (selected || showAdd || assessmentTarget || pinEdit || pendingPin) return null; // 🆕 v9.571: ピン登録中も隠す
                       const stColor = (st) => JIAGE_STATUS_COLORS[st]
                         || (st === "NG" || st === "断られた" || st === "お断り" ? "#ef4444"
                         : st === "訪問済" ? C.success
