@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-13-v9.543-update";
+const APP_VERSION = "2026-10-15-v9.544-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -5715,6 +5715,23 @@ async function loadDanchiMarkRows() {
     return map;
   } catch (e) { return null; }
 }
+// 🆕 v9.544: ハヤト（声の相棒）が作った訪問記録の下書き。1件=1行 hvdraft::<id>。
+//   ハヤトは visitLog を直接書かない（保存時に行動管理の面談カウンター等も+1されるため、ここを通さないと集計がずれる）。
+//   アプリで下書きを開く → いつもの訪問記録フォームに中身が入った状態になる → 本人が「記録する」で保存 → 下書きは消える。
+async function loadHayatoDrafts() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.hvdraft::*&select=id,data`, { headers: _TRACK_HEADERS });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return (rows || []).map(r => ({ rowId: r.id, ...((r.data && r.data.item) || {}) })).filter(x => x.pinId != null)
+      .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.time || "").localeCompare(String(b.time || "")));
+  } catch (e) { return null; }
+}
+async function deleteHayatoDraft(rowId) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${encodeURIComponent(rowId)}`, { method: "DELETE", headers: { ..._TRACK_HEADERS, "Prefer": "return=minimal" } });
+  } catch (e) {}
+}
 async function saveDanchiMarkRow(item) {
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data`, {
@@ -8623,6 +8640,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.544", date: "2026-10-15", who: ["下田"], title: "ハヤトに声で言った訪問結果を、アプリで1タップ記録できるように",
+    body: "ハヤトに「〇〇の家、不在。ポストに名刺」のように話すと、地上げの画面の左下に「🎙 ハヤトの訪問メモ」が出ます。押して「記録する」で、中身が入った訪問記録が開くので、確かめて保存してください。面談数などの集計もいつも通り入ります。",
+    where: "地上げ → 左下の「🎙 ハヤトの訪問メモ」" },
   { v: "9.541", date: "2026-10-13", title: "地図の「絞り込み」でも、戸建て／マンションを選べるように",
     body: "地図の左下の「絞り込み」を開くと「所有者の住まい：すべて／🏠 戸建て／🏢 マンション」が出ます。押すとその住まいの所有者のピンだけが地図に出ます。ピン状態や営業ステータスと一緒に使えます。",
     where: "地上げ → 地図 → 左下の「絞り込み」→「所有者の住まい」" },
@@ -23689,6 +23709,20 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 訪問結果記録モード
   const [visitRecordTarget, setVisitRecordTarget] = useState(null); // 記録対象のitem
   const [visitForm, setVisitForm] = useState(null); // { date, time, result, signs, intensityLevel, memo }
+  // 🆕 v9.544: ハヤトの訪問記録の下書き（自分の分だけ）。開いた時・画面に戻った時・3分ごとに読む
+  const [hvDrafts, setHvDrafts] = useState([]);
+  const [hvOpen, setHvOpen] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const me = getCurrentUser();
+    const load = () => loadHayatoDrafts().then(rows => { if (alive && rows) setHvDrafts(rows.filter(r => !r.by || !me || r.by === me)); });
+    load();
+    const t = setInterval(load, 3 * 60 * 1000);
+    const onVis = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { alive = false; clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
+  }, []);
+  const _hvDone = (rowId) => { if (!rowId) return; deleteHayatoDraft(rowId); setHvDrafts(ds => ds.filter(x => x.rowId !== rowId)); };
   // 🆕 家族構成の追加・編集フォーム
   // 🆕 v8.95: 現地ピン機能
   const [placementMode, setPlacementMode] = useState(false); // 地図タップ待機モード
@@ -25540,6 +25574,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
             const newLog = (s.item.raw?.visitLog || []).map(v => v.id === other.id ? mergedEntry : v);
             return { ...s, item: { ...s.item, raw: { ...s.item.raw, visitLog: newLog } } };
           });
+          _hvDone(visitForm.hvDraftRowId);
           setVisitRecordTarget(null);
           setVisitForm(null);
           return;
@@ -25705,6 +25740,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
         };
       }
     });
+    _hvDone(visitForm.hvDraftRowId);  // 🆕 v9.544: ハヤトの下書きから記録した時は、下書きを消す
     setVisitRecordTarget(null);
     setVisitForm(null);
     // selectedも更新
@@ -32116,6 +32152,47 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
           />
         );
       })()}
+
+      {/* 🆕 v9.544: ハヤトの訪問記録の下書き（声で言った訪問結果）。押して確かめ、いつもの記録で保存 */}
+      {hvDrafts.length > 0 && !visitRecordTarget && (
+        <button onClick={() => setHvOpen(true)} style={{
+          position: "fixed", left: 12, bottom: 150, zIndex: 400, padding: "10px 14px", borderRadius: 999,
+          background: "#0b2240", color: "#9be8ff", border: "2px solid #5fd6ff", boxShadow: "0 4px 14px rgba(0,0,0,.35)",
+          fontSize: 13, fontWeight: 800, fontFamily: "inherit", cursor: "pointer",
+        }}>🎙 ハヤトの訪問メモ {hvDrafts.length}件</button>
+      )}
+      {hvOpen && (
+        <BottomSheet title="🎙 ハヤトの訪問メモ" z={600} onClose={() => setHvOpen(false)}>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.6 }}>
+            ハヤトに声で言った訪問結果です。「記録する」で中身が入った訪問記録が開くので、確かめて保存してください（保存すると面談数などにも入ります）。
+          </div>
+          {hvDrafts.map(d => {
+            const it = allItems.find(i => String(i.rawId) === String(d.pinId));
+            const rd = VISIT_RESULTS.find(r => r.key === d.result);
+            return (
+              <div key={d.rowId} style={{ border: `2px solid ${C.border}`, borderRadius: 10, padding: 10, marginBottom: 10, boxShadow: "0 2px 6px rgba(0,0,0,.12)" }}>
+                <div style={{ fontWeight: 800, color: C.text, fontSize: 14 }}>{it ? it.address : "（ピンが見つかりません）"}</div>
+                <div style={{ fontSize: 13, color: C.text, marginTop: 4 }}>
+                  <b style={{ color: rd ? rd.color : C.muted }}>{rd ? rd.label : "結果は記録画面で選ぶ"}</b>
+                  <span style={{ color: C.muted, marginLeft: 8 }}>{String(d.date || "").slice(5)} {d.time || ""}</span>
+                  {d.posted && <span style={{ marginLeft: 8 }}>📮ポスティング</span>}
+                </div>
+                {d.memo && <div style={{ fontSize: 13, color: C.text, marginTop: 4, whiteSpace: "pre-wrap" }}>{d.memo}</div>}
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button disabled={!it} onClick={() => {
+                    setHvOpen(false);
+                    openVisitRecord(it);
+                    setVisitForm(f => f && ({ ...f, date: d.date || f.date, time: d.time || f.time, result: d.result || "",
+                      memo: d.memo || "", posted: !!d.posted, ...(d.status ? { status: d.status } : {}), hvDraftRowId: d.rowId }));
+                  }} style={{ flex: 1, padding: 10, borderRadius: 8, border: "none", background: it ? "#fbbf24" : "#ccc", color: "#000", fontWeight: 800, fontFamily: "inherit" }}>記録する</button>
+                  <button onClick={() => { if (window.confirm("このメモを消しますか？（訪問記録には残りません）")) _hvDone(d.rowId); }}
+                    style={{ padding: "10px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontFamily: "inherit" }}>消す</button>
+                </div>
+              </div>
+            );
+          })}
+        </BottomSheet>
+      )}
 
       {/* 📍 訪問結果記録BottomSheet */}
       {visitRecordTarget && visitForm && (
