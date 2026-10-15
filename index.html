@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-15-v9.550-update";
+const APP_VERSION = "2026-10-15-v9.551-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -5729,6 +5729,16 @@ async function loadHayatoDrafts() {
       .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.time || "").localeCompare(String(b.time || "")));
   } catch (e) { return null; }
 }
+// 🆕 v9.551: 請求書の請求元（振込先・口座まで全部）。公開ソースに書かないよう、クラウドの1行 invprof::<名前> に置いてある。
+//   hikari_main とは別の行なので、外から書いても巻き戻りは起きない。読むだけ（アプリからは書かない）。
+async function loadInvoiceProfileRow(me) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${encodeURIComponent("invprof::" + me)}&select=data`, { headers: _TRACK_HEADERS });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return (rows && rows[0] && rows[0].data) || null;
+  } catch (e) { return null; }
+}
 async function deleteHayatoDraft(rowId) {
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${encodeURIComponent(rowId)}`, { method: "DELETE", headers: { ..._TRACK_HEADERS, "Prefer": "return=minimal" } });
@@ -8646,7 +8656,7 @@ const WHATS_NEW = [
     body: "「保存して請求書を開く」を押すと、その請求書が自動で保存されます。収支の「請求書」タブに一覧で並び、タップすると当時の内容のまま開き直して、もう一度印刷・PDFにできます。直して開き直すと同じ控えが上書きされます。いらない控えは開いて「削除」で消せます。",
     where: "収支 → 「請求書」タブ" },
   { v: "9.545", date: "2026-10-15", who: ["下田"], title: "収支の案件から、請求書をそのまま作れるように",
-    body: "案件を開いて一番下の「🧾 この案件の請求書を作る」を押すと、内容と金額（歩合）が入った請求書の画面が出ます。日付と金額を確かめて「請求書を開く」で、A4の請求書が出るので印刷かPDFで保存してください。税抜と消費税は自動で計算します。会社の住所・登録番号は最初から入っています。振込先と口座だけ、最初の1回入れてください。",
+    body: "案件を開いて一番下の「🧾 この案件の請求書を作る」を押すと、内容と金額（歩合）が入った請求書の画面が出ます。日付と金額を確かめて「請求書を開く」で、A4の請求書が出るので印刷かPDFで保存してください。税抜と消費税は自動で計算します。会社の住所・登録番号・振込先は最初から入っています。",
     where: "収支 → 案件を開く →「🧾 この案件の請求書を作る」（案件なしなら右上の「🧾 請求書」）" },
   { v: "9.544", date: "2026-10-15", who: ["下田"], title: "ハヤトに声で言った訪問結果を、アプリで1タップ記録できるように",
     body: "ハヤトに「〇〇の家、不在。ポストに名刺」のように話すと、地上げの画面の左下に「🎙 ハヤトの訪問メモ」が出ます。押して「記録する」で、中身が入った訪問記録が開くので、確かめて保存してください。面談数などの集計もいつも通り入ります。",
@@ -36144,6 +36154,8 @@ function IncomePage({ data, setData, currentUser }) {
   const [term, setTerm] = useState(termOf(nowYM) || 3);
   const [monthOpen, setMonthOpen] = useState({});     // 🆕 v9.466: 「案件外」を開いた月
   const [inv, setInv] = useState(null);               // 🆕 v9.545: 請求書の入力中 { issueDate, dueDate, item, total, note, prof }
+  const [profRow, setProfRow] = useState(null);       // 🆕 v9.551: クラウドの invprof::<名前>（振込先・口座の既定値）
+  useEffect(() => { let on = true; loadInvoiceProfileRow(me).then(p => { if (on && p) setProfRow(p); }); return () => { on = false; }; }, [me]);
   const deals =React.useMemo(() => (data.deals || []).filter(d => d && (!d.owner || d.owner === me)), [data.deals, me]);
   const months = React.useMemo(() => data.incomeMonths || {}, [data.incomeMonths]);
 
@@ -36228,7 +36240,7 @@ function IncomePage({ data, setData, currentUser }) {
     const t = new Date(), today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
     // 振込先が未登録なら、前に作った請求書の控えから拾う（無ければ最初の1回だけ入れてもらう）
     const lastDoc = (Array.isArray(data.invoiceDocs) ? data.invoiceDocs : []).find(x => x && x.prof && x.prof.account);
-    const prof = invoiceProfileOf({ ...((lastDoc && lastDoc.prof) || {}), ...Object.fromEntries(Object.entries(data.invoiceProfile || {}).filter(([, v]) => String(v || "").trim())) });
+    const prof = invoiceProfileOf({ ...(profRow || {}), ...((lastDoc && lastDoc.prof) || {}), ...Object.fromEntries(Object.entries(data.invoiceProfile || {}).filter(([, v]) => String(v || "").trim())) });
     setInv({
       id: null, dealId: d ? d.id : null,
       issueDate: today, dueDate: today,
