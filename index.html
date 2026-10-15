@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-16-v9.558-update";
+const APP_VERSION = "2026-10-16-v9.559-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8691,7 +8691,7 @@ const PAGES = [
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
   { v: "9.558", date: "2026-10-16", title: "次に回る場所が、地図で点滅して分かるように",
-    body: "地上げの地図の左下に「🎯 探索候補」ボタンを足しました。市町村を選ぶと、町丁・字ごとに区切った地図が出て、まだ回っていない区画のうち、お年寄りが多い・一戸建てが多い・近くに未訪問の所有者が多い順に、上位3つが点滅します。区画をタップすると理由が見られ、「今日ここを回る」を押すとその区画だけが点滅します。灰色は回ったことがある区画です。",
+    body: "地上げの地図の左下に「🎯 探索候補」ボタンを足しました。市町村を選ぶと、町丁・字ごとに区切った地図が出て、まだ回っていない区画のうち、家が並んでいる住宅街で、お年寄りが多い・一戸建てが多い・近くに未訪問の所有者が多い順に、上位3つが点滅します（田畑の中に家が点在するような所は出しません）。区画をタップすると理由が見られ、「今日ここを回る」を押すとその区画だけが点滅します。灰色は回ったことがある区画です。",
     where: "地上げ → 地図 → 左下「🎯 探索候補」" },
   { v: "9.557", date: "2026-10-15", title: "町ごとに「最後に回った日」と「次に回る目安」が分かるように",
     body: "地上げの上の切り替えに「🧭 エリア」を足しました。ピンを打った時刻から、町ごとに最後に探索した日・その時1時間に何件ピンが立ったか・次に回る目安の日を出します。よく見つかった町は半年後、ふつうの町は1年後、少なかった町は2年後が目安です。町をタップすると、日ごとの探索の記録が見られます。地図でも「🧭 探索エリアの時期を丸で出す」をONにすると、時期を過ぎた町が赤で出ます。",
@@ -23050,9 +23050,12 @@ function tansakuStateColor(untilNext) {
 // 🆕 v9.558: 探索候補エリア。市町村を選ぶと町丁・字ごとの区画を出し、次に回るべき上位3区画を点滅させる。
 //   区画データは静的ファイル areas/<市区町村コード>.geojson（scripts/build-area-geojson.py で作成・e-Stat 令和2年国勢調査）。
 //   計算は画面上だけ。jiage には一切書かない。重みだけ app_data の別行 kohoconf::main（全員共有）。
-const KOHO_DEFAULT_W = { aging: 40, detached: 30, setai: 10, near: 20 };
-const KOHO_NEAR_KM = 15;          // 30分圏内の目安（直線15km）
-const KOHO_MIN_SETAI = 30;        // これ未満の世帯数は回る価値が低い→減点
+// 🆕 v9.559: 「家の密集度」(1km²あたりの世帯数)を一番重く。まばらな区画(minDens未満)はおすすめにしない
+//   （v9.558 は高齢化率・一戸建て割合だけで、田畑の中に家が点在する農村ばかりが上位に来ていた）
+//   一戸建てが少ない区画（団地・マンション中心＝minIkko%未満）と、世帯が少なすぎる区画（30未満）も候補にしない
+const KOHO_DEFAULT_W = { density: 40, aging: 25, detached: 15, setai: 5, near: 15, minDens: 1000, minIkko: 50 };
+const KOHO_NEAR_KM = 3;           // 近くの未訪問の所有者を数える範囲（直線3km。15kmだと市内どこでも同じ件数になり差がつかなかった）
+const KOHO_MIN_SETAI = 30;        // これ未満の世帯数は回る価値が低い→おすすめにしない
 const KOHO_TRACK_MIN_MS = 3 * 60000; // 探索ルートが区画の中に合計3分以上いた日だけ「通った」とみなす（車で通過しただけは数えない）
 const KOHO_CLOSED_STATUS = ["対象外", "訪問禁止", "見込無し", "仕入", "失注"];
 const _kohoCache = {};
@@ -23069,7 +23072,15 @@ function kohoPrepare(fc) {
     const polys = (f.geometry && f.geometry.coordinates) || [];
     let s = 90, w = 180, n = -90, e = -180;
     polys.forEach(p => (p[0] || []).forEach(([x, y]) => { if (y < s) s = y; if (y > n) n = y; if (x < w) w = x; if (x > e) e = x; }));
-    return { ...f.properties, polys, bb: [s, w, n, e] };
+    // 面積(km²)：緯度経度をその場の縮尺でkmに直して多角形の面積（穴は引く）
+    const kx = 111.32 * Math.cos(((s + n) / 2) * Math.PI / 180), ky = 110.57;
+    let km2 = 0;
+    polys.forEach(p => p.forEach((r, ri) => {
+      let A = 0;
+      for (let i = 0, j = r.length - 1; i < r.length; j = i++) A += (r[j][0] * kx) * (r[i][1] * ky) - (r[i][0] * kx) * (r[j][1] * ky);
+      km2 += (ri === 0 ? 1 : -1) * Math.abs(A) / 2;
+    }));
+    return { ...f.properties, polys, bb: [s, w, n, e], km2, dens: km2 > 0 ? f.properties.h / km2 : 0 };
   });
 }
 function _kohoInRing(lat, lng, ring) {
@@ -23167,7 +23178,7 @@ function computeKoho(areas, ctx) {
     a.next = tansakuAddMonths(last, tansakuMonthsFor(t ? t.lastRate : null, conf || TANSAKU_DEFAULT));
     a.state = a.next <= today ? "again" : "done";
   });
-  // ④ 30分圏内の未訪問の所有者
+  // ④ 近く（KOHO_NEAR_KM以内）の未訪問の所有者
   const owners = (jiage || []).filter(j => j && typeof j.ownerLat === "number" && typeof j.ownerLng === "number"
     && !j.excluded && _kohoSaitama(j.ownerAddr || j.ownerAddress)
     && !(Array.isArray(j.visitLog) && j.visitLog.length) && !KOHO_CLOSED_STATUS.includes(j.status));
@@ -23178,11 +23189,17 @@ function computeKoho(areas, ctx) {
     a.near = n;
   });
   // ⑤ おすすめ度（未探索・再探索時期だけ）。各要素は町の中での順位(0〜1)×重み
-  const cand = res.filter(a => a.state !== "done" && a.h > 0);
+  const minDens = Number(W.minDens) || 0;
+  const minIkko = (Number(W.minIkko) || 0) / 100;
+  const why = a => a.h < KOHO_MIN_SETAI ? `世帯が${a.h}世帯と少ない`
+    : a.dens < minDens ? `家がまばら（1km²に${Math.round(a.dens).toLocaleString()}世帯・${minDens.toLocaleString()}未満）`
+    : (a.d != null && a.d < minIkko) ? `一戸建てが${Math.round(a.d * 100)}%と少ない（団地・マンション中心）` : "";
+  const cand = res.filter(a => a.state !== "done" && !why(a));
+  const pDen = _kohoPct(cand, a => a.dens);
   const pO = _kohoPct(cand, a => a.o), pD = _kohoPct(cand, a => a.d), pH = _kohoPct(cand, a => a.h), pN = _kohoPct(cand, a => a.near);
   cand.forEach((a, i) => {
-    const setai = a.h < KOHO_MIN_SETAI ? -W.setai : (pH[i] || 0) * W.setai;
-    a.score = (pO[i] || 0) * W.aging + (pD[i] || 0) * W.detached + setai + (pN[i] || 0) * W.near;
+    const setai = (pH[i] || 0) * W.setai;
+    a.score = (pDen[i] || 0) * W.density + (pO[i] || 0) * W.aging + (pD[i] || 0) * W.detached + setai + (pN[i] || 0) * W.near;
   });
   cand.sort((x, y) => y.score - x.score).forEach((a, i) => { a.rank = i + 1; });
   // ⑥ 理由の文（町の中での順位で）
@@ -23190,13 +23207,14 @@ function computeKoho(areas, ctx) {
     const l = res.filter(a => get(a) != null && a.h > 0).sort((x, y) => get(y) - get(x));
     const m = {}; l.forEach((a, i) => { m[a.k] = i + 1; }); return [m, l.length];
   };
-  const [rO, nO] = rankOf(a => a.o), [rD, nD] = rankOf(a => a.d);
+  const [rO, nO] = rankOf(a => a.o), [rD, nD] = rankOf(a => a.d), [rDen, nDen] = rankOf(a => a.dens);
   res.forEach(a => {
     const r = [];
+    if (rDen[a.k]) r.push(`家の密集度が町内${rDen[a.k]}位（1km²に${Math.round(a.dens).toLocaleString()}世帯）`);
+    if (a.state !== "done" && why(a)) r.push(`${why(a)}ので、おすすめにしていません`);
     if (a.o != null && rO[a.k]) r.push(`高齢化率が町内${rO[a.k]}位（${nO}区画中）`);
     if (a.d != null && rD[a.k]) r.push(`一戸建てが${Math.round(a.d * 100)}%（町内${rD[a.k]}位）`);
-    r.push(`30分圏内に未訪問の所有者${a.near}件`);
-    if (a.h < KOHO_MIN_SETAI) r.push(`世帯が${a.h}世帯と少ない（減点）`);
+    r.push(`${KOHO_NEAR_KM}km以内に未訪問の所有者${a.near}件`);
     a.reasons = r;
   });
   const top = cand.slice(0, 3).map(a => a.k);
@@ -29867,11 +29885,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#38bdf8", border: "1px solid #0284c7", marginRight: 3, verticalAlign: "middle" }} />未探索 {kohoResult.counts.none}</span>
                             <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#fbbf24", border: "1px solid #d97706", marginRight: 3, verticalAlign: "middle" }} />再探索時期 {kohoResult.counts.again}</span>
                             <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#94a3b8", border: "1px solid #64748b", marginRight: 3, verticalAlign: "middle" }} />探索済み {kohoResult.counts.done}</span>
-                            <span style={{ color: "#e11d48", fontWeight: 800 }}>{kohoPin && kohoPin.date === kohoToday && kohoResult.areas.some(a => a.k === kohoPin.k) ? "★ 今日回る区画を表示中" : "点滅＝おすすめ上位3"}</span>
+                            <span style={{ color: "#e11d48", fontWeight: 800 }}>{kohoPin && kohoPin.date === kohoToday && kohoResult.areas.some(a => a.k === kohoPin.k) ? "★ 今日回る区画を表示中" : kohoResult.top.length ? "点滅＝おすすめ上位" + kohoResult.top.length : "未探索の住宅街は残っていません"}</span>
                           </div>
                         )}
                         {kohoShowConf && (() => {
-                          const rows = [["aging", "高齢化率"], ["detached", "一戸建て割合"], ["setai", "世帯数（30未満は減点）"], ["near", "30分圏内の未訪問の所有者"]];
+                          const rows = [["density", "家の密集度（1km²あたりの世帯数）"], ["aging", "高齢化率"], ["detached", "一戸建て割合"], ["setai", "世帯数"], ["near", "3km以内の未訪問の所有者"], ["minDens", "これ未満の密集度はおすすめにしない（世帯/km²）"], ["minIkko", "一戸建てがこれ未満(%)はおすすめにしない"]];
                           return (
                             <div style={{ marginTop: 6, borderTop: "1px solid #e2e8f0", paddingTop: 6 }}>
                               <div style={{ color: "#64748b", marginBottom: 4 }}>おすすめ度の重み（大きいほど重視。全員で共通）</div>
@@ -29956,7 +29974,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {cell("世帯数", a.h.toLocaleString() + "世帯")}
                             {cell("高齢化率（65歳以上）", pct(a.o))}
                             {cell("一戸建て割合", pct(a.d))}
-                            {cell("30分圏内の未訪問の所有者", a.near + "件")}
+                            {cell("3km以内の未訪問の所有者", a.near + "件")}
+                            {cell("家の密集度", Math.round(a.dens).toLocaleString() + "世帯/km²")}
+                            {cell("人口", (a.p || 0).toLocaleString() + "人")}
                           </div>
                           <div style={{ fontSize: 12, color: C.text, lineHeight: 1.7, background: C.inset, borderRadius: 8, padding: "6px 10px", marginBottom: 10 }}>
                             <div style={{ fontWeight: 800, marginBottom: 2 }}>{a.state === "done" ? "探索済みなので、おすすめからは外しています" : "おすすめの理由"}</div>
