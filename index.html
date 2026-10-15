@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-15-v9.555-update";
+const APP_VERSION = "2026-10-15-v9.556-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8690,6 +8690,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.556", date: "2026-10-15", title: "前に調べた家が、地図で灰色の点で分かるように",
+    body: "対象外（本人居住・法人など）や見込無しにしたピンは、いつもの地図には出ません。そのため、同じエリアをもう一度回った時に「ここ前に調べたっけ？」が分かりませんでした。これからは、そうした調べ済みの家を灰色の小さな点で出します。点をタップすると、何と判断したか・誰がいつ立てたかが出ます。いらない時はボタンで消せます。",
+    where: "地上げ → 地図（物件住所）→「👣 調べ済みも灰色の点で出す」" },
   { v: "9.555", date: "2026-10-15", title: "所有者宅のピンを、地番の地図で正しい家の上に",
     body: "所有者住所の番地（地番）を、法務局の地番地図やブルーマップで探して、所有者宅のピンをその家の真上に置き直しました。ピンの写真に「赤丸つきの地図」が入っているので、どの家か一目で分かります。この方法で直したピンには「🗺 地番で位置特定」の印がつきます（表札までは見ていないので、着いたら表札を確かめてください）。",
     where: "地上げ → 地図（所有者住所）→ ピンを開く → 写真" },
@@ -9970,7 +9973,7 @@ if (typeof L !== "undefined" && L.Map && !L.Map.prototype._hkRotPatched) {
   L.Map.prototype._hkRotPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -10163,6 +10166,31 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     svLayerRef.current = grp;
     return () => { try { map.removeLayer(grp); } catch (e) {} };
   }, [svScans]);
+
+  // 🆕 v9.556: 「調べ済み」の家を灰色の小さな点で出す（絞り込みで隠れている対象外・見込無しなど）。
+  //   同じエリアをもう一度探索した時に「ここは前に調べた」が分かるように。タップで中身だけ見せる。
+  const ghostLayerRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (ghostLayerRef.current) { try { map.removeLayer(ghostLayerRef.current); } catch (e) {} ghostLayerRef.current = null; }
+    const pins = Array.isArray(ghostPins) ? ghostPins : [];
+    if (!pins.length) return;
+    const renderer = L.canvas({ padding: 0.3 });
+    const grp = L.layerGroup();
+    const esc = s => String(s || "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    pins.forEach(p => {
+      if (typeof p.lat !== "number" || typeof p.lng !== "number") return;
+      L.circleMarker([p.lat, p.lng], {
+        renderer, radius: 5, color: "#475569", weight: 1.5, fillColor: "#cbd5e1", fillOpacity: 0.9,
+      }).bindPopup(`<div style="font-size:12px;line-height:1.6;"><b>👣 調べ済み</b><br>${esc(p.address)}<br>`
+        + `<span style="color:#475569;">${esc(p.state)}</span><br>`
+        + `<span style="color:#94a3b8;font-size:11px;">${esc(p.who)}${p.when ? "・" + esc(p.when) : ""}</span></div>`).addTo(grp);
+    });
+    grp.addTo(map);
+    ghostLayerRef.current = grp;
+    return () => { try { map.removeLayer(grp); } catch (e) {} };
+  }, [ghostPins]);
 
   // 🆕 v9.441: 密集市街地（再建築不可が集中する古い戸建地帯）
   const mitsuLayerRef = React.useRef(null);
@@ -25254,6 +25282,22 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     return true;
   }), [allItems, typeFilter, areaFilter, filterStatuses, resultFilters, filterMember, search, searchTarget, quickFilter, batchFilter, today, homeType]);
 
+  // 🆕 v9.556: 下田さん「同じエリアをまた探索した時、前に空き家として調べたかが分からない」。
+  //   絞り込みで地図から隠れたピン（対象外・見込無し・別の担当など）を、灰色の小さな点「👣 調べ済み」で出す。
+  //   物件住所の地図だけ。端末ごとに ON/OFF を覚える（既定は ON）。
+  const [showDonePins, setShowDonePinsRaw] = useState(() => { try { return localStorage.getItem("hikari_show_done_pins") !== "0"; } catch (e) { return true; } });
+  const setShowDonePins = (v) => { setShowDonePinsRaw(v); try { localStorage.setItem("hikari_show_done_pins", v ? "1" : "0"); } catch (e) {} };
+  const donePins = useMemo(() => {
+    if (!showDonePins || mapPinTarget === "ownerAddr") return [];
+    const shown = new Set(filtered.map(i => i.id));
+    const fmt = (t) => { if (typeof t !== "number") return ""; const d = new Date(t); return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`; };
+    return allItems.filter(i => !shown.has(i.id) && typeof i.lat === "number" && typeof i.lng === "number").map(i => {
+      const r = i.raw || {};
+      const state = r.excluded === true ? `対象外（${r.excludedReason || "DM不要"}）` : (i.status || "");
+      return { lat: i.lat, lng: i.lng, address: i.address || r.landmark || "", state, who: i.assignee || "", when: fmt(r.createdAt) };
+    });
+  }, [showDonePins, mapPinTarget, filtered, allItems]);
+
   // 🆕 最新訪問日（visitLog の中で最新のもの）を取り出す
   const getLatestVisit = (item) => {
     const log = (item && item.raw && item.raw.visitLog) || [];
@@ -27798,6 +27842,19 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 );
               })}
             </div>
+            {/* 🆕 v9.556: 調べ済み（絞り込みで隠れているピン）を灰色の点で出す */}
+            {mapPinTarget !== "ownerAddr" && (
+              <button onClick={() => setShowDonePins(!showDonePins)} style={{
+                marginTop: 6, width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                background: showDonePins ? "#47556922" : C.inset, color: showDonePins ? C.text : C.muted,
+                border: `1.5px solid ${showDonePins ? "#475569" : C.borderDim}`, borderRadius: 8, padding: "6px 10px",
+                cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textAlign: "left",
+              }}>
+                <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "#cbd5e1", border: "1.5px solid #475569", marginRight: 6, verticalAlign: "middle" }} />
+                  👣 調べ済みも灰色の点で出す{showDonePins ? `（${donePins.length}件）` : ""}</span>
+                <span style={{ fontSize: 11 }}>{showDonePins ? "ON" : "OFF"}</span>
+              </button>
+            )}
           </div>
 
           {/* 🗺️ Leaflet地図表示 */}
@@ -29109,6 +29166,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     <div style={{ position: "relative" }}>
                     <LeafletMap
                       items={itemsWithCoord}
+                      ghostPins={donePins}
                       onPinClick={(it) => setSelected({ item: it })}
                       pinTarget={mapPinTarget}
                       height="82vh"
