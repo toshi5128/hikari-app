@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-15-v9.552-update";
+const APP_VERSION = "2026-10-15-v9.553-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6165,10 +6165,48 @@ function _sameChiban(ownerKey, propKey) {
   if (!ot || !pt) return false;
   return pt === ot || pt.endsWith("-" + ot);
 }
+// 🆕 v9.553: 2026-10-15 下田さんの決定「家を建てた時の住所で登記して、その後に町名が変わっても登記を
+//   直していない人は住所違いではない＝本人居住」。所有者住所が旧大字(川越市大字南大塚1496番地67)のままで、
+//   物件がその大字から生まれた新しい町(南大塚6丁目)にある時。区画整理で地番も変わるので _sameChiban では拾えない。
+//   名前が似ている町は自動、全く変わった町は OAZA_RENAMED で対応。jiage-chiban/dm_judge.py と同じ中身に保つ。
+const OAZA_RENAMED = [
+  ["川越市", "笠幡", "かすみ野"], ["川越市", "的場", "霞ケ関北"], ["川越市", "吉田", "霞ケ関北"],
+  ["川越市", "的場", "霞ケ関東"],
+  ["入間郡毛呂山町", "長瀬", "南台"], ["入間郡毛呂山町", "葛貫", "南台"], ["入間郡毛呂山町", "長瀬", "若山"],
+  ["北本市", "北本宿", "緑"], ["比企郡滑川町", "月輪", "月の輪"],
+];
+function _kanjiNum(s) {
+  const KN = { "〇": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9 };
+  return s.replace(/[〇一二三四五六七八九十]+/g, r => {
+    if (r.indexOf("十") >= 0) { const [a, b] = r.split("十"); return String((a ? KN[a] : 1) * 10 + (b ? KN[b] : 0)); }
+    return r.split("").map(c => KN[c]).join("");
+  });
+}
+function _cityTown(addr) {
+  let s = applyKyujuMuni(String(addr || "").normalize("NFKC").replace(/[\s　]/g, ""));
+  s = s.replace(/ヶ/g, "ケ").replace(/ヵ/g, "カ").replace(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/, "");
+  s = _kanjiNum(s);
+  const m = /^(.+?郡.+?[町村]|.+?市.+?区|.+?[市町村])(.*?)(\d.*)?$/.exec(s);
+  if (!m) return null;
+  return { city: m[1], town: (m[2] || "").replace(/^大字/, ""), chome: /^\d+丁目/.test(m[3] || "") };
+}
+function isOldTownResident(propAddr, ownerAddr) {
+  const parts = String(ownerAddr || "").split(/[・、／\/,，]/).filter(p => p.trim());
+  if (parts.length > 1) return parts.some(p => isOldTownResident(propAddr, p));
+  const raw = String(ownerAddr || "").normalize("NFKC");
+  const o = _cityTown(ownerAddr), p = _cityTown(propAddr);
+  if (!o || !p || !o.city || o.city !== p.city || !o.town || !p.town || o.chome) return false;
+  if (raw.indexOf("大字") < 0 && raw.indexOf("番地") < 0) return false;          // 旧大字の書き方だけ
+  if (/\d[^\d\s\-‐-―−ー－ｰ丁目番地号の]{2,}/.test(String(propAddr || "").normalize("NFKC"))) return false; // マンションの部屋は除く
+  if (o.town === p.town) return p.chome;                                          // 大字小泉 → 小泉1丁目
+  if (o.town.length >= 2 && (p.town.startsWith(o.town) || (p.town.length >= 2 && o.town.startsWith(p.town)) || p.town.endsWith(o.town))) return true;
+  return OAZA_RENAMED.some(([c, ot, nt]) => c === o.city && ot === o.town && p.town.startsWith(nt));
+}
 function isOwnerResident(j) {
   if (!j) return false;
   const rawOwner = j.ownerAddr || j.ownerAddress || "";
   if (!String(rawOwner).trim()) return false;
+  if (j.ownerOldTown === true || isOldTownResident(j.address || "", rawOwner)) return true;
   const pa = dmAddrKey(j.address || "");
   const lm = dmAddrKey(j.landmark || (j.raw && j.raw.landmark) || "");
   if (!pa && !lm) return false;
@@ -8652,6 +8690,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.553", date: "2026-10-15", title: "昔の町名のまま登記している所有者を、自動で「本人居住」に",
+    body: "謄本の所有者住所が「川越市大字南大塚1496番地67」のような昔の町名のままで、物件がその町から変わった新しい町（南大塚6丁目など）にある時は、所有者がその物件に住んでいると判断して、自動で対象外（本人居住）にします。町名が変わっても登記を直していないだけなので、住所違いではありません。🏠住所要確認だったピンのうち、これに当てはまるものも片付けました。",
+    where: "地上げ → 所有者（対象外・🏠住所要確認の件数）" },
   { v: "9.547", date: "2026-10-15", who: ["下田"], title: "作った請求書が、控えとして残るように",
     body: "「保存して請求書を開く」を押すと、その請求書が自動で保存されます。収支の「請求書」タブに一覧で並び、タップすると当時の内容のまま開き直して、もう一度印刷・PDFにできます。直して開き直すと同じ控えが上書きされます。いらない控えは開いて「削除」で消せます。",
     where: "収支 → 「請求書」タブ" },
