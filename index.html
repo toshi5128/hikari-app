@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-15-v9.544-update";
+const APP_VERSION = "2026-10-15-v9.545-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -5099,6 +5099,7 @@ const DEFAULT_DATA = {
   holdingGoal: 500000, // 🆕 v9.455: 家賃の手取りの月額目標（まず50万、いずれ100万・200万）
   deals: [],           // 🆕 v9.463: 収支（案件ごとの仕入・売却・利益・歩合）。本人だけに見える
   incomeMonths: {},    // 🆕 v9.463: 月別の手入力（過去の実績）。{ "2026-09": { pay, memo } }
+  invoiceProfile: {},  // 🆕 v9.545: 請求書の請求元（会社名・住所・登録番号・振込先）。収支タブの本人だけが使う
   hanro: [], // 🆕 v9.352: 買取業者リスト（先行打診の送り先。投資家は反響から自動集約＝v9.367）
   investorMail: [], // 🆕 v9.367: 投資家の打診メール設定（id＝名寄せキー / optOut / lastSentAt）
   offers: [], // 🆕 v9.354: 先行打診の送信履歴（いつ・どの物件を・何件に送ったか）
@@ -8640,6 +8641,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.545", date: "2026-10-15", who: ["下田"], title: "収支の案件から、請求書をそのまま作れるように",
+    body: "案件を開いて一番下の「🧾 この案件の請求書を作る」を押すと、内容と金額（歩合）が入った請求書の画面が出ます。日付と金額を確かめて「請求書を開く」で、A4の請求書が出るので印刷かPDFで保存してください。税抜と消費税は自動で計算します。会社名や振込先は最初の1回だけ入れれば、次から自動で入ります。",
+    where: "収支 → 案件を開く →「🧾 この案件の請求書を作る」（案件なしなら右上の「🧾 請求書」）" },
   { v: "9.544", date: "2026-10-15", who: ["下田"], title: "ハヤトに声で言った訪問結果を、アプリで1タップ記録できるように",
     body: "ハヤトに「〇〇の家、不在。ポストに名刺」のように話すと、地上げの画面の左下に「🎙 ハヤトの訪問メモ」が出ます。押して「記録する」で、中身が入った訪問記録が開くので、確かめて保存してください。面談数などの集計もいつも通り入ります。",
     where: "地上げ → 左下の「🎙 ハヤトの訪問メモ」" },
@@ -35978,6 +35982,141 @@ function termMonths(no) {                            // その期の12ヶ月分�
   });
 }
 
+// 🆕 v9.545: 請求書（自分の会社 → ひかり不動産）。作って印刷・PDFにするだけ（一覧・入金管理はしない）。
+//   ・請求元（会社名・住所・登録番号・振込先）は data.invoiceProfile に保存（ソースは公開なので直書きしない）。
+//   ・金額は税込で入れる → 税抜 = 税込 ÷ 1.1（円未満四捨五入）、消費税 = 税込 − 税抜。
+const INVOICE_TO = { name: "合同会社ひかり不動産", zip: "360-0847", addr: "埼玉県熊谷市籠原南1丁目225" };
+const INVOICE_PROFILE_FIELDS = [
+  ["company", "会社名", "例: 合同会社〇〇"], ["zip", "郵便番号", "例: 355-0031"], ["addr", "住所", ""],
+  ["tel", "電話", ""], ["regNo", "インボイス登録番号", "例: T1234567890123"],
+  ["bank", "振込先（銀行・支店）", "例: 〇〇信用金庫 〇〇支店"], ["account", "口座（種別・番号・名義）", "例: 普通口座 1234567 ド）〇〇"],
+];
+function invoiceCalc(total) {
+  const inc = Math.round(hNum(total));
+  const ex = Math.round(inc / 1.1);
+  return { inc, ex, tax: inc - ex };
+}
+function buildInvoiceHTML(inv, prof) {
+  const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const yen = n => Math.round(n || 0).toLocaleString("ja-JP");
+  const jd = s => { const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[1]}年${Number(m[2])}月${Number(m[3])}日` : ""; };
+  const p = prof || {}, c = invoiceCalc(inv.total);
+  const blank = Array.from({ length: 6 }, () => `<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>`).join("");
+  return `<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>請求書 ${esc(inv.item)}</title>
+<style>
+@page{size:A4;margin:0}
+*{box-sizing:border-box}
+body{margin:0;background:#e5e7eb;font-family:"Noto Sans JP","Hiragino Sans","Yu Gothic",sans-serif;color:#111}
+.toolbar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px 14px;background:#1f2937;color:#fff;font-size:14px}
+.toolbar button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:15px;font-weight:700}
+.sheet{width:210mm;min-height:297mm;margin:12px auto;background:#fff;padding:18mm 16mm;box-shadow:0 2px 10px rgba(0,0,0,.15)}
+h1{text-align:center;font-size:26px;letter-spacing:.6em;margin:0 0 6mm;padding-bottom:3mm;border-bottom:3px double #111}
+.meta{text-align:right;font-size:13px;margin-bottom:6mm}
+.top{display:flex;justify-content:space-between;gap:8mm}
+.to .nm{font-size:18px;font-weight:700;border-bottom:1px solid #111;padding-bottom:1mm;margin-bottom:2mm}
+.to div,.from div{font-size:12.5px;line-height:1.75}
+.from{text-align:left;min-width:72mm}
+.from .nm{font-size:15px;font-weight:700}
+.lead{font-size:13px;margin:7mm 0 3mm}
+.amount{display:flex;align-items:baseline;gap:6mm;border-bottom:2px solid #111;width:105mm;padding-bottom:1.5mm}
+.amount span{font-size:13px}.amount b{font-size:24px;letter-spacing:.02em}
+.pay{margin:6mm 0;font-size:12.5px;line-height:1.85}
+.pay td{padding:0 4mm 0 0;vertical-align:top}
+table.items{width:100%;border-collapse:collapse;font-size:12px;margin-top:3mm}
+table.items th{background:#f3f4f6;font-weight:700}
+table.items th,table.items td{border:1px solid #555;padding:2.2mm 2mm}
+table.items td.n{text-align:right;font-variant-numeric:tabular-nums}
+table.sum{margin-left:auto;border-collapse:collapse;font-size:12.5px;margin-top:-1px}
+table.sum td{border:1px solid #555;padding:2.2mm 3mm;min-width:32mm}
+table.sum td.n{text-align:right;font-variant-numeric:tabular-nums}
+table.sum tr.t td{font-weight:700;background:#f3f4f6}
+.note{margin-top:8mm;border:1px solid #555;min-height:24mm;padding:2.5mm 3mm;font-size:12px;white-space:pre-wrap}
+.note .h{font-weight:700;margin-bottom:1mm}
+@media print{body{background:#fff}.toolbar{display:none}.sheet{margin:0;box-shadow:none;zoom:1!important;min-height:0;height:296mm;overflow:hidden}}
+</style></head>
+<body>
+<div class="sheet">
+  <h1>請求書</h1>
+  <div class="meta">発行日：${jd(inv.issueDate)}</div>
+  <div class="top">
+    <div class="to">
+      <div class="nm">${esc(INVOICE_TO.name)}　御中</div>
+      <div>〒${esc(INVOICE_TO.zip)}</div>
+      <div>${esc(INVOICE_TO.addr)}</div>
+    </div>
+    <div class="from">
+      <div class="nm">${esc(p.company)}</div>
+      ${p.zip ? `<div>〒${esc(p.zip)}</div>` : ""}
+      ${p.addr ? `<div>住所：${esc(p.addr)}</div>` : ""}
+      ${p.tel ? `<div>電話：${esc(p.tel)}</div>` : ""}
+      ${p.regNo ? `<div>登録番号：${esc(p.regNo)}</div>` : ""}
+    </div>
+  </div>
+  <div class="lead">下記の通り、ご請求申し上げます。</div>
+  <div class="amount"><span>ご請求金額（税込）</span><b>¥${yen(c.inc)} -</b></div>
+  <table class="pay">
+    <tr><td>振込先</td><td>${esc(p.bank)}<br>${esc(p.account)}</td></tr>
+    <tr><td>振込期日</td><td>${jd(inv.dueDate)}まで</td></tr>
+    <tr><td></td><td>振込手数料は御社のご負担にてお願いいたします。</td></tr>
+  </table>
+  <table class="items">
+    <tr><th style="width:29mm;white-space:nowrap">日付</th><th>内容</th><th style="width:12mm">数量</th><th style="width:12mm">単位</th><th style="width:28mm">単価（税抜）</th><th style="width:13mm">税率</th><th style="width:28mm">金額（税抜）</th></tr>
+    <tr><td style="white-space:nowrap">${jd(inv.issueDate)}</td><td>${esc(inv.item)}</td><td class="n">1</td><td>式</td><td class="n">${yen(c.ex)}</td><td class="n">10%</td><td class="n">${yen(c.ex)}</td></tr>
+    ${blank}
+  </table>
+  <table class="sum">
+    <tr><td>小計（税抜）</td><td class="n">${yen(c.ex)}</td></tr>
+    <tr><td>消費税（10%）</td><td class="n">${yen(c.tax)}</td></tr>
+    <tr class="t"><td>合計（税込）</td><td class="n">${yen(c.inc)}</td></tr>
+  </table>
+  <div class="note"><div class="h">備考</div>${esc(inv.note)}</div>
+</div>
+<script>
+(function(){
+  var PAGE_PX = 210 * 96 / 25.4;
+  function fit(){
+    var s = document.querySelector('.sheet'); if(!s) return;
+    var vw = document.documentElement.clientWidth || window.innerWidth || PAGE_PX;
+    s.style.zoom = (vw < PAGE_PX) ? String((vw - 12) / PAGE_PX) : '';
+  }
+  window.addEventListener('resize', fit);
+  window.addEventListener('orientationchange', fit);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fit); else fit();
+})();
+${"<" + "/script>"}
+</body></html>`;
+}
+// 新しいタブで開く（上部の印刷ボタン or 共有→印刷でPDF）。開けない端末は画面外iframeで印刷（請負契約書と同じ方式）
+function printInvoice(inv, prof) {
+  try {
+    let html = buildInvoiceHTML(inv, prof);
+    html = html.replace("<body>", '<body><div class="toolbar"><span>請求書 — プレビュー</span><button onclick="window.print()">🖨 印刷 / PDFで保存</button></div>');
+    let w = null;
+    try { w = window.open("", "_blank"); } catch (e) {}
+    if (w && w.document) {
+      w.document.open(); w.document.write(html); w.document.close();
+      try { w.focus(); } catch (e) {}
+      return;
+    }
+    const ifr = document.createElement("iframe");
+    ifr.setAttribute("aria-hidden", "true");
+    ifr.style.cssText = "position:fixed;left:-10000px;top:0;width:820px;height:1200px;border:0;";
+    document.body.appendChild(ifr);
+    const doc = ifr.contentWindow.document;
+    doc.open(); doc.write(html); doc.close();
+    let done = false;
+    const fire = () => {
+      if (done) return; done = true;
+      try { ifr.contentWindow.focus(); ifr.contentWindow.print(); } catch (e) {}
+      setTimeout(() => { try { document.body.removeChild(ifr); } catch (e) {} }, 2000);
+    };
+    try { const fk = ifr.contentWindow.document.fonts; if (fk && fk.ready) fk.ready.then(() => setTimeout(fire, 150)); } catch (e) {}
+    setTimeout(fire, 2000);
+  } catch (e) { console.warn("invoice print failed", e); alert("請求書の生成に失敗しました：" + e.message); }
+}
+
 function IncomePage({ data, setData, currentUser }) {
   const me = String(currentUser || "").trim();
   const [edit, setEdit] = useState(null);
@@ -35985,7 +36124,8 @@ function IncomePage({ data, setData, currentUser }) {
   const nowYM = new Date().toISOString().slice(0, 7);
   const [term, setTerm] = useState(termOf(nowYM) || 3);
   const [monthOpen, setMonthOpen] = useState({});     // 🆕 v9.466: 「案件外」を開いた月
-  const deals = React.useMemo(() => (data.deals || []).filter(d => d && (!d.owner || d.owner === me)), [data.deals, me]);
+  const [inv, setInv] = useState(null);               // 🆕 v9.545: 請求書の入力中 { issueDate, dueDate, item, total, note, prof }
+  const deals =React.useMemo(() => (data.deals || []).filter(d => d && (!d.owner || d.owner === me)), [data.deals, me]);
   const months = React.useMemo(() => data.incomeMonths || {}, [data.incomeMonths]);
 
   const yen = n => "¥" + Math.round(n || 0).toLocaleString("ja-JP");
@@ -36064,6 +36204,27 @@ function IncomePage({ data, setData, currentUser }) {
     if (!Array.isArray(out.costs) || !out.costs.length) out.costs = DEAL_COST_LABELS.map(l => ({ label: l, amount: "" }));
     return out;
   };
+  // 🆕 v9.545: 請求書を開く（案件から開くと内容と金額＝歩合を入れておく）
+  const openInvoice = (d) => {
+    const t = new Date(), today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+    const prof = { ...(data.invoiceProfile || {}) };
+    setInv({
+      issueDate: today, dueDate: today,
+      item: d ? `${d.name || d.address || ""}　営業企画及び営業費用として` : "",
+      total: d ? String(Math.max(0, dealCalc(d).pay)) : "",
+      note: "", prof, profOpen: !prof.company,
+    });
+  };
+  const runInvoice = () => {
+    const keys = INVOICE_PROFILE_FIELDS.map(f => f[0]);
+    const cur = data.invoiceProfile || {};
+    if (keys.some(k => String(cur[k] || "") !== String(inv.prof[k] || ""))) {
+      const now = Date.now();
+      const clean = {}; keys.forEach(k => { clean[k] = String(inv.prof[k] || "").trim(); });
+      setData(prev => ({ ...prev, invoiceProfile: { ...(prev.invoiceProfile || {}), ...clean, updatedAt: now } }));
+    }
+    printInvoice(inv, inv.prof);
+  };
   const setMonth = (ym, patch) => {
     const now = Date.now();
     setData(prev => ({
@@ -36076,7 +36237,10 @@ function IncomePage({ data, setData, currentUser }) {
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
         <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>💰 収支<span style={{ fontSize: 11, color: C.muted, marginLeft: 8, fontWeight: 700 }}>🔒 {me}さんだけに見えています</span></div>
-        <button onClick={() => setEdit(blankDeal())} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>＋ 案件を追加</button>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => openInvoice(null)} style={{ background: "transparent", color: C.text, border: `1.5px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>🧾 請求書</button>
+          <button onClick={() => setEdit(blankDeal())} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>＋ 案件を追加</button>
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
@@ -36422,6 +36586,52 @@ function IncomePage({ data, setData, currentUser }) {
                 <textarea value={edit.memo || ""} onChange={e => set("memo", e.target.value)} rows={2}
                   style={{ width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", resize: "vertical" }} />
               </div>
+              {/* 🆕 v9.545: この案件の請求書（内容と金額＝歩合を入れた状態で開く） */}
+              <button onClick={() => { const d = edit; setEdit(null); openInvoice(d); }}
+                style={{ padding: "11px 14px", background: "transparent", border: `2px solid ${C.accent}`, color: C.accent, borderRadius: 8, fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>🧾 この案件の請求書を作る</button>
+            </div>
+          </BottomSheet>
+        );
+      })()}
+
+      {/* 🆕 v9.545: 請求書の入力 → 印刷・PDF */}
+      {inv && (() => {
+        const set = (k, v) => setInv(x => ({ ...x, [k]: v }));
+        const setP = (k, v) => setInv(x => ({ ...x, prof: { ...x.prof, [k]: v } }));
+        const c = invoiceCalc(inv.total);
+        const box = { width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
+        const lab = t => <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{t}</div>;
+        const ready = inv.item.trim() && c.inc > 0 && String(inv.prof.company || "").trim();
+        return (
+          <BottomSheet title="🧾 請求書を作る" onClose={() => setInv(null)}
+            footer={
+              <button onClick={runInvoice} disabled={!ready} style={{ width: "100%", padding: "12px 14px", background: ready ? C.accent : C.borderDim, border: "none", color: "#fff", borderRadius: 8, fontSize: 15, fontWeight: 800, cursor: ready ? "pointer" : "default", fontFamily: "inherit" }}>
+                {ready ? "🖨 請求書を開く（印刷・PDF）" : "内容・金額・請求元の会社名を入れてください"}
+              </button>
+            }>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ fontSize: 12, color: C.muted }}>宛先：{INVOICE_TO.name} 御中</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div>{lab("発行日")}<input type="date" value={inv.issueDate} onChange={e => set("issueDate", e.target.value)} style={box} /></div>
+                <div>{lab("振込期日")}<input type="date" value={inv.dueDate} onChange={e => set("dueDate", e.target.value)} style={box} /></div>
+              </div>
+              <div>{lab("内容")}<textarea value={inv.item} onChange={e => set("item", e.target.value)} rows={2} placeholder="例: 川越市木野目中古戸建　営業企画及び営業費用として" style={{ ...box, resize: "vertical" }} /></div>
+              <div>{lab("ご請求金額（税込）")}<MoneyInput value={inv.total} onChange={v => set("total", v)} placeholder="0" /></div>
+              <div style={{ background: C.bg, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: C.text, lineHeight: 1.9, fontVariantNumeric: "tabular-nums" }}>
+                税抜 <b>¥{c.ex.toLocaleString("ja-JP")}</b>　＋　消費税 <b>¥{c.tax.toLocaleString("ja-JP")}</b>　＝　<b style={{ color: "#16a34a" }}>¥{c.inc.toLocaleString("ja-JP")}</b>
+              </div>
+              <div>{lab("備考（空でもOK）")}<textarea value={inv.note} onChange={e => set("note", e.target.value)} rows={2} style={{ ...box, resize: "vertical" }} /></div>
+              <button onClick={() => set("profOpen", !inv.profOpen)} style={{ textAlign: "left", padding: "9px 12px", background: "transparent", border: `1px dashed ${C.borderDim}`, color: C.text, borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                {inv.profOpen ? "▼" : "▶"} 請求元（自分の会社）の情報{inv.prof.company ? `：${inv.prof.company}` : "（最初の1回だけ入れてください）"}
+              </button>
+              {inv.profOpen && (
+                <div style={{ display: "grid", gap: 8 }}>
+                  {INVOICE_PROFILE_FIELDS.map(([k, l, ph]) => (
+                    <div key={k}>{lab(l)}<input type="text" value={inv.prof[k] || ""} onChange={e => setP(k, e.target.value)} placeholder={ph} style={box} /></div>
+                  ))}
+                  <div style={{ fontSize: 11, color: C.muted }}>ここは一度入れると次から自動で入ります（あなたにだけ見えます）。</div>
+                </div>
+              )}
             </div>
           </BottomSheet>
         );
