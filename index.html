@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-15-v9.556-update";
+const APP_VERSION = "2026-10-15-v9.557-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8690,6 +8690,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.557", date: "2026-10-15", title: "町ごとに「最後に回った日」と「次に回る目安」が分かるように",
+    body: "地上げの上の切り替えに「🧭 エリア」を足しました。ピンを打った時刻から、町ごとに最後に探索した日・その時1時間に何件ピンが立ったか・次に回る目安の日を出します。よく見つかった町は半年後、ふつうの町は1年後、少なかった町は2年後が目安です。町をタップすると、日ごとの探索の記録が見られます。地図でも「🧭 探索エリアの時期を丸で出す」をONにすると、時期を過ぎた町が赤で出ます。",
+    where: "地上げ → 右上「🧭 エリア」／地図 →「🧭 探索エリアの時期を丸で出す」" },
   { v: "9.556", date: "2026-10-15", title: "前に調べた家が、地図で灰色の点で分かるように",
     body: "対象外（本人居住・法人など）や見込無しにしたピンは、いつもの地図には出ません。そのため、同じエリアをもう一度回った時に「ここ前に調べたっけ？」が分かりませんでした。これからは、そうした調べ済みの家を灰色の小さな点で出します。点をタップすると、何と判断したか・誰がいつ立てたかが出ます。いらない時はボタンで消せます。",
     where: "地上げ → 地図（物件住所）→「👣 調べ済みも灰色の点で出す」" },
@@ -9973,7 +9976,7 @@ if (typeof L !== "undefined" && L.Map && !L.Map.prototype._hkRotPatched) {
   L.Map.prototype._hkRotPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -10191,6 +10194,24 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     ghostLayerRef.current = grp;
     return () => { try { map.removeLayer(grp); } catch (e) {} };
   }, [ghostPins]);
+
+  // 🆕 v9.557: 探索エリアの中心に、再探索の時期の色で丸（赤＝時期を過ぎた／黄＝30日以内／緑＝まだ先）
+  const areaLayerRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (areaLayerRef.current) { try { map.removeLayer(areaLayerRef.current); } catch (e) {} areaLayerRef.current = null; }
+    const list = Array.isArray(areaCircles) ? areaCircles : [];
+    if (!list.length) return;
+    const grp = L.layerGroup();
+    list.forEach(a => {
+      L.circleMarker([a.lat, a.lng], { radius: 16, color: a.color, weight: 3, fillColor: a.color, fillOpacity: 0.18 })
+        .bindPopup(`<div style="font-size:12px;line-height:1.6;">🧭 ${a.label}</div>`).addTo(grp);
+    });
+    grp.addTo(map);
+    areaLayerRef.current = grp;
+    return () => { try { map.removeLayer(grp); } catch (e) {} };
+  }, [areaCircles]);
 
   // 🆕 v9.441: 密集市街地（再建築不可が集中する古い戸建地帯）
   const mitsuLayerRef = React.useRef(null);
@@ -22843,6 +22864,242 @@ function inferAreaFromAddress(address) {
 //   ・カード下の「面談」ボタン → ワンタップで「この人と面談した」を日付・担当者つきで記録
 //   ・データの置き場所は今まで通り jiage[].family。増えたのは age / isOwner / isKey /
 //     met / metAt / metBy / deceased の各項目だけで、既存メンバーはそのまま表示できる。
+// 🆕 v9.557: 探索エリア管理（Phase 1）。現地ピンの「打った時刻」から、エリア（市区町村＋町名）ごとに
+//   最終探索日・その時の1時間あたりピン数・再探索の目安日を出す。データは読むだけで書き換えない。
+//   しきい値だけ app_data の別行 tansakuconf::main に保存（全員で共有）。
+const TANSAKU_DEFAULT = { hi: 12, lo: 5, hiMonths: 6, midMonths: 12, loMonths: 24, noneMonths: 12 };
+const TANSAKU_GAP_MS = 60 * 60000;     // 前のピンから60分以上空いたら別の探索
+const TANSAKU_MIN_STAY_MS = 15 * 60000; // 滞在が15分未満なら15分として計算
+// 住所 → "市区町村＋町名"（大字・字・丁目・番地を落とす。ケ/ヶ・全半角の揺れを吸収）
+function tansakuAreaOf(addr) {
+  let s = String(addr || "").normalize("NFKC").replace(/[\s　]/g, "").replace(/ヶ/g, "ケ").replace(/ヵ/g, "カ");
+  s = s.replace(/^\d{3}-?\d{4}/, "").replace(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/, "");
+  const m = /^(?:.+?郡)?(さいたま市.+?区|.+?[市町村])(.*)$/.exec(s);
+  if (!m) return null;
+  let rest = m[2].replace(/^大字/, "").replace(/^字/, "");
+  const t = /^(.+?)(?=[0-9〇一二三四五六七八九十]+丁目|[0-9]|$)/.exec(rest);
+  let town = (t ? t[1] : "").replace(/^[-ー−]+|[-ー−]+$/g, "").replace(/(大字|字)$/, "");
+  if (!town || /^[0-9-]+$/.test(town)) return null;
+  return m[1] + town;
+}
+function tansakuJstDate(t) { return new Date(Number(t) + 9 * 3600000).toISOString().slice(0, 10); }
+function tansakuAddMonths(ymd, n) {
+  const [y, mo, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, mo - 1 + n, d));
+  return dt.toISOString().slice(0, 10);
+}
+function tansakuMonthsFor(rate, conf) {
+  if (rate == null) return conf.noneMonths;
+  if (rate >= conf.hi) return conf.hiMonths;
+  if (rate >= conf.lo) return conf.midMonths;
+  return conf.loMonths;
+}
+function computeTansaku(jiage, conf, todayYmd) {
+  const pins = [], unknown = [];
+  (jiage || []).forEach(j => {
+    if (!j || j.source !== "現地ピン") return;
+    const t = Number(j.createdAt);
+    if (!isFinite(t) || t <= 0) return;
+    const area = tansakuAreaOf(j.address) || tansakuAreaOf(j.landmark);
+    if (!area) { unknown.push(j); return; }
+    pins.push({ t, who: j.jiageBy || j.assignee || "?", area, lat: j.lat, lng: j.lng });
+  });
+  // 人ごとに時刻順 → 60分空いたら別セッション → 同じエリアに続けて打ったまとまり＝エリア滞在
+  const byWho = {};
+  pins.forEach(p => { (byWho[p.who] = byWho[p.who] || []).push(p); });
+  const stays = [], perWho = {};
+  Object.entries(byWho).forEach(([who, list]) => {
+    list.sort((a, b) => a.t - b.t);
+    const sessions = [];
+    list.forEach(p => {
+      const cur = sessions[sessions.length - 1];
+      if (!cur || p.t - cur[cur.length - 1].t >= TANSAKU_GAP_MS) sessions.push([p]); else cur.push(p);
+    });
+    // 検算用：人ごとの全期間（ピン5件以上の探索だけ）
+    let wn = 0, wms = 0;
+    sessions.forEach(s => { if (s.length >= 5) { wn += s.length; wms += s[s.length - 1].t - s[0].t; } });
+    perWho[who] = { pins: wn, hours: wms / 3600000, rate: wms > 0 ? wn / (wms / 3600000) : null, sessions: sessions.length };
+    sessions.forEach(s => {
+      const groups = [];
+      s.forEach(p => {
+        const g = groups[groups.length - 1];
+        if (!g || g.area !== p.area) groups.push({ area: p.area, who, pins: [p] }); else g.pins.push(p);
+      });
+      groups.forEach((g, i) => {
+        const start = g.pins[0].t;
+        const end = i < groups.length - 1 ? groups[i + 1].pins[0].t : g.pins[g.pins.length - 1].t;
+        stays.push({ area: g.area, who, n: g.pins.length, start, ms: Math.max(end - start, TANSAKU_MIN_STAY_MS) });
+      });
+    });
+  });
+  // エリア × 日付でまとめる（同じ日に何回か入ったら合計ピン ÷ 合計時間。2件以下の滞在は率に使わない）
+  const areas = {};
+  stays.forEach(s => {
+    const a = areas[s.area] = areas[s.area] || { area: s.area, days: {}, pins: 0 };
+    const day = tansakuJstDate(s.start);
+    const d = a.days[day] = a.days[day] || { date: day, n: 0, ms: 0, rateN: 0, rateMs: 0, who: s.who, lastStart: 0 };
+    d.n += s.n; d.ms += s.ms; a.pins += s.n;
+    if (s.n >= 3) { d.rateN += s.n; d.rateMs += s.ms; }
+    if (s.start >= d.lastStart) { d.lastStart = s.start; d.who = s.who; }
+  });
+  pins.forEach(p => {
+    const a = areas[p.area];
+    if (!a || typeof p.lat !== "number" || typeof p.lng !== "number") return;
+    a._la = (a._la || 0) + p.lat; a._ln = (a._ln || 0) + p.lng; a._c = (a._c || 0) + 1;
+  });
+  const today = todayYmd || tansakuJstDate(Date.now());
+  const list = Object.values(areas).map(a => {
+    const days = Object.values(a.days).sort((x, y) => x.date < y.date ? -1 : 1)
+      .map(d => ({ ...d, rate: d.rateMs > 0 ? d.rateN / (d.rateMs / 3600000) : null }));
+    const first = days[0], last = days[days.length - 1];
+    const next = tansakuAddMonths(last.date, tansakuMonthsFor(last.rate, conf));
+    const elapsed = Math.round((Date.parse(today) - Date.parse(last.date)) / 86400000);
+    const untilNext = Math.round((Date.parse(next) - Date.parse(today)) / 86400000);
+    const sp = a.area.match(/^(さいたま市.+?区|.+?[市町村])/);
+    return {
+      area: a.area, city: sp ? sp[1] : "", visits: days.length, days,
+      firstDate: first.date, firstRate: first.rate, lastDate: last.date, lastRate: last.rate,
+      elapsed, pins: a.pins, who: last.who, next, untilNext,
+      lat: a._c ? a._la / a._c : null, lng: a._c ? a._ln / a._c : null,
+    };
+  }).sort((x, y) => x.next < y.next ? -1 : x.next > y.next ? 1 : 0);
+  return { areas: list, unknown, perWho };
+}
+function tansakuStateColor(untilNext) {
+  if (untilNext <= 0) return "#dc2626";       // 再探索の時期を過ぎた
+  if (untilNext <= 30) return "#f59e0b";      // もうすぐ（30日以内）
+  return "#16a34a";                            // まだ先
+}
+
+// 🆕 v9.557: 「🧭 エリア」画面（一覧 → タップで探索履歴・設定）
+function TansakuAreaPanel({ result, conf, onSaveConf }) {
+  const [city, setCity] = useState("");
+  const [who, setWho] = useState("");
+  const [open, setOpen] = useState(null);
+  const [showConf, setShowConf] = useState(false);
+  const [draft, setDraft] = useState(conf);
+  React.useEffect(() => { setDraft(conf); }, [conf]);
+  const areas = result.areas;
+  const cities = [...new Set(areas.map(a => a.city))].sort();
+  const whos = [...new Set(areas.map(a => a.who))].sort();
+  const shown = areas.filter(a => (!city || a.city === city) && (!who || a.who === who));
+  const overdue = shown.filter(a => a.untilNext <= 0).length;
+  const fmtRate = r => r == null ? "—" : r.toFixed(1);
+  const fmtD = s => s ? s.slice(2).replace(/-/g, "/") : "";
+  const sel = { background: C.inset, color: C.text, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 8px", fontSize: 12, fontFamily: "inherit", flex: 1, minWidth: 0 };
+  return (
+    <div style={{ padding: "12px 14px" }}>
+      <div style={{ background: C.cardBg, border: `2px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 10, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.text, marginBottom: 4 }}>🧭 探索エリア</div>
+        <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginBottom: 8 }}>
+          ピンを打った時刻から、町ごとに「最後に回った日」と「その時1時間に何件ピンが立ったか」を出しています。
+          よく見つかった町ほど早めに、見つからなかった町はしばらく空けて回る目安です。
+        </div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          <select value={city} onChange={e => setCity(e.target.value)} style={sel}>
+            <option value="">市区町村：すべて</option>
+            {cities.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={who} onChange={e => setWho(e.target.value)} style={sel}>
+            <option value="">担当：すべて</option>
+            {whos.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+          <span style={{ background: C.inset, borderRadius: 6, padding: "3px 8px", color: C.text, fontWeight: 700 }}>エリア {shown.length}</span>
+          <span style={{ background: "#dc262622", borderRadius: 6, padding: "3px 8px", color: "#dc2626", fontWeight: 800 }}>回る時期 {overdue}</span>
+          <span style={{ background: "#f59e0b22", borderRadius: 6, padding: "3px 8px", color: "#b45309", fontWeight: 700 }}>30日以内 {shown.filter(a => a.untilNext > 0 && a.untilNext <= 30).length}</span>
+          {result.unknown.length > 0 && <span style={{ background: C.inset, borderRadius: 6, padding: "3px 8px", color: C.muted }}>エリア不明 {result.unknown.length}件</span>}
+        </div>
+      </div>
+
+      {/* 見出し（スマホでも4列が収まる幅） */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 62px 46px 62px", gap: 4, padding: "0 10px 4px", fontSize: 10, color: C.muted, fontWeight: 700 }}>
+        <span>エリア</span><span>最終探索</span><span style={{ textAlign: "right" }}>件/時</span><span style={{ textAlign: "right" }}>次の目安</span>
+      </div>
+      {shown.map(a => {
+        const col = tansakuStateColor(a.untilNext);
+        const isOpen = open === a.area;
+        return (
+          <div key={a.area} style={{ background: C.cardBg, border: `2px solid ${a.untilNext <= 0 ? col : C.borderDim}`, borderRadius: 10, marginBottom: 6, boxShadow: "0 1px 3px rgba(0,0,0,0.08)", overflow: "hidden" }}>
+            <button onClick={() => setOpen(isOpen ? null : a.area)} style={{ display: "grid", gridTemplateColumns: "1fr 62px 46px 62px", gap: 4, alignItems: "center", width: "100%", background: a.untilNext <= 0 ? col + "12" : "none", border: "none", padding: "9px 10px", cursor: "pointer", fontFamily: "inherit", textAlign: "left", color: C.text }}>
+              <span style={{ minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 13, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.area}</span>
+                <span style={{ display: "block", fontSize: 10, color: C.muted }}>{a.visits}回・累計{a.pins}件・{a.who}</span>
+              </span>
+              <span style={{ fontSize: 11 }}>{fmtD(a.lastDate)}<span style={{ display: "block", fontSize: 9, color: C.muted }}>{a.elapsed}日前</span></span>
+              <span style={{ fontSize: 13, fontWeight: 800, textAlign: "right" }}>{fmtRate(a.lastRate)}</span>
+              <span style={{ fontSize: 11, fontWeight: 800, color: col, textAlign: "right" }}>{fmtD(a.next)}<span style={{ display: "block", fontSize: 9, fontWeight: 700 }}>{a.untilNext <= 0 ? "回る時期" : `あと${a.untilNext}日`}</span></span>
+            </button>
+            {isOpen && (
+              <div style={{ borderTop: `1px solid ${C.borderDim}`, padding: "8px 10px", background: C.inset }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  {[["初回", a.firstDate, a.firstRate], ["最終", a.lastDate, a.lastRate]].map(([lb, d, r]) => (
+                    <div key={lb} style={{ flex: 1, background: C.cardBg, border: `1.5px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 8px" }}>
+                      <div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>{lb}（{fmtD(d)}）</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{fmtRate(r)}<span style={{ fontSize: 10, color: C.muted }}> 件/時</span></div>
+                    </div>
+                  ))}
+                </div>
+                {a.firstRate != null && a.lastRate != null && a.visits > 1 && (
+                  <div style={{ fontSize: 11, color: a.lastRate >= a.firstRate ? C.success : C.danger, fontWeight: 700, marginBottom: 6 }}>
+                    初回から {a.lastRate >= a.firstRate ? "＋" : "−"}{Math.abs(a.lastRate - a.firstRate).toFixed(1)} 件/時
+                  </div>
+                )}
+                <div style={{ display: "grid", gridTemplateColumns: "64px 1fr 40px 46px 46px", gap: 4, fontSize: 10, color: C.muted, fontWeight: 700, marginBottom: 2 }}>
+                  <span>日付</span><span>担当</span><span style={{ textAlign: "right" }}>ピン</span><span style={{ textAlign: "right" }}>滞在</span><span style={{ textAlign: "right" }}>件/時</span>
+                </div>
+                {a.days.slice().reverse().map(d => (
+                  <div key={d.date} style={{ display: "grid", gridTemplateColumns: "64px 1fr 40px 46px 46px", gap: 4, fontSize: 12, padding: "3px 0", borderTop: `1px dashed ${C.borderDim}`, color: C.text }}>
+                    <span>{fmtD(d.date)}</span><span>{d.who}</span>
+                    <span style={{ textAlign: "right" }}>{d.n}</span>
+                    <span style={{ textAlign: "right" }}>{Math.round(d.ms / 60000)}分</span>
+                    <span style={{ textAlign: "right", fontWeight: 700 }}>{fmtRate(d.rate)}</span>
+                  </div>
+                ))}
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 6 }}>※ピン2件以下の日は件/時を出していません（数字がブレるため）。</div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* 検算（人ごとの全期間）と、エリア不明のピン */}
+      <div style={{ background: C.cardBg, border: `1.5px solid ${C.borderDim}`, borderRadius: 10, padding: 10, marginTop: 10, fontSize: 11, color: C.muted, lineHeight: 1.7 }}>
+        <div style={{ fontWeight: 800, color: C.text, marginBottom: 2 }}>人ごとの全期間（ピン5件以上の探索）</div>
+        {Object.entries(result.perWho).filter(([, v]) => v.rate != null).sort((x, y) => y[1].pins - x[1].pins).map(([w, v]) => (
+          <div key={w}>{w}：{v.rate.toFixed(1)} 件/時（{v.pins}件・{v.hours.toFixed(1)}時間）</div>
+        ))}
+        {result.unknown.length > 0 && (
+          <div style={{ marginTop: 6 }}>エリア不明 {result.unknown.length}件：{result.unknown.slice(0, 5).map(j => j.address || j.landmark || "(住所なし)").join("／")}</div>
+        )}
+      </div>
+
+      {/* 再探索の目安の設定（全員共有） */}
+      <div style={{ background: C.cardBg, border: `1.5px solid ${C.borderDim}`, borderRadius: 10, padding: 10, marginTop: 10 }}>
+        <button onClick={() => setShowConf(v => !v)} style={{ background: "none", border: "none", color: C.text, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>⚙️ 再探索の目安を変える {showConf ? "▲" : "▼"}</button>
+        {showConf && (
+          <div style={{ marginTop: 8, fontSize: 12, color: C.text, lineHeight: 2 }}>
+            {[["hi", "よく見つかる（件/時 以上）"], ["lo", "ふつう（件/時 以上）"]].map(([k, lb]) => (
+              <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ flex: 1 }}>{lb}</span>
+                <input type="number" value={draft[k]} onChange={e => setDraft(d => ({ ...d, [k]: Number(e.target.value) }))} style={{ width: 60, ...sel, flex: "none" }} />
+              </div>
+            ))}
+            {[["hiMonths", "よく見つかる → 何か月後"], ["midMonths", "ふつう → 何か月後"], ["loMonths", "少ない → 何か月後"], ["noneMonths", "ピン2件以下 → 何か月後"]].map(([k, lb]) => (
+              <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ flex: 1 }}>{lb}</span>
+                <input type="number" value={draft[k]} onChange={e => setDraft(d => ({ ...d, [k]: Number(e.target.value) }))} style={{ width: 60, ...sel, flex: "none" }} />
+              </div>
+            ))}
+            <button onClick={() => onSaveConf(draft)} style={{ marginTop: 6, width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px", fontWeight: 800, fontFamily: "inherit", cursor: "pointer" }}>保存（全員に反映）</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
   const list = (Array.isArray(members) ? members : []).map(jiageFamilyNormalize);
   const [form, setForm] = useState(null); // { editId, name, relation, age, memo, isOwner, isKey, deceased } | null
@@ -23607,6 +23864,30 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     setViewModeRaw(v);
     try { localStorage.setItem(JIAGE_VIEW_MODE_KEY, v); } catch (e) {}
   };
+  // 🆕 v9.557: 探索エリア。しきい値は app_data の別行 tansakuconf::main（全員共有・無ければ既定値）
+  const [tansakuConf, setTansakuConf] = useState(TANSAKU_DEFAULT);
+  React.useEffect(() => {
+    fetch(`${SUPABASE_URL}/rest/v1/app_data?select=data&id=eq.tansakuconf::main`, { headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY } })
+      .then(r => r.ok ? r.json() : []).then(rows => { if (rows && rows[0] && rows[0].data) setTansakuConf({ ...TANSAKU_DEFAULT, ...rows[0].data }); })
+      .catch(() => {});
+  }, []);
+  const saveTansakuConf = (c) => {
+    const clean = {};
+    Object.keys(TANSAKU_DEFAULT).forEach(k => { const v = Number(c[k]); clean[k] = isFinite(v) && v >= 0 ? v : TANSAKU_DEFAULT[k]; });
+    setTansakuConf(clean);
+    fetch(`${SUPABASE_URL}/rest/v1/app_data`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: "tansakuconf::main", data: clean }),
+    }).then(r => { if (!r.ok) alert("保存できませんでした（" + r.status + "）"); else alert("保存しました。全員の目安に反映されます。"); })
+      .catch(() => alert("保存できませんでした（通信）"));
+  };
+  const tansakuResult = useMemo(() => computeTansaku(data.jiage, tansakuConf), [data.jiage, tansakuConf]);
+  const [showTansakuCircles, setShowTansakuCircles] = useState(false);
+  const tansakuCircles = useMemo(() => showTansakuCircles
+    ? tansakuResult.areas.filter(a => a.lat != null).map(a => ({ lat: a.lat, lng: a.lng, color: tansakuStateColor(a.untilNext),
+        label: `${a.area}<br>最終 ${a.lastDate}（${a.lastRate == null ? "—" : a.lastRate.toFixed(1)}件/時）<br>次の目安 ${a.next}` }))
+    : [], [showTansakuCircles, tansakuResult]);
   // 🆕 v9.43: scroll 位置を保存・復元 ( DOM 高さが追いつくまで polling 待機 )
   //   ・v9.42: 段階的リトライ ( 30/100/250/500/1000ms ) → DOM 高さが間に合わない端末で失敗
   //   ・v9.43: DOM 高さが目標 scrollY を超えるまで 100ms 間隔で polling ( 最大 3秒 )
@@ -27653,7 +27934,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
           <div style={{ fontSize: 16, fontWeight: 800, color: C.text, flex: 1 }}><NavIcon name="mappin" size={16} /> 地上げ・所有者</div>
           <div style={{ display: "flex", background: C.inset, borderRadius: 8, padding: 3, border: `1px solid ${C.borderDim}` }}>
-            {[["list", "☰ リスト"], ["map", "🗺 地図"]].map(([key, label]) => (
+            {[["list", "☰ リスト"], ["map", "🗺 地図"], ["area", "🧭 エリア"]].map(([key, label]) => (
               <button key={key} onClick={() => setViewMode(key)} style={{
                 background: viewMode === key ? C.accent : "none", border: "none",
                 color: viewMode === key ? "#fff" : C.muted, borderRadius: 6,
@@ -27810,6 +28091,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
         <div style={{ color: C.muted, fontSize: 11, marginTop: 6 }}>{filtered.length}件表示</div>
       </div>
 
+      {/* 🆕 v9.557: 探索エリア */}
+      {viewMode === "area" && (
+        <TansakuAreaPanel result={tansakuResult} conf={tansakuConf} onSaveConf={saveTansakuConf} />
+      )}
+
       {/* 地図ビュー */}
       {viewMode === "map" && (
         <div style={{ padding: "12px 14px" }}>
@@ -27855,6 +28141,16 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                 <span style={{ fontSize: 11 }}>{showDonePins ? "ON" : "OFF"}</span>
               </button>
             )}
+            {/* 🆕 v9.557: 探索エリアの再探索時期を丸で出す */}
+            <button onClick={() => setShowTansakuCircles(!showTansakuCircles)} style={{
+              marginTop: 6, width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+              background: showTansakuCircles ? "#16a34a22" : C.inset, color: showTansakuCircles ? C.text : C.muted,
+              border: `1.5px solid ${showTansakuCircles ? "#16a34a" : C.borderDim}`, borderRadius: 8, padding: "6px 10px",
+              cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textAlign: "left",
+            }}>
+              <span>🧭 探索エリアの時期を丸で出す <span style={{ color: "#dc2626" }}>●</span>過ぎた <span style={{ color: "#f59e0b" }}>●</span>30日以内 <span style={{ color: "#16a34a" }}>●</span>まだ先</span>
+              <span style={{ fontSize: 11 }}>{showTansakuCircles ? "ON" : "OFF"}</span>
+            </button>
           </div>
 
           {/* 🗺️ Leaflet地図表示 */}
@@ -29167,6 +29463,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     <LeafletMap
                       items={itemsWithCoord}
                       ghostPins={donePins}
+                      areaCircles={tansakuCircles}
                       onPinClick={(it) => setSelected({ item: it })}
                       pinTarget={mapPinTarget}
                       height="82vh"
