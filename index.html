@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-15-v9.548-update";
+const APP_VERSION = "2026-10-15-v9.549-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8646,7 +8646,7 @@ const WHATS_NEW = [
     body: "「保存して請求書を開く」を押すと、その請求書が自動で保存されます。収支の「請求書」タブに一覧で並び、タップすると当時の内容のまま開き直して、もう一度印刷・PDFにできます。直して開き直すと同じ控えが上書きされます。いらない控えは開いて「削除」で消せます。",
     where: "収支 → 「請求書」タブ" },
   { v: "9.545", date: "2026-10-15", who: ["下田"], title: "収支の案件から、請求書をそのまま作れるように",
-    body: "案件を開いて一番下の「🧾 この案件の請求書を作る」を押すと、内容と金額（歩合）が入った請求書の画面が出ます。日付と金額を確かめて「請求書を開く」で、A4の請求書が出るので印刷かPDFで保存してください。税抜と消費税は自動で計算します。会社の住所・登録番号・振込先は最初から入っています。",
+    body: "案件を開いて一番下の「🧾 この案件の請求書を作る」を押すと、内容と金額（歩合）が入った請求書の画面が出ます。日付と金額を確かめて「請求書を開く」で、A4の請求書が出るので印刷かPDFで保存してください。税抜と消費税は自動で計算します。会社の住所・登録番号は最初から入っています。振込先と口座だけ、最初の1回入れてください。",
     where: "収支 → 案件を開く →「🧾 この案件の請求書を作る」（案件なしなら右上の「🧾 請求書」）" },
   { v: "9.544", date: "2026-10-15", who: ["下田"], title: "ハヤトに声で言った訪問結果を、アプリで1タップ記録できるように",
     body: "ハヤトに「〇〇の家、不在。ポストに名刺」のように話すと、地上げの画面の左下に「🎙 ハヤトの訪問メモ」が出ます。押して「記録する」で、中身が入った訪問記録が開くので、確かめて保存してください。面談数などの集計もいつも通り入ります。",
@@ -35996,9 +35996,10 @@ const INVOICE_PROFILE_FIELDS = [
   ["bank", "振込先（銀行・支店）", "例: 〇〇信用金庫 〇〇支店"], ["account", "口座（種別・番号・名義）", "例: 普通口座 1234567 ド）〇〇"],
 ];
 // 🆕 v9.548: どの案件でも同じ請求元は最初から入れておく（下田さんの指示。変えたい時は画面で直せば次からそれが使われる）
+//   v9.549: 振込先・口座はソースが公開なので書かない。最初の1回だけ画面で入れ、data.invoiceProfile から出す
 const INVOICE_PROFILE_DEFAULT = {
   company: "合同会社VISION", zip: "349-0135", addr: "埼玉県蓮田市井沼1129番4", tel: "080-7831-7773",
-  regNo: "T5030003025152", bank: "埼玉縣信用金庫　東松山支店", account: "普通口座 6294161　ド）ヴイジヨン",
+  regNo: "T5030003025152", bank: "", account: "",
 };
 // 内容は「〇〇（物件名）中古戸建営業企画及び営業費用として」で固定。変わるのは物件名だけ
 const INVOICE_ITEM_SUFFIX = "中古戸建営業企画及び営業費用として";
@@ -36225,13 +36226,15 @@ function IncomePage({ data, setData, currentUser }) {
   // 🆕 v9.545: 請求書を開く（案件から開くと内容と金額＝歩合を入れておく）
   const openInvoice = (d) => {
     const t = new Date(), today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
-    const prof = invoiceProfileOf(data.invoiceProfile);
+    // 振込先が未登録なら、前に作った請求書の控えから拾う（無ければ最初の1回だけ入れてもらう）
+    const lastDoc = (Array.isArray(data.invoiceDocs) ? data.invoiceDocs : []).find(x => x && x.prof && x.prof.account);
+    const prof = invoiceProfileOf({ ...((lastDoc && lastDoc.prof) || {}), ...Object.fromEntries(Object.entries(data.invoiceProfile || {}).filter(([, v]) => String(v || "").trim())) });
     setInv({
       id: null, dealId: d ? d.id : null,
       issueDate: today, dueDate: today,
       prop: d ? (d.name || d.address || "") : "",
       total: d ? String(Math.max(0, dealCalc(d).pay)) : "",
-      note: "", prof, profOpen: false,
+      note: "", prof, profOpen: !prof.bank || !prof.account,
     });
   };
   // 🆕 v9.547: 保存した請求書（控え）。開くと当時の内容・請求元のまま出る
@@ -36671,7 +36674,8 @@ function IncomePage({ data, setData, currentUser }) {
         const c = invoiceCalc(inv.total);
         const box = { width: "100%", padding: "8px 10px", background: C.bg, border: `1px solid ${C.borderDim}`, borderRadius: 8, color: C.text, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
         const lab = t => <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, marginBottom: 3 }}>{t}</div>;
-        const ready = String(inv.prop || "").trim() && c.inc > 0 && String(inv.prof.company || "").trim();
+        const noBank = !String(inv.prof.bank || "").trim() || !String(inv.prof.account || "").trim();
+        const ready = String(inv.prop || "").trim() && c.inc > 0 && String(inv.prof.company || "").trim() && !noBank;
         return (
           <BottomSheet title={inv.id ? "🧾 保存した請求書" : "🧾 請求書を作る"} onClose={() => setInv(null)}
             footer={
@@ -36680,7 +36684,7 @@ function IncomePage({ data, setData, currentUser }) {
                 <button onClick={() => deleteInvoice(inv.id)} style={{ padding: "12px 14px", background: "transparent", border: `1px solid ${C.danger}`, color: C.danger, borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>削除</button>
               )}
               <button onClick={runInvoice} disabled={!ready} style={{ flex: 1, padding: "12px 14px", background: ready ? C.accent : "transparent", border: ready ? "none" : `2px dashed ${C.accent}`, color: ready ? "#fff" : C.text, borderRadius: 8, fontSize: 15, fontWeight: 800, cursor: ready ? "pointer" : "default", fontFamily: "inherit" }}>
-                {ready ? "🖨 保存して請求書を開く（印刷・PDF）" : "物件名と金額を入れてください"}
+                {ready ? "🖨 保存して請求書を開く（印刷・PDF）" : noBank ? "振込先と口座を入れてください（最初の1回だけ）" : "物件名と金額を入れてください"}
               </button>
               </div>
             }>
