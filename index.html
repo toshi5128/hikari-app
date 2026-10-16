@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-16-v9.574-ui";
+const APP_VERSION = "2026-10-16-v9.575-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -10989,6 +10989,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     // 🆕 v8.125→v9.17: 所有者あり時は status を反映（NG→暗赤、見込み→ピンク 等）
     const colorForOnsite = (r, status) => {
       if (!r.address || !String(r.address).trim()) return isAutoLookupRaw(r) ? ONSITE_COLORS.autoLookup : ONSITE_COLORS.pendingLot;
+      // 🆕 v9.575: 対象外(本人居住・法人)は所有者名が入っていても DM不要 を優先（未訪問のとき）。訪問が進んでいれば status を出す
+      if (r.excluded === true && (!status || status === "未訪問")) return ONSITE_COLORS.excluded;
       if (_ownerExists(r)) {
         // 訪問が進んでる場合は status の色を反映（初訪/再訪/見込み/NG など）
         if (status && status !== "未訪問") return colorByStatus(status);
@@ -11090,6 +11092,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         // 現地ピン
         if (_r && _r.coordsManual) {
           if (pendingLot) return "⏰";
+          if (_r.excluded === true && (!s || s === "未訪問")) return "📭"; // 🆕 v9.575: 対象外は所有者名ありでも DM不要 優先
           // 所有者判明後は訪問status を反映（未訪問なら ✅ で訪問OK 待機）
           if (_ownerExists(_r)) {
             if (resultOverride) return resultOverride;  // 不在/居留守/訪問禁止 を優先表示
@@ -11183,6 +11186,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         }
         if (pendingLot) return "🟡 地番待ち";
         if (isAutoLookupRaw(_r)) return "🤖 自動照会中";
+        if (_r.excluded === true && (!it.status || it.status === "未訪問")) return "📭 DM不要"; // 🆕 v9.575
         if (_ownerExists(_r)) {
           const s = it.status;
           if (_isBasicStage(s) && _latestResLabel && _RESULT_LABEL[_latestResLabel]) return `${_RESULT_LABEL[_latestResLabel]}（${s || "訪問OK"}）`;
@@ -24558,8 +24562,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v8.100→v8.111→v8.114→v8.118: 現地ピン5状態集計
   //   優先順位:
   //   1. 🟡 地番待ち   = coordsManual && !address
-  //   2. 🚪 訪問OK     = coordsManual && address && hasOwner       （hasOwner 最優先）
-  //   3. 📭 DM不要     = coordsManual && address && !hasOwner && excluded
+  //   2. 🚪 訪問OK     = coordsManual && address && hasOwner && !excluded   （v9.575: 対象外が優先）
+  //   3. 📭 DM不要     = coordsManual && address && excluded（所有者名の有無は問わない）
   //   4. 🔧 要修正     = coordsManual && address && !hasOwner && !excluded && lookupFailed  ← 🆕 v8.118
   //   5. ⏳ 謄本待ち   = coordsManual && address && !hasOwner && !excluded && !lookupFailed
   const pendingPinSummary = useMemo(() => {
@@ -24573,8 +24577,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const pendingPins = noAddrPins.filter(j => !isAutoLookup(j));
     const confirmedPins = onsiteAll.filter(j => j.address && String(j.address).trim() !== "");
     // 🆕 v8.114: hasOwner 最優先で 訪問OK → 残りを excluded で分割
-    const dmReadyPins = confirmedPins.filter(j => hasOwner(j));
-    const noOwnerPins = confirmedPins.filter(j => !hasOwner(j));
+    // 🆕 v9.575: 対象外(excluded)は所有者名が入っていても訪問OKに数えない（あとから本人居住と判明した分が訪問OKに紛れていた）
+    const dmReadyPins = confirmedPins.filter(j => hasOwner(j) && j.excluded !== true);
+    const noOwnerPins = confirmedPins.filter(j => !(hasOwner(j) && j.excluded !== true));
     const excludedPins = noOwnerPins.filter(j => j.excluded === true);
     // 🆕 v8.118: excluded でないものの中から lookupFailed を切り出し
     const noExcludedPins = noOwnerPins.filter(j => j.excluded !== true);
@@ -25811,6 +25816,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       if (!item.address || String(item.address).trim() === "") return false;
       const hasOwner = (raw.owner && String(raw.owner).trim()) || (raw.ownerName && String(raw.ownerName).trim());
       if (!hasOwner) return false;
+      if (raw.excluded === true) return false; // 🆕 v9.575
     }
     // 🆕 v9.348: 🏠 住所要確認（所有者宅の場所が地図で特定できない）
     if (quickFilter === "addr_ng") {
@@ -25825,9 +25831,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       const raw = item.raw || {};
       if (!raw.coordsManual) return false;
       if (!item.address || String(item.address).trim() === "") return false;
-      const hasOwner = (raw.owner && String(raw.owner).trim()) || (raw.ownerName && String(raw.ownerName).trim());
-      if (hasOwner) return false;
-      if (raw.excluded !== true) return false;
+      if (raw.excluded !== true) return false; // 🆕 v9.575: 所有者名ありの対象外も含める
     }
     // 🆕 v8.99: 今日立てたピンのみ
     if (quickFilter === "today_pin") {
