@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-18-v9.584-chosei";
+const APP_VERSION = "2026-10-18-v9.585-danchi";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8697,6 +8697,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.585", date: "2026-10-18", title: "地図に「🏘 名前のある団地」を出せるように",
+    body: "地図に「〇〇団地」「〇〇ニュータウン」と書いてある住宅団地を、範囲ごと色付きで出します。調整区域の団地は🔥つきの赤、市街化区域の団地は青。点線はまだ行っていない団地です。押すと団地の名前・ピン・面談・未訪問の人数とストリートビューが開けます。新規地上げは団地から優先して回ってください。",
+    where: "地上げ → 地図 → 表示の切り替え → 🗺 地図に重ねる「🏘 名前のある団地」" },
   { v: "9.582", date: "2026-10-18", title: "地図に「🔥 調整区域の団地」を出せるように",
     body: "東武台団地（東松山 市ノ川・野田）で仕入・リフォーム請負が3件出ました。同じような「調整区域にある戸建の分譲団地」を地図に赤い面で出します（農村集落は出しません）。濃い赤＝成果あり、赤＝見込みあり、オレンジ＝ピンあり、点線＝まだ行っていない団地。押すと、その一帯のピン・面談・未訪問の人数とストリートビューが開けます。新規地上げの行き先選びに使ってください。",
     where: "地上げ → 地図 → 表示の切り替え → 🗺 地図に重ねる「🔥 調整区域の団地」（🏠物件住所の表示の時）" },
@@ -9740,6 +9743,31 @@ function loadChosei() {
   return _choseiPromise;
 }
 
+// 🆕 v9.585: 名前のある住宅団地（OpenStreetMap「住宅地＋名前」）。danchi-names.json に同梱。
+//   1件 = [名前, 市町, 調整区域か(1/0), 中心lat, 中心lng, 半径m(点だけの時), 範囲の形(緯度経度を交互に並べた配列 or 0)]
+let _danchiNmPromise = null;
+function loadDanchiNames() {
+  if (_danchiNmPromise) return _danchiNmPromise;
+  _danchiNmPromise = fetch("danchi-names.json")
+    .then(r => { if (!r.ok) throw new Error("danchi " + r.status); return r.json(); })
+    .then(raw => (raw.items || []).map(a => {
+      const ring = Array.isArray(a[6]) && a[6].length >= 6 ? [] : null;
+      if (ring) for (let i = 0; i + 1 < a[6].length; i += 2) ring.push([a[6][i], a[6][i + 1]]);
+      let bbox;
+      if (ring) {
+        let s = 99, w = 999, n = -99, e = -999;
+        ring.forEach(p => { if (p[0] < s) s = p[0]; if (p[0] > n) n = p[0]; if (p[1] < w) w = p[1]; if (p[1] > e) e = p[1]; });
+        bbox = [s, w, n, e];
+      } else {
+        const dl = a[5] / 111000, dg = a[5] / 90000;
+        bbox = [a[3] - dl, a[4] - dg, a[3] + dl, a[4] + dg];
+      }
+      return { name: a[0], city: a[1], chosei: !!a[2], lat: a[3], lng: a[4], r: a[5], ring, bbox };
+    }))
+    .catch(e => { _danchiNmPromise = null; throw e; });
+  return _danchiNmPromise;
+}
+
 let _akiyaPromise = null;
 function loadAkiya() {
   if (_akiyaPromise) return _akiyaPromise;
@@ -10063,7 +10091,7 @@ if (typeof L !== "undefined" && L.Map && !L.Map.prototype._hkRotPatched) {
   L.Map.prototype._hkRotPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -10534,6 +10562,158 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       drop();
     };
   }, [chShow, choseiPinSig]);
+
+  // 🆕 v9.585: 🏘 名前のある住宅団地（OpenStreetMap の「住宅地＋名前」）。下田さん「〇〇団地と書いてある所は
+  //   調整区域でなくても優先したい」。調整区域の団地は🔥つき。中のピン・面談・見込み・成果をその場で数える。
+  const danchiNmLayerRef = React.useRef(null);
+  const danchiNmDataRef = React.useRef(null);
+  const dnShow = !!showDanchiNames && pinTarget === "address";
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    const drop = () => {
+      if (danchiNmLayerRef.current) {
+        try { map.removeLayer(danchiNmLayerRef.current); } catch (e) {}
+        danchiNmLayerRef.current = null;
+      }
+    };
+    if (!dnShow) { drop(); return; }
+    let alive = true, timer = null, popupOpen = false;
+    const grp = L.layerGroup();
+    const rend = L.canvas({ padding: 0.2 });
+    const WIN = ["仕入", "媒介", "リフォーム請負"];
+    const GOOD = ["見込み", "見込み候補", "中長期見込", "交渉中"];
+    const inRing = (ring, la, lo) => {
+      let ins = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const yi = ring[i][0], xi = ring[i][1], yj = ring[j][0], xj = ring[j][1];
+        if (((yi > la) !== (yj > la)) && (lo < (xj - xi) * (la - yi) / (yj - yi + 1e-15) + xi)) ins = !ins;
+      }
+      return ins;
+    };
+    const contains = (d, la, lo) => {
+      if (la < d.bbox[0] || la > d.bbox[2] || lo < d.bbox[1] || lo > d.bbox[3]) return false;
+      if (d.ring) return inRing(d.ring, la, lo);
+      const dy = (la - d.lat) * 111000, dx = (lo - d.lng) * 90000;
+      return dx * dx + dy * dy <= d.r * d.r;
+    };
+    const statsOf = (rows) => {
+      rows.forEach(d => { d.st = { pins: 0, met: 0, good: 0, win: 0, todo: 0 }; });
+      (choseiItemsRef.current || []).forEach(it => {
+        const la = Number(it && it.lat), lo = Number(it && it.lng);
+        if (!isFinite(la) || !isFinite(lo)) return;
+        for (let i = 0; i < rows.length; i++) {
+          const d = rows[i];
+          if (!contains(d, la, lo)) continue;
+          const st = d.st, r0 = it.raw || it;
+          const vlog = r0.visitLog || it.visitLog || [];
+          const status = it.status || r0.status;
+          const met = vlog.some(v => v && (v.result === "home" || v.result === "intercom"));
+          st.pins++;
+          if (met) st.met++;
+          if (WIN.includes(status)) st.win++;
+          else if (GOOD.includes(status)) st.good++;
+          const hasOwner = !!((it.owner || r0.owner) && String(it.owner || r0.owner).trim());
+          const excl = r0.excluded === true || it.excluded === true;
+          if (hasOwner && !excl && !met && (!status || status === "未訪問")) st.todo++;
+          break;
+        }
+      });
+    };
+    const colorOf = (d) => {
+      const st = d.st || { pins: 0 };
+      if (st.win) return "#991b1b";
+      if (st.good) return "#dc2626";
+      if (st.pins) return d.chosei ? "#f97316" : "#6366f1";
+      return d.chosei ? "#ef4444" : "#818cf8";
+    };
+    let drawnView = null;
+    const draw = (force) => {
+      const rows = danchiNmDataRef.current;
+      if (!alive || !rows) return;
+      if (popupOpen && !force) return;
+      const z = map.getZoom();
+      const bb = map.getBounds().pad(0.2);
+      const s = bb.getSouth(), w = bb.getWest(), n = bb.getNorth(), e = bb.getEast();
+      if (!force && drawnView && drawnView.z === z && s >= drawnView.s && n <= drawnView.n && w >= drawnView.w && e <= drawnView.e) return;
+      drawnView = { z, s, w, n, e };
+      grp.clearLayers();
+      for (let i = 0; i < rows.length; i++) {
+        const d = rows[i];
+        if (d.bbox[0] > n || d.bbox[2] < s || d.bbox[1] > e || d.bbox[3] < w) continue;
+        const col = colorOf(d);
+        const fresh = !(d.st && d.st.pins);
+        const style = { renderer: rend, interactive: false, color: d.chosei ? "#7f1d1d" : "#3730a3",
+                        weight: fresh ? 2 : 1.2, dashArray: fresh ? "5,4" : null,
+                        fillColor: col, fillOpacity: (d.st && (d.st.win || d.st.good)) ? 0.45 : 0.22 };
+        if (z >= 12 && d.ring) {
+          L.polygon(d.ring, style).addTo(grp);
+        } else if (z >= 12) {
+          L.circle([d.lat, d.lng], { ...style, radius: d.r }).addTo(grp);
+        } else {
+          L.circleMarker([d.lat, d.lng], { ...style, radius: 7, weight: 1.5, fillOpacity: 0.85 }).addTo(grp);
+        }
+        if (z >= 14) {
+          L.marker([d.lat, d.lng], { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0],
+            html: `<div style="transform:translate(-50%,-50%);white-space:nowrap;font-size:11px;font-weight:800;`
+              + `color:${d.chosei ? "#7f1d1d" : "#312e81"};text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;">`
+              + `${d.chosei ? "🔥" : "🏘"}${_hkEsc(d.name)}</div>` }) }).addTo(grp);
+        }
+      }
+      try { grp.bringToBack(); } catch (e2) {}
+    };
+    const queue = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => draw(false), 140); };
+    const onTap = (ev) => {
+      const rows = danchiNmDataRef.current;
+      if (!rows || !ev || !ev.latlng) return;
+      const la = ev.latlng.lat, lo = ev.latlng.lng;
+      const zoomOut = map.getZoom() < 12;
+      let best = null, bestD = Infinity;
+      for (let i = 0; i < rows.length; i++) {
+        const d = rows[i];
+        const dist = Math.hypot((la - d.lat) * 111000, (lo - d.lng) * 90000);
+        const hit = zoomOut ? dist < 600 : contains(d, la, lo);
+        if (hit && dist < bestD) { bestD = dist; best = d; }
+      }
+      if (!best || !_tapClaim(ev, 5)) return;
+      const st = best.st || { pins: 0, met: 0, good: 0, win: 0, todo: 0 };
+      const ll = `${best.lat.toFixed(6)},${best.lng.toFixed(6)}`;
+      const head = st.win ? `<b style="color:#991b1b;">🏆 成果が出た団地（${st.win}件）</b>`
+        : st.good ? `<b style="color:#dc2626;">🔥 見込みあり ${st.good}人</b>`
+        : st.pins ? `<span style="color:#4338ca;font-weight:700;">ピンあり・まだ見込みなし</span>`
+        : `<b style="color:#b91c1c;">🚩 まだ行っていない</b>`;
+      L.popup({ autoPan: true }).setLatLng(ev.latlng).setContent(
+        `<div style="font-size:12px;line-height:1.7;min-width:200px;">`
+        + `<b>${best.chosei ? "🔥" : "🏘"} ${_hkEsc(best.name)}</b>　${_hkEsc(best.city || "")}<br>`
+        + (best.chosei ? `<span style="color:#b91c1c;font-size:11px;font-weight:700;">調整区域の団地（実績：東武台団地で成果3件）</span><br>`
+                       : `<span style="color:#475569;font-size:11px;">市街化区域の団地</span><br>`)
+        + head + `<br>`
+        + `<span style="font-size:11px;color:#334155;">ピン ${st.pins}本 ／ 面談 ${st.met}人${st.todo ? ` ／ <b>未訪問 ${st.todo}人</b>` : ""}</span>`
+        + `<div style="display:flex;gap:6px;margin-top:7px;">`
+        + `<a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${ll}" target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:6px 8px;border-radius:8px;background:#1a73e8;color:#fff;text-decoration:none;font-size:11px;font-weight:700;">👁 ストリートビュー</a>`
+        + `<a href="https://www.google.com/maps/search/?api=1&query=${ll}" target="_blank" rel="noopener noreferrer" style="padding:6px 8px;border-radius:8px;background:#f1f5f9;color:#334155;text-decoration:none;font-size:11px;font-weight:700;border:1px solid #cbd5e1;">🗺 地図</a>`
+        + `</div><div style="color:#94a3b8;font-size:9px;margin-top:4px;">名前・範囲は OpenStreetMap より</div></div>`
+      ).openOn(map);
+    };
+    const onOpen = () => { popupOpen = true; };
+    const onClose = () => { popupOpen = false; queue(); };
+    map.on("click", onTap);
+    map.on("popupopen", onOpen);
+    map.on("popupclose", onClose);
+    map.on("zoomend", queue);
+    map.on("moveend", queue);
+    grp.addTo(map);
+    danchiNmLayerRef.current = grp;
+    (danchiNmDataRef.current ? Promise.resolve(danchiNmDataRef.current) : loadDanchiNames())
+      .then(rows => { if (!alive) return; danchiNmDataRef.current = rows; statsOf(rows); draw(true); })
+      .catch(e => { console.warn("住宅団地の読み込みに失敗", e); });
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+      try { map.off("click", onTap); map.off("popupopen", onOpen); map.off("popupclose", onClose); map.off("zoomend", queue); map.off("moveend", queue); } catch (e) {}
+      drop();
+    };
+  }, [dnShow, choseiPinSig]);
 
   // 🆕 v9.441: 密集市街地（再建築不可が集中する古い戸建地帯）
   const mitsuLayerRef = React.useRef(null);
@@ -23962,6 +24142,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [chikaResOnly, setChikaResOnly] = useState(() => {
     try { return localStorage.getItem("hikari_chika_res") !== "0"; } catch (e) { return true; }
   });
+  // 🆕 v9.585: 🏘 名前のある住宅団地。この端末だけの表示設定。
+  const [showDanchiNames, setShowDanchiNames] = useState(() => {
+    try { return localStorage.getItem("hikari_show_danchi_names") === "1"; } catch (e) { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hikari_show_danchi_names", showDanchiNames ? "1" : "0"); } catch (e) {}
+  }, [showDanchiNames]);
   // 🆕 v9.580: 🔥 調整区域の団地。この端末だけの表示設定。
   const [showChosei, setShowChosei] = useState(() => {
     try { return localStorage.getItem("hikari_show_chosei") === "1"; } catch (e) { return false; }
@@ -29218,6 +29405,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         { k: "chosei", on: showChosei, c: "#dc2626", l: "🔥 調整区域の団地",
                           // 所有者住所の表示だと団地の面は出ない（ピンが所有者の家にあるため）→ 点けたら物件住所に切り替える
                           set: () => { const nv = !showChosei; setShowChosei(nv); if (nv && mapPinTarget !== "address") setMapPinTarget("address"); } },
+                        { k: "danchi", on: showDanchiNames, c: "#4338ca", l: "🏘 名前のある団地",
+                          set: () => { const nv = !showDanchiNames; setShowDanchiNames(nv); if (nv && mapPinTarget !== "address") setMapPinTarget("address"); } },
                       ];
                       const chip = (key, on, c, onClick, label) => (
                         <button key={key} onClick={onClick} style={{
@@ -29265,6 +29454,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             ...CHIKA_BANDS.map(b => sw(b[2], b[3], true)),
                           ])}
                           {showYouto && optRow("#0f766e", "用途", YOUTO_LEGEND.map(k => sw(YOUTO_ZONES[k][2], YOUTO_ZONES[k][1])))}
+                          {showDanchiNames && optRow("#4338ca", "名前", [
+                            sw("#991b1b", "成果あり"), sw("#dc2626", "見込みあり"), sw("#ef4444", "🔥調整区域"), sw("#818cf8", "市街化"),
+                            <span key="nt2" style={{ fontSize: 9, color: C.muted }}>点線＝まだ行っていない。寄せると団地の名前が出ます</span>,
+                          ])}
                           {showChosei && optRow("#dc2626", "団地", [
                             sw("#991b1b", "成果あり"), sw("#dc2626", "見込みあり"), sw("#f97316", "ピンあり"), sw("#ef4444", "🚩 未踏（点線）"),
                             <span key="nt" style={{ fontSize: 9, color: C.muted }}>1976〜97年に造成された調整区域の分譲地＋東武台。農村集落は出しません。🏠物件住所の表示の時に出ます</span>,
@@ -29731,6 +29924,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       showMitsu={false}
                       showYouto={showYouto}
                       showChosei={showChosei}
+                      showDanchiNames={showDanchiNames}
                       chika={{ show: showChika, resOnly: chikaResOnly }}
                       takuchi={{ show: false, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
                                  onlyStar: takuchiOnlyStar,
