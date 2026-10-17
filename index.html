@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-17-v9.579-color";
+const APP_VERSION = "2026-10-17-v9.580-chosei";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8697,6 +8697,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.580", date: "2026-10-17", title: "地図に「🔥 調整区域の団地」を出せるように",
+    body: "これまでの実績で、調整区域にある住宅団地は面談12人に1件の成果が出ています（市街化区域などは54人に1件）。東武台団地（東松山 市ノ川・野田）のような場所を地図に赤い面で出します。濃い赤＝成果あり、赤＝見込みあり、オレンジ＝ピンあり、点線＝まだ行っていない団地。押すと、その一帯のピン・面談・未訪問の人数とストリートビューが開けます。新規地上げの行き先選びに使ってください。",
+    where: "地上げ → 地図 → 表示の切り替え → 🗺 地図に重ねる「🔥 調整区域の団地」（🏠物件住所の表示の時）" },
   { v: "9.579", date: "2026-10-17", title: "画面の色をくっきり見やすく",
     body: "背景を少し濃くして、白いカードが浮き出るようにしました。線・補足の文字・金色や緑・赤などの色も一段濃くして、外でもメリハリがついて読みやすくなっています。",
     where: "アプリ全体" },
@@ -9701,6 +9704,37 @@ function loadMitsu() {
   return _mitsuPromise;
 }
 
+// 🆕 v9.580: 🔥 調整区域の団地。下田さん「東武台団地(市ノ川・野田)で3件。調整区域の分譲団地の空き家は熱い」。
+//   実績(面談340人): 用途地域の外にある10ha以上の住宅地＝面談12人に1件の成果／市街化など＝54人に1件。
+//   データ＝1976年の土地利用細分メッシュ「建物用地」＋宅地化した年代(1976→1997)のマスのうち、用途地域の外にあるもの。
+//   1976年より前からある古い団地(東武台など)も入る（宅地化した年代レイヤーには出ない）。chosei-danchi.json に同梱。
+const CHOSEI_ZOOM_AREA = 12;
+let _choseiPromise = null;
+function loadChosei() {
+  if (_choseiPromise) return _choseiPromise;
+  _choseiPromise = fetch("chosei-danchi.json")
+    .then(r => { if (!r.ok) throw new Error("chosei " + r.status); return r.json(); })
+    .then(raw => (raw.clusters || []).map(rec => {
+      const r0 = rec[1], c0 = rec[2], offs = rec[3];
+      let s = 99, w = 999, n = -99, e = -999;
+      const grid = [];
+      const cells = offs.map(o => {
+        const r = r0 + o[0], c = c0 + o[1];
+        grid.push(r + ":" + c);
+        const a = _tkyToJgd(r / 1200, 100 + c / 800);
+        const b = _tkyToJgd((r + 1) / 1200, 100 + (c + 1) / 800);
+        if (a[0] < s) s = a[0];
+        if (b[0] > n) n = b[0];
+        if (a[1] < w) w = a[1];
+        if (b[1] > e) e = b[1];
+        return [a[0], a[1], b[0], b[1]];
+      });
+      return { city: raw.cities[rec[0]] || "", ha: offs.length, oldPct: rec[4] || 0, cells, grid, bbox: [s, w, n, e] };
+    }))
+    .catch(e => { _choseiPromise = null; throw e; });
+  return _choseiPromise;
+}
+
 let _akiyaPromise = null;
 function loadAkiya() {
   if (_akiyaPromise) return _akiyaPromise;
@@ -10024,7 +10058,7 @@ if (typeof L !== "undefined" && L.Map && !L.Map.prototype._hkRotPatched) {
   L.Map.prototype._hkRotPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -10333,6 +10367,164 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     try { map.fitBounds([[s, w], [n, e]], { padding: [20, 20] }); } catch (er) {}
     // eslint-disable-next-line
   }, [kohoFitKey]);
+
+  // 🆕 v9.580: 🔥 調整区域の団地。この一帯のピン・面談・見込み・成果をその場で数えて色を変える。
+  const choseiLayerRef = React.useRef(null);
+  const choseiDataRef = React.useRef(null);
+  const chShow = !!showChosei && pinTarget === "address";
+  const choseiItemsRef = React.useRef(items);
+  choseiItemsRef.current = items;
+  const choseiPinSig = React.useMemo(() => {
+    let h = 0, n = 0;
+    (items || []).forEach(it => {
+      const la = Number(it && it.lat), lo = Number(it && it.lng);
+      if (!isFinite(la) || !isFinite(lo)) return;
+      n++;
+      h = (h * 31 + Math.round(la * 1e4) + Math.round(lo * 1e4) + String((it && it.status) || "").length) | 0;
+    });
+    return n + ":" + h;
+  }, [items]);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    const drop = () => {
+      if (choseiLayerRef.current) {
+        try { map.removeLayer(choseiLayerRef.current); } catch (e) {}
+        choseiLayerRef.current = null;
+      }
+    };
+    if (!chShow) { drop(); return; }
+    let alive = true, timer = null, popupOpen = false;
+    const grp = L.layerGroup();
+    const rend = L.canvas({ padding: 0.2 });
+    const WIN = ["仕入", "媒介", "リフォーム請負"];
+    const GOOD = ["見込み", "見込み候補", "中長期見込", "交渉中"];
+    // ピンを100mマスに落として、かたまりごとに数える（±1マスまで同じかたまりとみなす）
+    const statsOf = (rows) => {
+      const pinCells = new Map();
+      (choseiItemsRef.current || []).forEach(it => {
+        const la = Number(it && it.lat), lo = Number(it && it.lng);
+        if (!isFinite(la) || !isFinite(lo)) return;
+        const rc = _takuchiPinCell(la, lo);
+        const k = rc[0] + ":" + rc[1];
+        if (!pinCells.has(k)) pinCells.set(k, []);
+        pinCells.get(k).push(it);
+      });
+      rows.forEach(cl => {
+        const seen = new Set();
+        const st = { pins: 0, met: 0, good: 0, win: 0, todo: 0 };
+        cl.grid.forEach(g => {
+          const rc = g.split(":"), r = +rc[0], c = +rc[1];
+          for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+            const arr = pinCells.get((r + dr) + ":" + (c + dc));
+            if (!arr) continue;
+            arr.forEach(it => {
+              if (seen.has(it.id)) return;
+              seen.add(it.id);
+              st.pins++;
+              const met = (it.visitLog || []).some(v => v && (v.result === "home" || v.result === "intercom"));
+              if (met) st.met++;
+              if (WIN.includes(it.status)) st.win++;
+              else if (GOOD.includes(it.status)) st.good++;
+              const hasOwner = !!(it.owner && String(it.owner).trim());
+              if (hasOwner && it.excluded !== true && !met && (!it.status || it.status === "未訪問")) st.todo++;
+            });
+          }
+        });
+        cl.st = st;
+      });
+    };
+    const colorOf = (st) => st.win ? "#991b1b" : (st.good ? "#dc2626" : (st.pins ? "#f97316" : "#ef4444"));
+    let drawnView = null;
+    const draw = (force) => {
+      const rows = choseiDataRef.current;
+      if (!alive || !rows) return;
+      if (popupOpen && !force) return;
+      const z = map.getZoom();
+      const bb = map.getBounds().pad(0.2);
+      const s = bb.getSouth(), w = bb.getWest(), n = bb.getNorth(), e = bb.getEast();
+      if (!force && drawnView && drawnView.z === z && s >= drawnView.s && n <= drawnView.n && w >= drawnView.w && e <= drawnView.e) return;
+      drawnView = { z, s, w, n, e };
+      grp.clearLayers();
+      const area = z >= CHOSEI_ZOOM_AREA;
+      for (let i = 0; i < rows.length; i++) {
+        const cl = rows[i];
+        if (cl.bbox[0] > n || cl.bbox[2] < s || cl.bbox[1] > e || cl.bbox[3] < w) continue;
+        if (!area && z <= 10 && cl.ha < 20) continue;
+        const st = cl.st || { pins: 0 };
+        const col = colorOf(st);
+        const fresh = !st.pins;
+        if (area) {
+          L.polygon(cl.cells.map(c => [[[c[0], c[1]], [c[0], c[3]], [c[2], c[3]], [c[2], c[1]]]]), {
+            renderer: rend, interactive: false,
+            color: fresh ? "#7f1d1d" : col, weight: fresh ? 1.2 : 0.5, dashArray: fresh ? "4,3" : null,
+            fillColor: col, fillOpacity: st.win ? 0.6 : (st.good ? 0.5 : (fresh ? 0.28 : 0.38)),
+          }).addTo(grp);
+        } else {
+          L.circleMarker([(cl.bbox[0] + cl.bbox[2]) / 2, (cl.bbox[1] + cl.bbox[3]) / 2], {
+            renderer: rend, interactive: false, radius: Math.min(15, 6 + Math.sqrt(cl.ha)),
+            color: fresh ? "#7f1d1d" : "#ffffff", weight: fresh ? 1.6 : 1, fillColor: col, fillOpacity: 0.8,
+          }).addTo(grp);
+        }
+      }
+      try { grp.bringToBack(); } catch (e2) {}
+    };
+    const queue = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => draw(false), 140); };
+    const onTap = (ev) => {
+      const rows = choseiDataRef.current;
+      if (!rows || !ev || !ev.latlng) return;
+      const la = ev.latlng.lat, lo = ev.latlng.lng;
+      let best = null, bestArea = Infinity;
+      const pad = map.getZoom() >= CHOSEI_ZOOM_AREA ? 0 : 0.004;
+      for (let i = 0; i < rows.length; i++) {
+        const b = rows[i].bbox;
+        if (la < b[0] - pad || la > b[2] + pad || lo < b[1] - pad || lo > b[3] + pad) continue;
+        const ar = (b[2] - b[0]) * (b[3] - b[1]);
+        if (ar < bestArea) { bestArea = ar; best = rows[i]; }
+      }
+      if (!best || !_tapClaim(ev, 4)) return;
+      const st = best.st || { pins: 0, met: 0, good: 0, win: 0, todo: 0 };
+      const ll = `${la.toFixed(6)},${lo.toFixed(6)}`;
+      const head = st.win ? `<b style="color:#991b1b;">🏆 成果が出た団地（${st.win}件）</b>`
+        : st.good ? `<b style="color:#dc2626;">🔥 見込みあり ${st.good}人</b>`
+        : st.pins ? `<span style="color:#c2410c;font-weight:700;">ピンあり・まだ見込みなし</span>`
+        : `<b style="color:#b91c1c;">🚩 まだ行っていない</b>`;
+      const age = best.oldPct >= 60 ? "1976年より前からある古い住宅地（昭和40〜50年代）"
+        : best.oldPct >= 30 ? "古い住宅地と、1976年以降の分譲がまざる"
+        : "主に1976年以降にできた住宅地";
+      L.popup({ autoPan: true }).setLatLng(ev.latlng).setContent(
+        `<div style="font-size:12px;line-height:1.7;min-width:200px;">`
+        + `<b>🔥 調整区域の団地</b>　${_hkEsc(best.city)}<br>`
+        + `この一帯 ${best.ha}ha（約${(best.ha * 30).toLocaleString()}区画）<br>`
+        + `<span style="color:#475569;font-size:11px;">${age}</span><br>`
+        + head + `<br>`
+        + `<span style="font-size:11px;color:#334155;">ピン ${st.pins}本 ／ 面談 ${st.met}人${st.todo ? ` ／ <b>未訪問 ${st.todo}人</b>` : ""}</span><br>`
+        + `<span style="color:#64748b;font-size:10px;">用途地域の外（調整区域など）。実績では面談12人に1件の成果（市街化などは54人に1件）。仕入前に建て替え可否・浄化槽・私道を役所で確認。</span>`
+        + `<div style="display:flex;gap:6px;margin-top:7px;">`
+        + `<a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${ll}" target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:6px 8px;border-radius:8px;background:#1a73e8;color:#fff;text-decoration:none;font-size:11px;font-weight:700;">👁 ストリートビュー</a>`
+        + `<a href="https://www.google.com/maps/search/?api=1&query=${ll}" target="_blank" rel="noopener noreferrer" style="padding:6px 8px;border-radius:8px;background:#f1f5f9;color:#334155;text-decoration:none;font-size:11px;font-weight:700;border:1px solid #cbd5e1;">🗺 地図</a>`
+        + `</div></div>`
+      ).openOn(map);
+    };
+    const onOpen = () => { popupOpen = true; };
+    const onClose = () => { popupOpen = false; queue(); };
+    map.on("click", onTap);
+    map.on("popupopen", onOpen);
+    map.on("popupclose", onClose);
+    map.on("zoomend", queue);
+    map.on("moveend", queue);
+    grp.addTo(map);
+    choseiLayerRef.current = grp;
+    (choseiDataRef.current ? Promise.resolve(choseiDataRef.current) : loadChosei())
+      .then(rows => { if (!alive) return; choseiDataRef.current = rows; statsOf(rows); draw(true); })
+      .catch(e => { console.warn("調整区域の団地の読み込みに失敗", e); });
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+      try { map.off("click", onTap); map.off("popupopen", onOpen); map.off("popupclose", onClose); map.off("zoomend", queue); map.off("moveend", queue); } catch (e) {}
+      drop();
+    };
+  }, [chShow, choseiPinSig]);
 
   // 🆕 v9.441: 密集市街地（再建築不可が集中する古い戸建地帯）
   const mitsuLayerRef = React.useRef(null);
@@ -23761,6 +23953,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [chikaResOnly, setChikaResOnly] = useState(() => {
     try { return localStorage.getItem("hikari_chika_res") !== "0"; } catch (e) { return true; }
   });
+  // 🆕 v9.580: 🔥 調整区域の団地。この端末だけの表示設定。
+  const [showChosei, setShowChosei] = useState(() => {
+    try { return localStorage.getItem("hikari_show_chosei") === "1"; } catch (e) { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hikari_show_chosei", showChosei ? "1" : "0"); } catch (e) {}
+  }, [showChosei]);
   // 🆕 v9.534: 用途地域の色塗り。この端末だけの表示設定。
   const [showYouto, setShowYouto] = useState(() => {
     try { return localStorage.getItem("hikari_show_youto") === "1"; } catch (e) { return false; }
@@ -29007,6 +29206,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         // 🆕 v9.564: 空き家・密集市街地・ストリートビュー済み・宅地化の年代は外した（探索候補エリアに役目を譲る）
                         { k: "chika", on: showChika, set: setShowChika, c: "#b45309", l: "💴 基準地価" },
                         { k: "youto", on: showYouto, set: setShowYouto, c: "#0f766e", l: "🏙 用途地域" },
+                        { k: "chosei", on: showChosei, set: setShowChosei, c: "#dc2626", l: "🔥 調整区域の団地" },
                       ];
                       const chip = (key, on, c, onClick, label) => (
                         <button key={key} onClick={onClick} style={{
@@ -29054,6 +29254,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             ...CHIKA_BANDS.map(b => sw(b[2], b[3], true)),
                           ])}
                           {showYouto && optRow("#0f766e", "用途", YOUTO_LEGEND.map(k => sw(YOUTO_ZONES[k][2], YOUTO_ZONES[k][1])))}
+                          {showChosei && optRow("#dc2626", "団地", [
+                            sw("#991b1b", "成果あり"), sw("#dc2626", "見込みあり"), sw("#f97316", "ピンあり"), sw("#ef4444", "🚩 未踏（点線）"),
+                            <span key="nt" style={{ fontSize: 9, color: C.muted }}>面談12人に1件の成果（市街化は54人に1件）。🏠物件住所の表示の時に出ます</span>,
+                          ])}
                           {false && optRow("#e0603a", "団地", [
                             chip("star", takuchiOnlyStar, "#a16207", () => setTakuchiOnlyStar(v => !v), "⭐ 有望だけ"),
                             chip("new", takuchiOnlyNew, "#b91c1c", () => setTakuchiOnlyNew(v => !v), "🚩 未踏だけ"),
@@ -29515,6 +29719,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       akiyaMode={akiyaMode}
                       showMitsu={false}
                       showYouto={showYouto}
+                      showChosei={showChosei}
                       chika={{ show: showChika, resOnly: chikaResOnly }}
                       takuchi={{ show: false, onlyNew: takuchiOnlyNew, hideDone: takuchiHideDone,
                                  onlyStar: takuchiOnlyStar,
