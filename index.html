@@ -8985,6 +8985,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.587", date: "2026-10-18", title: "🎯探索候補に「古い団地」が上がってくるように",
+    body: "調整区域の中で家がかたまっている所（昔の分譲団地）を国勢調査から自動で見つけ、お年寄りが多く・長く住み続けている人が多い団地ほど、おすすめ上位に出します。名前を登録しなくても東武台団地（東松山 大字野田）のような所が上がります。区画を押すと「5年前も同じ家に住む人」「調整区域」の割合も見られます。",
+    where: "地上げ → 地図 → 左下「🎯 探索候補」→ 区画を押す（重みは「⚙ 重み」の『古い団地らしさ』）" },
   { v: "9.737", date: "2026-11-16", title: "地上げの地図に、行っても意味のない家を出さないように",
     body: "地上げの地図に、見込無し・対象外・訪問禁止・売却済みの家を出さないようにしました。灰色の小さな点（👣 調べ済み）としては残るので、同じ家にもう一度ピンを立ててしまうことはありません。地図の絞り込みでそのステータスを選んだ時や、住所・名前で探した時、リスト表示では今までどおり出ます。",
     where: "地上げ → 地図" },
@@ -26906,7 +26909,11 @@ function tansakuStateColor(untilNext) {
 //   一戸建てが少ない区画（団地・マンション中心＝minIkko%未満）と、世帯が少なすぎる区画（30未満）も候補にしない
 // 🆕 v9.637: nerai＝狙いの年代（昭和51〜平成初期に田畑から戸建て住宅地になった所）の広さ。
 //   下田さん「昭和50年代〜平成5年くらいの家が大好物」。仕入7件は全部この年代の住宅地(と100m以内)、それ以外の1,266ピンからは0件。
-const KOHO_DEFAULT_W = { density: 40, aging: 25, detached: 15, setai: 5, near: 15, nerai: 40, minDens: 1000, minIkko: 50 };
+// 🆕 v9.587: 「古い団地らしさ」(oldtown)。調整区域の中で家が1か所にかたまっている区画を団地とみなし、
+//   その一番家の多い250mマス(国勢調査)の高齢化率と「5年前も同じ家」の割合で加点（scripts/add-koho-oldtown.py の u/pk/po/ps）。
+//   団地とみなした区画は、大字全体では家がまばらでも、団地部分の密集度で「まばら」判定をする（東武台＝大字野田が除外されていた）。
+const KOHO_DEFAULT_W = { density: 40, aging: 25, detached: 15, setai: 5, near: 15, nerai: 40, oldtown: 30, minDens: 1000, minIkko: 50 };
+const KOHO_DANCHI_MIN = 0.6;      // 団地らしさ(調整区域の割合×かたまり具合)がこれ以上の区画を「調整区域の団地」とみなす
 // 🆕 v9.638: 団地のように家が固まっている所だけ（100mマスに戸建て20軒以上が3マス以上つながった塊）。調整区域のまばらな集落は外した。
 //   実績（団地の中を歩いた261マス）: 家約1万軒に空き家ピン220件＝約45軒に1軒・回っている1時間に約16件。
 const NERAI_PER_HOUSE = 0.022;
@@ -26950,7 +26957,12 @@ function kohoPrepare(fc) {
       }
     } else if (Array.isArray(hc)) hcLL = [];
     const { hc: _hc, ...props } = f.properties;
-    return { ...props, polys, hcLL, bb: [s, w, n, e], km2, dens: km2 > 0 ? f.properties.h / km2 : 0 };
+    const pr = f.properties, dens = km2 > 0 ? pr.h / km2 : 0;
+    // 🆕 v9.587: 団地らしさ 0〜1 = 調整区域の割合 × かたまり具合（一番家の多い250mマスに区画の人口の3割以上いれば1）
+    const fb = pr.u != null && pr.pk && pr.p > 0 ? pr.u * Math.min(1, pr.pk / pr.p / 0.3) : 0;
+    // 団地とみなす区画は、一番家の多いマス(0.0625km²)の世帯密度も見る
+    const pkDens = fb >= KOHO_DANCHI_MIN ? pr.pk * (pr.h / pr.p) / 0.0625 : 0;
+    return { ...props, polys, hcLL, bb: [s, w, n, e], km2, dens: Math.max(dens, pkDens), fb };
   });
 }
 function _kohoInRing(lat, lng, ring) {
@@ -27068,10 +27080,13 @@ function computeKoho(areas, ctx) {
   const pDen = _kohoPct(cand, a => a.dens);
   const pO = _kohoPct(cand, a => a.o), pD = _kohoPct(cand, a => a.d), pH = _kohoPct(cand, a => a.h), pN = _kohoPct(cand, a => a.near);
   const pT = _kohoPct(cand, a => a.t == null ? null : _neraiHa(a));
+  const pPO = _kohoPct(cand, a => a.po), pPS = _kohoPct(cand, a => a.ps);
   cand.forEach((a, i) => {
     const setai = (pH[i] || 0) * W.setai;
+    // 古い団地らしさ：団地らしさ(0〜1) × 一番家の多いマスの「高齢化率」と「5年前も同じ家」の町内順位の平均
+    const oldtown = (a.fb || 0) * ((pPO[i] || 0) + (pPS[i] || 0)) / 2 * (Number(W.oldtown) || 0);
     a.score = (pDen[i] || 0) * W.density + (pO[i] || 0) * W.aging + (pD[i] || 0) * W.detached + setai + (pN[i] || 0) * W.near
-      + (_neraiHa(a) > 0 ? (pT[i] || 0) : 0) * (Number(W.nerai) || 0);
+      + (_neraiHa(a) > 0 ? (pT[i] || 0) : 0) * (Number(W.nerai) || 0) + oldtown;
   });
   cand.sort((x, y) => y.score - x.score).forEach((a, i) => { a.rank = i + 1; });
   // ⑥ 理由の文（町の中での順位で）
@@ -27082,7 +27097,8 @@ function computeKoho(areas, ctx) {
   const [rO, nO] = rankOf(a => a.o), [rD, nD] = rankOf(a => a.d), [rDen, nDen] = rankOf(a => a.dens);
   res.forEach(a => {
     const r = [];
-    if (rDen[a.k]) r.push(`家の密集度が町内${rDen[a.k]}位（1km²に${Math.round(a.dens).toLocaleString()}世帯）`);
+    if (a.fb >= KOHO_DANCHI_MIN) r.push(`🔥 調整区域の団地らしい（家がかたまっている所で高齢化率${a.po != null ? Math.round(a.po * 100) + "%" : "—"}・5年前も同じ家に住む人${a.ps != null ? Math.round(a.ps * 100) + "%" : "—"}）`);
+    if (rDen[a.k]) r.push(`家の密集度が町内${rDen[a.k]}位（1km²に${Math.round(a.dens).toLocaleString()}世帯${a.fb >= KOHO_DANCHI_MIN ? "・団地部分で計算" : ""}）`);
     if (a.state !== "done" && why(a)) r.push(`${why(a)}ので、おすすめにしていません`);
     if (a.o != null && rO[a.k]) r.push(`高齢化率が町内${rO[a.k]}位（${nO}区画中）`);
     if (a.d != null && rD[a.k]) r.push(`一戸建てが${Math.round(a.d * 100)}%（町内${rD[a.k]}位）`);
@@ -33969,7 +33985,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           </div>
                         )}
                         {kohoShowConf && (() => {
-                          const rows = [["density", "家の密集度（1km²あたりの世帯数）"], ["aging", "高齢化率"], ["detached", "一戸建て割合"], ["setai", "世帯数"], ["near", "3km以内の未訪問の所有者"], ["nerai", "狙いの年代（昭和51〜平成初期）の団地の広さ"], ["minDens", "これ未満の密集度はおすすめにしない（世帯/km²）"], ["minIkko", "一戸建てがこれ未満(%)はおすすめにしない"]];
+                          const rows = [["density", "家の密集度（1km²あたりの世帯数）"], ["aging", "高齢化率"], ["detached", "一戸建て割合"], ["setai", "世帯数"], ["near", "3km以内の未訪問の所有者"], ["nerai", "狙いの年代（昭和51〜平成初期）の団地の広さ"], ["oldtown", "古い団地らしさ（調整区域・高齢化・長く住む人）"], ["minDens", "これ未満の密集度はおすすめにしない（世帯/km²）"], ["minIkko", "一戸建てがこれ未満(%)はおすすめにしない"]];
                           return (
                             <div style={{ marginTop: 6, borderTop: "1px solid #e2e8f0", paddingTop: 6 }}>
                               <div style={{ color: "#64748b", marginBottom: 4 }}>おすすめ度の重み（大きいほど重視。全員で共通）</div>
@@ -34149,6 +34165,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {cell("人口", (a.p || 0).toLocaleString() + "人")}
                             {a.t != null && cell("狙いの年代の団地", (a.t + a.t9) > 0 ? `${a.t + a.t9}ha・家${(a.hs || 0).toLocaleString()}軒` : "なし")}
                             {a.t != null && cell("団地の空き家（見込み）", (a.hs || 0) > 0 ? `約${Math.round(a.hs * NERAI_PER_HOUSE)}件・${(a.hs * NERAI_PER_HOUSE / NERAI_PER_HOUR).toFixed(1)}時間` : "—")}
+                            {a.s != null && cell("5年前も同じ家に住む人", pct(a.s))}
+                            {a.u != null && cell("調整区域（用途地域の外）", pct(a.u))}
                           </div>
                           <div style={{ fontSize: 12, color: C.text, lineHeight: 1.7, background: C.inset, borderRadius: 8, padding: "6px 10px", marginBottom: 10 }}>
                             <div style={{ fontWeight: 800, marginBottom: 2 }}>{a.state === "done" ? "探索済みなので、おすすめからは外しています" : "おすすめの理由"}</div>
