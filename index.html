@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-20-v9.587-pinform";
+const APP_VERSION = "2026-10-21-v9.588-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8697,6 +8697,10 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.588", date: "2026-10-21", title: "買取業者リストを「土地」と「建物」で分けられるように",
+    body: "買取業者リストの上に「土地の買取業者（土地を買って新築を建てる会社）」「建物の買取業者（中古の家を買ってリフォームして売る会社）」のタブができました。先行打診で買取業者へ送る時も「土地の業者へ／建物の業者へ／両方」を選べます。",
+    where: "その他 → 買取業者リスト ／ その他 → 先行打診 → 送る相手を選ぶ",
+    note: "どちらに出るかは、業者の「得意な物件」で 土地・戸建 を選んで決まります。" },
   { v: "9.587", date: "2026-10-20", title: "ピンを立てる時に「目印住所」と「地番」を別々に入れられるように",
     body: "ピン登録の画面に「🏠 地番」の欄を足しました。ブルーマップで読んだ地番はこちらへ、目印住所には家の住所（〇丁目〇-〇）を入れてください。目印住所に地番を入れると、所有者がその家に住んでいても「住所違い」に見えてしまうためです。地番が分からない時は空のままで大丈夫です。",
     where: "地上げ → 地図 → ピンを立てる → 📍 現地ピン登録" },
@@ -41438,7 +41442,10 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   const [queue, setQueue] = useState([]);
   const [showStocks, setShowStocks] = useState(false);
   const [kindSel, setKindSel] = useState("買取業者");
+  const [gSide, setGSide] = useState(""); // 🆕 v9.588: 買取業者のうち 土地／建物／""(両方)
   const [senderKey, setSenderKey] = useState("shimoda");
+  // 選んでいる種別に入る先か（買取業者は土地／建物でも絞る）
+  const inKind = (r, k = kindSel, sd = gSide) => (!k ? r.kind !== "反響のお客様" : r.kind === k) && (r.kind !== "買取業者" || hanroInSide(r, sd));
 
   // 🆕 v9.367: 買取業者＝名簿(hanro)、投資家＝反響から自動集約
   const hanro = useMemo(() => (data.hanro || []).filter(r => r && r.kind !== "投資家"), [data.hanro]);
@@ -41531,7 +41538,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
   // 送り先の種別を切り替える（選び直し＋文面も用途に合わせる）
   const applyKind = (k) => {
     setKindSel(k);
-    setPicked(sendable.filter(r => (!k ? r.kind !== "反響のお客様" : r.kind === k) && matchOf(r).hit).map(r => r.id));
+    setPicked(sendable.filter(r => inKind(r, k) && matchOf(r).hit).map(r => r.id));
     // 本文を触っていなければ、用途に合ったテンプレへ自動で切り替える
     const untouched = OFFER_PRESETS.some(t => t.body === body);
     if (untouched) {
@@ -41550,7 +41557,7 @@ function OfferPage({ data, setData, onBack, currentUser }) {
       const next = cnt("買取業者") > 0 ? "買取業者" : (cnt("投資家") > 0 ? "投資家" : "");
       if (next !== kindSel) { applyKind(next); setStep("targets"); return; }
     }
-    setPicked(sendable.filter(r => (!kindSel ? r.kind !== "反響のお客様" : r.kind === kindSel) && matchOf(r).hit).map(r => r.id));
+    setPicked(sendable.filter(r => inKind(r) && matchOf(r).hit).map(r => r.id));
     setStep("targets");
   };
 
@@ -41765,7 +41772,9 @@ function OfferPage({ data, setData, onBack, currentUser }) {
 
   // ===== STEP 2: 送る相手 =====
   if (step === "targets") {
-    const shown = sendable.filter(r => !kindSel ? r.kind !== "反響のお客様" : r.kind === kindSel);
+    const shown = sendable.filter(r => inKind(r));
+    const applySide = (sd) => { setGSide(sd); setPicked(sendable.filter(r => inKind(r, kindSel, sd) && matchOf(r).hit).map(r => r.id)); };
+    const hiddenUnsorted = gSide ? sendable.filter(r => r.kind === "買取業者" && hanroUnsorted(r)).length : 0;
     const hitCount = shown.filter(r => matchOf(r).hit).length;
     const excluded = pool.filter(r => !r.email || r.optOut);
     const noMailInvestors = investorRows.filter(r => !r.email && !r.optOut); // 🆕 メールが無い＝電話で当たる人
@@ -41796,10 +41805,28 @@ function OfferPage({ data, setData, onBack, currentUser }) {
             <button key={o.label} onClick={() => applyKind(o.k)} style={{ flex: 1, background: kindSel === o.k ? C.accentBg : C.cardBg, border: `2px solid ${kindSel === o.k ? C.accent : C.borderDim}`, borderRadius: 12, padding: "11px 4px", cursor: "pointer", fontFamily: "inherit" }}>
               <div style={{ color: C.text, fontWeight: 800, fontSize: 13 }}>{o.label}</div>
               <div style={{ color: C.muted, fontSize: 10, marginTop: 2 }}>{o.sub}</div>
-              <div style={{ color: kindSel === o.k ? C.accent : C.muted, fontSize: 11, fontWeight: 700, marginTop: 3 }}>{sendable.filter(r => !o.k ? r.kind !== "反響のお客様" : r.kind === o.k).length}件</div>
+              <div style={{ color: kindSel === o.k ? C.accent : C.muted, fontSize: 11, fontWeight: 700, marginTop: 3 }}>{sendable.filter(r => inKind(r, o.k)).length}件</div>
             </button>
           ))}
         </div>
+
+        {/* 🆕 v9.588: 買取業者は 土地／建物 で選べる（古家付き土地→土地、中古戸建→建物） */}
+        {kindSel === "買取業者" || kindSel === "" ? (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>どの買取業者に送りますか</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+              {[...HANRO_SIDES.map(s => ({ k: s.k, label: s.k + "の業者" })), { k: "", label: "両方" }].map(o => {
+                const on = gSide === o.k;
+                return (
+                  <button key={o.label} onClick={() => applySide(o.k)} style={{ background: on ? C.accentBg : C.cardBg, border: `2px solid ${on ? C.accent : C.borderDim}`, borderRadius: 10, padding: "9px 4px", cursor: "pointer", fontFamily: "inherit", color: on ? C.accent : C.text, fontWeight: 800, fontSize: 13 }}>
+                    {o.label}<span style={{ display: "block", fontSize: 11, fontWeight: 700, color: on ? C.accent : C.muted, marginTop: 2 }}>{sendable.filter(r => r.kind === "買取業者" && hanroInSide(r, o.k)).length}件</span>
+                  </button>
+                );
+              })}
+            </div>
+            {hiddenUnsorted ? <div style={{ color: C.warn, fontSize: 11, marginTop: 6, lineHeight: 1.6 }}>土地か建物か未設定の業者 {hiddenUnsorted}件は出ていません（買取業者リストで「得意な物件」を選ぶと出ます）</div> : null}
+          </div>
+        ) : null}
 
         <div style={{ background: C.cardBg, border: `2px solid ${C.muted + "aa"}`, boxShadow: "0 2px 8px rgba(0,0,0,.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
           <div style={{ color: C.text, fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{propName || "(物件名なし)"}</div>
@@ -41924,6 +41951,21 @@ function OfferPage({ data, setData, onBack, currentUser }) {
 const HANRO_KINDS = ["買取業者"];
 const HANRO_TYPE_OPTIONS = ["戸建", "土地", "区分", "アパート", "収益", "再建築不可", "借地", "何でも"];
 
+// 🆕 v9.588: 土地の買取業者／建物の買取業者で分ける（2026-10-21 下田さん）
+//   土地＝土地を買って新築を建てる会社（飯田Gなど）、建物＝中古戸建を買ってリフォーム再販する会社（カチタス型）
+//   中身は「得意な物件(types)」の 土地／戸建 をそのまま使う。両方買う会社は両方のタブに出る
+const HANRO_SIDES = [
+  { k: "土地", label: "土地の買取業者", sub: "土地を買って新築", type: "土地" },
+  { k: "建物", label: "建物の買取業者", sub: "中古を買って再販", type: "戸建" },
+];
+function hanroInSide(r, side) {
+  if (!side) return true;
+  const t = String((r && r.types) || "");
+  if (/何でも/.test(t)) return true;
+  return side === "土地" ? /土地/.test(t) : /戸建/.test(t);
+}
+function hanroUnsorted(r) { return !hanroInSide(r, "土地") && !hanroInSide(r, "建物"); }
+
 function hanroBlank() {
   return { id: null, kind: "買取業者", company: "", name: "", email: "", tel: "", budgetMin: "", budgetMax: "", types: "", note: "", optOut: false, lastSentAt: "" };
 }
@@ -41942,24 +41984,30 @@ function hanroSamples() {
 function HanroListPage({ data, setData, onBack }) {
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
+  const [side, setSide] = useState("土地"); // 🆕 v9.588: 土地／建物／""(すべて)
 
   // 🆕 v9.367: このリストは買取業者だけ（昔の「投資家」行が残っていても出さない）
   const list = useMemo(() => (data.hanro || []).filter(r => r && r.kind !== "投資家"), [data.hanro]);
 
   const filtered = useMemo(() => list.filter(r => {
+    if (!hanroInSide(r, side)) return false;
     if (search) {
       const q = search.toLowerCase();
       const t = [r.company, r.name, r.email, r.tel, r.types, r.note].join(" ").toLowerCase();
       if (!t.includes(q)) return false;
     }
     return true;
-  }), [list, search]);
+  }), [list, search, side]);
 
   const kpi = useMemo(() => ({
     total: list.length,
     gyosha: list.length,
     stop: list.filter(r => r.optOut).length,
+    unsorted: list.filter(hanroUnsorted).length,
   }), [list]);
+  const sideInfo = HANRO_SIDES.find(s => s.k === side);
+  // 開いているタブの種類を最初から選んだ状態で追加する
+  const blankForSide = () => ({ ...hanroBlank(), types: sideInfo ? sideInfo.type : "" });
 
   const saveRec = (rec) => {
     const mail = String(rec.email || "").trim();
@@ -42033,9 +42081,10 @@ function HanroListPage({ data, setData, onBack }) {
         <Field label="得意な物件（複数可）">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {HANRO_TYPE_OPTIONS.map(t => (
-              <button key={t} onClick={() => toggleType(t)} style={{ padding: "8px 12px", borderRadius: 999, border: `1px solid ${curTypes.includes(t) ? C.accent : C.borderDim}`, background: curTypes.includes(t) ? C.accentBg : C.cardBg, color: C.text, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>{t}</button>
+              <button key={t} onClick={() => toggleType(t)} style={{ padding: "8px 12px", borderRadius: 999, border: `1px solid ${curTypes.includes(t) ? C.accent : C.borderDim}`, background: curTypes.includes(t) ? C.accentBg : C.cardBg, color: C.text, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>{t === "土地" ? "土地（土地の業者）" : t === "戸建" ? "戸建（建物の業者）" : t}</button>
             ))}
           </div>
+          <div style={{ color: C.muted, fontSize: 11, marginTop: 6, lineHeight: 1.6 }}>「土地」を選ぶと土地の買取業者、「戸建」を選ぶと建物の買取業者のタブに出ます（両方選べば両方）</div>
         </Field>
 
         <Field label="メモ"><textarea style={{ ...inp, minHeight: 80, resize: "vertical" }} value={editing.note} onChange={e => set("note", e.target.value)} placeholder="決済スピード・付き合いの深さなど" /></Field>
@@ -42066,20 +42115,24 @@ function HanroListPage({ data, setData, onBack }) {
         💎 投資家はここに登録しません。反響で「購入目的＝投資家」を選ぶと、先行打診の送り先へ<b style={{ color: C.text }}>自動で入ります</b>（今 {collectInvestorTargets(data).filter(r => r.email && !r.optOut).length} 人）。
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
-        {[
-          { label: "買取業者", count: kpi.gyosha, color: C.success, icon: "🏢" },
-          { label: "配信停止", count: kpi.stop, color: C.muted, icon: "🚫" },
-        ].map(k => (
-          <div key={k.label} style={{ background: C.cardBg, border: `1.5px solid ${C.muted + "77"}`, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}>
-            <div style={{ fontSize: 16 }}>{k.icon}</div>
-            <div style={{ color: k.color, fontWeight: 800, fontSize: 18, lineHeight: 1 }}>{k.count}</div>
-            <div style={{ color: C.muted, fontSize: 9, marginTop: 4 }}>{k.label}</div>
-          </div>
-        ))}
+      {/* 🆕 v9.588: 土地／建物のタブ */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 0.7fr", gap: 8, marginBottom: 8 }}>
+        {[...HANRO_SIDES, { k: "", label: "すべて", sub: "" }].map(o => {
+          const on = side === o.k;
+          return (
+            <button key={o.label} onClick={() => setSide(o.k)} style={{ background: on ? C.accentBg : C.cardBg, border: `2px solid ${on ? C.accent : C.border}`, boxShadow: on ? "0 2px 8px rgba(0,0,0,.12)" : "none", borderRadius: 12, padding: "10px 4px", cursor: "pointer", fontFamily: "inherit", textAlign: "center" }}>
+              <div style={{ color: on ? C.accent : C.text, fontWeight: 800, fontSize: 13 }}>{o.label}</div>
+              {o.sub ? <div style={{ color: C.muted, fontSize: 10, marginTop: 2 }}>{o.sub}</div> : null}
+              <div style={{ color: on ? C.accent : C.muted, fontSize: 15, fontWeight: 800, marginTop: 3 }}>{list.filter(r => hanroInSide(r, o.k)).length}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ color: C.muted, fontSize: 11, marginBottom: 14, lineHeight: 1.6 }}>
+        配信停止 {kpi.stop}件{kpi.unsorted ? <>　／　<b style={{ color: C.warn }}>土地か建物か未設定 {kpi.unsorted}件</b>（「すべて」で開いて「得意な物件」を選んでください）</> : null}
       </div>
 
-      <button onClick={() => setEditing(hanroBlank())} style={{ width: "100%", background: C.accent, border: "none", borderRadius: 12, padding: "15px 0", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: "inherit", marginBottom: 10 }}>＋ 買取業者を追加</button>
+      <button onClick={() => setEditing(blankForSide())} style={{ width: "100%", background: C.accent, border: "none", borderRadius: 12, padding: "15px 0", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: "inherit", marginBottom: 10 }}>＋ {sideInfo ? sideInfo.label : "買取業者"}を追加</button>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         <button onClick={exportCSV} style={{ flex: 1, minWidth: 110, background: C.cardBg, border: `1.5px solid ${C.muted + "77"}`, borderRadius: 10, padding: "11px 8px", color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}><NavIcon name="file" size={14} /> CSV出力</button>
@@ -42099,9 +42152,11 @@ function HanroListPage({ data, setData, onBack }) {
       ) : null}
 
       {filtered.map(r => (
-        <button key={r.id} onClick={() => setEditing({ ...hanroBlank(), ...r })} style={{ width: "100%", textAlign: "left", background: C.cardBg, border: `1px solid ${r.optOut ? C.border : C.borderDim}`, borderRadius: 14, padding: 16, marginBottom: 10, cursor: "pointer", fontFamily: "inherit", opacity: r.optOut ? 0.55 : 1 }}>
+        <button key={r.id} onClick={() => setEditing({ ...hanroBlank(), ...r })} style={{ width: "100%", textAlign: "left", background: C.cardBg, border: `2px solid ${C.muted + "aa"}`, boxShadow: "0 2px 8px rgba(0,0,0,.12)", borderRadius: 14, padding: 16, marginBottom: 10, cursor: "pointer", fontFamily: "inherit", opacity: r.optOut ? 0.55 : 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, background: C.successBg, color: C.success }}>買取業者</span>
+            {hanroInSide(r, "土地") ? <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, background: C.successBg, color: C.success }}>土地</span> : null}
+            {hanroInSide(r, "建物") ? <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, background: C.accentBg, color: C.accent }}>建物</span> : null}
+            {hanroUnsorted(r) ? <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, background: C.warnBg, color: C.warn }}>種類未設定</span> : null}
             <span style={{ color: C.text, fontWeight: 700, fontSize: 15 }}>{r.company || r.name || "(無題)"}</span>
             {r.company && r.name ? <span style={{ color: C.muted, fontSize: 13 }}>{r.name}</span> : null}
             {r.optOut ? <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999, background: C.dangerBg, color: C.danger }}>配信停止</span> : null}
