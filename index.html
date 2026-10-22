@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-22-v9.589-update";
+const APP_VERSION = "2026-10-22-v9.590-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2832,6 +2832,20 @@ const STATUS_GROUPS = [
   { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
   { label: "🟠 販売・売却", color: "#f97316", statuses: ["販売中", "売契準備中", "売却役調中", "売契完了", "売決完了"] },
 ];
+// 🆕 v9.590: 賃貸で保有している物件（在庫の「🔑 賃貸」）のステータス
+const RENT_STATUS_GROUPS = [
+  { label: "🟣 残置物・リフォーム", color: "#a855f7", statuses: ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"] },
+  { label: "🟢 募集", color: "#22c55e", statuses: ["募集準備中", "募集中", "申込あり", "賃貸契約準備中"] },
+  { label: "🏠 入居", color: "#0ea5e9", statuses: ["賃貸契約済", "入居中", "退去予定"] },
+];
+const RENT_STATUSES = RENT_STATUS_GROUPS.flatMap(g => g.statuses);
+// 物件に合わせたステータスの選択肢（今の値が一覧に無ければ先頭に残す＝勝手に変えない）
+const stockStatusGroupsFor = (item) => {
+  const groups = item && item.dealKind === "賃貸" ? RENT_STATUS_GROUPS : STATUS_GROUPS;
+  const cur = item && item.status;
+  if (cur && !groups.some(g => g.statuses.includes(cur))) return [{ label: "今のステータス", color: "#64748b", statuses: [cur] }, ...groups];
+  return groups;
+};
 // 🆕 v9.372: 地上げステータスの刷新（STATUS-SPEC-v1）
 //   ・判断基準は「明日その家に行っていいか？」の一本。ステータスは感想ではなく“次の行動”を表す。
 //   ・機能していなかった NG を廃止し、「訪問禁止（人が理由）」と「対象外（物件が理由）」に分割。
@@ -8697,6 +8711,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.590", date: "2026-10-22", title: "賃貸の物件は、賃貸用のステータスで管理できるように",
+    body: "在庫の「🔑 賃貸」の物件は、ステータスの選択肢が賃貸用に変わります（募集準備中・募集中・申込あり・賃貸契約準備中・賃貸契約済・入居中・退去予定 と、リフォームの4つ）。売買から賃貸に切り替えると、自動で「募集中」になります。",
+    where: "在庫 → 仕入案件 →「🔑 賃貸」→ 物件の編集 → ステータス" },
   { v: "9.589", date: "2026-10-22", title: "在庫を「売買」と「賃貸」で分けて見られるように",
     body: "在庫（仕入案件）の上に「🏷 売買」「🔑 賃貸」のタブができました。アットホームなどで貸し出しの募集をしている保有物件は「賃貸」で管理できます。反響・写真・キーボックス・ステータスは今までの売買と同じように使えます。賃貸では、賃料・管理費・敷金・礼金を入れられ、カードに賃料と利回りが出ます。",
     where: "在庫 → 仕入案件 →「🏷 売買／🔑 賃貸」のタブ",
@@ -12777,6 +12794,9 @@ function StatusTag({ status }) {
     "残置物処理中": "#06b6d4", "リフォーム待ち": C.warn, "リフォーム中": C.purple, "リフォーム完了": C.success,
     // 販売・売却
     "販売中": "#22c55e", "売契準備中": "#fb923c", "売却役調中": "#fdba74", "売契完了": "#f97316", "売決完了": "#64748b",
+    // 🆕 v9.590: 賃貸
+    "募集準備中": "#86efac", "募集中": "#22c55e", "申込あり": "#f59e0b", "賃貸契約準備中": "#fb923c",
+    "賃貸契約済": "#0ea5e9", "入居中": "#2563eb", "退去予定": "#ef4444",
     // 旧ステータス（互換用 - マイグレーション前のデータが残ってた場合用）
     "見込": C.success, // 在庫管理では廃止、所有者アタック・地上げ用に維持
     "仕契完成": "#22c55e", "仕入決済完了": "#0ea5e9", "登記・残置物処理中": "#06b6d4",
@@ -16034,7 +16054,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           </Field>
           <Field label="📊 ステータス">
             <select style={inp} value={quickEditForm.status} onChange={e => setQuickEditForm(p => ({ ...p, status: e.target.value }))}>
-              {STATUS_GROUPS.map(grp => (
+              {stockStatusGroupsFor(quickEditForm).map(grp => (
                 <optgroup key={grp.label} label={grp.label}>
                   {grp.statuses.map(st => <option key={st} value={st}>{st}</option>)}
                 </optgroup>
@@ -17953,6 +17973,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   //   販売中 → 売契系 → リフォーム → 登記 → 仕入 の順でグループ表示
   const STATUS_SORT_ORDER = [
     "販売中", "売契準備中", "売却役調中", "売契完了", "売決完了",
+    "募集中", "申込あり", "賃貸契約準備中", "募集準備中", "退去予定", "賃貸契約済", "入居中",
     "リフォーム完了", "リフォーム中", "リフォーム待ち", "残置物処理中",
     "登記依頼完了",
     "仕決完了", "仕契完了", "仕契準備中", "仕入役調中",
@@ -18203,7 +18224,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
     const sellContractDateChanged = (editItem?.sellContractDate || "") !== (item.sellContractDate || "");
     const buyDateChanged = (editItem?.buyDate || "") !== (item.buyDate || "");
     const buyContractDateChanged = (editItem?.buyContractDate || "") !== (item.buyContractDate || "");
-    if (!userChangedStatus) {
+    if (!userChangedStatus && item.dealKind !== "賃貸") { // 🆕 v9.590: 賃貸は日付でステータスを動かさない
       if (item.sellDate && sellDateChanged) {
         item.status = "売決完了";
       } else if (item.sellContractDate && sellContractDateChanged) {
@@ -18536,7 +18557,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
             borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontSize: 13,
             fontFamily: "inherit", fontWeight: 700,
           }} onClick={() => { setShowImport(true); setImportText(""); setImportParsed(null); setImportTargetStockId(null); }}><NavIcon name="download" size={15} /> 反響取込</button>
-          <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm({ ...empty, dealKind: saleKind === "rent" ? "賃貸" : "売買" }); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
+          <button style={{ ...btnStyle(), padding: "10px 16px", fontSize: 14 }} onClick={() => { setForm({ ...empty, dealKind: saleKind === "rent" ? "賃貸" : "売買", status: saleKind === "rent" ? "募集中" : empty.status }); setEditItem(null); setShowAdd(true); }}>＋ 追加</button>
         </div>
       </div>
 
@@ -18702,7 +18723,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         {statusFilterExpanded && (
           <div style={{ marginTop: 6 }}>
             {/* 🆕 グループ表示でステータス選択 */}
-            {STATUS_GROUPS.map(grp => {
+            {(saleKind === "rent" ? RENT_STATUS_GROUPS : STATUS_GROUPS).map(grp => {
               // viewModeでフィルター
               const visibleStatuses = grp.statuses.filter(st => {
                 if (viewMode === "active" && st === "売決完了") return false;
@@ -19402,7 +19423,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
           <Field label="物件名"><input style={inp} value={form.name} onChange={f("name")} placeholder="川越市木野目" /></Field>
           <Field label="ステータス">
             <select style={inp} value={form.status} onChange={f("status")}>
-              {STATUS_GROUPS.map(grp => (
+              {stockStatusGroupsFor(form).map(grp => (
                 <optgroup key={grp.label} label={grp.label}>
                   {grp.statuses.map(st => <option key={st} value={st}>{st}</option>)}
                 </optgroup>
@@ -19415,7 +19436,15 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                 const on = (form.dealKind || "売買") === k;
                 const col = k === "賃貸" ? "#f59e0b" : C.accent;
                 return (
-                  <button key={k} type="button" onClick={() => setForm(p => ({ ...p, dealKind: k }))} style={{
+                  <button key={k} type="button" onClick={() => setForm(p => {
+                    if ((p.dealKind || "売買") === k) return p;
+                    // 🆕 v9.590: 売買⇔賃貸を切り替えたら、ステータスも相手側の入口に合わせる（リフォーム系はそのまま）
+                    const reform = ["残置物処理中", "リフォーム待ち", "リフォーム中", "リフォーム完了"];
+                    let st = p.status;
+                    if (k === "賃貸" && !RENT_STATUSES.includes(st)) st = "募集中";
+                    if (k === "売買" && RENT_STATUSES.includes(st) && !reform.includes(st)) st = "販売中";
+                    return { ...p, dealKind: k, status: st };
+                  })} style={{
                     flex: 1, padding: "10px 4px", borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700,
                     background: on ? col : "none", color: on ? "#fff" : C.muted, border: `1.5px solid ${on ? col : C.borderDim}`,
                   }}>{k === "賃貸" ? "🔑 賃貸（貸し出し募集）" : "🏷 売買"}</button>
