@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-22-v9.590-update";
+const APP_VERSION = "2026-10-22-v9.591-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -552,7 +552,14 @@ const MONEY_VIEWERS = ["下田", "比嘉"];
 // 🆕 v9.402: 下田・比嘉 以外は、在庫・仲介・売却決済を「自分の担当分」だけにする。
 //   物件の担当は「比嘉・下田」のように連名のことがあるので expandAssignee 経由で判定する。
 //   🆕 v9.404: 2人1組で動いているペア（EDIT_TEAMS＝脇本・松村）は、互いの案件も見える。
+// 🆕 v9.591: 在庫の「賃貸」（下田さんの保有物件の貸し出し募集）は下田さんの画面にだけ出す。
+//   一覧・ダッシュボード・カレンダー・反響の電話リスト・お知らせ のすべてから、他の人には消える。
+//   ※ データ自体はクラウド共有（画面上の秘匿）。
+const RENT_VIEWERS = ["下田"];
+const canSeeRent = (user = getCurrentUser()) => RENT_VIEWERS.includes(user);
+const hideRentStocks = (arr, user = getCurrentUser()) => canSeeRent(user) ? (arr || []) : (arr || []).filter(s => !(s && s.dealKind === "賃貸"));
 function visibleToUser(items, user, key = "assignee") {
+  items = hideRentStocks(items, user);
   if (canViewMoney(user)) return items || [];
   if (!user) return [];
   const mates = editTeammatesOf(user);
@@ -1574,7 +1581,7 @@ function MailHistoryPage({ data, onBack }) {
       const k = String((v && v.email) || "").trim().toLowerCase();
       if (k && !m[k]) m[k] = { parentType, parentId: p.id, vid: v.id, vi, customer: v.customer || "", prop: name };
     });
-    (data.stocks || []).forEach(s => s && add("stock", s, s.name || ""));
+    hideRentStocks(data.stocks).forEach(s => s && add("stock", s, s.name || ""));
     (data.mediations || []).forEach(x => x && add("mediation", x, (x.name || "") + "（仲介）"));
     return m;
   }, [data.stocks, data.mediations]);
@@ -4887,13 +4894,13 @@ function computeMyDailyAlerts(data, member, todayStr) {
     !CLOSED_JIAGE_STATUSES.includes(o.status)
   );
   const stagnant180 = (data.stocks || []).filter(s => {
-    if (!isMine(s.assignee) || s.status === "売決完了") return false;
+    if (!isMine(s.assignee) || s.status === "売決完了" || isRentStock(s)) return false;
     if (!s.buyDate) return false;
     const days = Math.floor((new Date(todayStr) - new Date(s.buyDate + "T00:00:00")) / 86400000);
     return days >= 180;
   });
   const stagnant90 = (data.stocks || []).filter(s => {
-    if (!isMine(s.assignee) || s.status === "売決完了") return false;
+    if (!isMine(s.assignee) || s.status === "売決完了" || isRentStock(s)) return false;
     if (!s.buyDate) return false;
     const days = Math.floor((new Date(todayStr) - new Date(s.buyDate + "T00:00:00")) / 86400000);
     return days >= 90 && days < 180;
@@ -8713,11 +8720,11 @@ const PAGES = [
 const WHATS_NEW = [
   { v: "9.590", date: "2026-10-22", title: "賃貸の物件は、賃貸用のステータスで管理できるように",
     body: "在庫の「🔑 賃貸」の物件は、ステータスの選択肢が賃貸用に変わります（募集準備中・募集中・申込あり・賃貸契約準備中・賃貸契約済・入居中・退去予定 と、リフォームの4つ）。売買から賃貸に切り替えると、自動で「募集中」になります。",
-    where: "在庫 → 仕入案件 →「🔑 賃貸」→ 物件の編集 → ステータス" },
+    where: "在庫 → 仕入案件 →「🔑 賃貸」→ 物件の編集 → ステータス", who: ["下田"] },
   { v: "9.589", date: "2026-10-22", title: "在庫を「売買」と「賃貸」で分けて見られるように",
     body: "在庫（仕入案件）の上に「🏷 売買」「🔑 賃貸」のタブができました。アットホームなどで貸し出しの募集をしている保有物件は「賃貸」で管理できます。反響・写真・キーボックス・ステータスは今までの売買と同じように使えます。賃貸では、賃料・管理費・敷金・礼金を入れられ、カードに賃料と利回りが出ます。",
     where: "在庫 → 仕入案件 →「🏷 売買／🔑 賃貸」のタブ",
-    note: "今ある物件を賃貸に移すときは、物件の編集画面の一番上「売買／賃貸」で「賃貸」を選んで保存してください。" },
+    note: "今ある物件を賃貸に移すときは、物件の編集画面の一番上「売買／賃貸」で「賃貸」を選んで保存してください。", who: ["下田"] },
   { v: "9.588", date: "2026-10-21", title: "買取業者リストを「土地」と「建物」で分けられるように",
     body: "買取業者リストの上に「土地の買取業者（土地を買って新築を建てる会社）」「建物の買取業者（中古の家を買ってリフォームして売る会社）」のタブができました。先行打診で買取業者へ送る時も「土地の業者へ／建物の業者へ／両方」を選べます。",
     where: "その他 → 買取業者リスト ／ その他 → 先行打診 → 送る相手を選ぶ",
@@ -14088,7 +14095,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       // 🆕 査定したものはカレンダーに連動しない（売主結果確認日のみ customEvents 経由で連動）
       // if (s.createdAt) list.push({ date: s.createdAt, type: "sekisan", icon: "🧮", color: C.danger, title: s.address || "(無住所)", sub: `仕入検討・${s.judgment}`, assignee: s.assignee, rawId: s.id });
     });
-    (data.stocks || []).forEach(s => {
+    hideRentStocks(data.stocks).forEach(s => {
       if (s.buyContractDate) list.push({ date: s.buyContractDate, type: "buyContract", icon: "📝", color: "#a855f7", title: s.name || "(無題)", sub: "仕入契約", assignee: s.assignee, rawId: s.id });
       if (s.buyDate) list.push({ date: s.buyDate, type: "buy", icon: "🏠", color: C.success, title: s.name || "(無題)", sub: "仕入決済", assignee: s.assignee, rawId: s.id });
       if (s.sellContractDate) list.push({ date: s.sellContractDate, type: "sellContract", icon: "📋", color: C.accent, title: s.name || "(無題)", sub: "売却契約", assignee: s.assignee, rawId: s.id });
@@ -14284,7 +14291,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const availableYears = useMemo(() => {
     const years = new Set([currentYear]);
-    data.stocks.forEach(s => {
+    hideRentStocks(data.stocks).forEach(s => {
       if (s.buyDate) years.add(parseInt(s.buyDate.slice(0, 4)));
       if (s.sellDate) years.add(parseInt(s.sellDate.slice(0, 4)));
     });
@@ -14294,14 +14301,14 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const nv = v => parseFloat(String(v || "").replace(/,/g, "")) || 0;
 
   const yearCompleted = useMemo(() =>
-    data.stocks.filter(s => s.status === "売決完了" && (s.sellDate || "").startsWith(String(selectedYear))),
+    hideRentStocks(data.stocks).filter(s => s.status === "売決完了" && (s.sellDate || "").startsWith(String(selectedYear))),
     [data.stocks, selectedYear]);
 
   const yearBought = useMemo(() =>
-    data.stocks.filter(s => (s.buyDate || "").startsWith(String(selectedYear))),
+    hideRentStocks(data.stocks).filter(s => (s.buyDate || "").startsWith(String(selectedYear))),
     [data.stocks, selectedYear]);
 
-  const active = data.stocks.filter(s => s.status !== "売決完了");
+  const active = hideRentStocks(data.stocks).filter(s => s.status !== "売決完了");
   const jiageToday = hidePersonal(data.jiage).filter(j => j.nextVisit === today);
   const ownerToday = (data.owners || []).filter(o => o.nextFollowDate === today);
 
@@ -14342,8 +14349,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     return Array.from({ length: 12 }, (_, i) => {
       const m = i + 1;
       const ym = `${selectedYear}-${String(m).padStart(2, "0")}`;
-      const sold = data.stocks.filter(s => (s.sellDate || "").startsWith(ym));
-      const bought = data.stocks.filter(s => (s.buyDate || "").startsWith(ym));
+      const sold = hideRentStocks(data.stocks).filter(s => (s.sellDate || "").startsWith(ym));
+      const bought = hideRentStocks(data.stocks).filter(s => (s.buyDate || "").startsWith(ym));
       const medSettled = (data.mediations || []).filter(med => med.status === "決済完了" && (med.settleDate || "").startsWith(ym));
       return {
         month: m + "月",
@@ -17802,8 +17809,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
   const [viewMode, setViewMode] = useState("active"); // "active" | "completed" | "all"
   const [dealType, setDealType] = useState("stock"); // 🆕 "stock"=仕入案件 / "mediation"=仲介案件
   // 🆕 v9.589: 売買の在庫 / 賃貸で募集中の保有物件 の切替（s.dealKind==="賃貸" が賃貸、それ以外は売買）
-  const [saleKind, setSaleKind] = useState(() => { try { return localStorage.getItem("stockSaleKind") === "rent" ? "rent" : "sale"; } catch { return "sale"; } });
-  useEffect(() => { try { localStorage.setItem("stockSaleKind", saleKind); } catch {} }, [saleKind]);
+  const [saleKindRaw, setSaleKind] = useState(() => { try { return localStorage.getItem("stockSaleKind") === "rent" ? "rent" : "sale"; } catch { return "sale"; } });
+  const saleKind = canSeeRent(currentUser) ? saleKindRaw : "sale"; // 🆕 v9.591: 賃貸は下田さんだけ
+  useEffect(() => { try { localStorage.setItem("stockSaleKind", saleKindRaw); } catch {} }, [saleKindRaw]);
   const [photoViewer, setPhotoViewer] = useState(null); // 写真拡大表示
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [expandedViewings, setExpandedViewings] = useState({}); // {index: true/false}
@@ -18613,8 +18621,8 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         })}
       </div>
 
-      {/* 🆕 v9.589: 売買 / 賃貸 切替 */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 10, background: C.cardBg, border: `2px solid ${C.muted + "aa"}`, boxShadow: "0 2px 8px rgba(0,0,0,.12)", borderRadius: 12, padding: 4 }}>
+      {/* 🆕 v9.589: 売買 / 賃貸 切替（🆕 v9.591: 下田さんだけ） */}
+      {canSeeRent(currentUser) && <div style={{ display: "flex", gap: 6, marginBottom: 10, background: C.cardBg, border: `2px solid ${C.muted + "aa"}`, boxShadow: "0 2px 8px rgba(0,0,0,.12)", borderRadius: 12, padding: 4 }}>
         {[{ key: "sale", label: "🏷 売買", color: C.accent }, { key: "rent", label: "🔑 賃貸", color: "#f59e0b" }].map(t => {
           const active = saleKind === t.key;
           return <button key={t.key} onClick={() => { setSaleKind(t.key); setFilterStatuses([]); }} style={{
@@ -18623,7 +18631,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
             cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 500, fontFamily: "inherit",
           }}>{t.label}（{kindCounts[t.key]}件）</button>;
         })}
-      </div>
+      </div>}
 
       {/* ====== 表示モード切替（現在の在庫 / 決済完了 / すべて） ====== */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, background: C.cardBg, border: `2px solid ${C.muted + "aa"}`, boxShadow: "0 2px 8px rgba(0,0,0,.12)", borderRadius: 12, padding: 4 }}>
@@ -18786,7 +18794,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
       })()}
       {filtered.map(s => {
         const profit = s.sellPrice - s.buyCost;
-        const sinfo = s.status !== "売決完了" ? stagnantInfo(s.buyDate) : null;
+        const sinfo = s.status !== "売決完了" && !isRentStock(s) ? stagnantInfo(s.buyDate) : null;
         const isHighlight = highlightId === s.id;
         return (
           <div
@@ -19430,7 +19438,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               ))}
             </select>
           </Field>
-          <Field label="売買／賃貸">
+          {canSeeRent(currentUser) && <Field label="売買／賃貸">
             <div style={{ display: "flex", gap: 6 }}>
               {["売買", "賃貸"].map(k => {
                 const on = (form.dealKind || "売買") === k;
@@ -19451,7 +19459,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                 );
               })}
             </div>
-          </Field>
+          </Field>}
           {form.dealKind === "賃貸" && (
             <div style={{ background: "#f59e0b14", border: "1.5px solid #f59e0b", borderRadius: 10, padding: 12, marginBottom: 16 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#f59e0b", marginBottom: 10 }}>🔑 賃貸の条件</div>
@@ -20926,11 +20934,11 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     const sekisanActive = filterByMember((data.sekisan || []).filter(s => s.judgment !== "見送り"));
     const sekisanHot = sekisanActive.filter(s => s.judgment === "熱い");
     const sekisanCheck = sekisanActive.filter(s => s.judgment === "検討中");
-    const stocksActive = filterByMember((data.stocks || []).filter(s => s.status !== "売決完了"));
+    const stocksActive = filterByMember(hideRentStocks(data.stocks).filter(s => s.status !== "売決完了"));
     const mediationsActive = filterByMember((data.mediations || []).filter(m => m.status !== "決済完了"));
     // 「決済完了」は選択月の年（casesMonthの年）に決済完了したもの
     const selectedYear = casesMonth.slice(0, 4);
-    const stocksCompleted = filterByMember((data.stocks || []).filter(s =>
+    const stocksCompleted = filterByMember(hideRentStocks(data.stocks).filter(s =>
       s.status === "売決完了" && (s.sellDate || "").startsWith(selectedYear)
     ));
     return { jiageActive, jiageMediation, ownersActive, sekisanActive, sekisanHot, sekisanCheck, stocksActive, mediationsActive, stocksCompleted, selectedYear };
@@ -20943,13 +20951,13 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     const overdueOwner = filterByMember((data.owners || []).filter(o =>
       o.nextFollowDate && o.nextFollowDate < today && !CLOSED_JIAGE_STATUSES.includes(o.status)
     ));
-    const stagnant90 = filterByMember((data.stocks || []).filter(s => {
-      if (s.status === "売決完了") return false;
+    const stagnant90 = filterByMember(hideRentStocks(data.stocks).filter(s => {
+      if (s.status === "売決完了" || isRentStock(s)) return false;
       const d = daysSinceBuy(s.buyDate);
       return d != null && d >= 90 && d < 180;
     }));
-    const stagnant180 = filterByMember((data.stocks || []).filter(s => {
-      if (s.status === "売決完了") return false;
+    const stagnant180 = filterByMember(hideRentStocks(data.stocks).filter(s => {
+      if (s.status === "売決完了" || isRentStock(s)) return false;
       const d = daysSinceBuy(s.buyDate);
       return d != null && d >= 180;
     }));
@@ -20982,10 +20990,10 @@ function ApproachPage({ data, setData, pendingNav, onConsumeNav, onOpenJiageDeta
     // 選択月の集計（casesMonth に従う）
     const ym = casesMonth; // "2026-05"
     const newSekisan = filterByMember((data.sekisan || []).filter(s => (s.createdAt || "").startsWith(ym)));
-    const newBuyContract = filterByMember((data.stocks || []).filter(s => (s.buyContractDate || "").startsWith(ym)));
-    const newPurchase = filterByMember((data.stocks || []).filter(s => (s.buyDate || "").startsWith(ym)));
-    const newSellContract = filterByMember((data.stocks || []).filter(s => (s.sellContractDate || "").startsWith(ym)));
-    const newCompleted = filterByMember((data.stocks || []).filter(s =>
+    const newBuyContract = filterByMember(hideRentStocks(data.stocks).filter(s => (s.buyContractDate || "").startsWith(ym)));
+    const newPurchase = filterByMember(hideRentStocks(data.stocks).filter(s => (s.buyDate || "").startsWith(ym)));
+    const newSellContract = filterByMember(hideRentStocks(data.stocks).filter(s => (s.sellContractDate || "").startsWith(ym)));
+    const newCompleted = filterByMember(hideRentStocks(data.stocks).filter(s =>
       s.status === "売決完了" && (s.sellDate || "").startsWith(ym)
     ));
     const currentKentou = filterByMember((data.sekisan || []).filter(s => s.judgment === "仕入検討"));
@@ -41382,7 +41390,7 @@ function collectInvestorTargets(data) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push({ v, from });
   };
-  (data.stocks || []).forEach(s => (s.viewings || []).forEach(v => add(v, s.name || "")));
+  hideRentStocks(data.stocks).forEach(s => (s.viewings || []).forEach(v => add(v, s.name || "")));
   (data.mediations || []).forEach(m => (m.viewings || []).forEach(v => add(v, (m.name || "") + "（仲介）")));
 
   const out = [];
@@ -41438,7 +41446,7 @@ function collectBuyerTargets(data) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push({ v, from });
   };
-  (data.stocks || []).forEach(s => (s.viewings || []).forEach(v => add(v, s.name || "")));
+  hideRentStocks(data.stocks).forEach(s => (s.viewings || []).forEach(v => add(v, s.name || "")));
   (data.mediations || []).forEach(m => (m.viewings || []).forEach(v => add(v, m.name || "")));
   const out = [];
   groups.forEach((items, key) => {
@@ -42283,7 +42291,7 @@ function InvestorListPage({ data, setData, onBack, onJumpToStock }) {
   // 全在庫＋仲介案件の反響から「投資家」のみ抽出
   const investors = useMemo(() => {
     const list = [];
-    (data.stocks || []).forEach(s => {
+    hideRentStocks(data.stocks).forEach(s => {
       (s.viewings || []).forEach((v, vi) => {
         if (v.purpose !== "投資家") return;
         list.push({
