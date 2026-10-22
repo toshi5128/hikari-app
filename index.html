@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-23-v9.596-update";
+const APP_VERSION = "2026-10-23-v9.597-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -1680,6 +1680,55 @@ async function propInfoFromFile(blob, mime) {
     } catch (e) { lastErr = e; }
   }
   throw lastErr || new Error("読み取れませんでした");
+}
+
+// 🆕 v9.597: ヒアリング画面の上に物件情報を貼り付けておく（下田さん「電話しながら入力しつつ、物件概要を確認できたら嬉しい」）
+//   ・下へ入力していっても画面の上に残る（sticky）。押すと開く／閉じる。開いた状態は端末に覚えておく
+function HearingPropPanel({ parentType, p }) {
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem("hearingPropOpen") === "1"; } catch (e) { return false; } });
+  const toggle = () => setOpen(o => { try { localStorage.setItem("hearingPropOpen", o ? "0" : "1"); } catch (e) {} return !o; });
+  if (!p) return null;
+  const info = p.propInfo || {};
+  const filled = propInfoCount(p);
+  const docs = (p.docs || []).filter(d => d && d.url);
+  const brief = [info.price, info.madori, info.access].map(x => String(x || "").split(/。|※|\n/)[0].trim()).filter(Boolean).join("・");
+  return (
+    <div style={{ position: "sticky", top: 0, zIndex: 6, background: C.cardBg, paddingTop: 4, paddingBottom: 8, marginBottom: 8 }}>
+      <div style={{ border: `2px solid ${C.accent}`, borderRadius: 12, background: C.accent + "10", boxShadow: "0 3px 10px rgba(0,0,0,.15)" }}>
+        <div onClick={toggle} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", cursor: "pointer" }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 900, color: C.accent }}>📋 物件情報 <span style={{ color: C.text }}>{p.name || ""}</span></div>
+            {!open && <div style={{ fontSize: 12, color: C.text, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{brief || (filled ? `${filled}項目 入っています` : "まだ入っていません")}</div>}
+          </div>
+          <span style={{ flexShrink: 0, background: C.accent, color: "#fff", borderRadius: 999, padding: "4px 12px", fontSize: 12, fontWeight: 800 }}>{open ? "▲ 閉じる" : "▼ 見る"}</span>
+        </div>
+        {open && (
+          <div style={{ maxHeight: "42vh", overflowY: "auto", padding: "0 12px 10px", borderTop: `1px solid ${C.accent}55` }}>
+            {filled === 0 && <div style={{ fontSize: 13, color: C.text, lineHeight: 1.7, padding: "10px 0" }}>まだ物件情報が入っていません。下の「✏️ 入れる」から入れておくと、次の電話からここで見られます。</div>}
+            {PROP_INFO_GROUPS.map(g => {
+              const rows = g.items.filter(([k]) => String(info[k] || "").trim());
+              if (!rows.length) return null;
+              return (
+                <div key={g.title} style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, marginBottom: 2 }}>{g.title}</div>
+                  {rows.map(([k, l]) => (
+                    <div key={k} style={{ display: PROP_INFO_LONG.has(k) ? "block" : "flex", gap: 8, padding: "4px 0", borderTop: `1px solid ${C.borderDim}` }}>
+                      <div style={{ fontSize: 11, color: C.muted, width: 84, flexShrink: 0, lineHeight: 1.5 }}>{l}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: k === "chui" ? C.danger : C.text, whiteSpace: "pre-wrap", lineHeight: 1.5, overflowWrap: "anywhere" }}>{info[k]}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+            {docs.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+              {docs.map(d => <a key={d.id} href={d.url} target="_blank" rel="noopener noreferrer" style={{ background: C.cardBg, border: `1.5px solid ${C.accent}`, borderRadius: 8, padding: "7px 10px", color: C.accent, fontWeight: 800, fontSize: 12, textDecoration: "none" }}>{d.path ? "📄" : "🔗"} {d.label || "物件資料"}</a>)}
+            </div>}
+            <button onClick={() => openPropInfo({ parentType, parentId: p.id, edit: filled === 0 })} style={{ ...btnStyle("ghost"), width: "100%", marginTop: 10, padding: "9px 0", fontSize: 13, border: `1.5px solid ${C.accent}`, color: C.accent, fontWeight: 800 }}>{filled === 0 ? "✏️ 物件情報を入れる" : "🔍 大きく見る・編集する"}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function PropertyInfoHost({ data, setData }) {
@@ -8834,6 +8883,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.597", date: "2026-10-23", title: "ヒアリング画面で、物件情報を見ながら入力できるように",
+    body: "お客様のヒアリング画面のいちばん上に「📋 物件情報」の帯が付きました。押すと価格・間取り・交通・土地・建物・注意点などが開き、下へ入力していっても帯は画面の上に残ります。電話で聞かれたことに、画面を切り替えずに答えられます。",
+    where: "反響のお客様の名前を押す →「ヒアリング」画面のいちばん上" },
   { v: "9.596", date: "2026-10-23", title: "電話がつながっていない人が光るように",
     body: "電話をかけたのにつながっていない（📵不在・留守電）お客様のカードと「📵不在」のボタンが、オレンジ色に光るようになりました。3回かけてもつながらない人はグレーで光ります（メールやSMSに切り替える目印です）。",
     where: "在庫 →「📞 今日かける反響」／「📅 反響を日付で見る」／物件の反響一覧" },
@@ -17508,6 +17560,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
               <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
             </>
           )}>
+          {focusVi != null && editItem && <HearingPropPanel parentType="mediation" p={(data.mediations || []).find(x => x && x.id === editItem.id) || editItem} />}
           {focusVi == null && (<>
           <Field label="物件名 *"><input style={inp} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="〇〇市〇〇" /></Field>
           <Field label="担当者"><select style={inp} value={form.assignee} onChange={e => setForm(p => ({ ...p, assignee: e.target.value }))}>{memberOptions(form.assignee).map(mm => <option key={mm}>{mm}</option>)}</select></Field>
@@ -19557,6 +19610,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               <button style={{ ...btnStyle(), flex: 2 }} onClick={handleSave}>保存する</button>
             </>
           )}>
+          {focusVi != null && editItem && <HearingPropPanel parentType="stock" p={(data.stocks || []).find(x => x && x.id === editItem.id) || editItem} />}
           {focusVi == null && (<>
           <Field label="担当者"><select style={inp} value={form.assignee} onChange={f("assignee")}>{memberOptions(form.assignee).map(m => <option key={m}>{m}</option>)}</select></Field>
           <Field label="物件名"><input style={inp} value={form.name} onChange={f("name")} placeholder="川越市木野目" /></Field>
