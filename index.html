@@ -96,6 +96,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover,input[type="time"]::
 .hikari-hide-zoom .leaflet-control-zoom{display:none!important;}
 /* 🆕 v9.45: ズーム +/- を絞り込み FAB と中心揃え ( 左 25px = 中心 40px、 FAB と一致 ) */
 .leaflet-bottom.leaflet-left .leaflet-control-zoom{margin-left:25px!important;}
+@keyframes hikariAbsentPulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0.15)}50%{box-shadow:0 0 18px 4px rgba(245,158,11,0.6)}}
+@keyframes hikariGiveupPulse{0%,100%{box-shadow:0 0 0 0 rgba(107,114,128,0.15)}50%{box-shadow:0 0 18px 4px rgba(107,114,128,0.65)}}
 @keyframes hikariNoCallPulse{0%,100%{box-shadow:0 0 0 0 rgba(234,88,12,0.15)}50%{box-shadow:0 0 18px 4px rgba(234,88,12,0.55)}}
 @keyframes hikariGoldFlow{0%{background-position:0% 0%}100%{background-position:200% 0%}}
 @keyframes hikariGoldSparkle{0%,100%{transform:scale(1) rotate(0deg);opacity:1}50%{transform:scale(1.15) rotate(8deg);opacity:0.85}}
@@ -237,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-23-v9.595-update";
+const APP_VERSION = "2026-10-23-v9.596-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -739,6 +741,22 @@ function collectNoCallViewings(data, user) {
   visibleToUser(data.mediations, user).forEach(m => m && m.status !== "決済完了" && (m.viewings || []).forEach((v, idx) => { if (viewingNeedsCall(v)) out.push({ parentType: "mediation", parentId: m.id, parentName: (m.name || "(無題)") + "（仲介）", assignee: m.assignee || "", idx, v }); }));
   out.sort((a, b) => String(a.v.date || "").localeCompare(String(b.v.date || "")));
   return out;
+}
+// 🆕 v9.596: かけたのにつながっていない人を光らせる（下田さん「つながってない人を光らせて、3回かけて駄目ならグレーで」）
+//   0=光らせない / 1=📵不在1〜2回（オレンジ） / 3=📵3回以上かけて駄目（グレー）
+const ABSENT_GIVEUP = 3;
+function viewingAbsentLevel(v) {
+  if (viewingHandledKey(v) !== "不在留守電") return 0;
+  const n = ((v && v.attempts) || []).filter(a => a && a.kind === "tel_absent").length;
+  return n >= ABSENT_GIVEUP ? 3 : n > 0 ? 1 : 0;
+}
+// カードの光り方（📞電話まだ＝濃いオレンジ / 📵不在＝オレンジ / 3回以上不在＝グレー）。leftToo=左の太線も同じ色に
+function viewingGlowStyle(v, leftToo) {
+  const lv = viewingAbsentLevel(v);
+  const col = viewingNeedsCall(v) ? "#ea580c" : lv === 3 ? "#6b7280" : lv === 1 ? "#f59e0b" : "";
+  if (!col) return {};
+  const anim = col === "#ea580c" ? "hikariNoCallPulse" : col === "#6b7280" ? "hikariGiveupPulse" : "hikariAbsentPulse";
+  return { border: `3px solid ${col}`, ...(leftToo ? { borderLeft: `6px solid ${col}` } : {}), animation: `${anim} 1.6s ease-in-out infinite` };
 }
 function viewingHandledInfo(v) { return HANDLED_INFO[viewingHandledKey(v)] || HANDLED_INFO["未対応"]; }
 // カード先頭のバッジ文字（📵不在留守電 2回 8/11 下田 のように回数と最終日まで）
@@ -2565,6 +2583,7 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
           return (
             <button key={val} onClick={() => setStateFilter(val)} style={{
               padding: "9px 4px", borderRadius: 10, cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 800, lineHeight: 1.35,
+              ...(val === "不在留守電" && stateCounts["不在留守電"] > 0 ? { animation: "hikariAbsentPulse 1.6s ease-in-out infinite" } : {}), // 🆕 v9.596
               background: active ? col : col + "14", color: active ? "#fff" : col,
               border: `1.5px solid ${active ? col : col + "66"}`,
             }}>{label}</button>
@@ -2609,12 +2628,12 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
               const hi = viewingHandledInfo(v);
               const pi = v.prospect && PROSPECT_INFO[v.prospect];
               return (
-                <div key={key} style={{ background: C.cardBg, border: `2px solid ${isOpen ? "#0891b2" : C.muted + "88"}`, borderLeft: `6px solid ${hi.color}`, borderRadius: 10, marginBottom: 6, boxShadow: "0 1px 4px rgba(0,0,0,.10)", opacity: row.done && !isOpen ? 0.6 : 1 }}>
+                <div key={key} style={{ background: C.cardBg, border: `2px solid ${isOpen ? "#0891b2" : C.muted + "88"}`, borderLeft: `6px solid ${hi.color}`, borderRadius: 10, marginBottom: 6, boxShadow: "0 1px 4px rgba(0,0,0,.10)", opacity: row.done && !isOpen ? 0.6 : 1, ...(row.done ? {} : viewingGlowStyle(v, true)) }}>
                   <div onClick={() => setOpenKey(k => k === key ? null : key)} style={{ padding: "9px 10px", cursor: "pointer" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       {viewingTime(v) && <span style={{ fontSize: 12, color: C.muted, fontWeight: 700, flexShrink: 0 }}>{viewingTime(v)}</span>}
                       <span style={{ fontSize: 15, fontWeight: 800, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{v.customer || "(名前未入力)"}</span>
-                      <span style={{ marginLeft: "auto", flexShrink: 0, background: hi.color, color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{viewingStateLabel(v)}</span>
+                      <span style={{ marginLeft: "auto", flexShrink: 0, background: viewingAbsentLevel(v) === 3 ? "#6b7280" : hi.color, color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{viewingStateLabel(v)}</span>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, fontSize: 12, color: C.muted }}>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>🏠 {row.parentName}{row.done ? "（売れ終わり）" : ""}</span>
@@ -2645,14 +2664,14 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
             background: C.cardBg, border: `1px solid ${C.borderDim}`,
             borderLeft: `4px solid ${ag ? ag.color : C.borderDim}`,
             borderRadius: 10, padding: 12, marginBottom: 10,
-            ...(viewingNeedsCall(v) ? { border: "3px solid #ea580c", borderLeft: "6px solid #ea580c", animation: "hikariNoCallPulse 1.6s ease-in-out infinite" } : {}),
+            ...viewingGlowStyle(v, true),
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
               {ag && <span style={{ background: ag.color, color: "#fff", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{ag.label}</span>}
               {/* 🆕 v9.517: 名前を押すと、どんなお客様かの詳しい情報を開く/閉じる */}
               <span onClick={() => setOpenKey(k => k === `${row.parentType}_${row.parentId}_${row.idx}` ? null : `${row.parentType}_${row.parentId}_${row.idx}`)} style={{ fontSize: 14, fontWeight: 800, color: "#0891b2", textDecoration: "underline", cursor: "pointer" }}>{v.customer || "(名前未入力)"} {openKey === `${row.parentType}_${row.parentId}_${row.idx}` ? "▲" : "▼"}</span>{v.leak && <span title="この方には社内用の資料（値下げの下限など）が誤って届いています" style={{ background: "#dc2626", color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>⚠️ 社内資料誤送付</span>}
               {/* 🆕 v9.384: 🔴未対応 / 📵不在留守電（回数・最終日）を出す */}
-              <span style={{ background: viewingHandledInfo(v).color, color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>
+              <span style={{ background: viewingAbsentLevel(v) === 3 ? "#6b7280" : viewingHandledInfo(v).color, color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>
                 {viewingStateLabel(v)}
               </span>
               {viewingNeedsCall(v) && <span title="まだ電話していません" style={{ background: "#ea580c", color: "#fff", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 900 }}>📞 電話まだ</span>}
@@ -8815,6 +8834,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.596", date: "2026-10-23", title: "電話がつながっていない人が光るように",
+    body: "電話をかけたのにつながっていない（📵不在・留守電）お客様のカードと「📵不在」のボタンが、オレンジ色に光るようになりました。3回かけてもつながらない人はグレーで光ります（メールやSMSに切り替える目印です）。",
+    where: "在庫 →「📞 今日かける反響」／「📅 反響を日付で見る」／物件の反響一覧" },
   { v: "9.595", date: "2026-10-23", title: "反響を日付ごとに見られるように",
     body: "物件をまたいで、反響を「10/23（金）3件」のように日付ごとに並べて見られます。1人1行で、名前を押すと詳しい情報と電話・メールのボタンが開きます。期間（1週間・1か月・全部）の切り替え、まだ対応していない人だけ、名前や電話番号での検索もできます。",
     where: "在庫 →「📅 反響を日付で見る」（「📞 今日かける反響」の中の上のタブでも切り替えられます）" },
@@ -17168,6 +17190,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                             color: active ? "#fff" : info.color,
                             cursor: dim ? "not-allowed" : "pointer",
                             opacity: dim ? 0.35 : 1,
+                            ...(h === "不在留守電" && !dim ? { animation: "hikariAbsentPulse 1.6s ease-in-out infinite" } : {}), // 🆕 v9.596
                           }}>{info.icon}{h}({c})</button>
                         );
                       })}
@@ -17240,7 +17263,7 @@ function MediationView({ data, setData, dealType, setDealType }) {
                           // 🆕 v9.483/484: お客さんごとの境目がわかるよう外枠を濃く＋影（下田さん「お客さんとお客さんの境がわからない」）
                           border: `2px solid ${isRepeat ? repeatColor : C.muted + "aa"}`,
                           borderLeft: unhandled ? `5px solid ${_hColor}` : (isRepeat ? `5px solid ${repeatColor}` : `2px solid ${C.muted + "aa"}`),
-                          borderRadius: 10, padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,.18)", ...(viewingNeedsCall(v) ? { border: "3px solid #ea580c", animation: "hikariNoCallPulse 1.6s ease-in-out infinite" } : {})
+                          borderRadius: 10, padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,.18)", ...viewingGlowStyle(v)
                         }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 5 }}>
                             {/* 🆕 v9.365: 対応済みかどうかを名前の前に出す */}
@@ -18801,6 +18824,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
               fontSize: 11, fontFamily: "inherit", fontWeight: 800, opacity: dim ? 0.35 : 1,
               background: active ? col : col + "14", color: active ? "#fff" : col,
               border: `1.5px solid ${active ? col : col + "66"}`,
+              ...(val === "不在留守電" && !dim ? { animation: "hikariAbsentPulse 1.6s ease-in-out infinite" } : {}), // 🆕 v9.596
             }}>{label}</button>
           );
         })}
@@ -19112,6 +19136,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                               color: active ? "#fff" : info.color,
                               cursor: dim ? "not-allowed" : "pointer",
                               opacity: dim ? 0.35 : 1,
+                              ...(h === "不在留守電" && !dim ? { animation: "hikariAbsentPulse 1.6s ease-in-out infinite" } : {}), // 🆕 v9.596
                             }}>{info.icon}{h}({c})</button>
                           );
                         })}
@@ -19184,7 +19209,7 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
                             // 🆕 v9.483/484: お客さんごとの境目がわかるよう外枠を濃く＋影（下田さん「お客さんとお客さんの境がわからない」）
                             border: `2px solid ${isRepeat ? repeatColor : C.muted + "aa"}`,
                             borderLeft: unhandled ? `5px solid ${_hColor}` : (isRepeat ? `5px solid ${repeatColor}` : `2px solid ${C.muted + "aa"}`),
-                            borderRadius: 10, padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,.18)", ...(viewingNeedsCall(v) ? { border: "3px solid #ea580c", animation: "hikariNoCallPulse 1.6s ease-in-out infinite" } : {})
+                            borderRadius: 10, padding: "12px 14px", boxShadow: "0 2px 8px rgba(0,0,0,.18)", ...viewingGlowStyle(v)
                           }}>
                             {/* 顧客情報 */}
                             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 5 }}>
