@@ -237,7 +237,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-22-v9.594-update";
+const APP_VERSION = "2026-10-23-v9.595-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -2406,6 +2406,14 @@ function collectTodayViewings(data, user) {
   out.sort((a, b) => ((a.v.handled && !viewingNeedsCall(a.v)) ? 1 : 0) - ((b.v.handled && !viewingNeedsCall(b.v)) ? 1 : 0) || String(b.v.date || "").localeCompare(String(a.v.date || "")) || (Number(b.v.updatedAt) || 0) - (Number(a.v.updatedAt) || 0));
   return out;
 }
+// 🆕 v9.595: 反響を日付ごとに見る（物件をまたいで全部。売れ終わった物件の反響も入れる）
+function collectAllViewings(data, user) {
+  const out = [];
+  visibleToUser(data.stocks, user).forEach(s => (s && s.viewings || []).forEach((v, idx) => { if (v) out.push({ parentType: "stock", parentId: s.id, parentName: s.name || "(無題)", assignee: s.assignee || "", idx, v, done: s.status === "売決完了" }); }));
+  visibleToUser(data.mediations, user).forEach(m => (m && m.viewings || []).forEach((v, idx) => { if (v) out.push({ parentType: "mediation", parentId: m.id, parentName: (m.name || "(無題)") + "（仲介）", assignee: m.assignee || "", idx, v, done: m.status === "決済完了" }); }));
+  out.sort((a, b) => String(b.v.date || "").localeCompare(String(a.v.date || "")) || String(viewingTime(b.v) || "").localeCompare(String(viewingTime(a.v) || "")) || (Number(b.v.updatedAt) || 0) - (Number(a.v.updatedAt) || 0));
+  return out;
+}
 function collectPendingViewings(data, user) {
   const out = [];
   // 🆕 v9.402: 在庫・仲介を自分の担当分だけにしたので、かけ直しリストも同じ範囲に揃える
@@ -2472,11 +2480,29 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
   const todayRows = onlyMine ? todayAll.filter(r => r.assignee === currentUser) : todayAll;
   const noCallAll = collectNoCallViewings(data, currentUser);
   const noCallRows = onlyMine ? noCallAll.filter(r => r.assignee === currentUser) : noCallAll;
-  const rows0 = stateFilter === "nocall" ? noCallRows : stateFilter === "today" ? todayRows : stateFilter === "follow" ? followRows : stateFilter === "all" ? base : base.filter(r => viewingHandledKey(r.v) === stateFilter);
+  // 🆕 v9.595: 📅 日付で見る（下田さん「日付ごとに反響が見れるように」）
+  const byDate = stateFilter === "bydate";
+  const [dateRange, setDateRange] = useState("7"); // "7" | "30" | "all"
+  const [dateOnlyOpen, setDateOnlyOpen] = useState(false); // まだ対応していない人だけ
+  const [dateQ, setDateQ] = useState("");
+  const dateAll = byDate ? collectAllViewings(data, currentUser) : [];
+  const dateBase = onlyMine ? dateAll.filter(r => r.assignee === currentUser) : dateAll;
+  const _q = dateQ.trim().toLowerCase();
+  const _since = dateRange === "all" ? "" : new Date(Date.now() - (Number(dateRange) - 1) * 86400000).toLocaleDateString("sv-SE");
+  const dateRows = dateBase.filter(r => {
+    const v = r.v;
+    if (_q) return [v.customer, v.contact, v.email, r.parentName].some(x => String(x || "").toLowerCase().includes(_q)); // 名前で探す時は期間に関係なく
+    if (_since && String(v.date || "") < _since) return false;
+    if (dateOnlyOpen && v.handled && !viewingNeedsCall(v)) return false;
+    return true;
+  });
+  const dateGroups = [];
+  dateRows.forEach(r => { const k = String(r.v.date || "").slice(0, 10) || "日付なし"; const g = dateGroups[dateGroups.length - 1]; if (g && g.date === k) g.rows.push(r); else dateGroups.push({ date: k, rows: [r] }); });
+  const rows0 = byDate ? dateRows : stateFilter === "nocall" ? noCallRows : stateFilter === "today" ? todayRows : stateFilter === "follow" ? followRows : stateFilter === "all" ? base : base.filter(r => viewingHandledKey(r.v) === stateFilter);
   // 🆕 v9.507: これからのお客様を優先。3日以内の新しい反響を一番上（新しい順）、社内資料を誤送付した人は一番下
   const _newSince = new Date(Date.now() - 3 * 86400000).toLocaleDateString("sv-SE");
   const _rank = (r) => r.v && r.v.leak ? 2 : (String((r.v && r.v.date) || "") >= _newSince ? 0 : 1);
-  const rows = (stateFilter === "today" || stateFilter === "nocall") ? rows0 : rows0.map((r, i) => ({ r, i })).sort((a, b) => _rank(a.r) - _rank(b.r) || (_rank(a.r) === 0 ? String(b.r.v.date || "").localeCompare(String(a.r.v.date || "")) : a.i - b.i)).map(x => x.r);
+  const rows = (byDate || stateFilter === "today" || stateFilter === "nocall") ? rows0 : rows0.map((r, i) => ({ r, i })).sort((a, b) => _rank(a.r) - _rank(b.r) || (_rank(a.r) === 0 ? String(b.r.v.date || "").localeCompare(String(a.r.v.date || "")) : a.i - b.i)).map(x => x.r);
 
   const applyAttempt = (row, kind) => {
     if (!currentUser) { alert("先にログインしてください"); return; }
@@ -2491,13 +2517,20 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
   };
 
   return (
-    <BottomSheet title={`📞 今日かける反響（${rows.length}件）`} onClose={onClose}>
-      <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.7, marginBottom: 12 }}>
-        まだ<b style={{ color: C.text }}>繋がっていない</b>反響を、<b style={{ color: C.text }}>古い順</b>に並べています。<br />
-        📵不在・留守電はここに残ります（かけ直しが要るため）。売れ終わった物件の反響は入りません。
+    <BottomSheet title={byDate ? `📅 反響を日付で見る（${rows.length}件）` : `📞 今日かける反響（${rows.length}件）`} onClose={onClose}>
+      {/* 🆕 v9.595: 「日付で見る」と「かける順」の2つに分ける */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, background: C.inset, borderRadius: 12, padding: 4 }}>
+        {[["bydate", "📅 日付で見る"], ["call", "📞 電話をかける順"]].map(([k, l]) => {
+          const active = k === "bydate" ? byDate : !byDate;
+          return <button key={k} onClick={() => setStateFilter(k === "bydate" ? "bydate" : "today")} style={{ flex: 1, padding: "11px 4px", borderRadius: 9, cursor: "pointer", fontSize: 14, fontFamily: "inherit", fontWeight: 800, border: "none", background: active ? C.accent : "transparent", color: active ? "#fff" : C.muted }}>{l}</button>;
+        })}
       </div>
+      {!byDate && <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.7, marginBottom: 12 }}>
+        まだ<b style={{ color: C.text }}>繋がっていない</b>反響です。<b style={{ color: C.text }}>3日以内の新しい反響が上</b>、その下は<b style={{ color: C.text }}>最後に連絡してから長い順</b>。<br />
+        📵不在・留守電はここに残ります（かけ直しが要るため）。売れ終わった物件の反響は入りません。
+      </div>}
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        {[[false, `全員 ${all.length}件`], [true, `自分だけ ${all.filter(r => r.assignee === currentUser).length}件`]].map(([val, label]) => (
+        {(byDate ? [[false, `全員`], [true, `自分の担当だけ`]] : [[false, `全員 ${all.length}件`], [true, `自分だけ ${all.filter(r => r.assignee === currentUser).length}件`]]).map(([val, label]) => (
           <button key={String(val)} onClick={() => setOnlyMine(val)} style={{
             flex: 1, padding: "9px 4px", borderRadius: 10, cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 800,
             background: onlyMine === val ? C.accent : C.cardBg, color: onlyMine === val ? "#fff" : C.muted,
@@ -2506,8 +2539,20 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
         ))}
       </div>
 
-      {/* 🆕 v9.406: 🔴未対応 / 📵不在・留守電 の切り替え（件数つき） */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+      {/* 🆕 v9.595: 日付で見る時の絞り込み（期間・まだの人だけ・名前で探す） */}
+      {byDate && <div style={{ marginBottom: 12 }}>
+        <input type="text" value={dateQ} onChange={e => setDateQ(e.target.value)} placeholder="🔍 名前・電話・物件で探す（期間に関係なく全部から）"
+          style={{ width: "100%", boxSizing: "border-box", background: C.inset, border: `1.5px solid ${C.borderDim}`, borderRadius: 10, padding: "11px 12px", fontSize: 14, color: C.text, fontFamily: "inherit", marginBottom: 8 }} />
+        {!_q && <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+          {[["7", "1週間"], ["30", "1か月"], ["all", "全部"]].map(([k, l]) => (
+            <button key={k} onClick={() => setDateRange(k)} style={{ padding: "10px 2px", borderRadius: 10, cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 800, background: dateRange === k ? C.accent : C.cardBg, color: dateRange === k ? "#fff" : C.muted, border: `1.5px solid ${dateRange === k ? C.accent : C.borderDim}` }}>{l}</button>
+          ))}
+          <button onClick={() => setDateOnlyOpen(x => !x)} style={{ padding: "10px 2px", borderRadius: 10, cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 800, background: dateOnlyOpen ? "#ef4444" : "#ef444414", color: dateOnlyOpen ? "#fff" : "#ef4444", border: "1.5px solid #ef4444" }}>🔴まだの人</button>
+        </div>}
+      </div>}
+
+      {/* 🆕 v9.406: 🔴未対応 / 📵不在・留守電 の切り替え（件数つき）。🆕 v9.595: スマホで潰れないよう3列×2段に */}
+      {!byDate && <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 12 }}>
         {[
           ["today", `🆕今日・昨日の未対応 ${todayRows.length}`, "#0891b2"],
           ["nocall", `📞電話まだ ${noCallRows.length}`, "#ea580c"],
@@ -2519,13 +2564,13 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
           const active = stateFilter === val;
           return (
             <button key={val} onClick={() => setStateFilter(val)} style={{
-              flex: 1, padding: "9px 4px", borderRadius: 10, cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 800,
+              padding: "9px 4px", borderRadius: 10, cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 800, lineHeight: 1.35,
               background: active ? col : col + "14", color: active ? "#fff" : col,
               border: `1.5px solid ${active ? col : col + "66"}`,
             }}>{label}</button>
           );
         })}
-      </div>
+      </div>}
 
       {stateFilter === "follow" && (
         <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginBottom: 10, background: "#8b5cf614", borderRadius: 8, padding: "8px 10px" }}>
@@ -2534,7 +2579,8 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
       )}
       {rows.length === 0 && (
         <div style={{ background: "#10b98114", border: `1.5px solid #10b98155`, borderRadius: 12, padding: 24, textAlign: "center", color: C.text, fontSize: 14, fontWeight: 700 }}>
-          {stateFilter === "nocall" ? "✅ まだ電話していないお客様はいません"
+          {byDate ? (_q ? "見つかりませんでした" : dateOnlyOpen ? "✅ この期間に、まだ対応していない反響はありません" : "この期間の反響はありません")
+            : stateFilter === "nocall" ? "✅ まだ電話していないお客様はいません"
             : stateFilter === "today" ? "今日の反響・昨日の未対応はありません"
             : stateFilter === "follow" ? "✅ 放置になっているお客様はいません"
             : stateFilter === "未対応" ? "✅ まだ誰も触っていない反響はありません"
@@ -2543,7 +2589,55 @@ function ViewingCallSheet({ data, setData, currentUser, onClose, onJump }) {
         </div>
       )}
 
-      {rows.map((row, i) => {
+      {/* 🆕 v9.595: 日付ごとの見出し＋1人1行。名前を押すと詳しい情報と電話・メールのボタンが開く */}
+      {byDate && dateGroups.map(g => {
+        const dw = dayOfWeekLabel(g.date);
+        const ag = daysAgoInfo(g.date);
+        const open = g.rows.filter(r => !r.v.handled || viewingNeedsCall(r.v)).length;
+        return (
+          <div key={g.date} style={{ marginBottom: 14 }}>
+            <div style={{ position: "sticky", top: 0, zIndex: 1, display: "flex", alignItems: "baseline", gap: 8, background: C.cardBg, padding: "6px 2px", borderBottom: `2px solid ${C.accent}`, marginBottom: 6 }}>
+              <span style={{ fontSize: 16, fontWeight: 900, color: C.text }}>{g.date.length === 10 ? `${Number(g.date.slice(5, 7))}/${Number(g.date.slice(8, 10))}` : g.date}{dw && <span style={{ color: dw.color }}>（{dw.label}）</span>}</span>
+              {ag && ag.days <= 1 && <span style={{ background: C.accent, color: "#fff", borderRadius: 999, padding: "1px 9px", fontSize: 11, fontWeight: 800 }}>{ag.label}</span>}
+              <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 800, color: C.text }}>{g.rows.length}件</span>
+              {open > 0 && <span style={{ fontSize: 12, fontWeight: 800, color: "#ef4444" }}>まだ{open}</span>}
+            </div>
+            {g.rows.map(row => {
+              const v = row.v;
+              const key = `${row.parentType}_${row.parentId}_${row.idx}`;
+              const isOpen = openKey === key;
+              const hi = viewingHandledInfo(v);
+              const pi = v.prospect && PROSPECT_INFO[v.prospect];
+              return (
+                <div key={key} style={{ background: C.cardBg, border: `2px solid ${isOpen ? "#0891b2" : C.muted + "88"}`, borderLeft: `6px solid ${hi.color}`, borderRadius: 10, marginBottom: 6, boxShadow: "0 1px 4px rgba(0,0,0,.10)", opacity: row.done && !isOpen ? 0.6 : 1 }}>
+                  <div onClick={() => setOpenKey(k => k === key ? null : key)} style={{ padding: "9px 10px", cursor: "pointer" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {viewingTime(v) && <span style={{ fontSize: 12, color: C.muted, fontWeight: 700, flexShrink: 0 }}>{viewingTime(v)}</span>}
+                      <span style={{ fontSize: 15, fontWeight: 800, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{v.customer || "(名前未入力)"}</span>
+                      <span style={{ marginLeft: "auto", flexShrink: 0, background: hi.color, color: "#fff", padding: "1px 8px", borderRadius: 999, fontSize: 11, fontWeight: 800 }}>{viewingStateLabel(v)}</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, fontSize: 12, color: C.muted }}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>🏠 {row.parentName}{row.done ? "（売れ終わり）" : ""}</span>
+                      {v.channel && <span style={{ flexShrink: 0 }}>・{String(v.channel).replace(/（応対記録）/, "")}</span>}
+                      {pi && <span style={{ flexShrink: 0, color: pi.color, fontWeight: 800 }}>{pi.icon}{v.prospect}</span>}
+                      {viewingNeedsCall(v) && <span style={{ flexShrink: 0, color: "#ea580c", fontWeight: 900 }}>📞まだ</span>}
+                      {v.leak && <span style={{ flexShrink: 0, color: "#dc2626", fontWeight: 900 }}>⚠️</span>}
+                      <span style={{ marginLeft: "auto", flexShrink: 0, color: "#0891b2", fontWeight: 800 }}>{isOpen ? "▲" : "▼"}</span>
+                    </div>
+                  </div>
+                  {isOpen && <div style={{ padding: "0 10px 10px" }}>
+                    <div style={{ marginLeft: -12, marginRight: -12 }}><ViewingProfile v={v} onOpen={onJump ? () => onJump(row) : undefined} /></div>
+                    <ViewingActions v={v} onAttempt={(kind) => applyAttempt(row, kind)} onUnhandle={() => {}}
+                      onCompose={(tpl) => openViewingMail({ parentType: row.parentType, parentId: row.parentId, vid: v.id, vi: row.idx, tpl })} />
+                  </div>}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+
+      {!byDate && rows.map((row, i) => {
         const v = row.v;
         const ag = daysAgoInfo(v.date, true);
         return (
@@ -8721,6 +8815,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.595", date: "2026-10-23", title: "反響を日付ごとに見られるように",
+    body: "物件をまたいで、反響を「10/23（金）3件」のように日付ごとに並べて見られます。1人1行で、名前を押すと詳しい情報と電話・メールのボタンが開きます。期間（1週間・1か月・全部）の切り替え、まだ対応していない人だけ、名前や電話番号での検索もできます。",
+    where: "在庫 →「📅 反響を日付で見る」（「📞 今日かける反響」の中の上のタブでも切り替えられます）" },
   { v: "9.594", date: "2026-10-22", title: "問い合わせに質問が書いてあったら、答えの下書きをAIが作るように",
     body: "アットホームなどの問い合わせに「駐車場はありますか？」「再建築はできますか？」のような質問が書いてあると、反響を取り込んでから5分ほどで、AIが物件情報をもとに答えのメールの下書きを作ります。スマホに通知が来るので、中身を確かめて「この内容で返信する」を押すだけで送れます。分からないところは【要確認】と書いてあるので、そこだけ直してください。",
     where: "反響取込 → 数分後に「📩 お客様から返信」の中の「❓ 問い合わせの質問」",
@@ -16882,8 +16979,9 @@ function MediationView({ data, setData, dealType, setDealType }) {
         const today = new Date().toLocaleDateString("sv-SE");
         const t = collectTodayViewings(data, getCurrentUser()).filter(r => r.v.date === today);
         const un = t.filter(r => !r.v.handled).length;
-        return (<button onClick={() => { _callSheetStart = "today"; setShowCallSheet(true); }} style={{ width: "100%", marginBottom: 10, padding: "11px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", background: "#0891b214", border: "1.5px solid #0891b2", color: "#0891b2", fontSize: 14, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-          🆕 今日の反響 {t.length}件{t.length ? `（まだ対応していない ${un}件）` : ""}{t.length ? " ›" : ""}
+        // 🆕 v9.595: 押すと「📅 日付で見る」が開く（今日が一番上。昨日・その前も続けて見られる）
+        return (<button onClick={() => { _callSheetStart = "bydate"; setShowCallSheet(true); }} style={{ width: "100%", marginBottom: 10, padding: "11px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", background: "#0891b214", border: "1.5px solid #0891b2", color: "#0891b2", fontSize: 14, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+          📅 反響を日付で見る（今日 {t.length}件{un ? `・まだ ${un}件` : ""}） ›
         </button>);
       })()}
       <SearchBar value={search} onChange={setSearch} placeholder="物件名・売主で検索..." />
@@ -18683,8 +18781,9 @@ function StockPage({ data, setData, pendingNav, onConsumeNav }) {
         const today = new Date().toLocaleDateString("sv-SE");
         const t = collectTodayViewings(data, getCurrentUser()).filter(r => r.v.date === today);
         const un = t.filter(r => !r.v.handled).length;
-        return (<button onClick={() => { _callSheetStart = "today"; setShowCallSheet(true); }} style={{ width: "100%", marginBottom: 10, padding: "11px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", background: "#0891b214", border: "1.5px solid #0891b2", color: "#0891b2", fontSize: 14, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-          🆕 今日の反響 {t.length}件{t.length ? `（まだ対応していない ${un}件）` : ""}{t.length ? " ›" : ""}
+        // 🆕 v9.595: 押すと「📅 日付で見る」が開く（今日が一番上。昨日・その前も続けて見られる）
+        return (<button onClick={() => { _callSheetStart = "bydate"; setShowCallSheet(true); }} style={{ width: "100%", marginBottom: 10, padding: "11px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", background: "#0891b214", border: "1.5px solid #0891b2", color: "#0891b2", fontSize: 14, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+          📅 反響を日付で見る（今日 {t.length}件{un ? `・まだ ${un}件` : ""}） ›
         </button>);
       })()}
       {/* 🆕 v9.406: 在庫一覧を反響の状態で絞る（🔴未対応がある物件 / 📵不在がある物件） */}
