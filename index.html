@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-27-v9.598-fix";
+const APP_VERSION = "2026-10-27-v9.599-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8883,6 +8883,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.599", date: "2026-10-27", title: "同じ人が他にも家を持っていると分かるように",
+    body: "地上げのピンを開くと、同じ持ち主（名前と住所が同じ人）が他にも家を持っていれば「🏠 この人は他にも〇軒持っています」と青い枠で出ます。まとめて買取の相談ができます。同じ家に別のピンが立っている時は「📌 同じ家に別のピンもあります」とオレンジの枠で出るので、前に誰が行ったか確かめてから訪問できます。",
+    where: "地上げ → 地図 → ピンを押す（所有者の情報の上）" },
   { v: "9.597", date: "2026-10-23", title: "ヒアリング画面で、物件情報を見ながら入力できるように",
     body: "お客様のヒアリング画面のいちばん上に「📋 物件情報」の帯が付きました。押すと価格・間取り・交通・土地・建物・注意点などが開き、下へ入力していっても帯は画面の上に残ります。電話で聞かれたことに、画面を切り替えずに答えられます。",
     where: "反響のお客様の名前を押す →「ヒアリング」画面のいちばん上" },
@@ -27389,6 +27392,27 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       .map(j => ({ address: j.address, banReason: j.banReason }));
   };
 
+  // 🆕 v9.599: 同じ人が他にも家を持っているか（氏名＋住所が両方一致＝同じ人。共有は1人でも一致すれば）
+  const ownerKeysOf = (j) => {
+    const nm = (s) => String(s || "").normalize("NFKC").replace(/[\s　]/g, "");
+    const ad = (s) => nm(s).replace(/^埼玉県/, "").replace(/ケ/g, "ヶ").replace(/[‐－―−ー]/g, "-");
+    const names = String((j && j.owner) || "").split(/[・、／/，]/).map(nm).filter(Boolean);
+    const addrs = String((j && j.ownerAddr) || "").split(/[・、／/，]/).map(ad).filter(Boolean);
+    if (!names.length || !addrs.length) return [];
+    return names.map((n, i) => n + "|" + (addrs[i] || addrs[0]));
+  };
+  const sameOwnerOtherHomes = (item) => {
+    const me = item && item.raw;
+    const keys = ownerKeysOf(me);
+    if (!keys.length) return [];
+    // 物件住所が同じ＝同じ家に立った重複ピン（別の担当が先に立てていた等）。「他の家」とは分けて出す
+    const pa = (j) => String((j && (j.address || j.landmark)) || "").normalize("NFKC").replace(/[\s　]/g, "").replace(/^埼玉県/, "")
+      .replace(/ケ/g, "ヶ").replace(/[‐－―−ー]/g, "-").replace(/(\d+)番地?(\d+)/g, "$1-$2");
+    const myPa = pa(me);
+    return (data.jiage || []).filter(j => j && j.id !== item.rawId && ownerKeysOf(j).some(k => keys.includes(k)))
+      .map(j => ({ address: j.address || j.landmark, status: j.excluded ? "対象外" : j.status, assignee: j.assignee, same: !!myPa && pa(j) === myPa }));
+  };
+
   // 🆕 v9.264: 失注理由の更新（jiageのみ）。status と同じ最小差分パターン（_fieldUpdatedAtは保存時に自動付与）
   const updateLostReason = (item, lostReason) => {
     const updated = { ...item.raw, lostReason };
@@ -32132,6 +32156,29 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   <br /><span style={{ color: C.muted }}>該当：{warn.map(w => w.address || "(住所なし)").join(" / ")}</span>
                 </div>
               </div>
+            );
+          })()}
+          {/* 🆕 v9.599: 同じ人が他にも家を持っていたら知らせる（まとめて買取の相談ができる） */}
+          {(() => {
+            const all = sameOwnerOtherHomes(selected.item);
+            const sib = all.filter(s => !s.same), dup = all.filter(s => s.same);
+            if (!all.length) return null;
+            const line = (s, i) => <div key={i}>・{s.address || "(住所なし)"}<span style={{ color: C.muted }}>（{[s.assignee, s.status].filter(Boolean).join("・")}）</span></div>;
+            return (
+              <>
+                {sib.length > 0 && (
+                  <div style={{ background: "#1d4ed818", border: `2px solid #1d4ed8`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#1d4ed8", marginBottom: 6 }}>🏠 この人は他にも{sib.length}軒持っています（全部で{sib.length + 1}軒）</div>
+                    <div style={{ fontSize: 12, color: C.text, lineHeight: 1.8 }}>まとめて買取の相談ができます。{sib.map(line)}</div>
+                  </div>
+                )}
+                {dup.length > 0 && (
+                  <div style={{ background: "#b4530918", border: `2px solid #b45309`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#b45309", marginBottom: 6 }}>📌 同じ家に別のピンもあります</div>
+                    <div style={{ fontSize: 12, color: C.text, lineHeight: 1.8 }}>前に誰かが訪問しているかもしれません。行く前に様子を確認してください。{dup.map(line)}</div>
+                  </div>
+                )}
+              </>
             );
           })()}
           {/* ステータス・次回日変更 */}
