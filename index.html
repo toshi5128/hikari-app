@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-23-v9.597-update";
+const APP_VERSION = "2026-10-27-v9.598-fix";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -10303,6 +10303,37 @@ if (typeof L !== "undefined" && L.Map && !L.Map.prototype._hkRotPatched) {
   };
   L.Map.prototype._hkRotPatched = true;
 }
+// 🆕 v9.598: 地図を回した時、ピンと吹き出しだけ逆向きに回して、文字をまっすぐ読めるようにする。
+//   Leaflet が位置決めに使う transform(translate3d) の後ろに rotate を足す（map._hkBear が回した角度）。
+//   CSS の rotate 指定だと位置の移動量まで一緒に回ってピンがずれるので、この形にしている。
+if (typeof L !== "undefined" && L.Marker && L.Popup && !L.Marker.prototype._hkUprightPatched) {
+  const _hkUp = (el, map, origin) => {
+    if (!el) return;
+    const b = (map && map._hkBear) || 0;
+    const base = String(el.style.transform || "").replace(/\s*rotate\([^)]*\)/g, "");
+    el.style.transform = b ? base + ` rotate(${b}deg)` : base;
+    el.style.transformOrigin = b ? origin : "";
+  };
+  const _hkOrigSetPos = L.Marker.prototype._setPos;
+  L.Marker.prototype._setPos = function (pos) {
+    _hkOrigSetPos.call(this, pos);
+    if (!this._map || !this._map._hkBear) { if (this._icon && /rotate\(/.test(this._icon.style.transform || "")) _hkUp(this._icon, this._map, ""); return; }
+    const o = (this.options.icon && this.options.icon.options) || {};
+    const a = o.iconAnchor || (o.iconSize ? [o.iconSize[0] / 2, o.iconSize[1] / 2] : null);
+    _hkUp(this._icon, this._map, a ? `${a[0]}px ${a[1]}px` : "50% 50%");
+  };
+  const _hkOrigPopPos = L.Popup.prototype._updatePosition;
+  L.Popup.prototype._updatePosition = function () {
+    _hkOrigPopPos.apply(this, arguments);
+    _hkUp(this._container, this._map, "50% 100%");
+  };
+  const _hkOrigPopZoom = L.Popup.prototype._animateZoom;
+  if (_hkOrigPopZoom) L.Popup.prototype._animateZoom = function () {
+    _hkOrigPopZoom.apply(this, arguments);
+    _hkUp(this._container, this._map, "50% 100%");
+  };
+  L.Marker.prototype._hkUprightPatched = true;
+}
 
 function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
@@ -12656,17 +12687,70 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     lastValidHeadingRef.current = currentLocation.heading;
   }
   const mapBearing = headingMode === "heading" ? _curHeading : 0;
+  // 🆕 v9.598: 進行方向モードでは、地図を「画面の対角線」の大きさの正方形にして回す。
+  //   画面と同じ大きさのまま回すと四隅に地図の無い所が出て、枠ごと斜めに見えていた（2026-10-27 下田さん）。
+  //   正方形の中心＝枠の中心なので、タップ位置の補正(hkContainerPoint)と現在地の追従はそのまま合う。
+  const frameRef = React.useRef(null);
+  const [frameSize, setFrameSize] = React.useState({ w: 0, h: 0 });
+  React.useEffect(() => {
+    const el = frameRef.current;
+    if (!el) return;
+    const upd = () => setFrameSize(s => (s.w === el.clientWidth && s.h === el.clientHeight) ? s : { w: el.clientWidth, h: el.clientHeight });
+    upd();
+    if (typeof ResizeObserver === "function") {
+      const ro = new ResizeObserver(upd); ro.observe(el);
+      return () => ro.disconnect();
+    }
+    window.addEventListener("resize", upd);
+    return () => window.removeEventListener("resize", upd);
+  }, []);
+  const rotOn = headingMode === "heading" && frameSize.w > 0 && frameSize.h > 0;
+  const rotSide = rotOn ? Math.ceil(Math.hypot(frameSize.w, frameSize.h)) + 2 : 0;
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    // ＋−ボタンと著作表示は回さない枠の側へ移す（回る正方形の隅は画面の外に出るため）
+    const cc = map._controlContainer;
+    const home = rotOn ? frameRef.current : map._container;
+    if (cc && home && cc.parentNode !== home) home.appendChild(cc);
+    const t = setTimeout(() => { try { map.invalidateSize({ pan: true }); } catch (e) {} }, 0);
+    return () => clearTimeout(t);
+  }, [rotOn, rotSide]);
+  // 地図の回転角が変わったら、表示中のピンと吹き出しの向きを付け直す
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    const b = rotOn ? (Math.round(mapBearing) || 0) : 0;
+    if ((map._hkBear || 0) === b) return;
+    map._hkBear = b;
+    try {
+      map.eachLayer(l => { if (l._icon && typeof l.update === "function") l.update(); });
+      if (map._popup && map._popup.isOpen && map._popup.isOpen()) map._popup.update();
+    } catch (e) {}
+  }, [rotOn, mapBearing]);
   return (
     <div style={{ position: "relative" }} className={hideZoomControl ? "hikari-hide-zoom" : ""}>
       <div
+        ref={frameRef}
+        className={rotOn ? "hk-rot-frame leaflet-container" : ""}
+        style={{ height, width: "100%", borderRadius: 12, border: `1px solid ${C.borderDim}`, overflow: "hidden", position: "relative" }}
+      >
+      <div
         ref={mapRef}
         data-hk-bearing={mapBearing}
-        style={{
-          height, width: "100%", borderRadius: 12, border: `1px solid ${C.borderDim}`,
+        className={rotOn ? "hk-rot" : ""}
+        style={rotOn ? {
+          position: "absolute", left: "50%", top: "50%",
+          width: rotSide, height: rotSide, marginLeft: -rotSide / 2, marginTop: -rotSide / 2,
+          transform: `rotate(${-mapBearing}deg)`,
+          transition: "transform 0.4s ease-out",
+        } : {
+          height: "100%", width: "100%",
           transform: `rotate(${-mapBearing}deg)`,
           transition: "transform 0.4s ease-out",
         }}
       />
+      </div>
       {/* 🆕 v8.133→v8.137→v9.46.1: Googleマップ風の地図内固定検索バー（pendingPinLocation 中 / BottomSheet 表示中は非表示） */}
       {searchProps && !pendingPinLocation && !hideOverlays && (
         <div style={{
