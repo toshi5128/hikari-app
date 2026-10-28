@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-29-v9.604-update";
+const APP_VERSION = "2026-10-29-v9.605-update";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8886,6 +8886,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.605", date: "2026-10-29", title: "ルートの一覧から家の詳細を見られるように",
+    body: "訪問ルートの一覧で、住所や名前のところ（または青い「📋 詳細」）を押すと、その家の詳細が開きます。所有者・訪問履歴・メモ・取った謄本を、回る前に確かめられます。詳細を閉じると、ルートの一覧に戻ります。",
+    where: "地上げ → 地図 → 「ルート」→ 一覧の家を押す" },
   { v: "9.604", date: "2026-10-29", title: "回り終わったら出発地点に戻るルートが作れるように・50軒まで",
     body: "訪問ルートに「🔁 最後に出発地点へ戻るルートにする」ボタンが付きました。押すと、ルートを作った場所（今いる場所）に最後に帰ってくる前提で、帰り道まで含めて一番短い順に並べ直します。一覧の最後に「🏠 出発地点に戻る」が出て、ナビもできます。「何軒回る」は30軒・40軒・50軒も選べるようになりました。",
     where: "地上げ → 地図 → 左下の「ルート」→「🔁 最後に出発地点へ戻る」" },
@@ -25312,6 +25315,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [routeFitKey, setRouteFitKey] = useState(0);
   const [routeCelebrate, setRouteCelebrate] = useState(false);
   const routeRoadKeyRef = React.useRef("");
+  // 🆕 v9.605: ルート一覧から家の詳細を開いた時、詳細を閉じたらルート一覧に戻す
+  const routeBackRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!selected && routeBackRef.current) { routeBackRef.current = false; setRoute(r => (r.open ? { ...r, minimized: false } : r)); }
+  }, [selected]);
 
   // 🆕 v9.51: 道なりルート線を OSRM(無料) から取得（失敗時は直線にフォールバック）
   React.useEffect(() => {
@@ -29617,7 +29625,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             // 🆕 v9.52: ピンの「📍訪問結果を記録する」→ ピン詳細を開く（既存の訪問記録UIへ）
             const routeOnStopOpen = (id) => {
               const it = itemsWithCoord.find(x => String(x.id != null ? x.id : x.rawId) === String(id));
-              if (it) { setRoute(r => ({ ...r, minimized: true })); setSelected({ item: it }); }
+              if (it) { routeBackRef.current = true; setRoute(r => ({ ...r, minimized: true })); setSelected({ item: it }); }
             };
             const routeArriveNext = () => {
               setRoute(prev => {
@@ -30684,7 +30692,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                       background: isDone ? "#22c55e" : isNext ? "#f43f5e" : (isEnd ? "#f59e0b" : C.accent),
                                       color: "#fff", fontWeight: 800, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center",
                                     }}>{isDone ? "✓" : i + 1}</div>
-                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                    {/* 🆕 v9.605: 住所・名前のところを押すと、その家の詳細（謄本・訪問履歴・メモ）が開く。閉じるとルート一覧に戻る */}
+                                    <div onClick={() => routeOnStopOpen(s.id)} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
                                       <div style={{ fontSize: 13, fontWeight: 700, color: isDone ? C.muted : C.text, textDecoration: isDone ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                         {s.name} {isNext && <span style={{ fontSize: 10, color: "#fb7185", fontWeight: 800 }}>← 次はここ！</span>}
                                       </div>
@@ -30706,7 +30715,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                       <button onClick={() => routeSetGoal(s.id)} title="ここを🏁ゴール(最後に行く家)にする"
                                         style={{ flex: "none", background: String(route.endId || "") === String(s.id) ? "#f59e0b" : "transparent", color: String(route.endId || "") === String(s.id) ? "#fff" : C.muted, border: `1px solid ${String(route.endId || "") === String(s.id) ? "#f59e0b" : C.borderDim}`, borderRadius: 8, padding: "6px 7px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>🏁</button>
                                     )}
-                                    <button onClick={() => routeOnStopOpen(s.id)} style={{ flex: "none", background: "transparent", color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 7px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>📋</button>
+                                    <button onClick={() => routeOnStopOpen(s.id)} style={{ flex: "none", background: "#1d4ed8", color: "#fff", border: "1px solid #1d4ed8", borderRadius: 8, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>📋 詳細</button>
                                     <button onClick={() => routeOpenGmaps(s.lat, s.lng)} style={{ flex: "none", background: C.accentBg, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>▶ ナビ</button>
                                   </div>
                                 );
