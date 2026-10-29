@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-29-v9.607-fix";
+const APP_VERSION = "2026-10-29-v9.608";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8886,6 +8886,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.608", date: "2026-10-29", title: "「謄本取り違え」の家を地図で見分けられるように",
+    body: "取った謄本が隣の家（所有者の自宅）のものだった疑いがある家は、地図のピンが黒い「⚠️」になりました。押すと「⚠️ 取り違え・行かない」と出ます。訪問しても「自宅以外は持っていない」と言われる家なので、行かなくて大丈夫です。今までは本人居住と同じ灰色の📭で、見分けがつきませんでした。",
+    where: "地上げ → 地図 → 黒い⚠️のピン" },
   { v: "9.605", date: "2026-10-29", title: "ルートの一覧から家の詳細を見られるように",
     body: "訪問ルートの一覧で、住所や名前のところ（または青い「📋 詳細」）を押すと、その家の詳細が開きます。所有者・訪問履歴・メモ・取った謄本を、回る前に確かめられます。詳細を閉じると、ルートの一覧に戻ります。",
     where: "地上げ → 地図 → 「ルート」→ 一覧の家を押す" },
@@ -11649,6 +11652,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       autoLookup:    "#a78bfa",  // 🤖 自動照会中（目印住所で謄本を取りに行っている最中）
       lookupPending: "#f97316",  // ⏳ 謄本待ち
       excluded:      "#cbd5e1",  // 📭 DM不要
+      suspect:       "#111827",  // ⚠️ 謄本取り違え疑い（行かない）🆕 v9.608
       lookupFailed:  "#dc2626",  // 🔧 要修正
       lookupGiveUp:  "#475569",  // 🛑 取れない（何度やっても謄本が出ない・地番を調べ直すまで打ち止め）
       dmReady:       "#16a34a",  // 🚪 訪問OK
@@ -11657,6 +11661,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     // 🆕 v9.383: 🛑取れない = 地番は入っているが、その地番のままでは何度投げても謄本が出ない。
     //   🔧要修正（直せば取れる見込み）と分けて、再挑戦リストから外す。地番を調べ直したら解除。
     const isGiveUpRaw = (r) => !!(r && r.lookupGiveUp === true);
+    // 🆕 v9.608: 謄本取り違え疑い＝謄本が隣の家（所有者の自宅）のもの。訪問状況に関係なく「行かない」で最優先表示
+    const isChibanSuspectRaw = (r) => !!(r && r.excluded === true && r.chibanSuspect === true);
     // 🆕 v9.381: 自動照会中 = 地番は未確定だが、目印住所で謄本を取りに行っている最中のピン。
     //   lookupTry 0=未照会 / 1=①そのまま外れ(次は②大字つき) / 2=②も外れ → ここで初めて担当者の番。
     //   担当者の「🟡地番待ち」から外して、二度手間（自動で入るのに手で調べる）を防ぐ。
@@ -11668,6 +11674,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     // 🆕 v8.125→v9.17: 所有者あり時は status を反映（NG→暗赤、見込み→ピンク 等）
     const colorForOnsite = (r, status) => {
       if (!r.address || !String(r.address).trim()) return isAutoLookupRaw(r) ? ONSITE_COLORS.autoLookup : ONSITE_COLORS.pendingLot;
+      if (isChibanSuspectRaw(r)) return ONSITE_COLORS.suspect;
       // 🆕 v9.575: 対象外(本人居住・法人)は所有者名が入っていても DM不要 を優先（未訪問のとき）。訪問が進んでいれば status を出す
       if (r.excluded === true && (!status || status === "未訪問")) return ONSITE_COLORS.excluded;
       if (_ownerExists(r)) {
@@ -11771,6 +11778,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         // 現地ピン
         if (_r && _r.coordsManual) {
           if (pendingLot) return "⏰";
+          if (isChibanSuspectRaw(_r)) return "⚠️"; // 🆕 v9.608
           if (_r.excluded === true && (!s || s === "未訪問")) return "📭"; // 🆕 v9.575: 対象外は所有者名ありでも DM不要 優先
           // 所有者判明後は訪問status を反映（未訪問なら ✅ で訪問OK 待機）
           if (_ownerExists(_r)) {
@@ -11865,6 +11873,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         }
         if (pendingLot) return "🟡 地番待ち";
         if (isAutoLookupRaw(_r)) return "🤖 自動照会中";
+        if (isChibanSuspectRaw(_r)) return "⚠️ 取り違え・行かない"; // 🆕 v9.608
         if (_r.excluded === true && (!it.status || it.status === "未訪問")) return "📭 DM不要"; // 🆕 v9.575
         if (_ownerExists(_r)) {
           const s = it.status;
