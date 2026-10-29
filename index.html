@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-29-v9.609";
+const APP_VERSION = "2026-10-29-v9.610";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8886,6 +8886,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.610", date: "2026-10-29", title: "ルートの一覧から家を外せるように・対象外の家は自動で外れる",
+    body: "訪問ルートの一覧の各行に赤い「➖」ボタンが付きました。押すと、その家をルートから外します（回る順番はそのまま）。また、作った後で対象外（本人居住・謄本取り違えなど）になった家は、まだ回っていなければ自動でルートから外れます。",
+    where: "地上げ → 地図 → 「ルート」→ 一覧の「➖」" },
   { v: "9.609", date: "2026-10-29", title: "ルートの一覧を画面いっぱいに広げられるように",
     body: "訪問ルートの右上に「⤢ 広げる」ボタンが付きました。押すと設定のボタンが隠れて、一覧が画面いっぱいに広がり、40軒でも一度にたくさん見られます。「⤡ 戻す」で元の大きさに戻ります。",
     where: "地上げ → 地図 → 「ルート」→ 右上の「⤢ 広げる」" },
@@ -26559,6 +26562,24 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       lat: j.lat, lng: j.lng, ownerLat: j.ownerLat, ownerLng: j.ownerLng,
     }));
   }, [data.jiage]);
+  // 🆕 v9.610: ルートを作った後で対象外(本人居住・取り違え等)になった家は、まだ回っていなければ自動で外す
+  //   (2026-10-29 下田さん: 朝に作ったルートに10/16から対象外の家が残っていて、行って「持ってない」と言われた)
+  React.useEffect(() => {
+    if (!route || !Array.isArray(route.stops) || route.stops.length === 0) return;
+    const ex = new Set();
+    (data.jiage || []).forEach(j => { if (j && j.excluded === true) { ex.add(String(j.id)); ex.add(`j_${j.id}`); } });
+    if (ex.size === 0) return;
+    const bad = route.stops.filter((s, i) => i >= route.targetIndex && ex.has(String(s.id)));
+    if (bad.length === 0) return;
+    const badSet = new Set(bad.map(s => String(s.id)));
+    setRoute(prev => {
+      const stops = prev.stops.filter((s, i) => !(i >= prev.targetIndex && badSet.has(String(s.id))));
+      if (stops.length === prev.stops.length) return prev;
+      const endId = badSet.has(String(prev.endId)) ? "" : prev.endId;
+      return { ...prev, stops, endId, road: null };
+    });
+    routeRoadKeyRef.current = "";
+  }, [data.jiage, route.stops, route.targetIndex]);
 
   const filtered = useMemo(() => allItems.filter(item => {
     // 🆕 v8.115: 既定で📭DM不要を非表示（地図を開いた直後にDM不要のピンで埋まらないようにするため）
@@ -30736,6 +30757,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                         style={{ flex: "none", background: String(route.endId || "") === String(s.id) ? "#f59e0b" : "transparent", color: String(route.endId || "") === String(s.id) ? "#fff" : C.muted, border: `1px solid ${String(route.endId || "") === String(s.id) ? "#f59e0b" : C.borderDim}`, borderRadius: 8, padding: "6px 7px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>🏁</button>
                                     )}
                                     <button onClick={() => routeOnStopOpen(s.id)} style={{ flex: "none", background: "#1d4ed8", color: "#fff", border: "1px solid #1d4ed8", borderRadius: 8, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>📋 詳細</button>
+                                    {/* 🆕 v9.610: この家をルートから外す（順番はそのまま） */}
+                                    {!isDone && (
+                                      <button onClick={() => { if (window.confirm(`「${s.name || s.address || "この家"}」をルートから外しますか？`)) routeRemoveOne(s.id); }} title="この家をルートから外す"
+                                        style={{ flex: "none", background: "#fff", color: "#dc2626", border: "1.5px solid #dc2626", borderRadius: 8, padding: "6px 9px", fontSize: 12, fontWeight: 900, cursor: "pointer", fontFamily: "inherit" }}>➖</button>
+                                    )}
                                     <button onClick={() => routeOpenGmaps(s.lat, s.lng)} style={{ flex: "none", background: C.accentBg, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>▶ ナビ</button>
                                   </div>
                                 );
