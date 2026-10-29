@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-29-v9.613";
+const APP_VERSION = "2026-10-29-v9.614";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8886,6 +8886,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.614", date: "2026-10-29", title: "前にピンを立てた家に、もう一度ピンを立てそうになったら知らせる",
+    body: "ピンを立てる画面で、すぐそば（約20m以内）に前のピンがあると「⚠️ この家には前のピンがあります」と出ます。地図の絞り込みで隠れているピンや、他の人のピンも含めて調べます。「前のピンを開く」を押せば、その家の訪問記録をそのまま見られます。同じ家に2本ピンが立って、断られた人をまた訪ねてしまうのを防ぎます。",
+    where: "地上げ → 地図 → ピンを立てる画面の一番上" },
   { v: "9.613", date: "2026-10-29", title: "ルートは絞り込んだピンだけ・所有者が分からない家は入れない",
     body: "訪問ルートは、地図の絞り込みで今出ているピンだけから作ります（例：「未訪問」で絞れば未訪問の家だけ）。そのうえで、所有者がまだ分からない家（🟡地番待ち・⏳謄本待ち・🔧要修正）はルートに入らなくなりました。",
     where: "地上げ → 地図 → 絞り込み →「ルート」" },
@@ -31515,6 +31518,47 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
       {/* 🆕 v8.95→v8.98: 現地ピン入力モーダル（2段構え: 目印住所＋地番） */}
       {pendingPin && (
         <BottomSheet title="📍 現地ピン登録" onClose={cancelPendingPin}>
+          {/* 🆕 v9.614: 同じ家に前のピンがあれば知らせる（絞り込みで隠れている分・他の人の分も含む）
+              2026-10-29 下田さん: 一度回った道をもう一度回り、6/5のピン(過去に提案してだめだった人)の家に新しくピンを立てていた */}
+          {(() => {
+            const _d = (a, b) => Math.hypot((a.lat - b.lat) * 111000, (a.lng - b.lng) * 90000);
+            const _nl = (x) => String(x || "").normalize("NFKC").replace(/^埼玉県/, "").replace(/[\s　]/g, "").replace(/[‐－―−ーｰ]/g, "-");
+            const _lm = _nl(pinForm.landmark);
+            const near = (data.jiage || []).filter(j => j && typeof j.lat === "number" && typeof j.lng === "number"
+              && (_d(pendingPin, j) <= 20 || (_lm.length >= 6 && _nl(j.landmark) === _lm)))
+              .map(j => ({ j, m: Math.round(_d(pendingPin, j)) }))
+              .sort((a, b) => a.m - b.m).slice(0, 3);
+            if (near.length === 0) return null;
+            return (
+              <div style={{ background: "#fef2f2", border: "2px solid #dc2626", borderRadius: 10, padding: 10, marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>⚠️ この家には前のピンがあります</div>
+                {near.map(({ j, m }) => {
+                  const _own = String(j.owner || j.ownerName || "").trim();
+                  const _vl = Array.isArray(j.visitLog) ? j.visitLog : [];
+                  const _last = _vl.length ? _vl[_vl.length - 1] : null;
+                  const _when = j.createdAt ? new Date(Number(j.createdAt)).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) : "";
+                  return (
+                    <div key={j.id} style={{ background: "#fff", border: "1px solid #fecaca", borderRadius: 8, padding: 8, marginBottom: 6, fontSize: 12, color: "#1f2937", lineHeight: 1.6 }}>
+                      <div><b>{_own || "（所有者まだ不明）"}</b>　{j.status || ""}{j.excluded === true ? `・対象外（${j.excludedReason || ""}）` : ""}</div>
+                      <div style={{ color: "#475569" }}>{j.landmark || j.address || ""}</div>
+                      <div style={{ color: "#475569" }}>担当 {j.assignee || "-"}{_when ? `・${_when}に立てた` : ""}・ここから約{m}m{_vl.length ? `・訪問記録${_vl.length}回` : ""}</div>
+                      {_last && _last.memo ? <div style={{ color: "#475569" }}>📝 {String(_last.memo).slice(0, 60)}</div> : null}
+                      <button onClick={() => {
+                        const it = (allItems || []).find(x => String(x.rawId) === String(j.id));
+                        pendingPinPhotos.forEach(p => { if (p && p.previewUrl) { try { URL.revokeObjectURL(p.previewUrl); } catch (e) {} } });
+                        setPendingPinPhotos([]);
+                        cancelPendingPin();
+                        if (it) setSelected({ item: it });
+                      }} style={{ marginTop: 6, width: "100%", background: "#dc2626", color: "#fff", border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                        📋 前のピンを開く（新しく立てない）
+                      </button>
+                    </div>
+                  );
+                })}
+                <div style={{ fontSize: 11, color: "#7f1d1d", lineHeight: 1.5 }}>隣の別の家なら、このまま下で保存してください。</div>
+              </div>
+            );
+          })()}
           <div style={{ background: C.inset, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: 10, marginBottom: 14, fontSize: 12 }}>
             <div style={{ color: C.muted, marginBottom: 4 }}><NavIcon name="mappin" size={15} /> 立てた位置（実測座標）</div>
             <div style={{ color: C.text, fontFamily: "monospace" }}>
