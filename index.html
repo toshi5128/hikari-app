@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-31-v9.617";
+const APP_VERSION = "2026-10-31-v9.618";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8898,6 +8898,9 @@ const WHATS_NEW = [
   { v: "9.609", date: "2026-10-29", title: "ルートの一覧を画面いっぱいに広げられるように",
     body: "訪問ルートの右上に「⤢ 広げる」ボタンが付きました。押すと設定のボタンが隠れて、一覧が画面いっぱいに広がり、40軒でも一度にたくさん見られます。「⤡ 戻す」で元の大きさに戻ります。",
     where: "地上げ → 地図 → 「ルート」→ 右上の「⤢ 広げる」" },
+  { v: "9.618", date: "2026-10-31", title: "決めたルートに、あとから家を追加できるように",
+    body: "訪問ルートを作ったあとに「➕ 回る家を追加する」を押すと、地図にルートに入っていない家が点線の丸で出ます。足したい家をタップして「ルートに入れる」を押すと、その家も入れて回る順番を自動で並べ直します。もう回った家の順番はそのままです。終わったら上の「終わる」を押してください。",
+    where: "地上げ → 地図 → 左下の「ルート」→「➕ 回る家を追加する」" },
   { v: "9.616", date: "2026-10-31", title: "なぞって囲んだルートが、地図を触っても消えないように",
     body: "「✏️ なぞって囲む」で囲み終わると、その場で確定します。そのあと地図を動かしたり、ほかの所を触ったりしても、囲みと回る順番は消えません。囲み直したい時は、ルートの画面の「✏️ 囲み直す」を押してから、もう一度なぞってください。",
     where: "地上げ → 地図 → 左下の「ルート」→「✏️ なぞって囲む」" },
@@ -12089,7 +12092,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       }
     }
     // 🆕 v9.63: 選択モードでは、未選択の表示中ピンを「点」で出してタップ追加できる
-    if (pickMode) {
+    //   🆕 v9.618: 件数で自動／なぞって囲む でも「➕ 回る家を追加」中は同じ点を出す
+    if (pickMode || routeOverlay.addMode) {
       const selSet = new Set(stops.map(s => String(s.id)));
       pickPins.forEach(p => {
         if (selSet.has(String(p.id))) return;
@@ -25362,7 +25366,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.91: ルートを localStorage に保存し、更新/リロードしても継続できるように
   const ROUTE_STATE_KEY = "hikari_route_state";
   // 🆕 v9.414: optimize=true なら「スタート(現在地)→…→ゴール」の効率順に自動で並べ替える
-  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, lasso: null, optimize: true, roundTrip: false, home: null, homeManual: false, lassoLocked: false };
+  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, lasso: null, optimize: true, roundTrip: false, home: null, homeManual: false, lassoLocked: false, addMode: false };
   const [route, setRoute] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(ROUTE_STATE_KEY) || "null");
@@ -29613,6 +29617,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               // 選択中は地図を自動で動かさない（押した位置で止めておく）→ fitBounds しない
             };
             const routePickToggle = (id) => {
+              if (route.mode !== "pick") { routeAddStop(id); return; } // 🆕 v9.618
               const exists = route.pickIds.some(x => String(x) === String(id));
               routeBuildFromPick(exists ? route.pickIds.filter(x => String(x) !== String(id)) : [...route.pickIds, id]);
             };
@@ -29687,6 +29692,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             };
             const routeStartHomePick = () => { setRouteHomePicking(true); setRoute(r => ({ ...r, minimized: true, big: false })); };
             const routeSetMode = (m) => {
+              if (route.addMode) setRoute(r => ({ ...r, addMode: false }));
               if (m === "auto") routeRecompute(route.count, "");
               else if (m === "lasso") setRoute(prev => ({ ...prev, open: true, minimized: true, mode: "lasso", pickIds: [], stops: [], lasso: null, targetIndex: 0, road: null, lassoLocked: false })); // 折りたたんで地図を広く→なぞって囲む
               else routeBuildFromPick([], true); // 選択モードは折りたたみで開始（地図を広く）
@@ -29711,6 +29717,24 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               setRouteFitKey(Date.now());
             };
             // 🆕 v9.64: 番号ピンを直接タップ→「➖ルートから外す」（自動モード・1件ずつ）。地図は動かさない
+            // 🆕 v9.618: 決めたルートに家を1軒足す。もう回った家はそのまま、まだの家だけ足した家込みで並べ直す
+            const routeAddStop = (id) => {
+              const add = routeAllStops.find(s => String(s.id) === String(id));
+              if (!add || !currentLoc) return;
+              setRoute(prev => {
+                if (prev.stops.some(s => String(s.id) === String(id))) return prev;
+                const ti = Math.min(prev.targetIndex || 0, prev.stops.length);
+                const done = prev.stops.slice(0, ti);
+                const rest = [...prev.stops.slice(ti), add];
+                const last = done.length ? done[done.length - 1] : null;
+                const startPt = last ? { lat: last.lat, lng: last.lng } : { lat: currentLoc.lat, lng: currentLoc.lng };
+                const home = (prev.roundTrip && prev.home) ? prev.home : null;
+                const ordered = rest.length > 1 ? routeBuildOrder(startPt, rest, 999, prev.endId, home) : rest;
+                return { ...prev, stops: [...done, ...ordered], targetIndex: ti, road: null };
+              });
+              routeRoadKeyRef.current = "";
+            };
+            const routeToggleAddMode = () => setRoute(r => ({ ...r, addMode: !r.addMode, minimized: !r.addMode ? true : r.minimized, big: false }));
             const routeRemoveOne = (id) => {
               setRoute(prev => {
                 const idx = prev.stops.findIndex(s => String(s.id) === String(id));
@@ -30541,10 +30565,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         endId: route.endId,
                         roadCoords: route.road && route.road.coords,
                         pickMode: route.mode === "pick",
-                        pickPins: route.mode === "pick" ? routeAllStops : [],
+                        pickPins: (route.mode === "pick" || route.addMode) ? routeAllStops : [],
+                        addMode: !!route.addMode && route.mode !== "pick", // 🆕 v9.618
                         mode: route.mode,            // 🆕 v9.100
                         lasso: route.lasso || null,  // 🆕 v9.100
-                        lassoDraw: route.mode === "lasso" && !route.lassoLocked && !routeHomePicking, // 🆕 v9.616: なぞりを受け付ける間だけ true
+                        lassoDraw: route.mode === "lasso" && !route.lassoLocked && !routeHomePicking && !route.addMode, // 🆕 v9.616: なぞりを受け付ける間だけ true
                         home: (route.roundTrip && route.home) ? route.home : null, // 🆕 v9.615: ゴール（帰る場所）
                         homeManual: !!route.homeManual,
                       } : null}
@@ -30773,6 +30798,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               {route.roundTrip && route.home && (
                                 <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>地図の🏁を指で押したまま動かしても、ゴールを変えられます。</div>
                               )}
+                              {/* 🆕 v9.618: 決めたルートに家を足す（自分で選ぶ は元から地図で足せる） */}
+                              {route.mode !== "pick" && route.stops.length > 0 && (
+                                <button onClick={routeToggleAddMode} style={{ width: "100%", marginTop: 6, background: route.addMode ? "#22c55e" : C.inset, color: route.addMode ? "#fff" : "#16a34a", border: "1.5px solid #22c55e", borderRadius: 10, padding: "7px 6px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                                  {route.addMode ? "✓ ➕ 家を追加中（押すと終わる）" : "➕ 回る家を追加する"}
+                                </button>
+                              )}
                             </div>
                             {/* コントロール */}
                             {route.big ? null : route.mode === "auto" ? (
@@ -30912,6 +30943,17 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           </div>
                         )}
 
+                        {/* 🆕 v9.618: 回る家を追加している最中の案内 */}
+                        {route.open && route.addMode && route.mode !== "pick" && !routeHomePicking && (
+                          <div style={{
+                            position: "absolute", left: 12, right: 12, top: 12, zIndex: 700,
+                            background: "#16a34a", color: "#fff", borderRadius: 14, padding: "10px 12px",
+                            boxShadow: "0 6px 20px rgba(0,0,0,0.45)", display: "flex", alignItems: "center", gap: 8,
+                          }}>
+                            <span style={{ flex: 1, fontSize: 13, fontWeight: 800 }}>➕ 足したい家（点線の丸）をタップ →「ルートに入れる」<span style={{ fontWeight: 400, fontSize: 11 }}>（今 {route.stops.length}軒）</span></span>
+                            <button onClick={routeToggleAddMode} style={{ flex: "none", background: "#fff", color: "#16a34a", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>終わる</button>
+                          </div>
+                        )}
                         {/* 🆕 v9.615: ゴールを地図で決めている最中の案内 */}
                         {route.open && routeHomePicking && (
                           <div style={{
