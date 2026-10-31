@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-29-v9.614";
+const APP_VERSION = "2026-10-31-v9.615";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8898,6 +8898,9 @@ const WHATS_NEW = [
   { v: "9.609", date: "2026-10-29", title: "ルートの一覧を画面いっぱいに広げられるように",
     body: "訪問ルートの右上に「⤢ 広げる」ボタンが付きました。押すと設定のボタンが隠れて、一覧が画面いっぱいに広がり、40軒でも一度にたくさん見られます。「⤡ 戻す」で元の大きさに戻ります。",
     where: "地上げ → 地図 → 「ルート」→ 右上の「⤢ 広げる」" },
+  { v: "9.615", date: "2026-10-31", title: "ルートのゴール（最後に向かう場所）を地図で決められるように",
+    body: "訪問ルートの「🏁 ゴールを地図で決める」を押して地図をタップすると、そこが最後に向かう場所になります（事務所や家など）。地図の🏁マークを指で押したまま動かしても変えられます。回る順番は、そのゴールに向かって一番短くなるように自動で並べ直します。「📍 今いる場所に戻す」で元に戻せます。",
+    where: "地上げ → 地図 → 左下の「ルート」→「🏁 ゴールを地図で決める」" },
   { v: "9.608", date: "2026-10-29", title: "「謄本取り違え」の家を地図で見分けられるように",
     body: "取った謄本が隣の家（所有者の自宅）のものだった疑いがある家は、地図のピンが黒い「⚠️」になりました。押すと「⚠️ 取り違え・行かない」と出ます。訪問しても「自宅以外は持っていない」と言われる家なので、行かなくて大丈夫です。今までは本人居住と同じ灰色の📭で、見分けがつきませんでした。",
     where: "地上げ → 地図 → 黒い⚠️のピン" },
@@ -10368,7 +10371,7 @@ if (typeof L !== "undefined" && L.Marker && L.Popup && !L.Marker.prototype._hkUp
   L.Marker.prototype._hkUprightPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -12067,13 +12070,14 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       return;
     }
     // 🆕 v9.53.1: 中身が変わった時だけ再描画（GPS更新では作り直さない＝ポップアップが消えない）
-    const sig = stops.map(s => `${s.id}@${s.lat},${s.lng}`).join("|") + `#${targetIndex}#${endId || ""}#${(Array.isArray(roadCoords) && roadCoords.length) || 0}#${pickMode ? 1 : 0}#${pickPins.length}`;
+    const _rHome = routeOverlay.home || null; // 🆕 v9.615
+    const sig = stops.map(s => `${s.id}@${s.lat},${s.lng}`).join("|") + `#${targetIndex}#${endId || ""}#${(Array.isArray(roadCoords) && roadCoords.length) || 0}#${pickMode ? 1 : 0}#${pickPins.length}#${_rHome ? _rHome.lat + "," + _rHome.lng : ""}`;
     if (sig === routeSigRef.current && routeLayerRef.current) return;
     routeSigRef.current = sig;
     if (routeLayerRef.current) { try { map.removeLayer(routeLayerRef.current); } catch (e) {} routeLayerRef.current = null; }
     const grp = L.layerGroup();
     if (stops.length > 0) {
-      const straight = [[start.lat, start.lng], ...stops.map(s => [s.lat, s.lng])];
+      const straight = [[start.lat, start.lng], ...stops.map(s => [s.lat, s.lng]), ...(_rHome ? [[_rHome.lat, _rHome.lng]] : [])];
       const lineCoords = (Array.isArray(roadCoords) && roadCoords.length > 1) ? roadCoords : straight;
       L.polyline(lineCoords, { color: "#0ea5e9", weight: 4, opacity: 0.55, dashArray: roadCoords ? null : "2,8" }).addTo(grp);
       if (targetIndex > 0) {
@@ -12177,6 +12181,48 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     routeLayerRef.current = grp;
   }, [routeOverlay, onRouteStopTap, onRoutePickToggle, onRouteStopRemove]);
 
+  // 🆕 v9.615: ルートのゴール（最後に向かう場所）🏁マーカー。指で押したまま動かすとゴールを動かせる
+  const routeHomeMkRef = React.useRef(null);
+  const onRouteHomeMoveRef = React.useRef(onRouteHomeMove);
+  onRouteHomeMoveRef.current = onRouteHomeMove;
+  const _rhPt = routeOverlay && routeOverlay.home;
+  const _rhKey = _rhPt ? `${_rhPt.lat},${_rhPt.lng},${routeOverlay.homeManual ? 1 : 0}` : "";
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (routeHomeMkRef.current) { try { map.removeLayer(routeHomeMkRef.current); } catch (e) {} routeHomeMkRef.current = null; }
+    if (!_rhPt || typeof _rhPt.lat !== "number") return;
+    const manual = !!routeOverlay.homeManual;
+    const mk = L.marker([_rhPt.lat, _rhPt.lng], {
+      draggable: true, autoPan: true, zIndexOffset: 900,
+      icon: L.divIcon({
+        html: `<div style="position:relative;width:36px;height:44px;">`
+          + `<div style="position:absolute;left:0;top:0;width:36px;height:36px;border-radius:50%;background:#0f766e;border:3px solid #fff;box-sizing:border-box;box-shadow:0 2px 8px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:18px;line-height:1;">🏁</div>`
+          + `<div style="position:absolute;left:50%;top:33px;transform:translateX(-50%);background:#0f766e;color:#fff;font-size:9px;font-weight:800;padding:1px 5px;border-radius:6px;white-space:nowrap;font-family:'Noto Sans JP',sans-serif;">ゴール</div>`
+          + `</div>`,
+        className: "", iconSize: [36, 44], iconAnchor: [18, 18],
+      }),
+    });
+    mk.bindPopup(
+      `<div style="font-family:'Noto Sans JP',sans-serif;min-width:180px;">`
+      + `<div style="font-weight:800;font-size:13px;margin-bottom:4px;">🏁 ゴール（${manual ? "地図で決めた場所" : "出発した場所"}）</div>`
+      + `<div style="font-size:11px;color:#555;margin-bottom:6px;">指で押したまま動かすと、ゴールの場所を変えられます。回る順番も自動で並べ直します。</div>`
+      + (manual ? `<button class="hk-home-reset" style="display:block;width:100%;background:#0ea5e9;color:#fff;border:none;padding:8px;border-radius:7px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;">📍 今いる場所をゴールに戻す</button>` : "")
+      + `</div>`,
+      { autoClose: true, closeOnClick: false }
+    );
+    mk.on("popupopen", (e) => {
+      setTimeout(() => {
+        const node = e.popup && e.popup._contentNode;
+        const rb = node && node.querySelector(".hk-home-reset");
+        if (rb) rb.onclick = () => { try { map.closePopup(); } catch (_) {} if (onRouteHomeMoveRef.current) onRouteHomeMoveRef.current(null); };
+      }, 10);
+    });
+    mk.on("dragend", () => { const ll = mk.getLatLng(); if (onRouteHomeMoveRef.current) onRouteHomeMoveRef.current({ lat: ll.lat, lng: ll.lng }); });
+    mk.addTo(map);
+    routeHomeMkRef.current = mk;
+  }, [_rhKey, !!mapInstanceRef.current]); // 地図の準備ができた後にも1回描く
+
   // 🆕 v9.100: なぞって囲む — 確定した囲み（ポリゴン）を地図に表示
   const routeLassoRef = React.useRef(null);
   React.useEffect(() => {
@@ -12256,7 +12302,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     if (!routeFitKey) return;
     if (!routeOverlay || !routeOverlay.start || !Array.isArray(routeOverlay.stops) || routeOverlay.stops.length === 0) return;
     try {
-      const pts = [[routeOverlay.start.lat, routeOverlay.start.lng], ...routeOverlay.stops.map(s => [s.lat, s.lng])];
+      const pts = [[routeOverlay.start.lat, routeOverlay.start.lng], ...routeOverlay.stops.map(s => [s.lat, s.lng]), ...(routeOverlay.home ? [[routeOverlay.home.lat, routeOverlay.home.lng]] : [])];
       map.fitBounds(L.polyline(pts).getBounds(), { padding: [60, 60], maxZoom: 16 });
     } catch (e) {}
   }, [routeFitKey]);
@@ -25308,7 +25354,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.91: ルートを localStorage に保存し、更新/リロードしても継続できるように
   const ROUTE_STATE_KEY = "hikari_route_state";
   // 🆕 v9.414: optimize=true なら「スタート(現在地)→…→ゴール」の効率順に自動で並べ替える
-  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, lasso: null, optimize: true, roundTrip: false, home: null };
+  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, lasso: null, optimize: true, roundTrip: false, home: null, homeManual: false };
   const [route, setRoute] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(ROUTE_STATE_KEY) || "null");
@@ -25324,6 +25370,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       else localStorage.removeItem(ROUTE_STATE_KEY);
     } catch (e) {}
   }, [route]);
+  const [routeHomePicking, setRouteHomePicking] = useState(false); // 🆕 v9.615: 地図をタップしてゴール（帰る場所）を決めている最中
   const [routeSel, setRouteSel] = useState([]); // 🆕 v9.53: ルートから一括削除する選択 stop id 群
   // 🆕 v9.54: ピン位置の現地修正 { id, field:"address"|"owner", lat, lng, origLat, origLng, name }
   const [pinEdit, setPinEdit] = useState(null);
@@ -29513,11 +29560,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             const routeRecompute = (count, endId, roundTripOpt) => {
               if (!currentLoc) { alert("⚠️ 現在地がまだ取れていません。位置情報を許可してください。"); return; }
               const roundTrip = roundTripOpt !== undefined ? roundTripOpt : !!route.roundTrip;
-              const home = roundTrip ? { lat: currentLoc.lat, lng: currentLoc.lng } : null; // 自動は作り直すたびに今いる場所が出発地点
+              // 自動は作り直すたびに今いる場所が出発地点。🆕 v9.615: 地図で決めたゴールがあればそちらを使い続ける
+              const homeManual = roundTrip && !!route.homeManual && !!route.home;
+              const home = roundTrip ? (homeManual ? route.home : { lat: currentLoc.lat, lng: currentLoc.lng }) : null;
               const stops = routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, routeAllStops, count, endId, home);
               if (stops.length === 0) { alert("⚠️ ルートにできるピンが地図にありません。"); return; }
               routeRoadKeyRef.current = "";
-              setRoute({ open: true, minimized: false, mode: "auto", pickIds: [], count, endId: endId || "", stops, targetIndex: 0, road: null, roundTrip, home });
+              setRoute({ open: true, minimized: false, mode: "auto", pickIds: [], count, endId: endId || "", stops, targetIndex: 0, road: null, roundTrip, home, homeManual });
               setRouteSel([]);
               setRouteCelebrate(false);
               setRouteFitKey(Date.now());
@@ -29532,7 +29581,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               if (endId && !picked.some(s => String(s.id) === String(endId))) endId = "";
               const optimize = (o.optimize !== undefined) ? o.optimize : (route.optimize !== false);
               const roundTrip = (o.roundTrip !== undefined) ? o.roundTrip : !!route.roundTrip;
-              const home = roundTrip ? routeHomeFor(true) : null;
+              const home = roundTrip ? (o.home || routeHomeFor(true)) : null;
+              const homeManual = roundTrip && ((o.homeManual !== undefined) ? !!o.homeManual : !!route.homeManual);
               // 🆕 v9.414: 「効率よく回る順」に並べ替える（現在地スタート・ゴール固定・最近傍法＋2-opt）。
               //   旧v9.64.1は選んだ順のままだったので、あっち行ってこっち行ってになっていた。
               //   並べ替えを切れば今まで通り「選んだ順」。
@@ -29550,7 +29600,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const stops = [...doneStops, ...orderedRest];
               routeRoadKeyRef.current = "";
               // 🆕 v9.64.1: 既定で折りたたみ（地図を広く見る）。startMinimized 未指定なら現在の状態を維持
-              setRoute(prev => ({ ...prev, open: true, minimized: (startMinimized != null ? startMinimized : prev.minimized), mode: "pick", pickIds: stops.map(s => s.id), endId, optimize, stops, targetIndex: doneStops.length, road: null, roundTrip, home }));
+              setRoute(prev => ({ ...prev, open: true, minimized: (startMinimized != null ? startMinimized : prev.minimized), mode: "pick", pickIds: stops.map(s => s.id), endId, optimize, stops, targetIndex: doneStops.length, road: null, roundTrip, home, homeManual }));
               setRouteSel([]); setRouteCelebrate(false);
               // 選択中は地図を自動で動かさない（押した位置で止めておく）→ fitBounds しない
             };
@@ -29582,7 +29632,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               if (!currentLoc) { alert("⚠️ 現在地がまだ取れていません。位置情報を許可してください。"); return; }
               if (!Array.isArray(poly) || poly.length < 3) return;
               const within = routeAllStops.filter(s => _pointInPoly({ lat: s.lat, lng: s.lng }, poly));
-              const home = route.roundTrip ? { lat: currentLoc.lat, lng: currentLoc.lng } : null;
+              const home = route.roundTrip ? ((route.homeManual && route.home) ? route.home : { lat: currentLoc.lat, lng: currentLoc.lng }) : null;
               const stops = routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, within, 999, "", home);
               routeRoadKeyRef.current = "";
               setRoute(prev => ({ ...prev, open: true, minimized: false, mode: "lasso", pickIds: [], endId: "", stops, targetIndex: 0, road: null, lasso: poly, home }));
@@ -29592,14 +29642,40 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             // 🆕 v9.604: 「🔁 出発地点に戻る」のオン/オフ。今のルートをそのまま並べ直す
             const routeToggleRoundTrip = () => {
               const next = !route.roundTrip;
-              if (route.mode === "auto") { routeRecompute(route.count, route.endId, next); return; }
-              if (route.mode === "pick") { routeBuildFromPick(route.pickIds, undefined, { roundTrip: next, optimize: true }); return; }
+              setRouteHomePicking(false);
+              if (route.mode === "auto") {
+                if (!currentLoc) return;
+                const home = next ? { lat: currentLoc.lat, lng: currentLoc.lng } : null;
+                const stops = routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, routeAllStops, route.count, route.endId, home);
+                routeRoadKeyRef.current = "";
+                setRoute(prev => ({ ...prev, roundTrip: next, home, homeManual: false, stops: stops.length ? stops : prev.stops, targetIndex: 0, road: null }));
+                return;
+              }
+              if (route.mode === "pick") { routeBuildFromPick(route.pickIds, undefined, { roundTrip: next, optimize: true, home: next ? (currentLoc ? { lat: currentLoc.lat, lng: currentLoc.lng } : null) : null, homeManual: false }); return; }
               if (!currentLoc) return;
               const home = next ? { lat: currentLoc.lat, lng: currentLoc.lng } : null;
               const stops = route.stops.length > 1 ? routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, route.stops, 999, "", home) : route.stops;
               routeRoadKeyRef.current = "";
-              setRoute(prev => ({ ...prev, roundTrip: next, home, stops, targetIndex: 0, road: null }));
+              setRoute(prev => ({ ...prev, roundTrip: next, home, homeManual: false, stops, targetIndex: 0, road: null }));
             };
+            // 🆕 v9.615: ゴール（最後に向かう場所）を地図で決める／動かす。pt=null なら今いる場所に戻す。
+            //   回る家の顔ぶれは変えず、まだ行っていない家だけをそのゴールに向けて並べ直す。
+            const routeSetHome = (pt) => {
+              setRouteHomePicking(false);
+              const home = pt ? { lat: pt.lat, lng: pt.lng } : (currentLoc ? { lat: currentLoc.lat, lng: currentLoc.lng } : null);
+              if (!home || !currentLoc) return;
+              const homeManual = !!pt;
+              if (route.mode === "pick") { routeBuildFromPick(route.pickIds, undefined, { roundTrip: true, optimize: route.optimize !== false, endId: "", home, homeManual }); return; }
+              const ti = Math.min(route.targetIndex || 0, route.stops.length);
+              const done = route.stops.slice(0, ti);
+              const rest = route.stops.slice(ti);
+              const last = done.length ? done[done.length - 1] : null;
+              const startPt = last ? { lat: last.lat, lng: last.lng } : { lat: currentLoc.lat, lng: currentLoc.lng };
+              const ordered = rest.length > 1 ? routeBuildOrder(startPt, rest, 999, "", home) : rest;
+              routeRoadKeyRef.current = "";
+              setRoute(prev => ({ ...prev, roundTrip: true, home, homeManual, endId: "", stops: [...done, ...ordered], targetIndex: ti, road: null }));
+            };
+            const routeStartHomePick = () => { setRouteHomePicking(true); setRoute(r => ({ ...r, minimized: true, big: false })); };
             const routeSetMode = (m) => {
               if (m === "auto") routeRecompute(route.count, "");
               else if (m === "lasso") setRoute(prev => ({ ...prev, open: true, minimized: true, mode: "lasso", pickIds: [], stops: [], lasso: null, targetIndex: 0, road: null })); // 折りたたんで地図を広く→なぞって囲む
@@ -30405,7 +30481,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       onPinClick={(it) => setSelected({ item: it })}
                       pinTarget={mapPinTarget}
                       height="82vh"
-                      onMapClick={placementMode ? handleMapTap : undefined}
+                      onMapClick={placementMode ? handleMapTap : (routeHomePicking && route.open ? ((lat, lng) => routeSetHome({ lat, lng })) : undefined)}
                       onMapLongPress={handleMapLongPress}
                       pendingPinLocation={pendingPin}
                       currentLocation={currentLoc}
@@ -30458,7 +30534,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         pickPins: route.mode === "pick" ? routeAllStops : [],
                         mode: route.mode,            // 🆕 v9.100
                         lasso: route.lasso || null,  // 🆕 v9.100
+                        home: (route.roundTrip && route.home) ? route.home : null, // 🆕 v9.615: ゴール（帰る場所）
+                        homeManual: !!route.homeManual,
                       } : null}
+                      onRouteHomeMove={routeSetHome}
                       onRouteStopTap={routeOnStopTap}
                       onRouteStopOpen={routeOnStopOpen}
                       onRoutePickToggle={routePickToggle}
@@ -30667,8 +30746,22 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {/* 🆕 v9.604: 回り終わったら出発地点に戻る */}
                             <div style={{ padding: "8px 16px 0", display: route.big ? "none" : "block" }}>
                               <button onClick={routeToggleRoundTrip} style={{ width: "100%", background: route.roundTrip ? "#0f766e" : C.inset, color: route.roundTrip ? "#fff" : C.muted, border: `1.5px solid ${route.roundTrip ? "#0f766e" : C.borderDim}`, borderRadius: 10, padding: "8px 6px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
-                                {route.roundTrip ? "✓ 🔁 最後に出発地点へ戻る（帰り道まで入れて並べています）" : "🔁 最後に出発地点へ戻るルートにする"}
+                                {route.roundTrip ? (route.homeManual ? "✓ 🏁 最後に地図で決めたゴールへ向かう（押すと解除）" : "✓ 🔁 最後に出発地点へ戻る（帰り道まで入れて並べています）") : "🔁 最後に出発地点へ戻るルートにする"}
                               </button>
+                              {/* 🆕 v9.615: ゴール（最後に向かう場所）を地図で決める */}
+                              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                                <button onClick={routeStartHomePick} style={{ flex: 1, background: C.inset, color: "#0f766e", border: "1.5px solid #0f766e", borderRadius: 10, padding: "7px 6px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                                  🏁 ゴールを地図で決める
+                                </button>
+                                {route.roundTrip && route.homeManual && (
+                                  <button onClick={() => routeSetHome(null)} style={{ flex: 1, background: C.inset, color: C.muted, border: `1.5px solid ${C.borderDim}`, borderRadius: 10, padding: "7px 6px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                                    📍 今いる場所に戻す
+                                  </button>
+                                )}
+                              </div>
+                              {route.roundTrip && route.home && (
+                                <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>地図の🏁を指で押したまま動かしても、ゴールを変えられます。</div>
+                              )}
                             </div>
                             {/* コントロール */}
                             {route.big ? null : route.mode === "auto" ? (
@@ -30785,7 +30878,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "9px 8px", borderBottom: `1px solid ${C.borderDim}` }}>
                                     <div style={{ flex: "none", width: 26, height: 26, borderRadius: "50%", background: "#0f766e", color: "#fff", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>🏠</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
-                                      <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>出発地点に戻る</div>
+                                      <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{route.homeManual ? "🏁 ゴール（地図で決めた場所）" : "出発地点に戻る"}</div>
                                       <div style={{ fontSize: 11, color: C.muted }}>最後の家から {routeFmtDist(d)} ・ 車で約{legMin}分</div>
                                     </div>
                                     <button onClick={() => routeOpenGmaps(route.home.lat, route.home.lng)} style={{ flex: "none", background: C.accentBg, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>▶ ナビ</button>
@@ -30803,6 +30896,17 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           </div>
                         )}
 
+                        {/* 🆕 v9.615: ゴールを地図で決めている最中の案内 */}
+                        {route.open && routeHomePicking && (
+                          <div style={{
+                            position: "absolute", left: 12, right: 12, top: 12, zIndex: 700,
+                            background: "#0f766e", color: "#fff", borderRadius: 14, padding: "10px 12px",
+                            boxShadow: "0 6px 20px rgba(0,0,0,0.45)", display: "flex", alignItems: "center", gap: 8,
+                          }}>
+                            <span style={{ flex: 1, fontSize: 13, fontWeight: 800 }}>🏁 ゴールにしたい場所を地図でタップしてください</span>
+                            <button onClick={() => setRouteHomePicking(false)} style={{ flex: "none", background: "#fff", color: "#0f766e", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>やめる</button>
+                          </div>
+                        )}
                         {/* 最小化バー（タップで元に戻す） */}
                         {route.open && route.minimized && (
                           <button onClick={routeExpand} style={{
