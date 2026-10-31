@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-31-v9.618";
+const APP_VERSION = "2026-10-31-v9.619";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8898,8 +8898,8 @@ const WHATS_NEW = [
   { v: "9.609", date: "2026-10-29", title: "ルートの一覧を画面いっぱいに広げられるように",
     body: "訪問ルートの右上に「⤢ 広げる」ボタンが付きました。押すと設定のボタンが隠れて、一覧が画面いっぱいに広がり、40軒でも一度にたくさん見られます。「⤡ 戻す」で元の大きさに戻ります。",
     where: "地上げ → 地図 → 「ルート」→ 右上の「⤢ 広げる」" },
-  { v: "9.618", date: "2026-10-31", title: "決めたルートに、あとから家を追加できるように",
-    body: "訪問ルートを作ったあとに「➕ 回る家を追加する」を押すと、地図にルートに入っていない家が点線の丸で出ます。足したい家をタップして「ルートに入れる」を押すと、その家も入れて回る順番を自動で並べ直します。もう回った家の順番はそのままです。終わったら上の「終わる」を押してください。",
+  { v: "9.619", date: "2026-10-31", title: "決めたルートに、あとから家を追加できるように",
+    body: "訪問ルートを作ったあとに「➕ 回る家を追加する」を押すと、地図にルートに入っていない家が点線の丸で出ます。足したい家をタップして「ルートに入れる」を押すと、今の順番はそのままで、一番遠回りにならない所にその家が入ります。終わったら上の「終わる」を押してください。",
     where: "地上げ → 地図 → 左下の「ルート」→「➕ 回る家を追加する」" },
   { v: "9.616", date: "2026-10-31", title: "なぞって囲んだルートが、地図を触っても消えないように",
     body: "「✏️ なぞって囲む」で囲み終わると、その場で確定します。そのあと地図を動かしたり、ほかの所を触ったりしても、囲みと回る順番は消えません。囲み直したい時は、ルートの画面の「✏️ 囲み直す」を押してから、もう一度なぞってください。",
@@ -29717,20 +29717,28 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               setRouteFitKey(Date.now());
             };
             // 🆕 v9.64: 番号ピンを直接タップ→「➖ルートから外す」（自動モード・1件ずつ）。地図は動かさない
-            // 🆕 v9.618: 決めたルートに家を1軒足す。もう回った家はそのまま、まだの家だけ足した家込みで並べ直す
+            // 🆕 v9.618→v9.619: 決めたルートに家を1軒足す。今の順番は崩さず、遠回りが一番少ない所へ差し込む
             const routeAddStop = (id) => {
               const add = routeAllStops.find(s => String(s.id) === String(id));
               if (!add || !currentLoc) return;
               setRoute(prev => {
                 if (prev.stops.some(s => String(s.id) === String(id))) return prev;
                 const ti = Math.min(prev.targetIndex || 0, prev.stops.length);
-                const done = prev.stops.slice(0, ti);
-                const rest = [...prev.stops.slice(ti), add];
-                const last = done.length ? done[done.length - 1] : null;
-                const startPt = last ? { lat: last.lat, lng: last.lng } : { lat: currentLoc.lat, lng: currentLoc.lng };
+                const st = prev.stops;
                 const home = (prev.roundTrip && prev.home) ? prev.home : null;
-                const ordered = rest.length > 1 ? routeBuildOrder(startPt, rest, 999, prev.endId, home) : rest;
-                return { ...prev, stops: [...done, ...ordered], targetIndex: ti, road: null };
+                const hasEnd = prev.endId != null && prev.endId !== "" && st.length > 0 && String(st[st.length - 1].id) === String(prev.endId);
+                // 差し込める位置 k（st[k] の手前）: まだ行っていない区間 ti..末尾。🏁ゴールの家があればその手前まで
+                const maxK = hasEnd ? st.length - 1 : st.length;
+                const ptAt = (k) => (k === 0 ? { lat: currentLoc.lat, lng: currentLoc.lng } : st[k - 1]);
+                let bestK = maxK, bestCost = Infinity;
+                for (let k = ti; k <= maxK; k++) {
+                  const a = ptAt(k);
+                  const b = k < st.length ? st[k] : home;
+                  const cost = b ? (routeDist(a, add) + routeDist(add, b) - routeDist(a, b)) : routeDist(a, add);
+                  if (cost < bestCost) { bestCost = cost; bestK = k; }
+                }
+                const stops = [...st.slice(0, bestK), add, ...st.slice(bestK)];
+                return { ...prev, stops, targetIndex: ti, road: null };
               });
               routeRoadKeyRef.current = "";
             };
