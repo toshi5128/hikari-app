@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-10-31-v9.615";
+const APP_VERSION = "2026-10-31-v9.616";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8898,6 +8898,9 @@ const WHATS_NEW = [
   { v: "9.609", date: "2026-10-29", title: "ルートの一覧を画面いっぱいに広げられるように",
     body: "訪問ルートの右上に「⤢ 広げる」ボタンが付きました。押すと設定のボタンが隠れて、一覧が画面いっぱいに広がり、40軒でも一度にたくさん見られます。「⤡ 戻す」で元の大きさに戻ります。",
     where: "地上げ → 地図 → 「ルート」→ 右上の「⤢ 広げる」" },
+  { v: "9.616", date: "2026-10-31", title: "なぞって囲んだルートが、地図を触っても消えないように",
+    body: "「✏️ なぞって囲む」で囲み終わると、その場で確定します。そのあと地図を動かしたり、ほかの所を触ったりしても、囲みと回る順番は消えません。囲み直したい時は、ルートの画面の「✏️ 囲み直す」を押してから、もう一度なぞってください。",
+    where: "地上げ → 地図 → 左下の「ルート」→「✏️ なぞって囲む」" },
   { v: "9.615", date: "2026-10-31", title: "ルートのゴール（最後に向かう場所）を地図で決められるように",
     body: "訪問ルートの「🏁 ゴールを地図で決める」を押して地図をタップすると、そこが最後に向かう場所になります（事務所や家など）。地図の🏁マークを指で押したまま動かしても変えられます。回る順番は、そのゴールに向かって一番短くなるように自動で並べ直します。「📍 今いる場所に戻す」で元に戻せます。",
     where: "地上げ → 地図 → 左下の「ルート」→「🏁 ゴールを地図で決める」" },
@@ -12242,7 +12245,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
-    const lassoMode = !!(routeOverlay && routeOverlay.mode === "lasso");
+    // 🆕 v9.616: 囲み終わったら確定（なぞり受付を止める）。他の所を触っても囲みが描き直されて消えないように
+    const lassoMode = !!(routeOverlay && routeOverlay.mode === "lasso" && routeOverlay.lassoDraw);
     if (!lassoMode) return;
     const container = mapRef.current;
     if (!container) return;
@@ -12250,10 +12254,10 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     // 🆕 v9.102: なぞる間はブラウザのタッチスクロール/ズームを無効化（画面が動かないように）
     const _prevTouchAction = container.style.touchAction;
     container.style.touchAction = "none";
-    let drawing = false, path = [], line = null;
+    let drawing = false, path = [], line = null, bx = null; // bx: なぞった範囲(画面px)。ちょん触りは囲みにしない
     const toLL = (cx, cy) => map.containerPointToLatLng(hkContainerPoint(container, cx, cy)); // v9.443: 回転補正
     const begin = (cx, cy) => {
-      drawing = true; path = [];
+      drawing = true; path = []; bx = { x0: cx, x1: cx, y0: cy, y1: cy };
       const p = toLL(cx, cy); path.push([p.lat, p.lng]);
       if (line) { try { map.removeLayer(line); } catch (e) {} }
       line = L.polyline(path, { color: "#22c55e", weight: 3, interactive: false }).addTo(map);
@@ -12261,6 +12265,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     const moveTo = (cx, cy, ev) => {
       if (!drawing) return;
       if (ev && ev.cancelable) ev.preventDefault();
+      if (bx) { bx.x0 = Math.min(bx.x0, cx); bx.x1 = Math.max(bx.x1, cx); bx.y0 = Math.min(bx.y0, cy); bx.y1 = Math.max(bx.y1, cy); }
       const p = toLL(cx, cy); path.push([p.lat, p.lng]);
       if (line) line.setLatLngs(path);
     };
@@ -12268,7 +12273,8 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       if (!drawing) return;
       drawing = false;
       if (line) { try { map.removeLayer(line); } catch (e) {} line = null; }
-      if (path.length >= 3 && onRouteLassoRef.current) onRouteLassoRef.current(path.slice());
+      const _big = bx && Math.max(bx.x1 - bx.x0, bx.y1 - bx.y0) >= 60;
+      if (_big && path.length >= 3 && onRouteLassoRef.current) onRouteLassoRef.current(path.slice());
     };
     const onTS = e => { if (e.touches && e.touches.length === 1) begin(e.touches[0].clientX, e.touches[0].clientY); };
     const onTM = e => { if (e.touches && e.touches.length === 1) moveTo(e.touches[0].clientX, e.touches[0].clientY, e); };
@@ -12293,7 +12299,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       container.removeEventListener("mousemove", onMM);
       container.removeEventListener("mouseup", end);
     };
-  }, [routeOverlay && routeOverlay.mode]);
+  }, [routeOverlay && routeOverlay.mode, !!(routeOverlay && routeOverlay.lassoDraw)]);
 
   // 🆕 v9.51: ルート確定時に全体が見えるよう fitBounds
   React.useEffect(() => {
@@ -12393,7 +12399,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   //   ドラッグ＝新規ピン登録 になってしまっていた。修正モード中は登録自体を止めて競合を解消する。
   const editingActive = !!(editPin && typeof editPin.lat === "number" && typeof editPin.lng === "number");
   // 🆕 v9.100: なぞって囲むモード中は、長押し新規ピン登録を無効化（なぞり描きを優先）
-  const lassoModeActive = !!(routeOverlay && routeOverlay.mode === "lasso" && onRouteLasso);
+  const lassoModeActive = !!(routeOverlay && routeOverlay.mode === "lasso" && routeOverlay.lassoDraw && onRouteLasso);
   // 🆕 v8.127→v8.129: 地図長押しでピン立て
   //   - PC: 右クリック（contextmenu）
   //   - モバイル: 自前で touchstart/touchend を計測して 700ms 以上を長押し判定
@@ -25354,7 +25360,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.91: ルートを localStorage に保存し、更新/リロードしても継続できるように
   const ROUTE_STATE_KEY = "hikari_route_state";
   // 🆕 v9.414: optimize=true なら「スタート(現在地)→…→ゴール」の効率順に自動で並べ替える
-  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, lasso: null, optimize: true, roundTrip: false, home: null, homeManual: false };
+  const _routeDefault = { open: false, minimized: false, mode: "auto", pickIds: [], count: 10, endId: "", stops: [], targetIndex: 0, road: null, lasso: null, optimize: true, roundTrip: false, home: null, homeManual: false, lassoLocked: false };
   const [route, setRoute] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(ROUTE_STATE_KEY) || "null");
@@ -29635,10 +29641,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const home = route.roundTrip ? ((route.homeManual && route.home) ? route.home : { lat: currentLoc.lat, lng: currentLoc.lng }) : null;
               const stops = routeBuildOrder({ lat: currentLoc.lat, lng: currentLoc.lng }, within, 999, "", home);
               routeRoadKeyRef.current = "";
-              setRoute(prev => ({ ...prev, open: true, minimized: false, mode: "lasso", pickIds: [], endId: "", stops, targetIndex: 0, road: null, lasso: poly, home }));
+              setRoute(prev => ({ ...prev, open: true, minimized: false, mode: "lasso", pickIds: [], endId: "", stops, targetIndex: 0, road: null, lasso: poly, home, lassoLocked: stops.length > 0 }));
               setRouteSel([]); setRouteCelebrate(false);
             };
-            const routeClearLasso = () => setRoute(prev => ({ ...prev, mode: "lasso", stops: [], lasso: null, targetIndex: 0, road: null }));
+            const routeClearLasso = () => setRoute(prev => ({ ...prev, mode: "lasso", stops: [], lasso: null, targetIndex: 0, road: null, lassoLocked: false }));
+            // 🆕 v9.616: 確定した囲みをやり直す（今のルートは新しく囲むまで残す）。地図を広く見られるよう折りたたむ
+            const routeRedrawLasso = () => setRoute(prev => ({ ...prev, lassoLocked: false, minimized: true }));
             // 🆕 v9.604: 「🔁 出発地点に戻る」のオン/オフ。今のルートをそのまま並べ直す
             const routeToggleRoundTrip = () => {
               const next = !route.roundTrip;
@@ -29678,7 +29686,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             const routeStartHomePick = () => { setRouteHomePicking(true); setRoute(r => ({ ...r, minimized: true, big: false })); };
             const routeSetMode = (m) => {
               if (m === "auto") routeRecompute(route.count, "");
-              else if (m === "lasso") setRoute(prev => ({ ...prev, open: true, minimized: true, mode: "lasso", pickIds: [], stops: [], lasso: null, targetIndex: 0, road: null })); // 折りたたんで地図を広く→なぞって囲む
+              else if (m === "lasso") setRoute(prev => ({ ...prev, open: true, minimized: true, mode: "lasso", pickIds: [], stops: [], lasso: null, targetIndex: 0, road: null, lassoLocked: false })); // 折りたたんで地図を広く→なぞって囲む
               else routeBuildFromPick([], true); // 選択モードは折りたたみで開始（地図を広く）
             };
             // 🆕 v9.53: ルート停留所の複数選択 → 一括削除
@@ -30534,6 +30542,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         pickPins: route.mode === "pick" ? routeAllStops : [],
                         mode: route.mode,            // 🆕 v9.100
                         lasso: route.lasso || null,  // 🆕 v9.100
+                        lassoDraw: route.mode === "lasso" && !route.lassoLocked && !routeHomePicking, // 🆕 v9.616: なぞりを受け付ける間だけ true
                         home: (route.roundTrip && route.home) ? route.home : null, // 🆕 v9.615: ゴール（帰る場所）
                         homeManual: !!route.homeManual,
                       } : null}
@@ -30780,7 +30789,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               </div>
                             ) : route.mode === "lasso" ? (
                               <div style={{ padding: "10px 16px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12, borderBottom: `1px solid ${C.borderDim}` }}>
-                                <span style={{ color: C.muted, fontSize: 11 }}>地図を<b style={{ color: "#22c55e" }}>指でなぞって囲む</b> → 囲んだ中のピンでルート（<b style={{ color: "#22c55e" }}>{route.stops.length}</b>件）</span>
+                                {route.lassoLocked ? (
+                                  <span style={{ color: C.text, fontSize: 12, fontWeight: 700, flex: 1, minWidth: 160 }}>✅ 囲みを確定しました（<b style={{ color: "#22c55e" }}>{route.stops.length}</b>件）<br /><span style={{ color: C.muted, fontSize: 11, fontWeight: 400 }}>地図を動かしたり触ったりしても消えません</span></span>
+                                ) : (
+                                  <span style={{ color: C.muted, fontSize: 11 }}>地図を<b style={{ color: "#22c55e" }}>指でなぞって囲む</b> → 囲んだ中のピンでルート（<b style={{ color: "#22c55e" }}>{route.stops.length}</b>件）</span>
+                                )}
+                                {route.lassoLocked && <button onClick={routeRedrawLasso} style={{ background: "#22c55e", color: "#fff", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✏️ 囲み直す</button>}
                                 {route.lasso && <button onClick={routeClearLasso} style={{ background: C.inset, color: C.muted, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>囲みをクリア</button>}
                               </div>
                             ) : (
@@ -30918,6 +30932,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           }}>
                             <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                               {(() => {
+                                if (route.mode === "lasso" && !route.lassoLocked) return route.stops.length > 0 ? `✏️ なぞって囲み直してください（今は${route.stops.length}件・タップで一覧）` : `✏️ 地図を指でなぞって囲む（タップで一覧）`;
                                 if (route.mode === "pick") {
                                   return route.pickIds.length === 0 ? `👆 地図のピンをタップして選ぶ（タップで一覧）` : `👆 選択中 ${route.pickIds.length}件（タップで一覧・ナビ）`;
                                 }
