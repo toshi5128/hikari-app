@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-02-v9.632";
+const APP_VERSION = "2026-11-02-v9.633";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -600,9 +600,47 @@ function canViewMoney(user) {
 
 // 🆕 v9.177: カレンダー予定の色を「担当者カラー」で決める（誰の予定か一目で分かる）。担当不明は種別色にフォールバック。
 function calMemberColor(e) {
+  if (e && e.userColor) return e.userColor; // 🆕 v9.633: 予定ごとに選んだ色があればそれを優先（Googleカレンダーの「色」）
   const a = (e && e.assignees && e.assignees[0]) || (e && e.assignee) || "";
   return MEMBER_COLORS[a] || (e && e.color) || "#64748b";
 }
+// 🆕 v9.633: 繰り返し予定（毎日・平日・毎週・毎月・毎年）。ds(YYYY-MM-DD) がその予定の「回」に当たるか
+const CAL_REPEAT_OPTIONS = [["", "繰り返さない"], ["daily", "毎日"], ["weekdays", "平日（月〜金）"], ["weekly", "毎週"], ["monthly", "毎月"], ["yearly", "毎年"]];
+function calRepeatHits(ev, ds) {
+  if (!ev || !ev.repeat || !ev.date || !ds) return false;
+  if (ds < ev.date) return false;
+  if (ev.repeatUntil && ds > ev.repeatUntil) return false;
+  if ((ev.exdates || []).includes(ds)) return false;
+  const a = new Date(ev.date + "T00:00:00"), b = new Date(ds + "T00:00:00");
+  if (isNaN(a.getTime()) || isNaN(b.getTime())) return false;
+  switch (ev.repeat) {
+    case "daily": return true;
+    case "weekdays": { const w = b.getDay(); return w >= 1 && w <= 5; }
+    case "weekly": return a.getDay() === b.getDay();
+    case "monthly": return a.getDate() === b.getDate();
+    case "yearly": return a.getDate() === b.getDate() && a.getMonth() === b.getMonth();
+    default: return false;
+  }
+}
+function calRepeatLabel(ev) {
+  if (!ev || !ev.repeat || !ev.date) return "";
+  const a = new Date(ev.date + "T00:00:00"), W = "日月火水木金土";
+  let s = ev.repeat === "weekly" ? `毎週${W[a.getDay()]}曜日`
+    : ev.repeat === "monthly" ? `毎月${a.getDate()}日`
+    : ev.repeat === "yearly" ? `毎年${a.getMonth() + 1}月${a.getDate()}日`
+    : ((CAL_REPEAT_OPTIONS.find(o => o[0] === ev.repeat) || [])[1] || "");
+  if (ev.repeatUntil) s += `（${ev.repeatUntil}まで）`;
+  return s;
+}
+// YYYY-MM-DD を n 日ずらす
+function calShiftDate(ds, n) {
+  const d = new Date(ds + "T00:00:00"); if (isNaN(d.getTime())) return ds;
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+// 予定ごとに選べる色（Googleカレンダーの色に近い並び）
+const CAL_EVENT_COLORS = [["#d50000", "トマト"], ["#e67c73", "フラミンゴ"], ["#f4511e", "ミカン"], ["#e6a800", "バナナ"], ["#33b679", "セージ"], ["#0b8043", "バジル"], ["#039be5", "ピーコック"], ["#3f51b5", "ブルーベリー"], ["#7986cb", "ラベンダー"], ["#8e24aa", "ブドウ"], ["#616161", "グラファイト"]];
+
 // 予定の主担当名（ラベル「担当 ◯◯」用）
 function calMemberName(e) {
   return (e && e.assignees && e.assignees[0]) || (e && e.assignee) || "";
@@ -8903,6 +8941,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.633", date: "2026-11-02", title: "カレンダーがGoogleカレンダーと同じように使えるように",
+    body: "①月表示のマスに予定名がそのまま出ます。②表示を「日・3日・週・月・一覧」から選べます（日と3日は時間の目盛りつき。空いている時間を押すとその時間で予定を追加、今の時刻に赤い線）。③自分の予定を長押しすると、つかんで別の時間・別の日へ動かせます。④「繰り返し」（毎日・平日・毎週・毎月・毎年）が入れられます。変える・消すときは「この回だけ／これ以降／すべて」を選べます。⑤🔍で予定を検索。⑥予定ごとに色を選べます。⑦予定の詳細から「コピーして新しい予定」「Googleカレンダーに入れる」、場所を押すと地図が開きます。⑧左右にスワイプで前後の月・日へ。",
+    where: "ホームのカレンダー" },
   { v: "9.632", date: "2026-11-02", title: "カレンダーがスマホで読みやすくなりました",
     body: "①月表示：日付を押すと、カレンダーのすぐ下にその日の予定が「時間・予定名・担当」で全部並びます（同じ日をもう一度押すと、今までの時間割が開きます）。マスの中は担当者の色の点と件数で、どの日が忙しいかがひと目で分かります。②週表示：1日1行の縦の一覧になり、予定名が最後まで読めます。③予定は濃い色の札に白い文字でくっきり。④「👤 自分だけ」を押すと自分の予定だけになります（もう一度押すと全員に戻ります）。",
     where: "ホームのカレンダー" },
@@ -13883,7 +13924,9 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const [tlSel, setTlSel] = useState(null); // 🆕 v9.180: タイムラインの選択枠 {start,end}（タップで配置→つまみ調整→再タップで作成）
   const [tlResize, setTlResize] = useState(null); // "start" | "end" ドラッグ中の端
   const tlGridRef = React.useRef(null);
-  const [calMode, setCalMode] = useState("month"); // "month" | "week"
+  // 🆕 v9.633: "day" | "3day" | "week" | "month" | "list"。最後に見ていた表示をこの端末に覚えておく（Googleカレンダーと同じ）
+  const [calMode, _setCalMode] = useState(() => { try { const m = localStorage.getItem("hikari_cal_mode"); return ["day", "3day", "week", "month", "list"].includes(m) ? m : "month"; } catch (e) { return "month"; } });
+  const setCalMode = m => { _setCalMode(m); try { localStorage.setItem("hikari_cal_mode", m); } catch (e) {} };
   const [calCursor, setCalCursor] = useState(() => new Date());
   const [calSelectedDate, setCalSelectedDate] = useState(today);
   React.useEffect(() => { setTlSel(null); setTlResize(null); }, [calSelectedDate]); // 🆕 v9.181: 日付切替で選択枠をクリア（calSelectedDate宣言後に配置）
@@ -13901,7 +13944,9 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   const [showEventForm, setShowEventForm] = useState(false);
   const [editingEvent, setEditingEvent] = useState(null);
   const [eventDetail, setEventDetail] = useState(null); // 🆕 v9.137: 予定の詳細（読むだけ）ポップアップ対象 { e }
-  const eventEmpty = { title: "", date: today, endDate: "", time: "", endTime: "", allDay: false, location: "", memo: "", assignees: [], reminderMinutes: 0, private: false };
+  const eventEmpty = { title: "", date: today, endDate: "", time: "", endTime: "", allDay: false, location: "", memo: "", assignees: [], reminderMinutes: 0, private: false, repeat: "", repeatUntil: "", color: "" };
+  const [editOccDate, setEditOccDate] = useState(null); // 🆕 v9.633: 繰り返し予定のどの回を編集中か
+  const [editScope, setEditScope] = useState("one");    // 🆕 v9.633: "one"=この回だけ / "after"=これ以降 / "all"=すべて
   const [eventForm, setEventForm] = useState(eventEmpty);
   const [todoInput, setTodoInput] = useState(""); // 🆕 v9.73: ToDo入力
   const [showAddChoice, setShowAddChoice] = useState(false); // 🆕 v9.75: 追加時の予定/ToDo選択シート
@@ -14064,7 +14109,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
 
   const openNewEvent = (dateStr) => {
     setEventForm({ ...eventEmpty, date: dateStr || calSelectedDate });
-    setEditingEvent(null);
+    setEditingEvent(null); setEditOccDate(null);
     setShowEventForm(true);
   };
   // 🆕 v9.179: タイムラインのタップ/ドラッグから、開始〜終了の時刻入りで新規予定フォームを開く
@@ -14073,7 +14118,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     const s = Math.max(0, Math.min(1425, startMin));
     const e2 = Math.max(s + 15, Math.min(1440, endMin));
     setEventForm({ ...eventEmpty, date: dateStr || calSelectedDate, time: minToHHMM(s), endTime: minToHHMM(e2), allDay: false });
-    setEditingEvent(null);
+    setEditingEvent(null); setEditOccDate(null);
     setShowEventForm(true);
   };
 
@@ -14307,7 +14352,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     return null;
   };
 
-  const openEditEvent = (ev) => {
+  const openEditEvent = (ev, occDate) => {
     if (!canEdit(ev)) {
       const assigneeLabel = (ev.assignees || []).length > 0 ? ev.assignees.join("・") : (ev.createdBy || "他のメンバー");
       alert(`⚠️ 編集権限がありません\n\nこの予定の担当者/作成者は「${assigneeLabel}」です。\n管理者（${adminMember}）または担当者本人のみ編集できます。`);
@@ -14326,7 +14371,11 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       reminderMinutes: ev.reminderMinutes || 0,
       private: !!ev.private,  // 🆕 v9.116: 非公開フラグ
       endDate: ev.endDate || "",  // 🆕 v9.118: 終了日（複数日予定）
+      repeat: ev.repeat || "", repeatUntil: ev.repeatUntil || "", color: ev.color || "", // 🆕 v9.633
     });
+    // 🆕 v9.633: 繰り返し予定の「ある回」を開いたときは、その回の日付を出し、変更範囲（この回だけ／これ以降／すべて）を選ばせる
+    if (ev.repeat && occDate) { setEventForm(p => ({ ...p, date: occDate })); setEditOccDate(occDate); setEditScope("one"); }
+    else setEditOccDate(null);
     setEditingEvent(ev);
     setShowEventForm(true);
   };
@@ -14338,6 +14387,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     if (eventForm.endDate && eventForm.endDate < eventForm.date) { alert("終了日は開始日（日付）以降にしてください"); return; }
     // 🆕 v9.173: 同日内で終了時刻が開始時刻より前ならエラー（複数日にまたがる場合は除く）
     if (!eventForm.allDay && !eventForm.endDate && eventForm.time && eventForm.endTime && eventForm.endTime < eventForm.time) { alert("終了時刻は開始時刻より後にしてください"); return; }
+    if (eventForm.repeat && eventForm.repeatUntil && eventForm.repeatUntil < eventForm.date) { alert("繰り返しの終わりの日は、開始日以降にしてください"); return; }
     // 保険：編集時の権限チェック
     if (editingEvent && !canEdit(editingEvent)) {
       alert("⚠️ 編集権限がありません");
@@ -14362,15 +14412,48 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       assignees,
       reminderMinutes: eventForm.reminderMinutes || 0,
       private: !!eventForm.private,  // 🆕 v9.116: 非公開（作成者本人のみ表示）
-      endDate: (eventForm.endDate && eventForm.endDate > eventForm.date) ? eventForm.endDate : "",  // 🆕 v9.118: 複数日予定（開始日より後のときだけ保持）
+      endDate: (!eventForm.repeat && eventForm.endDate && eventForm.endDate > eventForm.date) ? eventForm.endDate : "",  // 🆕 v9.118: 複数日予定（開始日より後のときだけ保持）／繰り返しとは併用しない
+      repeat: eventForm.repeat || "",                                   // 🆕 v9.633: 繰り返し
+      repeatUntil: eventForm.repeat ? (eventForm.repeatUntil || "") : "", // 🆕 v9.633: 繰り返しの終わり（空＝ずっと）
+      exdates: editingEvent?.exdates || [],                             // 🆕 v9.633: 繰り返しのうち消した回
+      color: eventForm.color || "",                                     // 🆕 v9.633: 予定の色（空＝担当者の色）
       createdAt: editingEvent?.createdAt || new Date().toISOString(),
       createdBy: editingEvent?.createdBy || me,
       notified: editingEvent?.notified || false,
       newNotifiedTo: editingEvent?.newNotifiedTo || initialNotifiedTo,
     };
+    // 🆕 v9.633: 繰り返し予定の「ある回」を編集したとき（この回だけ／これ以降／すべて）
+    const _occ = (editingEvent && editingEvent.repeat && editOccDate) ? editOccDate : null;
+    if (_occ && editScope === "one") {
+      const single = { ...item, id: Date.now(), repeat: "", repeatUntil: "", exdates: [], createdAt: new Date().toISOString(), notified: false };
+      setData(d => {
+        const next = { ...d, customEvents: [...(d.customEvents || []).map(e => e.id === editingEvent.id ? { ...e, exdates: [...new Set([...(e.exdates || []), _occ])] } : e), single] };
+        if (item.private) return next;
+        return appendLogAndNotify(next, "update", "event", `予定「${single.title}」の${_occ}の回だけ変更`, single, { skipPush: true });
+      });
+      setShowEventForm(false); setEditingEvent(null); setEditOccDate(null);
+      return;
+    }
+    if (_occ && editScope === "after" && _occ > editingEvent.date) {
+      const newSeries = { ...item, id: Date.now(), exdates: (editingEvent.exdates || []).filter(x => x >= item.date), createdAt: new Date().toISOString() };
+      setData(d => {
+        const next = { ...d, customEvents: [...(d.customEvents || []).map(e => e.id === editingEvent.id ? { ...e, repeatUntil: calShiftDate(_occ, -1) } : e), newSeries] };
+        if (item.private) return next;
+        return appendLogAndNotify(next, "update", "event", `予定「${newSeries.title}」の${_occ}以降を変更`, newSeries, { skipPush: true });
+      });
+      setShowEventForm(false); setEditingEvent(null); setEditOccDate(null);
+      return;
+    }
+    if (_occ) {
+      // すべての回：開いた回からずらした日数だけ、繰り返しの開始日もずらす
+      const diff = Math.round((new Date(item.date + "T00:00:00") - new Date(_occ + "T00:00:00")) / 86400000);
+      item.date = calShiftDate(editingEvent.date, diff);
+      if (item.repeatUntil && item.repeatUntil < item.date) item.repeatUntil = "";
+    }
+    setEditOccDate(null);
     setData(d => {
       const next = { ...d, customEvents: editingEvent
-        ? (d.customEvents || []).map(e => e.id === editingEvent.id ? item : e)
+        ? (d.customEvents || []).map(e => e.id === editingEvent.id ? { ...e, ...item } : e) // 🆕 v9.633: やり取り(コメント)など他の項目を消さない
         : [...(d.customEvents || []), item] };
       // 🆕 v9.116: 非公開予定は共有の活動ログ・通知に出さない（本人だけのもの）
       if (item.private) return next;
@@ -14403,9 +14486,35 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     }
   };
 
-  const handleDeleteEvent = (id) => {
+  const handleDeleteEvent = (id, occDate, scope) => {
     const target = (data.customEvents || []).find(e => e.id === id);
     if (!target) return;
+    // 🆕 v9.633: 繰り返し予定は「この回だけ／これ以降／すべて」を選んで消す
+    if (target.repeat && occDate && canEdit(target)) {
+      let sc = scope;
+      if (!sc) {
+        if (window.confirm(`「${target.title}」の ${occDate} の回だけ削除しますか？\n\nOK＝この回だけ削除\nキャンセル＝ほかの選び方へ`)) sc = "one";
+        else if (window.confirm(`繰り返しの予定「${target.title}」を、すべての回まとめて削除しますか？`)) sc = "all";
+        else return;
+      } else if (sc === "one") {
+        if (!window.confirm(`「${target.title}」の ${occDate} の回だけ削除しますか？`)) return;
+      } else if (sc === "after") {
+        if (!window.confirm(`「${target.title}」の ${occDate} 以降の回を削除しますか？\n（それより前の回は残ります）`)) return;
+      } else if (sc === "all") {
+        if (!window.confirm(`繰り返しの予定「${target.title}」を、すべての回まとめて削除しますか？`)) return;
+      }
+      if (sc === "one") {
+        setData(d => appendLogAndNotify({ ...d, customEvents: (d.customEvents || []).map(e => e.id === id ? { ...e, exdates: [...new Set([...(e.exdates || []), occDate])] } : e) }, "update", "event", `予定「${target.title}」の${occDate}の回を削除`, target, { skipPush: true }));
+        return;
+      }
+      if (sc === "after" && occDate > target.date) {
+        setData(d => appendLogAndNotify({ ...d, customEvents: (d.customEvents || []).map(e => e.id === id ? { ...e, repeatUntil: calShiftDate(occDate, -1) } : e) }, "update", "event", `予定「${target.title}」の${occDate}以降を削除`, target, { skipPush: true }));
+        return;
+      }
+      // "all"（または最初の回から「これ以降」）＝下の通常の削除へ。確認はもう済んでいるので出さない
+      setData(d => appendLogAndNotify({ ...d, customEvents: (d.customEvents || []).filter(e => e.id !== id) }, "delete", "event", `予定「${target.title}」（繰り返し）を削除`, target));
+      return;
+    }
     if (!canEdit(target)) {
       const assigneeLabel = (target.assignees || []).length > 0 ? target.assignees.join("・") : (target.createdBy || "他のメンバー");
       alert(`⚠️ 削除権限がありません\n\nこの予定の担当者/作成者は「${assigneeLabel}」です。\n管理者（${adminMember}）または担当者本人のみ削除できます。`);
@@ -14436,6 +14545,28 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       if (Notification.permission !== "granted") return;
       const now = new Date();
       (data.customEvents || []).forEach(ev => {
+        // 🆕 v9.633: 繰り返し予定は「今日・明日の回」ごとに通知。通知済みはこの端末にだけ記録（みんなのデータは書き換えない）
+        if (ev.repeat) {
+          if (!ev.time || !ev.reminderMinutes) return;
+          const me = getCurrentUser();
+          const asg = ev.assignees || (ev.assignee ? [ev.assignee] : []);
+          if (me && asg.length > 0 && !isAssignedTo(asg, me)) return;
+          if (ev.private && ev.createdBy && ev.createdBy !== me) return;
+          const tds = now.toLocaleDateString("sv-SE");
+          [tds, calShiftDate(tds, 1)].forEach(ds => {
+            if (!calRepeatHits(ev, ds)) return;
+            const [h, m] = ev.time.split(":").map(Number);
+            const evTime = new Date(ds + "T00:00:00"); evTime.setHours(h || 0, m || 0, 0, 0);
+            const remindAt = new Date(evTime.getTime() - ev.reminderMinutes * 60000);
+            if (!(remindAt <= now && now < evTime)) return;
+            const key = `hikari_rep_notified_${ev.id}_${ds}`;
+            try { if (localStorage.getItem(key)) return; localStorage.setItem(key, "1"); } catch (er) { return; }
+            const title = `📅 ${ev.title}`, body = `${ev.time}〜${ev.location ? " @" + ev.location : ""}${ev.memo ? "\n" + ev.memo : ""}`, tag = `hikari-event-${ev.id}-${ds}`;
+            if (navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({ type: 'SHOW_NOTIFICATION', title, body, tag });
+            else if (navigator.serviceWorker) navigator.serviceWorker.ready.then(reg => reg.showNotification(title, { body, tag, icon: './icon-192.png' })).catch(() => {});
+          });
+          return;
+        }
         if (ev.notified) return;
         if (!ev.time || !ev.reminderMinutes) return;
         const [h, m] = (ev.time || "00:00").split(":").map(Number);
@@ -14591,7 +14722,16 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       const startD = ev.date;
       const endD = (ev.endDate && ev.endDate > ev.date) ? ev.endDate : ev.date;
       const dayList = [];
-      if (startD && endD !== startD) {
+      if (ev.repeat && startD) {
+        // 🆕 v9.633: 繰り返し予定は、約1年前〜2年先の範囲で「回」に当たる日を全部並べる
+        const lo = calShiftDate(today, -400), hi = calShiftDate(today, 730);
+        let ds = startD > lo ? startD : lo, guard = 0;
+        while (ds <= hi && guard < 1200) {
+          if (ev.repeatUntil && ds > ev.repeatUntil) break;
+          if (calRepeatHits(ev, ds)) dayList.push(ds);
+          ds = calShiftDate(ds, 1); guard++;
+        }
+      } else if (startD && endD !== startD) {
         const cur = new Date(startD + "T00:00:00");
         const end = new Date(endD + "T00:00:00");
         let guard = 0;
@@ -14603,11 +14743,13 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       } else if (startD) {
         dayList.push(startD);
       }
-      const isMulti = dayList.length > 1;
+      const isMulti = !ev.repeat && dayList.length > 1;
       const rangeLabel = isMulti ? `${startD.slice(5).replace("-", "/")}〜${endD.slice(5).replace("-", "/")}` : "";
       dayList.forEach((ds, di) => {
         list.push({
-          date: ds, type: "custom", icon: isMulti ? "📆" : (ev.allDay ? "📅" : "📌"), color: "#f97316",
+          date: ds, type: "custom", icon: isMulti ? "📆" : ev.repeat ? "🔁" : (ev.allDay ? "📅" : "📌"), color: "#f97316",
+          userColor: ev.color || "", // 🆕 v9.633: 予定ごとの色
+          isRepeat: !!ev.repeat,     // 🆕 v9.633: 繰り返し予定の1回分
           title: ev.title,
           sub: `${isMulti ? `📆 ${rangeLabel}（${di + 1}/${dayList.length}日目）` : (ev.allDay ? "終日" : (ev.time ? ev.time + "〜" + (ev.endTime || "") : ""))}${ev.location ? ((isMulti || ev.allDay || ev.time) ? " " : "") + "@" + ev.location : ""}${ev.memo ? " | " + ev.memo : ""}`,
           assignee: assignees[0] || "", // 後方互換
@@ -14657,7 +14799,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     const byId = {};
     calFilteredEvents.forEach(e => {
       if (!e.multiDay || !e.isCustom) return;
-      if (!byId[e.rawId]) byId[e.rawId] = { id: e.rawId, title: e.title, color: e.color, dates: [] };
+      if (!byId[e.rawId]) byId[e.rawId] = { id: e.rawId, title: e.title, color: e.color, userColor: e.userColor || "", assignees: e.assignees || [], assignee: e.assignee || "", dates: [] };
       byId[e.rawId].dates.push(e.date);
     });
     const evs = Object.values(byId).map(g => {
@@ -14729,7 +14871,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
   // 予定1件を「濃い色の札＋白い文字」で1行に出す。押すと予定の詳細が開く
   const calEventRow = (e, key, dateStr) => (
     <button key={key} type="button"
-      onClick={ev => { ev.stopPropagation(); if (dateStr) setCalSelectedDate(dateStr); setEventDetail({ e }); }}
+      onClick={ev => { ev.stopPropagation(); if (dateStr && calMode !== "list") setCalSelectedDate(dateStr); setEventDetail({ e }); }}
       className={isDealEvent(e) ? "hk-deal-glow" : ""}
       style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", background: calMemberColor(e), color: "#fff", border: "none", borderRadius: 8, padding: "7px 9px", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 1px 3px rgba(0,0,0,.25)", textShadow: "0 1px 1px rgba(0,0,0,.25)" }}>
       <span style={{ flexShrink: 0, minWidth: 40, fontSize: 12, fontWeight: 800 }}>{(e.isCustom && e.allDay) ? "終日" : (e.time || "")}</span>
@@ -14748,6 +14890,232 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
     }
     calMonthWeekLanes.push(mx);
   }
+
+  // ===== 🆕 v9.633: Googleカレンダーに近づける（日・3日・一覧表示／長押しで予定を動かす／検索／スワイプ） =====
+  const calShortTitle = e => { const t = String(e.title || ""); return (e.time && t.startsWith(e.time)) ? t.slice(e.time.length).trim() : t; };
+  const _calParse = t => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ""); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+  const CAL_HP = 48; // 時間割の1時間の高さ(px)
+  const calGridScrollRef = useRef(null);
+  const calDragRef = useRef(null);          // 長押し中/ドラッグ中の状態（描画しない値）
+  const calJustDraggedRef = useRef(0);      // ドラッグ直後の「押した」扱いを無視するための時刻
+  const [calDrag, setCalDrag] = useState(null); // 画面に出す移動先 { rawId, kind, date, start, dur, title, color }
+  const [calSearchOpen, setCalSearchOpen] = useState(false);
+  const [calSearchQ, setCalSearchQ] = useState("");
+  const [calListDays, setCalListDays] = useState(60);
+  const calBodySwipeRef = useRef(null);
+  // ドラッグ中は画面のスクロールを止める（指で予定を運べるように）
+  useEffect(() => {
+    const h = ev => { const st = calDragRef.current; if (st && st.mode === "drag") ev.preventDefault(); };
+    document.addEventListener("touchmove", h, { passive: false });
+    return () => document.removeEventListener("touchmove", h);
+  }, []);
+  // 動かせる予定＝自分で入れた（編集できる）1日だけの予定。繰り返し・数日続く予定・物件などと連動した予定は動かさない
+  const calCanMove = e => {
+    if (!e || !e.isCustom || e.isRepeat || e.multiDay) return false;
+    const ce = (data.customEvents || []).find(x => x.id === e.rawId);
+    return !!(ce && canEdit(ce));
+  };
+  const calMoveEvent = (rawId, newDate, newStartMin) => {
+    const ev0 = (data.customEvents || []).find(x => x.id === rawId); if (!ev0) return;
+    const upd = { date: newDate, notified: false };
+    if (newStartMin != null && !ev0.allDay && ev0.time) {
+      const s0 = _calParse(ev0.time), e0 = _calParse(ev0.endTime);
+      const ns = Math.max(0, Math.min(1440 - 15, newStartMin));
+      upd.time = minToHHMM(ns);
+      if (s0 != null && e0 != null && e0 > s0) upd.endTime = minToHHMM(Math.min(1439, ns + (e0 - s0)));
+    }
+    if (upd.date === ev0.date && (upd.time || ev0.time) === ev0.time) return;
+    setData(d => {
+      const next = { ...d, customEvents: (d.customEvents || []).map(x => x.id === rawId ? { ...x, ...upd } : x) };
+      if (ev0.private) return next;
+      return appendLogAndNotify(next, "update", "event", `予定「${ev0.title}」を ${upd.date}${upd.time ? " " + upd.time : ""} に移動`, { ...ev0, ...upd }, { skipPush: true });
+    });
+  };
+  const calPressStart = (ev, e, kind, extra) => {
+    if (!calCanMove(e)) return;
+    if (ev.pointerType === "mouse" && ev.button !== 0) return;
+    const st = { e, kind, sx: ev.clientX, sy: ev.clientY, mode: "pending", pointerId: ev.pointerId, el: ev.currentTarget,
+      grabOffMin: (extra && extra.grabOffMin) || 0, dur: (extra && extra.dur) || 60, origStart: extra ? extra.start : null, date: e.date, start: extra ? extra.start : null };
+    st.timer = setTimeout(() => {
+      if (calDragRef.current !== st) return;
+      st.mode = "drag";
+      try { st.el.setPointerCapture(st.pointerId); } catch (_e) {}
+      try { navigator.vibrate && navigator.vibrate(25); } catch (_e) {}
+      setCalDrag({ rawId: e.rawId, kind, date: st.date, start: st.start, dur: st.dur, title: calShortTitle(e), color: calMemberColor(e) });
+    }, 450);
+    calDragRef.current = st;
+  };
+  const calPressMove = ev => {
+    const st = calDragRef.current; if (!st) return;
+    if (st.mode === "pending") {
+      if (Math.abs(ev.clientX - st.sx) > 8 || Math.abs(ev.clientY - st.sy) > 8) { clearTimeout(st.timer); calDragRef.current = null; }
+      return;
+    }
+    const el = document.elementFromPoint(ev.clientX, ev.clientY);
+    const cell = el && el.closest ? el.closest("[data-caldate]") : null;
+    if (!cell) return;
+    st.date = cell.getAttribute("data-caldate");
+    if (st.kind === "time") {
+      const r = cell.getBoundingClientRect();
+      let m = ((ev.clientY - r.top) / CAL_HP) * 60 - st.grabOffMin;
+      st.start = Math.max(0, Math.min(1440 - 15, Math.round(m / 15) * 15));
+      const sc = calGridScrollRef.current;
+      if (sc) { const sr = sc.getBoundingClientRect(); if (ev.clientY < sr.top + 36) sc.scrollTop -= 14; else if (ev.clientY > sr.bottom - 36) sc.scrollTop += 14; }
+    }
+    setCalDrag(d => d ? { ...d, date: st.date, start: st.start } : d);
+  };
+  const calPressEnd = ev => {
+    const st = calDragRef.current; calDragRef.current = null;
+    if (!st) return;
+    clearTimeout(st.timer);
+    if (st.mode !== "drag") return;
+    calJustDraggedRef.current = Date.now();
+    try { st.el.releasePointerCapture(st.pointerId); } catch (_e) {}
+    setCalDrag(null);
+    if (ev && ev.type === "pointercancel") return; // 途中で止まった時は動かさない
+    calMoveEvent(st.e.rawId, st.date, st.kind === "time" ? st.start : null);
+  };
+  const calWasDragged = () => Date.now() - calJustDraggedRef.current < 500;
+  const calDragProps = (e, kind, extraFn) => ({
+    onPointerDown: ev => calPressStart(ev, e, kind, extraFn ? extraFn(ev) : null),
+    onPointerMove: calPressMove, onPointerUp: calPressEnd, onPointerCancel: calPressEnd,
+    onContextMenu: ev => { if (calCanMove(e)) ev.preventDefault(); },
+  });
+  // 前へ／次へ（表示ごとに動く幅が違う）
+  const calNav = dir => {
+    if (calMode === "month") { const d = new Date(calCursor); d.setDate(1); d.setMonth(d.getMonth() + dir); setCalCursor(d); return; }
+    const step = calMode === "day" ? 1 : calMode === "3day" ? 3 : calMode === "week" ? 7 : 30;
+    if (calMode === "week") { const d = new Date(calCursor); d.setDate(d.getDate() + step * dir); setCalCursor(d); return; }
+    const ns = calShiftDate(calSelectedDate, step * dir);
+    setCalSelectedDate(ns); const dd = new Date(ns + "T00:00:00"); if (!isNaN(dd.getTime())) setCalCursor(dd);
+  };
+  // 左右スワイプで前後へ（Googleカレンダーと同じ）
+  const calSwipeProps = {
+    onTouchStart: ev => { const t = ev.touches[0]; calBodySwipeRef.current = { x: t.clientX, y: t.clientY }; },
+    onTouchEnd: ev => {
+      const s = calBodySwipeRef.current; calBodySwipeRef.current = null;
+      if (!s || calDragRef.current || calWasDragged() || calMode === "list") return;
+      const t = ev.changedTouches[0]; const dx = t.clientX - s.x, dy = t.clientY - s.y;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) calNav(dx < 0 ? 1 : -1);
+    },
+  };
+  // 日・3日表示を開いた時、今の時刻（今日以外は朝8時）が見える所までスクロール
+  useEffect(() => {
+    const sc = calGridScrollRef.current; if (!sc) return;
+    const days = calMode === "3day" ? [0, 1, 2].map(n => calShiftDate(calSelectedDate, n)) : [calSelectedDate];
+    const nd = new Date(); const nowMin = nd.getHours() * 60 + nd.getMinutes();
+    const target = days.includes(today) ? Math.max(0, nowMin - 90) : 8 * 60 - 30;
+    sc.scrollTop = target / 60 * CAL_HP;
+  }, [calMode, calSelectedDate]);
+  // 時間割（日・3日表示）
+  const renderCalTimeGrid = dayStrs => {
+    const GUT = 40;
+    const nd = new Date(); const nowMin = nd.getHours() * 60 + nd.getMinutes();
+    const cols = dayStrs.map(ds => {
+      const timed = [], allday = [];
+      calSortByTime(calEventsByDate[ds] || []).forEach(e => {
+        const s = e.allDay ? null : _calParse(e.time);
+        if (s == null) { allday.push(e); return; }
+        const en = _calParse(e.endTime);
+        timed.push({ e, start: s, end: (en != null && en > s) ? en : s + 60, lane: 0, lanes: 1 });
+      });
+      const sorted = timed.sort((a, b) => a.start - b.start || a.end - b.end);
+      let ci = 0;
+      while (ci < sorted.length) {
+        let cj = ci, cEnd = sorted[ci].end; const cl = [sorted[ci]];
+        while (cj + 1 < sorted.length && sorted[cj + 1].start < cEnd) { cj++; cl.push(sorted[cj]); cEnd = Math.max(cEnd, sorted[cj].end); }
+        const laneEnd = [];
+        cl.forEach(it => { let pl = false; for (let l = 0; l < laneEnd.length; l++) { if (laneEnd[l] <= it.start) { it.lane = l; laneEnd[l] = it.end; pl = true; break; } } if (!pl) { it.lane = laneEnd.length; laneEnd.push(it.end); } });
+        cl.forEach(it => { it.lanes = laneEnd.length; });
+        ci = cj + 1;
+      }
+      return { ds, timed: sorted, allday };
+    });
+    const anyAllday = cols.some(c => c.allday.length > 0);
+    const hourBg = `repeating-linear-gradient(to bottom, transparent 0, transparent ${CAL_HP - 1}px, ${C.borderDim} ${CAL_HP - 1}px, ${C.borderDim} ${CAL_HP}px)`;
+    return (
+      <div>
+        {/* 日付の見出し（押すとその日の「日」表示へ） */}
+        <div style={{ display: "flex", paddingLeft: GUT, borderBottom: `1px solid ${C.borderDim}`, background: C.bgDark }}>
+          {cols.map(({ ds }) => {
+            const d = new Date(ds + "T00:00:00"), dw = d.getDay(), hol = jpHolidayName(ds), isT = ds === today;
+            const col = (dw === 0 || hol) ? C.danger : dw === 6 ? C.accent : C.text;
+            return (
+              <button key={ds} type="button" onClick={() => { setCalSelectedDate(ds); if (dayStrs.length > 1) setCalMode("day"); }}
+                style={{ flex: 1, minWidth: 0, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "6px 2px", display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: col }}>{calDowJ[dw]}</span>
+                <span style={{ width: 32, height: 32, borderRadius: 16, display: "inline-flex", alignItems: "center", justifyContent: "center", background: isT ? C.accent : "transparent", color: isT ? "#fff" : col, fontSize: 17, fontWeight: 800 }}>{d.getDate()}</span>
+                {hol ? <span style={{ fontSize: 9, color: C.danger, fontWeight: 700, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{hol}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+        {/* 終日・時間なしの予定 */}
+        {anyAllday && (
+          <div style={{ display: "flex", borderBottom: `1px solid ${C.borderDim}` }}>
+            <div style={{ width: GUT, flexShrink: 0, fontSize: 9, color: C.muted, textAlign: "center", paddingTop: 6 }}>終日</div>
+            {cols.map(({ ds, allday }) => (
+              <div key={ds} style={{ flex: 1, minWidth: 0, padding: 3, display: "flex", flexDirection: "column", gap: 2, borderLeft: `1px solid ${C.borderDim}` }}>
+                {allday.map((e, k) => (
+                  <button key={k} type="button" onClick={() => { setCalSelectedDate(ds); setEventDetail({ e }); }} className={isDealEvent(e) ? "hk-deal-glow" : ""}
+                    style={{ background: calMemberColor(e), color: "#fff", border: "none", borderRadius: 4, padding: "3px 5px", fontSize: 11, fontWeight: 700, textAlign: "left", cursor: "pointer", fontFamily: "inherit", overflow: "hidden", whiteSpace: dayStrs.length > 1 ? "nowrap" : "normal", textOverflow: "ellipsis", wordBreak: "break-word" }}>{e.icon}{calShortTitle(e)}</button>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+        {/* 時間の目盛り（空いている所を押す＝その時間で新しい予定／予定を長押し＝つかんで動かす） */}
+        <div ref={calGridScrollRef} style={{ height: "62vh", overflowY: "auto", position: "relative", WebkitOverflowScrolling: "touch" }}>
+          <div style={{ position: "relative", height: 24 * CAL_HP, display: "flex" }}>
+            <div style={{ width: GUT, flexShrink: 0, position: "relative" }}>
+              {Array.from({ length: 24 }).map((_, h) => h === 0 ? null : (
+                <span key={h} style={{ position: "absolute", top: h * CAL_HP - 7, right: 5, fontSize: 10, color: C.muted }}>{h}時</span>
+              ))}
+            </div>
+            {cols.map(({ ds, timed }) => (
+              <div key={ds} data-caldate={ds}
+                onClick={ev => {
+                  if (calWasDragged() || (ev.target.closest && ev.target.closest("[data-evt]"))) return;
+                  const r = ev.currentTarget.getBoundingClientRect();
+                  const m = Math.max(0, Math.min(23, Math.floor((ev.clientY - r.top) / CAL_HP))) * 60;
+                  setCalSelectedDate(ds); openNewEventAt(ds, m, m + 60);
+                }}
+                style={{ flex: 1, minWidth: 0, position: "relative", borderLeft: `1px solid ${C.borderDim}`, background: hourBg, cursor: "pointer" }}>
+                {timed.map((it, k) => {
+                  const e = it.e, movable = calCanMove(e);
+                  const top = it.start / 60 * CAL_HP, hgt = Math.max((it.end - it.start) / 60 * CAL_HP - 2, 20);
+                  const isDragging = calDrag && calDrag.rawId === e.rawId && e.isCustom;
+                  return (
+                    <div key={k} data-evt="1" role="button" title={e.title}
+                      {...calDragProps(e, "time", ev => ({ grabOffMin: ((ev.clientY - ev.currentTarget.getBoundingClientRect().top) / CAL_HP) * 60, dur: it.end - it.start, start: it.start }))}
+                      onClick={ev => { ev.stopPropagation(); if (calWasDragged()) return; setCalSelectedDate(ds); setEventDetail({ e }); }}
+                      className={isDealEvent(e) ? "hk-deal-glow" : ""}
+                      style={{ position: "absolute", top, height: hgt, left: `calc(100% / ${it.lanes} * ${it.lane} + 1px)`, width: `calc(100% / ${it.lanes} - 3px)`, background: calMemberColor(e), color: "#fff", borderRadius: 6, padding: "2px 5px", overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,.35)", border: "1px solid rgba(255,255,255,.3)", boxSizing: "border-box", cursor: "pointer", opacity: isDragging ? 0.35 : 1, userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none", textShadow: "0 1px 1px rgba(0,0,0,.25)" }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, lineHeight: 1.2, wordBreak: "break-word" }}>{e.icon}{calShortTitle(e)}</div>
+                      <div style={{ fontSize: 10, opacity: 0.92, lineHeight: 1.2 }}>{e.time}{e.endTime ? `〜${e.endTime}` : ""}{dayStrs.length === 1 && calMemberName(e) ? `　${calMemberName(e)}` : ""}{dayStrs.length === 1 && e.location ? `　📍${e.location}` : ""}</div>
+                      {movable && dayStrs.length === 1 && hgt >= 44 ? <div style={{ fontSize: 9, opacity: 0.75 }}>長押しで動かせます</div> : null}
+                    </div>
+                  );
+                })}
+                {/* 今の時刻の赤い線 */}
+                {ds === today && (
+                  <div style={{ position: "absolute", left: 0, right: 0, top: nowMin / 60 * CAL_HP, height: 2, background: "#ea4335", zIndex: 3, pointerEvents: "none" }}>
+                    <div style={{ position: "absolute", left: -5, top: -4, width: 10, height: 10, borderRadius: "50%", background: "#ea4335" }} />
+                  </div>
+                )}
+                {/* 動かしている途中の予定（移動先） */}
+                {calDrag && calDrag.kind === "time" && calDrag.date === ds && calDrag.start != null && (
+                  <div style={{ position: "absolute", left: 1, right: 2, top: calDrag.start / 60 * CAL_HP, height: Math.max(calDrag.dur / 60 * CAL_HP - 2, 20), background: calDrag.color, color: "#fff", borderRadius: 6, padding: "2px 5px", boxShadow: "0 6px 18px rgba(0,0,0,.5)", border: "2px solid #fff", zIndex: 4, pointerEvents: "none", fontSize: 11, fontWeight: 800 }}>
+                    {minToHHMM(calDrag.start)} {calDrag.title}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // 🆕 v9.73: 個人ToDo（自分用・未完了は翌日繰り越し・シンプル）
   const _todoUser = getCurrentUser() || "未設定";
@@ -14900,37 +15268,41 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       <div style={{ background: C.cardBg, border: `2px solid ${C.muted + "aa"}`, boxShadow: "0 2px 8px rgba(0,0,0,.12)", borderRadius: 14, padding: 0, overflow: "hidden", position: "relative" }}>
         {/* ヘッダー部 */}
         <div style={{ padding: "14px 14px 10px", borderBottom: `1px solid ${C.borderDim}` }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8 }}>
-            <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>
-              {calMode === "month"
-                ? `${calCursor.getFullYear()}年 ${calCursor.getMonth()+1}月`
-                : `${calWeekDays[0].getFullYear()}年 ${calWeekDays[0].getMonth()+1}/${calWeekDays[0].getDate()}〜${calWeekDays[6].getMonth()+1}/${calWeekDays[6].getDate()}`}
-            </div>
-            <div style={{ display: "flex", background: C.inset, borderRadius: 8, padding: 2, border: `1px solid ${C.borderDim}` }}>
-              {[["month", "月"], ["week", "週"]].map(([key, label]) => (
-                <button key={key} onClick={() => setCalMode(key)} style={{
-                  background: calMode === key ? C.accent : "none", border: "none",
-                  color: calMode === key ? "#fff" : C.muted, borderRadius: 6,
-                  padding: "6px 14px", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit",
-                }}>{label}</button>
-              ))}
-            </div>
+          {/* 🆕 v9.633: 表示の切り替え（日・3日・週・月・一覧）＝Googleカレンダーと同じ5種類 */}
+          <div style={{ display: "flex", background: C.inset, borderRadius: 10, padding: 3, border: `1px solid ${C.borderDim}`, marginBottom: 10 }}>
+            {[["day", "日"], ["3day", "3日"], ["week", "週"], ["month", "月"], ["list", "一覧"]].map(([key, label]) => (
+              <button key={key} onClick={() => setCalMode(key)} style={{
+                flex: 1, background: calMode === key ? C.accent : "none", border: "none",
+                color: calMode === key ? "#fff" : C.muted, borderRadius: 8,
+                padding: "8px 0", cursor: "pointer", fontSize: 14, fontWeight: 800, fontFamily: "inherit",
+              }}>{label}</button>
+            ))}
           </div>
+          <div style={{ display: "flex", alignItems: "center", marginBottom: 10, gap: 8 }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: C.text, flex: 1, minWidth: 0 }}>
+              {(() => {
+                const sd = new Date(calSelectedDate + "T00:00:00");
+                if (calMode === "month") return `${calCursor.getFullYear()}年 ${calCursor.getMonth() + 1}月`;
+                if (calMode === "week") return `${calWeekDays[0].getFullYear()}年 ${calWeekDays[0].getMonth() + 1}/${calWeekDays[0].getDate()}〜${calWeekDays[6].getMonth() + 1}/${calWeekDays[6].getDate()}`;
+                if (isNaN(sd.getTime())) return calSelectedDate;
+                if (calMode === "day") return `${sd.getFullYear()}年 ${sd.getMonth() + 1}月${sd.getDate()}日（${calDowJ[sd.getDay()]}）`;
+                if (calMode === "3day") { const e3 = new Date(calShiftDate(calSelectedDate, 2) + "T00:00:00"); return `${sd.getFullYear()}年 ${sd.getMonth() + 1}/${sd.getDate()}〜${e3.getMonth() + 1}/${e3.getDate()}`; }
+                return `予定リスト（${sd.getMonth() + 1}/${sd.getDate()}〜）`;
+              })()}
+            </div>
+            <button onClick={() => { setCalSearchOpen(v => !v); if (calSearchOpen) setCalSearchQ(""); }} aria-label="予定を検索" style={{ background: calSearchOpen ? C.accent : C.inset, border: `1.5px solid ${C.accent}`, color: calSearchOpen ? "#fff" : C.accent, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", fontWeight: 800, flexShrink: 0 }}>🔍</button>
+            <button onClick={() => openNewEvent(calSelectedDate)} style={{ background: C.accent, border: `1.5px solid ${C.accent}`, color: "#fff", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 14, fontFamily: "inherit", fontWeight: 800, flexShrink: 0 }}>＋ 予定</button>
+          </div>
+          {/* 🆕 v9.633: 予定の検索（題名・場所・メモ・お客様名など） */}
+          {calSearchOpen && (
+            <input autoFocus value={calSearchQ} onChange={e => setCalSearchQ(e.target.value)} placeholder="🔍 予定を検索（題名・場所・メモ・お客様名）"
+              style={{ width: "100%", boxSizing: "border-box", marginBottom: 10, padding: "10px 12px", borderRadius: 10, border: `1.5px solid ${C.accent}`, background: C.inset, color: C.text, fontSize: 15, fontFamily: "inherit" }} />
+          )}
           {/* ナビ＋今日＋フィルター開閉 */}
           {/* 🆕 v9.97: 折り返し許可（狭い画面でボタンが横にはみ出して見切れないように） */}
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", rowGap: 6 }}>
-            <button onClick={() => {
-              const d = new Date(calCursor);
-              if (calMode === "month") d.setMonth(d.getMonth() - 1);
-              else d.setDate(d.getDate() - 7);
-              setCalCursor(d);
-            }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, width: 36, height: 32, cursor: "pointer", fontSize: 20, fontFamily: "inherit", fontWeight: 800 }}>‹</button>
-            <button onClick={() => {
-              const d = new Date(calCursor);
-              if (calMode === "month") d.setMonth(d.getMonth() + 1);
-              else d.setDate(d.getDate() + 7);
-              setCalCursor(d);
-            }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, width: 36, height: 32, cursor: "pointer", fontSize: 20, fontFamily: "inherit", fontWeight: 800 }}>›</button>
+            <button onClick={() => calNav(-1)} aria-label="前へ" style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, width: 36, height: 32, cursor: "pointer", fontSize: 20, fontFamily: "inherit", fontWeight: 800 }}>‹</button>
+            <button onClick={() => calNav(1)} aria-label="次へ" style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, width: 36, height: 32, cursor: "pointer", fontSize: 20, fontFamily: "inherit", fontWeight: 800 }}>›</button>
             <button onClick={() => { setCalCursor(new Date()); setCalSelectedDate(today); }} style={{ background: C.accent + "22", border: `1px solid ${C.accent}66`, color: C.accent, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>今日</button>
             {/* 🆕 v9.632: ワンタップで自分の予定だけに（もう一度押すと全員に戻る） */}
             {_calMe && (() => {
@@ -15002,6 +15374,46 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           )}
         </div>
 
+        {/* 🆕 v9.633: 検索結果（検索中はカレンダーの代わりに出す） */}
+        {calSearchOpen && calSearchQ.trim() ? (() => {
+          const q = calSearchQ.trim().toLowerCase();
+          const hits = calFilteredEvents.filter(e => [e.title, e.sub, e.location, e.memo, calMemberName(e)].some(x => String(x || "").toLowerCase().includes(q)));
+          // 繰り返しの予定は「次の回」（なければ一番新しい過去の回）1件にまとめる
+          const pick = {};
+          hits.forEach(e => {
+            if (!e.isRepeat) return;
+            const k = e.rawId, cur = pick[k];
+            if (!cur) { pick[k] = e; return; }
+            const eUp = e.date >= today, cUp = cur.date >= today;
+            if (eUp && (!cUp || e.date < cur.date)) pick[k] = e;
+            else if (!eUp && !cUp && e.date > cur.date) pick[k] = e;
+          });
+          const list = hits.filter(e => !e.isRepeat || pick[e.rawId] === e);
+          const tkey = e => String(e.time || "").padStart(5, "0");
+          const up = list.filter(e => e.date >= today).sort((a, b) => a.date.localeCompare(b.date) || tkey(a).localeCompare(tkey(b)));
+          const past = list.filter(e => e.date < today).sort((a, b) => b.date.localeCompare(a.date));
+          const all = [...up, ...past].slice(0, 80);
+          return (
+            <div style={{ padding: 12 }}>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>「{calSearchQ.trim()}」の予定 {list.length}件{list.length > 80 ? "（先頭80件）" : ""}　これからの予定が上、過去は下</div>
+              {all.length === 0 ? <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "14px 0" }}>見つかりませんでした</div> : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  {all.map((e, k) => {
+                    const d = new Date(e.date + "T00:00:00");
+                    const head = k === 0 || all[k - 1].date !== e.date;
+                    return (
+                      <React.Fragment key={k}>
+                        {head && <div style={{ fontSize: 12, fontWeight: 800, color: e.date < today ? C.muted : C.text, marginTop: k ? 6 : 0 }}>{d.getFullYear()}/{d.getMonth() + 1}/{d.getDate()}（{calDowJ[d.getDay()]}）{e.date === today ? "　今日" : e.date < today ? "　過去" : ""}</div>}
+                        {calEventRow(e, "s" + k, e.date)}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })() : (
+        <div {...calSwipeProps}>
         {/* 曜日ヘッダー（🆕 v9.632: 週は縦の一覧になったので月表示のときだけ） */}
         {calMode === "month" && <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", padding: "8px 6px 4px", borderBottom: `1px solid ${C.borderDim}`, background: C.bgDark }}>
           {["日", "月", "火", "水", "木", "金", "土"].map((d, i) => (
@@ -15017,7 +15429,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
         {calMode === "month" && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", borderTop: `1px solid ${C.borderDim}` }}>
             {calMonthDays.map((d, i) => {
-              if (!d) return <div key={i} style={{ minHeight: 78, background: C.bgDark, borderRight: i % 7 !== 6 ? `1px solid ${C.borderDim}` : "none", borderBottom: `1px solid ${C.borderDim}` }} />;
+              if (!d) return <div key={i} style={{ minHeight: 88, background: C.bgDark, borderRight: i % 7 !== 6 ? `1px solid ${C.borderDim}` : "none", borderBottom: `1px solid ${C.borderDim}` }} />;
               const dateStr = fmtDate(d);
               const isToday = dateStr === today;
               const isSelected = dateStr === calSelectedDate;
@@ -15025,19 +15437,22 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               const dow = d.getDay();
               const _holName = jpHolidayName(dateStr);   // 🆕 v9.459
               const isOverdue = dateStr < today && events.some(e => e.type === "jiage" || e.type === "owner");
+              const isDropTarget = !!(calDrag && calDrag.kind === "month" && calDrag.date === dateStr);
               return (
                 <div
                   key={i}
                   role="button"
                   tabIndex={0}
+                  data-caldate={dateStr}
                   onClick={() => {
+                    if (calWasDragged()) return;
                     // 🆕 v9.632: 1回目のタップ＝選ぶだけ（下に予定が並ぶ）／選んでいる日をもう一度押す＝時間割のポップアップ
                     if (dateStr === calSelectedDate) setShowDayPanel(true);
                     else setCalSelectedDate(dateStr);
                   }}
                   style={{
-                    minHeight: 58, background: isSelected ? C.accent + "22" : C.panelBg,
-                    boxShadow: isSelected ? `inset 0 0 0 2px ${C.accent}` : "none",
+                    minHeight: 88, background: isDropTarget ? C.accent + "55" : isSelected ? C.accent + "22" : C.panelBg,
+                    boxShadow: isDropTarget ? `inset 0 0 0 3px ${C.accent}` : isSelected ? `inset 0 0 0 2px ${C.accent}` : "none",
                     borderRight: i % 7 !== 6 ? `1px solid ${C.borderDim}` : "none",
                     borderBottom: `1px solid ${C.borderDim}`,
                     padding: "3px 3px 4px", cursor: "pointer", fontFamily: "inherit",
@@ -15057,7 +15472,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                     {/* 🆕 v9.459: 祝日名 */}
                     {_holName && <span style={{ fontSize: 8.5, color: C.danger, fontWeight: 700, marginLeft: 2, lineHeight: "20px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{_holName}</span>}
                   </div>
-                  {/* 予定（複数日は連続した帯、単日は担当者の色の点＋件数）🆕 v9.632: 読めない小さい字をやめて点に。中身は下の一覧で */}
+                  {/* 予定（複数日は連続した帯、単日は予定名の札） */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 1, overflow: "hidden" }}>
                     {/* 🆕 v9.121: 複数日にまたがる予定はレーンで連続した帯として表示（🆕 v9.632: その週に帯がある分だけ） */}
                     {calMonthWeekLanes[Math.floor(i / 7)] > 0 && Array.from({ length: calMonthWeekLanes[Math.floor(i / 7)] }).map((_, lane) => {
@@ -15078,16 +15493,25 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                         }}>{showTitle ? `📆${mev.title}` : " "}</div>
                       );
                     })}
+                    {/* 🆕 v9.633: 予定名の札（Googleカレンダーの月表示と同じ）。1マスに4段まで、入りきらない分は「他N件」。長押しで別の日へ動かせる */}
                     {(() => {
-                      const singles = events.filter(e => !e.multiDay);
-                      if (singles.length === 0) return null;
+                      const singles = calSortByTime(events.filter(e => !e.multiDay));
+                      const laneN = calMonthWeekLanes[Math.floor(i / 7)] || 0;
+                      const room = Math.max(1, 4 - laneN);
+                      const shown = singles.length > room ? singles.slice(0, room - 1) : singles;
+                      const more = singles.length - shown.length;
                       return (
-                        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 3, padding: "2px 2px 0" }}>
-                          {singles.slice(0, 4).map((e, j) => (
-                            <span key={j} style={{ width: 8, height: 8, borderRadius: "50%", background: calMemberColor(e), flexShrink: 0, boxShadow: isDealEvent(e) ? "0 0 0 2px #fbbf24" : "none" }} />
+                        <>
+                          {shown.map((e, j) => (
+                            <div key={j} {...calDragProps(e, "month")}
+                              className={isDealEvent(e) ? "hk-deal-glow" : ""}
+                              style={{ background: calMemberColor(e), color: "#fff", borderRadius: 3, padding: "0 3px", fontSize: 10, fontWeight: 700, height: 16, lineHeight: "16px", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "clip", marginBottom: 1, opacity: (calDrag && calDrag.rawId === e.rawId && e.isCustom) ? 0.35 : 1, userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none", textShadow: "0 1px 1px rgba(0,0,0,.25)" }}>{calShortTitle(e)}</div>
                           ))}
-                          <span style={{ fontSize: 11, fontWeight: 800, color: C.text, lineHeight: 1 }}>{singles.length}件</span>
-                        </div>
+                          {more > 0 && <div style={{ fontSize: 10, color: C.text, fontWeight: 800, padding: "0 3px", lineHeight: "14px" }}>他{more}件</div>}
+                          {isDropTarget && !events.some(e => e.rawId === calDrag.rawId && e.isCustom) && (
+                            <div style={{ background: calDrag.color, color: "#fff", borderRadius: 3, padding: "0 3px", fontSize: 10, fontWeight: 800, height: 16, lineHeight: "16px", overflow: "hidden", whiteSpace: "nowrap", outline: "2px dashed #fff" }}>{calDrag.title}</div>
+                          )}
+                        </>
                       );
                     })()}
                   </div>
@@ -15165,6 +15589,49 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               );
             })}
           </div>
+        )}
+
+        {/* 🆕 v9.633: 日表示・3日表示（時間の目盛り。空いている所を押すと予定を追加、予定を長押しでつかんで動かせる） */}
+        {calMode === "day" && renderCalTimeGrid([calSelectedDate])}
+        {calMode === "3day" && renderCalTimeGrid([0, 1, 2].map(n => calShiftDate(calSelectedDate, n)))}
+        {(calMode === "day" || calMode === "3day") && (
+          <div style={{ fontSize: 10, color: C.muted, padding: "6px 10px 8px", borderTop: `1px solid ${C.borderDim}` }}>空いている時間を押す＝その時間で予定を追加／自分の予定を長押し＝つかんで別の時間・日へ動かせます／左右にスワイプで前後へ</div>
+        )}
+
+        {/* 🆕 v9.633: 一覧（予定リスト）＝Googleカレンダーの「スケジュール」。予定のある日だけを先まで並べる */}
+        {calMode === "list" && (() => {
+          const days = [];
+          for (let n = 0; n < calListDays; n++) {
+            const ds = calShiftDate(calSelectedDate, n);
+            const evs = calEventsByDate[ds];
+            if (evs && evs.length) days.push([ds, calSortByTime(evs)]);
+          }
+          return (
+            <div style={{ padding: "8px 10px 12px" }}>
+              <button onClick={() => calNav(-1)} style={{ width: "100%", background: "none", border: `1px dashed ${C.borderDim}`, color: C.muted, borderRadius: 8, padding: "8px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, marginBottom: 8 }}>▲ 30日前から見る</button>
+              {days.length === 0 && <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "16px 0" }}>この先{calListDays}日間に予定はありません</div>}
+              {days.map(([ds, evs]) => {
+                const d = new Date(ds + "T00:00:00"), dw = d.getDay(), hol = jpHolidayName(ds), isT = ds === today;
+                const col = (dw === 0 || hol) ? C.danger : dw === 6 ? C.accent : C.text;
+                return (
+                  <div key={ds} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.borderDim}` }}>
+                    <button type="button" onClick={() => { setCalSelectedDate(ds); setCalMode("day"); }} style={{ width: 46, flexShrink: 0, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", display: "flex", flexDirection: "column", alignItems: "center", gap: 1, padding: 0 }}>
+                      <span style={{ fontSize: 10, fontWeight: 800, color: C.muted }}>{d.getMonth() + 1}月</span>
+                      <span style={{ width: 32, height: 32, borderRadius: 16, display: "inline-flex", alignItems: "center", justifyContent: "center", background: isT ? C.accent : "transparent", color: isT ? "#fff" : col, fontSize: 17, fontWeight: 800 }}>{d.getDate()}</span>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: col }}>{calDowJ[dw]}</span>
+                      {hol ? <span style={{ fontSize: 9, color: C.danger, fontWeight: 700, textAlign: "center", lineHeight: 1.2 }}>{hol}</span> : null}
+                    </button>
+                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
+                      {evs.map((e, k) => calEventRow(e, k, ds))}
+                    </div>
+                  </div>
+                );
+              })}
+              <button onClick={() => setCalListDays(n => n + 60)} style={{ width: "100%", background: "none", border: `1px dashed ${C.borderDim}`, color: C.muted, borderRadius: 8, padding: "8px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, marginTop: 8 }}>▼ さらに先を見る（いま{calListDays}日分）</button>
+            </div>
+          );
+        })()}
+        </div>
         )}
 
         {/* 🆕 v9.86: 固定＋FABは廃止。追加は「日付タップ→ポップアップの『X日に追加』」に一本化 */}
@@ -15306,7 +15773,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                 <div key={i} style={{ background: C.inset, borderLeft: `4px solid ${e.color}`, borderRadius: 6, marginBottom: 6 }}>
                 <div
                   onClick={editable ? () => {
-                    if (customEv) openEditEvent(customEv);
+                    if (customEv) openEditEvent(customEv, e.date);
                     else openLinkedEdit(e);
                   } : undefined}
                   style={{
@@ -15366,9 +15833,9 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                         })()}
                         {e.isCustom && customEv && canEdit(customEv) && (
                           <>
-                            <button onClick={(clickEvt) => { clickEvt.stopPropagation(); openEditEvent(customEv); }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}><NavIcon name="edit" size={12} /></button>
+                            <button onClick={(clickEvt) => { clickEvt.stopPropagation(); openEditEvent(customEv, e.date); }} style={{ background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}><NavIcon name="edit" size={12} /></button>
                             <button onClick={(clickEvt) => { clickEvt.stopPropagation(); setEventDetail({ e }); }} style={{ background: C.success + "22", border: `1.5px solid ${C.success}`, color: C.success, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}><NavIcon name="clipboard" size={12} /> 詳細</button>
-                            <button onClick={(clickEvt) => { clickEvt.stopPropagation(); handleDeleteEvent(e.rawId); }} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}><NavIcon name="trash" size={12} /></button>
+                            <button onClick={(clickEvt) => { clickEvt.stopPropagation(); handleDeleteEvent(e.rawId, e.date); }} style={{ background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 700 }}><NavIcon name="trash" size={12} /></button>
                           </>
                         )}
                         {!e.isCustom && ["jiage", "owner", "buyContract", "buy", "sellContract", "sell", "viewing"].includes(e.type) && e.rawId && (() => {
@@ -15646,7 +16113,9 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           <BottomSheet title="📋 予定の詳細" onClose={() => setEventDetail(null)}>
             <div style={{ fontSize: 16, fontWeight: 800, color: C.text, marginBottom: 8 }}>{e.icon} {e.title}</div>
             <Row label="日時">{e.date}{customEv && customEv.endDate && customEv.endDate > e.date ? ` 〜 ${customEv.endDate}` : ""}{e.allDay ? "（終日）" : (e.time ? ` ${e.time}〜${e.endTime || ""}` : "")}</Row>
-            {e.location ? <Row label="場所">{e.location}</Row> : null}
+            {customEv && customEv.repeat ? <Row label="繰り返し">🔁 {calRepeatLabel(customEv)}</Row> : null}
+            {/* 🆕 v9.633: 場所は押すとGoogleマップで開く */}
+            {e.location ? <Row label="場所"><a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(e.location)}`} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, fontWeight: 700 }}>📍 {e.location}</a></Row> : null}
             {e.memo ? <Row label="メモ"><span style={{ whiteSpace: "pre-wrap" }}>{e.memo}</span></Row> : null}
             {assignees.length ? <Row label="担当">{assignees.map((m, i) => <span key={i} style={{ marginRight: 4 }}><MemberTag name={m} /></span>)}</Row> : null}
             {customEv && customEv.private ? <Row label="公開">🔒 自分だけ（非公開）</Row> : null}
@@ -15666,8 +16135,24 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
                   style={{ width: "100%", marginTop: 8, padding: "9px", background: C.accent + "22", border: `1.5px solid ${C.accent}`, color: C.accent, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}><NavIcon name="clipboard" size={13} /> この物件の詳細を開く</button>
               </div>
             ) : null}
-            <button type="button" onClick={() => { const ev2 = e, ce = customEv; setEventDetail(null); if (ce) openEditEvent(ce); else openLinkedEdit(ev2); }}
+            <button type="button" onClick={() => { const ev2 = e, ce = customEv; setEventDetail(null); if (ce) openEditEvent(ce, ev2.date); else openLinkedEdit(ev2); }}
               style={{ width: "100%", marginTop: 14, padding: "11px", background: C.cardBg, border: `1.5px solid ${C.borderDim}`, color: C.text, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit" }}><NavIcon name="edit" size={14} /> 編集する</button>
+            {/* 🆕 v9.633: コピー（同じ中身で新しい予定）／自分のGoogleカレンダーに入れる */}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button type="button" onClick={() => {
+                const src = customEv || e;
+                setEventDetail(null);
+                setEventForm({ ...eventEmpty, title: src.title || e.title || "", date: e.date, time: e.allDay ? "" : (e.time || ""), endTime: e.allDay ? "" : (e.endTime || ""), allDay: !!e.allDay, location: src.location || "", memo: src.memo || "", assignees: (customEv ? (customEv.assignees || []) : (e.assignees || [])).slice(), reminderMinutes: (customEv && customEv.reminderMinutes) || 0, private: !!(customEv && customEv.private), color: (customEv && customEv.color) || "" });
+                setEditingEvent(null); setEditOccDate(null); setShowEventForm(true);
+              }} style={{ flex: 1, padding: "10px", background: C.cardBg, border: `1.5px solid ${C.borderDim}`, color: C.text, borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}>📄 コピーして新しい予定</button>
+              <a href={(() => {
+                const ymd = e.date.replace(/-/g, "");
+                let dates;
+                if (e.allDay || !e.time) { const endD = (customEv && customEv.endDate && customEv.endDate > e.date && !customEv.repeat) ? customEv.endDate : e.date; dates = `${ymd}/${calShiftDate(endD, 1).replace(/-/g, "")}`; }
+                else { const st = e.time.replace(":", "").padStart(4, "0"); const en = (e.endTime && e.endTime > e.time ? e.endTime : `${String(Math.min(23, +e.time.split(":")[0] + 1)).padStart(2, "0")}:${e.time.split(":")[1]}`).replace(":", "").padStart(4, "0"); dates = `${ymd}T${st}00/${ymd}T${en}00`; }
+                return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(e.title || "")}&dates=${dates}&ctz=Asia/Tokyo&location=${encodeURIComponent(e.location || "")}&details=${encodeURIComponent(e.memo || e.sub || "")}`;
+              })()} target="_blank" rel="noopener noreferrer" style={{ flex: 1, padding: "10px", background: C.cardBg, border: `1.5px solid ${C.borderDim}`, color: C.text, borderRadius: 10, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none" }}>📲 Googleカレンダーに入れる</a>
+            </div>
           </BottomSheet>
         );
       })()}
@@ -15724,6 +16209,29 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
             </div>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}><NavIcon name="calendar" size={13} /> 終日（時間を指定しない）</span>
           </div>
+          {/* 🆕 v9.633: 繰り返し（Googleカレンダーと同じく 毎日・平日・毎週・毎月・毎年） */}
+          <Field label="🔁 繰り返し">
+            <select style={inp} value={eventForm.repeat || ""} onChange={e => setEventForm(p => ({ ...p, repeat: e.target.value }))}>
+              {CAL_REPEAT_OPTIONS.map(([k, l]) => <option key={k} value={k}>{k ? calRepeatLabel({ repeat: k, date: eventForm.date }) || l : l}</option>)}
+            </select>
+            {eventForm.repeat ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                <span style={{ fontSize: 12, color: C.muted, flex: "none" }}>終わりの日</span>
+                <input type="date" style={{ ...inp, flex: 1, minWidth: 0 }} value={eventForm.repeatUntil || ""} min={eventForm.date || undefined} onChange={e => setEventForm(p => ({ ...p, repeatUntil: e.target.value }))} />
+                {eventForm.repeatUntil ? <button type="button" onClick={() => setEventForm(p => ({ ...p, repeatUntil: "" }))} style={{ background: "none", border: `1px solid ${C.borderDim}`, color: C.muted, borderRadius: 6, padding: "6px 8px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, flex: "none" }}>ずっと</button> : null}
+              </div>
+            ) : null}
+            {eventForm.repeat ? <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{eventForm.repeatUntil ? `${eventForm.repeatUntil} まで繰り返します` : "終わりの日を入れなければ、ずっと繰り返します"}{eventForm.endDate ? "（繰り返しのときは「終了日」は使いません）" : ""}</div> : null}
+          </Field>
+          {/* 🆕 v9.633: 予定の色（空＝担当者の色のまま） */}
+          <Field label="🎨 色">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+              <button type="button" onClick={() => setEventForm(p => ({ ...p, color: "" }))} style={{ padding: "6px 10px", borderRadius: 16, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, background: !eventForm.color ? C.accent : C.inset, color: !eventForm.color ? "#fff" : C.muted, border: `1px solid ${!eventForm.color ? C.accent : C.borderDim}` }}>担当者の色</button>
+              {CAL_EVENT_COLORS.map(([c, n]) => (
+                <button key={c} type="button" title={n} aria-label={n} onClick={() => setEventForm(p => ({ ...p, color: c }))} style={{ width: 28, height: 28, borderRadius: "50%", background: c, cursor: "pointer", border: eventForm.color === c ? "3px solid #fff" : "2px solid transparent", boxShadow: eventForm.color === c ? `0 0 0 2px ${c}` : "none", color: "#fff", fontWeight: 900, fontSize: 13, padding: 0 }}>{eventForm.color === c ? "✓" : ""}</button>
+              ))}
+            </div>
+          </Field>
           <Field label="場所">
             <input style={inp} value={eventForm.location} onChange={e => setEventForm(p => ({ ...p, location: e.target.value }))} placeholder="現地 / 事務所 / Zoom" />
           </Field>
@@ -15852,12 +16360,32 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
               </div>
             );
           })()}
+          {/* 🆕 v9.633: 繰り返し予定のある回を編集中なら、どこまで変えるかを選ぶ（Googleカレンダーと同じ3択） */}
+          {editingEvent && editingEvent.repeat && editOccDate && (
+            <div style={{ background: C.inset, border: `1.5px solid ${C.accent}`, borderRadius: 10, padding: "10px 12px", marginTop: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: C.accent, marginBottom: 6 }}>🔁 繰り返しの予定です。どこまで変えますか？</div>
+              {[["one", `この回だけ（${editOccDate}）`], ["after", "この回とこれ以降"], ["all", "すべての回"]].map(([k, l]) => (
+                <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", fontSize: 14, color: C.text, cursor: "pointer" }}>
+                  <input type="radio" name="calEditScope" checked={editScope === k} onChange={() => setEditScope(k)} style={{ width: 18, height: 18 }} />{l}
+                </label>
+              ))}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowEventForm(false); setEditingEvent(null); }}>キャンセル</button>
+            <button style={{ ...btnStyle("ghost"), flex: 1 }} onClick={() => { setShowEventForm(false); setEditingEvent(null); setEditOccDate(null); }}>キャンセル</button>
             <button style={{ ...btnStyle(), flex: 2, background: "#f97316", borderColor: "#f97316" }} onClick={handleSaveEvent}>{editingEvent ? "更新する" : "予定を保存"}</button>
           </div>
           {/* 🆕 編集モード時のみ削除ボタンを表示 */}
-          {editingEvent && (
+          {/* 🆕 v9.633: 繰り返し予定の回なら、選んだ範囲（この回だけ／これ以降／すべて）で削除 */}
+          {editingEvent && editingEvent.repeat && editOccDate ? (
+            <button
+              onClick={() => {
+                handleDeleteEvent(editingEvent.id, editOccDate, editScope);
+                setShowEventForm(false); setEditingEvent(null); setEditOccDate(null);
+              }}
+              style={{ width: "100%", marginTop: 10, padding: "12px", background: C.danger + "22", border: `1.5px solid ${C.danger}`, color: C.danger, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit" }}
+            ><NavIcon name="trash" size={15} /> {editScope === "one" ? "この回だけ削除" : editScope === "after" ? "この回とこれ以降を削除" : "すべての回を削除"}</button>
+          ) : editingEvent && (
             <button
               onClick={() => {
                 handleDeleteEvent(editingEvent.id);
