@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-03-v9.635";
+const APP_VERSION = "2026-11-03-v9.636";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -6500,6 +6500,23 @@ function isOwnerResident(j) {
 //     所有者住所が書き換わると snapshot と食い違う → "" （未確認）に戻り、地図へ自動復帰する。
 //     どの編集経路（クイック編集/DM台帳/謄本取込）でも効くので、解除処理を各所に書かなくてよい。
 //   ※ 既存の lookupFailed（🔧要修正＝謄本を取る前の地番エラー・CSV課金除外）とは別物。混ぜない。
+// 🆕 v9.636: 🌙 夜訪（夕方以降に行くと会えそうな家）。ピンの色＝状態はそのままに、目印として上から貼る。
+//   nightVisit=true は人が付けた目印。isNightCandidate は「昼間に2回以上行って全部不在・夜はまだ行っていない」家の自動おすすめ。
+const NIGHT_FROM = "17:00";
+function isNightVisit(j) { return !!(j && j.nightVisit === true); }
+function isNightCandidate(j) {
+  if (!j || j.nightVisit === true || j.excluded === true) return false;
+  if (j.nightVisitDismissed === true) return false; // 「候補から外す」を押した家
+  const st = String(j.status || "");
+  if (["訪問禁止", "NG", "見込無し", "媒介", "仕入", "失注"].includes(st)) return false;
+  const log = (j.visitLog || []).filter(v => v && v.result);
+  if (log.length === 0) return false;
+  const last = log[log.length - 1];
+  if (last.result !== "absent") return false; // 最後に会えた・断られた家は外す
+  const t = v => String(v.time || "").slice(0, 5);
+  if (log.some(v => t(v) && t(v) >= NIGHT_FROM)) return false; // もう夜に行ったことがある
+  return log.filter(v => v.result === "absent" && t(v) && t(v) < NIGHT_FROM).length >= 2;
+}
 function _addrCheckNorm(s) { return String(s || "").normalize("NFKC").replace(/[\s　]/g, "").trim(); }
 function addrCheckOf(j) {
   if (!j) return "";
@@ -8961,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.636", date: "2026-11-03", title: "夕方以降に回る家に「🌙 夜訪」の目印を付けられるように",
+    body: "不在続きで「夜なら帰っていそう」な家は、ピンの詳細で「🌙 夜に行く家にする」を押すと、ピンの左上に🌙が付きます（ピンの色＝状態はそのまま）。一言メモも残せます。地図の絞り込み「🌙 夜訪」で夜に回る家だけを出して、そのままルートを作れます。昼に2回以上行って全部不在だった家は、点線の🌙で「夜訪候補」として自動で出ます（「🌙 夜訪＋候補」で絞り込み）。",
+    where: "地上げ → ピンの詳細 →「🌙 夜に行く家にする」／地図の絞り込み「🌙 夜訪」" },
   { v: "9.635", date: "2026-11-03", title: "ルート中に地図のピンを押すだけで「回る家」に足せるように",
     body: "訪問ルートを開いている時に地図のピンを押すと、吹き出しに「➕ ルートに追加」ボタンが出ます。押すと、今のルートの中で一番遠回りにならない位置に自動で入ります（もう回った家より前には入りません）。すでにルートに入っている家は「✓ ルートの◯番目に入っています」と出ます。",
     where: "地上げ → 地図 → ルートを開いた状態でピンを押す → 「➕ ルートに追加」" },
@@ -11970,6 +11990,13 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const mansionBadgeHtml = _isMansion
         ? `<div style="position:absolute;bottom:-5px;left:-6px;background:#334155;font-size:9px;width:15px;height:15px;border-radius:4px;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;">🏢</div>`
         : "";
+      // 🆕 v9.636: 🌙 夜訪の目印（左上）。付けた家は濃い紺、自動の候補は点線の薄い紺
+      const _nightSrc = _r || it.raw || {};
+      const _nightOn = isNightVisit(_nightSrc);
+      const _nightCand = !_nightOn && isNightCandidate(_nightSrc);
+      const nightBadgeHtml = (_nightOn || _nightCand)
+        ? `<div style="position:absolute;top:-8px;left:-8px;background:${_nightOn ? "#312e81" : "#e0e7ff"};font-size:10px;width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px ${_nightOn ? "solid white" : "dashed #4338ca"};box-shadow:0 1px 2px rgba(0,0,0,0.5);line-height:1;">🌙</div>`
+        : "";
       // 🆕 v8.134: 色付き丸の中央に絵文字を描画
       const innerPinHtml = `<div style="position:absolute;top:${innerOffset}px;left:${innerOffset}px;width:26px;height:26px;">
         <div style="background:${color};width:26px;height:26px;border-radius:${_pinRadius};border:${innerBorder};box-shadow:0 1px 4px rgba(0,0,0,0.5);box-sizing:border-box;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;">
@@ -11979,6 +12006,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         ${isNewTohon ? `<div style="position:absolute;top:-7px;left:-9px;background:#0ea5e9;color:#fff;font-size:8px;padding:0 3px;height:13px;border-radius:7px;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.4);line-height:1;font-weight:800;letter-spacing:0.2px;">NEW</div>` : ""}
         ${addrChkBadgeHtml}
         ${mansionBadgeHtml}
+        ${nightBadgeHtml}
       </div>`;
       // 🆕 v9.390: ルート選択モードの候補マーカーが状態色を使えるように控える
       try { pinStyleRef.current.set(String(it.id != null ? it.id : it.rawId), { color, emoji: emojiForPin }); } catch (e) {}
@@ -26836,6 +26864,32 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     });
   };
 
+  // 🆕 v9.636: 🌙 夜訪の目印を付ける/外す（最小差分・delete しない）。dismiss=true は「夜訪候補から外す」
+  const setNightVisit = (id, on, note, dismiss) => {
+    const _now = Date.now();
+    const _patch = (j) => {
+      const p = { ...j, _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}) }, updatedAt: _now };
+      if (dismiss) { p.nightVisitDismissed = true; p._fieldUpdatedAt.nightVisitDismissed = _now; return p; }
+      p.nightVisit = !!on;
+      p.nightVisitNote = on ? String(note != null ? note : (j.nightVisitNote || "")) : "";
+      p.nightVisitBy = on ? (getCurrentUser() || "") : "";
+      p.nightVisitDismissed = false;
+      Object.assign(p._fieldUpdatedAt, { nightVisit: _now, nightVisitNote: _now, nightVisitBy: _now, nightVisitDismissed: _now });
+      return p;
+    };
+    setData(d => ({
+      ...d,
+      jiage: (d.jiage || []).map(j => String(j.id) !== String(id) ? j : _patch(j)),
+      owners: (d.owners || []).map(o => String(o.id) !== String(id) ? o : _patch(o)),
+    }));
+    setSelected(s => {
+      if (!s || !s.item) return s;
+      const _sid = s.item.rawId != null ? s.item.rawId : s.item.id;
+      if (String(_sid) !== String(id)) return s;
+      return { ...s, item: { ...s.item, raw: _patch(s.item.raw || {}) } };
+    });
+  };
+
   // Excelファイル直接インポート用state
   const [importPreview, setImportPreview] = useState(null); // { rows, mapping, sheetName, totalRows }
   const fileInputRef = React.useRef(null);
@@ -27510,6 +27564,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       if (!hasOwner) return false;
       if (raw.excluded === true) return false; // 🆕 v9.575
     }
+    // 🆕 v9.636: 🌙 夜訪（目印つき）／🌙 夜訪候補（昼に2回以上不在）
+    if (quickFilter === "night") { if (!isNightVisit(item.raw || item)) return false; }
+    if (quickFilter === "night_cand") { const _nr = item.raw || item; if (!isNightVisit(_nr) && !isNightCandidate(_nr)) return false; }
     // 🆕 v9.348: 🏠 住所要確認（所有者宅の場所が地図で特定できない）
     if (quickFilter === "addr_ng") {
       if (addrCheckOf(item.raw || item) !== "ng") return false;
@@ -31886,6 +31943,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   { key: "out_saitama",    label: "✉️ 県外（DM）", color: "#94a3b8", count: _pool.filter(j => j.excluded !== true && String(j.ownerAddr || "").trim() && !isOwnerInSaitama(j)).length },
                                   { key: "addr_ng",        label: "🏠 住所要確認", color: "#a855f7", count: pendingPinSummary.addrNgTotal },
                                   { key: "addr_ok",        label: "✅ 場所確認済", color: "#16a34a", count: pendingPinSummary.addrOkTotal },
+                                  // 🆕 v9.636: 夕方以降に回る家
+                                  { key: "night",          label: "🌙 夜訪",     color: "#4338ca", count: _pool.filter(j => isNightVisit(j)).length },
+                                  { key: "night_cand",     label: "🌙 夜訪＋候補", color: "#6366f1", count: _pool.filter(j => isNightVisit(j) || isNightCandidate(j)).length },
                                   { key: "result_absent",  label: "🚪 不在",     color: "#92400e", count: _resultCount("absent") },
                                   { key: "result_ignore",  label: "🙈 居留守",   color: "#b45309", count: _resultCount("ignore") },
                                   { key: "result_rejected",label: "🚷 訪問禁止(記録)", color: "#7f1d1d", count: _resultCount("rejected") },
@@ -33075,6 +33135,42 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               {ownerNavLabel(selected.item)}
             </a>
           </div>
+
+          {/* 🆕 v9.636: 🌙 夜訪（夕方以降に行く家）の目印 */}
+          {(() => {
+            const _r = selected.item.raw || {};
+            const _nid = (selected.item.rawId != null ? selected.item.rawId : selected.item.id);
+            const on = isNightVisit(_r);
+            const cand = !on && isNightCandidate(_r);
+            if (on) return (
+              <div style={{ borderRadius: 10, padding: "10px 12px", marginBottom: 10, background: "#312e81", color: "#fff", border: "2px solid #312e81" }}>
+                <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 6 }}>🌙 夜訪の家（夕方以降に行く）</div>
+                <input defaultValue={_r.nightVisitNote || ""} key={"nv" + _nid}
+                  onBlur={e => { if (e.target.value !== (_r.nightVisitNote || "")) setNightVisit(_nid, true, e.target.value); }}
+                  placeholder="一言メモ（例：19時以降なら車がある）"
+                  style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "none", fontSize: 13, fontFamily: "inherit", marginBottom: 6 }} />
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ flex: 1, fontSize: 11, opacity: 0.8 }}>{_r.nightVisitBy ? `付けた人：${_r.nightVisitBy}` : ""}</span>
+                  <button onClick={() => setNightVisit(_nid, false)} style={{ flex: "none", background: "transparent", color: "#fff", border: "1.5px solid #fff", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>🌙 を外す</button>
+                </div>
+              </div>
+            );
+            return (
+              <div style={{ marginBottom: 10 }}>
+                {cand && (
+                  <div style={{ fontSize: 12, color: "#4338ca", fontWeight: 700, background: "#e0e7ff", border: "1.5px dashed #4338ca", borderRadius: 8, padding: "6px 10px", marginBottom: 6 }}>
+                    💡 昼に2回以上行って全部不在でした。夜なら会えるかもしれません。
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => setNightVisit(_nid, true, "")} style={{ flex: 1, background: "#312e81", color: "#fff", border: "2px solid #312e81", borderRadius: 10, padding: "10px 8px", fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>🌙 夜に行く家にする</button>
+                  {cand && (
+                    <button onClick={() => setNightVisit(_nid, false, "", true)} style={{ flex: "none", background: C.inset, color: C.muted, border: `1.5px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 8px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>候補から外す</button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* 🆕 v9.348: 所有者宅の場所チェック（地図で家まで行けるか）。
               1人が確認した結果を全員で共有し、同じ地図確認のやり直しと「行ってから分からない」を防ぐ。 */}
