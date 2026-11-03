@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-03-v9.634";
+const APP_VERSION = "2026-11-03-v9.635";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8961,6 +8961,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.635", date: "2026-11-03", title: "ルート中に地図のピンを押すだけで「回る家」に足せるように",
+    body: "訪問ルートを開いている時に地図のピンを押すと、吹き出しに「➕ ルートに追加」ボタンが出ます。押すと、今のルートの中で一番遠回りにならない位置に自動で入ります（もう回った家より前には入りません）。すでにルートに入っている家は「✓ ルートの◯番目に入っています」と出ます。",
+    where: "地上げ → 地図 → ルートを開いた状態でピンを押す → 「➕ ルートに追加」" },
   { v: "9.634", date: "2026-11-03", title: "訪問ルートのゴールに「🏠 自宅」を選べるように",
     body: "訪問ルートに「🏠 自宅をゴールにする」ボタンが付きました。押すと、最後に自宅へ帰る前提で、帰り道まで含めて一番短い順に並べ直します。自宅は「🏁 ゴールを地図で決める」で家の場所をタップ→「🏠 このゴールを自宅として登録する」で1回登録すれば、次からはボタン1つです。",
     where: "地上げ → 地図 → 左下の「ルート」→「🏠 自宅をゴールにする」" },
@@ -10485,6 +10488,11 @@ if (typeof L !== "undefined" && L.Marker && L.Popup && !L.Marker.prototype._hkUp
 }
 
 function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
+  // 🆕 v9.635: ルート中に普通のピンの吹き出しから「➕ ルートに追加」できるよう、最新のルート状態を覚えておく
+  const routeOverlayLiveRef = React.useRef(null);
+  routeOverlayLiveRef.current = routeOverlay || null;
+  const onRoutePickToggleLiveRef = React.useRef(null);
+  onRoutePickToggleLiveRef.current = onRoutePickToggle || null;
   // 🆕 v9.11: 緊急修正 - haversineQuick 定義復活（v9.7削除時のリグレッション）
   //   この関数が未定義だと、軌跡描画 useEffect で ReferenceError になり地図ビュー全体が真っ白になる
   const haversineQuick = (a, b) => {
@@ -12079,6 +12087,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
           ${!_isOnsite && it.assignee ? `<div style="font-size:11px;color:#64748b;">担当: ${it.assignee}</div>` : ""}
           <div style="margin-top:5px;"><span style="background:${color};color:${pendingLot ? "#000" : "#fff"};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${statusLabel}</span>${_addrChkPopupHtml}${_excludedBadgeHtml}${_giveUpBadgeHtml}${_lookupFailedBadgeHtml}${_sharedBadgeHtml}</div>
           <div class="hk-youto-slot"></div>
+          <div class="hk-route-slot"></div>
           <button id="pin-photo-btn" style="margin-top:6px;background:#10b981;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">📷 写真を見る</button>
           <button id="pin-detail-btn" style="margin-top:6px;background:#3b82f6;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;width:100%;font-family:inherit;">詳細を開く</button>
         </div>
@@ -12114,6 +12123,28 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
             const slot = rootEl && rootEl.querySelector ? rootEl.querySelector(".hk-youto-slot") : null;
             if (slot) slot.innerHTML = _youtoInfoHtml(d, ll.lat, ll.lng, yAddr);
           }).catch(() => {});
+        } catch (er) {}
+        // 🆕 v9.635: 訪問ルートを開いている時は、この吹き出しから「➕ ルートに追加」できる（追加モードに入らなくてよい）
+        try {
+          const ro = routeOverlayLiveRef.current;
+          const slot = rootEl && rootEl.querySelector ? rootEl.querySelector(".hk-route-slot") : null;
+          if (slot && ro && ro.mode !== "lasso" && onRoutePickToggleLiveRef.current) {
+            const pid = it && (it.id != null ? it.id : it.rawId);
+            const st = ro.stops || [];
+            const idx = st.findIndex(x => String(x.id) === String(pid));
+            if (idx >= 0) {
+              slot.innerHTML = `<div style="margin-top:6px;background:#dcfce7;color:#166534;border:1px solid #22c55e;padding:5px 8px;border-radius:6px;font-size:11px;font-weight:800;text-align:center;">✓ ルートの${idx + 1}番目に入っています</div>`;
+            } else {
+              slot.innerHTML = `<button class="hk-route-add-btn" style="margin-top:6px;background:#22c55e;color:#fff;border:none;padding:8px 10px;border-radius:6px;font-size:12px;font-weight:800;cursor:pointer;width:100%;font-family:inherit;">➕ ルートに追加</button>`;
+              const b = slot.querySelector(".hk-route-add-btn");
+              if (b) b.onclick = (ev) => {
+                try { ev.stopPropagation(); ev.preventDefault(); } catch (er) {}
+                try { marker.closePopup(); } catch (er) {}
+                const fn = onRoutePickToggleLiveRef.current;
+                if (fn) fn(pid);
+              };
+            }
+          }
         } catch (er) {}
         wire();                 // 開いた瞬間に同期で配線（10msの隙をなくす）
         setTimeout(wire, 10);   // フォールバック（DOM未準備・再描画後の再配線）
@@ -30285,6 +30316,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               // 選択中は地図を自動で動かさない（押した位置で止めておく）→ fitBounds しない
             };
             const routePickToggle = (id, pos) => {
+              // 🆕 v9.635: 今の絞り込みでルートの対象にならないピン（DM不要・本人居住など）は黙って無視せず知らせる
+              if (!routeAllStops.some(s => String(s.id) === String(id))) { alert("⚠️ このピンは今の表示の絞り込みでルートの対象外になっています。絞り込みを変えてからもう一度押してください。"); return; }
               if (route.mode !== "pick") { routeAddStop(id, pos); return; } // 🆕 v9.618（pos=何番目に入れるか v9.620）
               const exists = route.pickIds.some(x => String(x) === String(id));
               routeBuildFromPick(exists ? route.pickIds.filter(x => String(x) !== String(id)) : [...route.pickIds, id]);
