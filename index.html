@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-02-v9.633";
+const APP_VERSION = "2026-11-03-v9.634";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -5985,6 +5985,26 @@ async function loadInvoiceProfileRow(me) {
     return (rows && rows[0] && rows[0].data) || null;
   } catch (e) { return null; }
 }
+// 🆕 v9.634: 訪問ルートの「🏠 自宅」。公開ソースに住所を書かないよう、クラウドの1行 homept::<名前> に置く（{lat,lng,label}）。
+async function loadRouteHomeRow(me) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${encodeURIComponent("homept::" + me)}&select=data`, { headers: _TRACK_HEADERS });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    const d = rows && rows[0] && rows[0].data;
+    return (d && typeof d.lat === "number" && typeof d.lng === "number") ? d : null;
+  } catch (e) { return null; }
+}
+async function saveRouteHomeRow(me, pt) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data`, {
+      method: "POST",
+      headers: { ..._TRACK_HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([{ id: `homept::${me}`, data: { lat: pt.lat, lng: pt.lng, label: pt.label || "自宅" }, updated_at: new Date().toISOString() }]),
+    });
+    return res.ok;
+  } catch (e) { return false; }
+}
 async function deleteHayatoDraft(rowId) {
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${encodeURIComponent(rowId)}`, { method: "DELETE", headers: { ..._TRACK_HEADERS, "Prefer": "return=minimal" } });
@@ -8941,6 +8961,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.634", date: "2026-11-03", title: "訪問ルートのゴールに「🏠 自宅」を選べるように",
+    body: "訪問ルートに「🏠 自宅をゴールにする」ボタンが付きました。押すと、最後に自宅へ帰る前提で、帰り道まで含めて一番短い順に並べ直します。自宅は「🏁 ゴールを地図で決める」で家の場所をタップ→「🏠 このゴールを自宅として登録する」で1回登録すれば、次からはボタン1つです。",
+    where: "地上げ → 地図 → 左下の「ルート」→「🏠 自宅をゴールにする」" },
   { v: "9.633", date: "2026-11-02", title: "カレンダーがGoogleカレンダーと同じように使えるように",
     body: "①月表示のマスに予定名がそのまま出ます。②表示を「日・3日・週・月・一覧」から選べます（日と3日は時間の目盛りつき。空いている時間を押すとその時間で予定を追加、今の時刻に赤い線）。③自分の予定を長押しすると、つかんで別の時間・別の日へ動かせます。④「繰り返し」（毎日・平日・毎週・毎月・毎年）が入れられます。変える・消すときは「この回だけ／これ以降／すべて」を選べます。⑤🔍で予定を検索。⑥予定ごとに色を選べます。⑦予定の詳細から「コピーして新しい予定」「Googleカレンダーに入れる」、場所を押すと地図が開きます。⑧左右にスワイプで前後の月・日へ。",
     where: "ホームのカレンダー" },
@@ -26022,6 +26045,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       else localStorage.removeItem(ROUTE_STATE_KEY);
     } catch (e) {}
   }, [route]);
+  const [myHomePt, setMyHomePt] = useState(null); // 🆕 v9.634: 登録した🏠自宅（クラウド homept::<名前>）
+  useEffect(() => { if (!currentUser) return; let alive = true; loadRouteHomeRow(currentUser).then(d => { if (alive) setMyHomePt(d); }); return () => { alive = false; }; }, [currentUser]);
   const [routeHomePicking, setRouteHomePicking] = useState(false); // 🆕 v9.615: 地図をタップしてゴール（帰る場所）を決めている最中
   const [routeSel, setRouteSel] = useState([]); // 🆕 v9.53: ルートから一括削除する選択 stop id 群
   // 🆕 v9.54: ピン位置の現地修正 { id, field:"address"|"owner", lat, lng, origLat, origLng, name }
@@ -30333,6 +30358,15 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               routeRoadKeyRef.current = "";
               setRoute(prev => ({ ...prev, roundTrip: true, home, homeManual, endId: "", stops: [...done, ...ordered], targetIndex: ti, road: null }));
             };
+            // 🆕 v9.634: 今のゴールが🏠自宅かどうか（座標がほぼ同じなら自宅）
+            const routeGoalIsMyHome = !!(myHomePt && route.roundTrip && route.homeManual && route.home && Math.abs(route.home.lat - myHomePt.lat) < 1e-5 && Math.abs(route.home.lng - myHomePt.lng) < 1e-5);
+            const routeRegisterMyHome = async () => {
+              if (!route.home || !currentUser) return;
+              if (!window.confirm("今の🏁ゴールの場所を「🏠 自宅」として登録しますか？（次からは「🏠 自宅をゴールにする」1回で選べます。")) return;
+              const pt = { lat: route.home.lat, lng: route.home.lng, label: "自宅" };
+              const ok = await saveRouteHomeRow(currentUser, pt);
+              if (ok) setMyHomePt(pt); else alert("⚠️ 登録できませんでした。電波の良い所でもう一度お試しください。");
+            };
             const routeStartHomePick = () => { setRouteHomePicking(true); setRoute(r => ({ ...r, minimized: true, big: false })); };
             const routeSetMode = (m) => {
               if (route.addMode) setRoute(r => ({ ...r, addMode: false }));
@@ -31460,8 +31494,14 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {/* 🆕 v9.604: 回り終わったら出発地点に戻る */}
                             <div style={{ padding: "8px 16px 0", display: route.big ? "none" : "block" }}>
                               <button onClick={routeToggleRoundTrip} style={{ width: "100%", background: route.roundTrip ? "#0f766e" : C.inset, color: route.roundTrip ? "#fff" : C.muted, border: `1.5px solid ${route.roundTrip ? "#0f766e" : C.borderDim}`, borderRadius: 10, padding: "8px 6px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
-                                {route.roundTrip ? (route.homeManual ? "✓ 🏁 最後に地図で決めたゴールへ向かう（押すと解除）" : "✓ 🔁 最後に出発地点へ戻る（帰り道まで入れて並べています）") : "🔁 最後に出発地点へ戻るルートにする"}
+                                {route.roundTrip ? (route.homeManual ? (routeGoalIsMyHome ? "✓ 🏠 最後に自宅へ帰る（押すと解除）" : "✓ 🏁 最後に地図で決めたゴールへ向かう（押すと解除）") : "✓ 🔁 最後に出発地点へ戻る（帰り道まで入れて並べています）") : "🔁 最後に出発地点へ戻るルートにする"}
                               </button>
+                              {/* 🆕 v9.634: 登録した🏠自宅をゴールにする */}
+                              {myHomePt && (
+                                <button onClick={() => routeSetHome({ lat: myHomePt.lat, lng: myHomePt.lng })} disabled={routeGoalIsMyHome} style={{ width: "100%", marginTop: 6, background: routeGoalIsMyHome ? "#0f766e" : "#ecfdf5", color: routeGoalIsMyHome ? "#fff" : "#0f766e", border: "2px solid #0f766e", borderRadius: 10, padding: "8px 6px", fontSize: 13, fontWeight: 800, cursor: routeGoalIsMyHome ? "default" : "pointer", fontFamily: "inherit" }}>
+                                  {routeGoalIsMyHome ? "✓ 🏠 自宅がゴールです（自宅に帰る並びにしています）" : "🏠 自宅をゴールにする"}
+                                </button>
+                              )}
                               {/* 🆕 v9.615: ゴール（最後に向かう場所）を地図で決める */}
                               <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                                 <button onClick={routeStartHomePick} style={{ flex: 1, background: C.inset, color: "#0f766e", border: "1.5px solid #0f766e", borderRadius: 10, padding: "7px 6px", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
@@ -31475,6 +31515,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               </div>
                               {route.roundTrip && route.home && (
                                 <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>地図の🏁を指で押したまま動かしても、ゴールを変えられます。</div>
+                              )}
+                              {/* 🆕 v9.634: 地図で決めたゴールを🏠自宅として登録（各自1か所・クラウドに保存） */}
+                              {route.roundTrip && route.homeManual && route.home && !routeGoalIsMyHome && (
+                                <button onClick={routeRegisterMyHome} style={{ width: "100%", marginTop: 6, background: C.inset, color: C.muted, border: `1.5px dashed ${C.borderDim}`, borderRadius: 10, padding: "6px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                                  🏠 このゴールを自宅として登録する
+                                </button>
                               )}
                               {/* 🆕 v9.618: 決めたルートに家を足す（自分で選ぶ は元から地図で足せる） */}
                               {route.mode !== "pick" && route.stops.length > 0 && (
@@ -31603,7 +31649,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "9px 8px", borderBottom: `1px solid ${C.borderDim}` }}>
                                     <div style={{ flex: "none", width: 26, height: 26, borderRadius: "50%", background: "#0f766e", color: "#fff", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>🏠</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
-                                      <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{route.homeManual ? "🏁 ゴール（地図で決めた場所）" : "出発地点に戻る"}</div>
+                                      <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{route.homeManual ? (routeGoalIsMyHome ? "🏠 自宅に帰る" : "🏁 ゴール（地図で決めた場所）") : "出発地点に戻る"}</div>
                                       <div style={{ fontSize: 11, color: C.muted }}>最後の家から {routeFmtDist(d)} ・ 車で約{legMin}分</div>
                                     </div>
                                     <button onClick={() => routeOpenGmaps(route.home.lat, route.home.lng)} style={{ flex: "none", background: C.accentBg, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 8, padding: "6px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>▶ ナビ</button>
