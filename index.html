@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-13-v9.643";
+const APP_VERSION = "2026-11-13-v9.644";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.644", date: "2026-11-13", title: "探索候補の色が、寄ると薄くなって家が見えるように",
+    body: "🎯探索候補の赤・オレンジの塗りは、地図を大きく寄せる（建物が見えるくらい）と自動でほぼ透明になり、枠線だけが残るようにしました。航空写真でも家の屋根や庭がそのまま見えます。引くと元の色に戻ります。",
+    where: "地上げ → 地図 → 🎯 探索候補（寄った時）" },
   { v: "9.643", date: "2026-11-13", title: "地図を航空写真に切り替えられるように（地名つき）",
     body: "地上げの地図の右下に「🛰 写真」ボタンを足しました。押すと地図が航空写真（国土地理院の最新の空中写真）になり、家・空き地・畑の様子を上から見られます。写真の上には市町村名（引いた時）・町名（寄った時）が出ます。ピンや探索候補の色はそのまま重なります。もう一度押す（🗺 地図）と元の地図に戻ります。どちらにしたかはスマホごとに覚えます。",
     where: "地上げ → 地図 → 右下「🛰 写真」" },
@@ -10818,14 +10821,23 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     if (!map || typeof L === "undefined") return;
     if (kohoLayerRef.current) { try { map.removeLayer(kohoLayerRef.current); } catch (e) {} kohoLayerRef.current = null; }
     if (!Array.isArray(kohoAreas) || !kohoAreas.length) return;
-    if (!document.getElementById("koho-style2")) {
+    // 🆕 v9.644: ズーム16以上で地図の箱に hk-z-near を付ける（候補区画の塗りを薄くして建物を見せる）
+    if (!map._hkZoomHook) {
+      map._hkZoomHook = () => { try { map.getContainer().classList.toggle("hk-z-near", map.getZoom() >= 16); } catch (e) {} };
+      map.on("zoomend", map._hkZoomHook);
+    }
+    map._hkZoomHook();
+    if (!document.getElementById("koho-style3")) {
       const st = document.createElement("style");
-      st.id = "koho-style2";
+      st.id = "koho-style3";
       st.textContent = "@keyframes kohoBlink{0%,100%{fill-opacity:.15}50%{fill-opacity:.55}}"
         // 🆕 v9.641: 点滅は目がチカチカする（下田さん）→ 常時点灯
         + ".koho-blink{stroke-width:4px}"
         + ".koho-out{stroke-dasharray:10 6;stroke-width:6px}"
         + "@media (prefers-reduced-motion: reduce){.koho-blink{animation:none;fill-opacity:.55}}"
+        // 🆕 v9.644: 寄った時(ズーム16以上)は塗りをほぼ透明にして枠だけ残す（建物・航空写真が見えるように）
+        + ".hk-z-near path.koho-fill{fill-opacity:.07!important}"
+        + ".hk-z-near path.nerai-cell{stroke-width:2.5px;stroke-opacity:.95;fill-opacity:.04!important}"
         + ".koho-num{background:#e11d48;color:#fff;border:2px solid #fff;border-radius:50%;width:30px;height:30px;line-height:26px;text-align:center;font-weight:900;font-size:16px;box-shadow:0 2px 6px rgba(0,0,0,.4);font-family:inherit}"
         + ".koho-num.pin{background:#2563eb}";
       document.head.appendChild(st);
@@ -10851,7 +10863,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       if (hasHc && a.hcLL.length) {
         L.polygon(a.hcLL, { renderer, interactive: false, stroke: false,
           fillColor: on ? "#e11d48" : s.fillColor, fillOpacity: on ? 0.45 : Math.min(0.5, s.fillOpacity * 2.2),
-          className: on ? "koho-blink" : undefined }).addTo(grp);
+          className: on ? "koho-fill koho-blink" : "koho-fill" }).addTo(grp);
       }
       const pg = L.polygon(toLL(a.polys), {
         renderer, color: on ? "#e11d48" : (a.k === kohoSel ? "#111827" : s.color), weight: on ? 3 : (a.k === kohoSel ? 3 : 1.2),
@@ -10865,7 +10877,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     });
     // 🆕 v9.638: 狙いの団地（昭和51〜平成初期・家が固まった所）の100mマス。タップは区画へ素通し
     (kohoCells || []).forEach(x => {
-      L.rectangle([[x[0], x[1]], [x[2], x[3]]], { renderer, interactive: false,
+      L.rectangle([[x[0], x[1]], [x[2], x[3]]], { renderer, interactive: false, className: "koho-fill nerai-cell",
         color: x[5] ? "#9a3412" : "#ea580c", weight: x[5] ? 1.5 : 0.8, fillColor: x[4] === 2 ? "#fb923c" : "#ea580c", fillOpacity: x[5] ? 0.55 : 0.38 }).addTo(grp);
     });
     // 順位の番号（区画の内側の点に出す）
