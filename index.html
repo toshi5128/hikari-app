@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.657";
+const APP_VERSION = "2026-11-14-v9.658";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13608,16 +13608,14 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         pano2.setPov({ heading: t + SIDE, pitch: (pano2.getPov() || {}).pitch || 0 });
       };
       pano.__hkAim = aimSides;
-      // 🆕 v9.657: 自分で決めた寄り具合（引き）を、進んでも曲がっても保つ（下田さん「引きにしたのに通常の寄りに戻る」）
-      const zoomKeep = { a: 0, b: 0, until: 0 };
-      try { const z = JSON.parse(localStorage.getItem("hikari_sv_zoom") || "null"); if (z && typeof z.a === "number") { zoomKeep.a = z.a; zoomKeep.b = z.b || 0; } } catch (e) {}
-      const saveZoom = () => { try { localStorage.setItem("hikari_sv_zoom", JSON.stringify({ a: zoomKeep.a, b: zoomKeep.b })); } catch (e) {} };
-      const reZoom = () => { zoomKeep.until = Date.now() + 700; try { pano.setZoom(zoomKeep.a); pano2.setZoom(zoomKeep.b); } catch (e) {} };
-      pano.addListener("zoom_changed", () => { if (Date.now() < zoomKeep.until) { if (Math.abs(pano.getZoom() - zoomKeep.a) > 0.05) setTimeout(() => { try { pano.setZoom(zoomKeep.a); } catch (e) {} }, 0); return; } zoomKeep.a = pano.getZoom(); saveZoom(); });
-      pano2.addListener("zoom_changed", () => { if (Date.now() < zoomKeep.until) { if (Math.abs(pano2.getZoom() - zoomKeep.b) > 0.05) setTimeout(() => { try { pano2.setZoom(zoomKeep.b); } catch (e) {} }, 0); return; } zoomKeep.b = pano2.getZoom(); saveZoom(); });
-      pano.addListener("pano_changed", reZoom);
-      pano2.addListener("pano_changed", reZoom);
-      reZoom();
+      // 🆕 v9.658: 常に一番引き（一番広く見える）に固定（下田さん「常に1番引きの状態を保ってほしい。じゃないと全体が見えない」）
+      const fixWide = (pn) => { try { if (pn.getZoom() !== 0) pn.setZoom(0); } catch (e) {} };
+      [pano, pano2].forEach(pn => {
+        pn.addListener("zoom_changed", () => setTimeout(() => fixWide(pn), 0));
+        pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); });
+        pn.setOptions({ zoomControl: false, scrollwheel: false });
+        fixWide(pn);
+      });
       const ov = new gm.OverlayView(); ov.onAdd = () => {}; ov.draw = () => {}; ov.onRemove = () => {}; ov.setMap(gmap); ovRef.current = ov;
       // 🆕 v9.654: 見ている向きを地図に（下田さん「向いてる方向が分からなくなる」）
       const fanL = new gm.Polygon({ map: gmap, paths: [], strokeWeight: 0, fillColor: "#e11d48", fillOpacity: 0.35, clickable: false, zIndex: 9990 });
