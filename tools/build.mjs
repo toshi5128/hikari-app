@@ -116,6 +116,16 @@ if (existsSync(AREAS_DIR)) {
     copyFileSync(join(AREAS_DIR, f), join(DIST_DIR, "areas", f));
     areaCount++;
   }
+  // 🆕 v9.649: 建物ごとの地番（areas/chiban/*.json）
+  const CHIBAN_DIR = join(AREAS_DIR, "chiban");
+  if (existsSync(CHIBAN_DIR)) {
+    mkdirSync(join(DIST_DIR, "areas", "chiban"), { recursive: true });
+    for (const f of readdirSync(CHIBAN_DIR)) {
+      if (!/\.json$/.test(f)) continue;
+      copyFileSync(join(CHIBAN_DIR, f), join(DIST_DIR, "areas", "chiban", f));
+      areaCount++;
+    }
+  }
 }
 console.log(`区画データコピー: ${areaCount}ファイル`);
 

@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.648";
+const APP_VERSION = "2026-11-14-v9.649";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.649", date: "2026-11-14", title: "ピンを立てる時に、家の屋根を押して選べるように（地番も自動）",
+    body: "ピンを立てる画面の一番上に、航空写真の小さい地図が出ます。白い線が家です。空き家の屋根を押すとオレンジに光って選ばれ、ピンがその家の真ん中に立ちます（違ったら別の家を押すだけ）。法務省の地番の地図がある地域（坂戸・鶴ヶ島・狭山・川越など）では、選んだ家の地番も地番欄に自動で入ります。ピンがずれて隣の家の謄本を取ってしまうのを防ぐためです。",
+    where: "地上げ → 地図を長押し（または現在地でピン） → 現地ピン登録の一番上" },
   { v: "9.647", date: "2026-11-13", title: "ストリートビューの写真が新しい所が、地図とランキングで分かるように",
     body: "表示の切り替え「📷 ストリートビューの撮影年」を点けると、狙いの団地が撮影年で色分けされます（緑＝2025年〜・青＝2024年・黄＝2023年・灰＝2022年以前。出す年は選べます）。写真が新しい所ほど今の様子に近いので、👁 SVで探す時はここから歩くと効率的です。狙い目ランキングにも「📷2025〜 ◯%」が出て、「📷 2025年〜」を押すと新しい写真が多い町だけにしぼれます。",
     where: "地上げ → 地図 → 表示の切り替え「📷 ストリートビューの撮影年」／🎯探索候補 →🏆ランキング" },
@@ -13633,6 +13636,188 @@ function loadSvYear() {
     .then(d => { const m = new Map(); (d.cells || []).forEach(([r, c, y]) => m.set(r + "," + c, y)); return m; })
     .catch(e => { _svYearPromise = null; throw e; });
   return _svYearPromise;
+}
+
+// 🆕 v9.649: 家を押して選ぶ（ピンを家の真ん中に立てる＋その家の地番）
+//   下田さん(2026-11-13)「ピンが正確に立たないのがダメ。建物を押すと点滅して選べて、その建物に地番を振ってくれたら正確になる」
+//   建物＝国土地理院ベクトルタイル(z16 building)をその場で読む。地番＝areas/chiban/<z13>.json（scripts/build-bldg-chiban.py＝法務省の地番地図）
+const _HK_BZ = 16;
+const _hkBldgCache = new Map();
+const _hkChibanCache = new Map();
+function _hkMvtBuildings(buf, tx, ty) {
+  let pos = 0;
+  const rv = () => { let r = 0, sh = 1, b; do { b = buf[pos++]; r += (b & 0x7f) * sh; sh *= 128; } while (b & 0x80); return r; };
+  const skip = (w) => { if (w === 0) rv(); else if (w === 1) pos += 8; else if (w === 2) { const l = rv(); pos += l; } else if (w === 5) pos += 4; };
+  const N = Math.pow(2, _HK_BZ);
+  const toLL = (px, py, ext) => { const x = (tx + px / ext) / N, y = (ty + py / ext) / N; return [Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180 / Math.PI, x * 360 - 180]; };
+  while (pos < buf.length) {
+    const tag = rv(), f = Math.floor(tag / 8), w = tag & 7;
+    if (!(f === 3 && w === 2)) { skip(w); continue; }
+    const lend = rv() + pos;
+    let name = "", ext = 4096; const feats = [];
+    while (pos < lend) {
+      const t2 = rv(), f2 = Math.floor(t2 / 8), w2 = t2 & 7;
+      if (f2 === 1 && w2 === 2) { const l = rv(); name = new TextDecoder().decode(buf.subarray(pos, pos + l)); pos += l; }
+      else if (f2 === 2 && w2 === 2) { const l = rv(); feats.push([pos, pos + l]); pos += l; }
+      else if (f2 === 5 && w2 === 0) ext = rv();
+      else skip(w2);
+    }
+    pos = lend;
+    if (name !== "building") continue;
+    const out = [];
+    feats.forEach(([a, b], idx) => {
+      pos = a; let type = 0, geom = null;
+      while (pos < b) {
+        const t3 = rv(), f3 = Math.floor(t3 / 8), w3 = t3 & 7;
+        if (f3 === 3 && w3 === 0) type = rv();
+        else if (f3 === 4 && w3 === 2) { const l = rv() + pos; geom = []; while (pos < l) geom.push(rv()); }
+        else skip(w3);
+      }
+      if (type !== 3 || !geom) return;
+      const rings = []; let x = 0, y = 0, cur = null, i = 0;
+      const zz = (n) => (n % 2 === 1) ? -(n + 1) / 2 : n / 2;
+      while (i < geom.length) {
+        const c = geom[i++], cmd = c & 7, cnt = Math.floor(c / 8);
+        if (cmd === 1 || cmd === 2) {
+          for (let k = 0; k < cnt; k++) { x += zz(geom[i++]); y += zz(geom[i++]); if (cmd === 1) { cur = []; rings.push(cur); } cur.push([x, y]); }
+        } else if (cmd === 7 && cur && cur.length) cur.push(cur[0]);
+      }
+      const area = (r) => { let s2 = 0; for (let k = 0; k < r.length - 1; k++) s2 += r[k][0] * r[k + 1][1] - r[k + 1][0] * r[k][1]; return s2; };
+      const outer = rings.filter(r => r.length >= 4 && area(r) > 0);
+      if (!outer.length) return;
+      let ring = outer[0]; outer.forEach(r => { if (r.length > ring.length) ring = r; });
+      let A = 0, cx = 0, cy = 0;
+      for (let k = 0; k < ring.length - 1; k++) { const fct = ring[k][0] * ring[k + 1][1] - ring[k + 1][0] * ring[k][1]; A += fct; cx += (ring[k][0] + ring[k + 1][0]) * fct; cy += (ring[k][1] + ring[k + 1][1]) * fct; }
+      if (Math.abs(A) < 1e-9) return;
+      cx /= 3 * A; cy /= 3 * A;
+      if (!(cx >= 0 && cx < ext && cy >= 0 && cy < ext)) return;   // のりしろ部分は隣のタイルで数える
+      const c = toLL(cx, cy, ext);
+      out.push({ key: tx + "_" + ty + "#" + idx, tile: tx + "_" + ty, idx, lat: c[0], lng: c[1], ll: ring.map(p => toLL(p[0], p[1], ext)) });
+    });
+    return out;
+  }
+  return [];
+}
+function _hkLoadBldgTile(tx, ty) {
+  const k = tx + "_" + ty;
+  if (!_hkBldgCache.has(k)) {
+    _hkBldgCache.set(k, fetch(`https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/${_HK_BZ}/${tx}/${ty}.pbf`)
+      .then(r => r.ok ? r.arrayBuffer() : null)
+      .then(ab => ab ? _hkMvtBuildings(new Uint8Array(ab), tx, ty) : [])
+      .catch(e => { _hkBldgCache.delete(k); return []; }));
+  }
+  return _hkBldgCache.get(k);
+}
+function _hkLoadChiban(tx, ty) {
+  const k = (tx >> 3) + "_" + (ty >> 3);
+  if (!_hkChibanCache.has(k)) {
+    _hkChibanCache.set(k, fetch(`areas/chiban/${k}.json`).then(r => r.ok ? r.json() : null).catch(() => { _hkChibanCache.delete(k); return null; }));
+  }
+  return _hkChibanCache.get(k).then(d => {
+    if (!d || !d.t) return null;
+    const m = new Map();
+    (d.t[tx + "_" + ty] || []).forEach(([i, o, cb]) => m.set(i, { town: d.o[o] || "", chiban: cb, q: Array.isArray(d.q) && typeof d.q[o] === "number" ? d.q[o] : -1 }));
+    return m;
+  });
+}
+function _hkTileOf(lat, lng) {
+  const N = Math.pow(2, _HK_BZ);
+  return [Math.floor((lng + 180) / 360 * N), Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * N)];
+}
+function _hkPointInRing(lat, lng, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [yi, xi] = ring[i], [yj, xj] = ring[j];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+const _hkDistM = (a, b) => Math.hypot((a.lat - b.lat) * 111000, (a.lng - b.lng) * 90000);
+
+function HousePicker({ lat, lng, pickedKey, onPick }) {
+  const divRef = React.useRef(null);
+  const mapRef = React.useRef(null);
+  const layerRef = React.useRef(null);
+  const [blds, setBlds] = React.useState(null);
+  const [chib, setChib] = React.useState({});
+  const [sel, setSel] = React.useState(pickedKey || null);
+  const pickRef = React.useRef(onPick); pickRef.current = onPick;
+  // 地図を作る（下地＝航空写真。屋根で家が分かるように）
+  React.useEffect(() => {
+    if (!divRef.current || typeof L === "undefined") return;
+    const map = L.map(divRef.current, { zoomControl: false, attributionControl: false, maxZoom: 21 }).setView([lat, lng], 19);
+    L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg", { maxNativeZoom: 18, maxZoom: 21 }).addTo(map);
+    L.circleMarker([lat, lng], { radius: 5, color: "#fff", weight: 2, fillColor: "#2563eb", fillOpacity: 1, interactive: false }).addTo(map);
+    mapRef.current = map;
+    setTimeout(() => { try { map.invalidateSize(); } catch (e) {} }, 300);
+    return () => { try { map.remove(); } catch (e) {} mapRef.current = null; };
+  }, [lat, lng]);
+  // 近くの建物と地番を読む
+  React.useEffect(() => {
+    let dead = false;
+    const d = 0.0011;   // 約100m四方
+    const ts = new Set();
+    [[lat - d, lng - d], [lat - d, lng + d], [lat + d, lng - d], [lat + d, lng + d]].forEach(([a, b]) => ts.add(_hkTileOf(a, b).join("_")));
+    const tl = [...ts].map(k => k.split("_").map(Number));
+    Promise.all(tl.map(([x, y]) => Promise.all([_hkLoadBldgTile(x, y), _hkLoadChiban(x, y)]))).then(rs => {
+      if (dead) return;
+      const all = [], cm = {};
+      rs.forEach(([bs, cbm]) => (bs || []).forEach(b => {
+        if (_hkDistM(b, { lat, lng }) > 120) return;
+        all.push(b);
+        const c = cbm && cbm.get(b.idx);
+        if (c) cm[b.key] = c;
+      }));
+      setBlds(all); setChib(cm);
+      // 最初は「ピンが乗っている家」、無ければ一番近い家（25m以内）を選んでおく
+      if (!pickedKey && all.length) {
+        let best = all.find(b => _hkPointInRing(lat, lng, b.ll));
+        if (!best) { const s2 = [...all].sort((a, b) => _hkDistM(a, { lat, lng }) - _hkDistM(b, { lat, lng })); if (_hkDistM(s2[0], { lat, lng }) <= 25) best = s2[0]; }
+        if (best) { setSel(best.key); pickRef.current && pickRef.current({ ...best, ...(cm[best.key] || {}), auto: true }); }
+      }
+    });
+    return () => { dead = true; };
+  }, [lat, lng]);
+  // 建物の輪郭を描く（選んだ家＝オレンジで3回点滅してから点きっぱなし）
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !blds) return;
+    if (layerRef.current) { try { map.removeLayer(layerRef.current); } catch (e) {} }
+    const grp = L.layerGroup();
+    blds.forEach(b => {
+      const on = b.key === sel;
+      const pg = L.polygon(b.ll, on
+        ? { color: "#f97316", weight: 4, fillColor: "#f97316", fillOpacity: 0.4, className: "hk-bldg-on" }
+        : { color: "#ffffff", weight: 1.5, opacity: 0.9, fillColor: "#ffffff", fillOpacity: 0.06 });
+      pg.on("click", (ev) => { try { L.DomEvent.stop(ev); } catch (e) {} setSel(b.key); pickRef.current && pickRef.current({ ...b, ...(chib[b.key] || {}), auto: false }); });
+      pg.addTo(grp);
+    });
+    grp.addTo(map);
+    layerRef.current = grp;
+  }, [blds, sel, chib]);
+  React.useEffect(() => {
+    if (document.getElementById("hk-bldg-style")) return;
+    const st = document.createElement("style"); st.id = "hk-bldg-style";
+    st.textContent = "@keyframes hkBldgPick{0%,100%{fill-opacity:.4;stroke-opacity:1}50%{fill-opacity:.05;stroke-opacity:.2}}"
+      + "path.hk-bldg-on{animation:hkBldgPick .45s ease-in-out 3}"
+      + "@media (prefers-reduced-motion: reduce){path.hk-bldg-on{animation:none}}";
+    document.head.appendChild(st);
+  }, []);
+  const cur = sel ? (blds || []).find(b => b.key === sel) : null;
+  const cc = sel ? chib[sel] : null;
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.text, marginBottom: 6 }}>🏠 どの家？（屋根を押して選ぶ）</div>
+      <div ref={divRef} style={{ height: 240, borderRadius: 10, overflow: "hidden", border: "2px solid #f97316", touchAction: "none", background: "#1f2937" }} />
+      <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.6, color: C.text }}>
+        {!blds ? "建物を読み込み中…"
+          : !blds.length ? "この近くには地図に建物がありません（新築・更地など）。今の位置のまま立てます。"
+          : !cur ? "家の屋根を押してください（白い線＝家）。押した家がオレンジになり、ピンが家の真ん中に立ちます。"
+          : <>✅ オレンジの家にピンを立てます{cc && cc.q >= 0 && cc.q < 60 ? <><br /><span style={{ color: "#b45309" }}>地番は参考：{cc.town}{cc.chiban}（この町は法務省の地図がずれやすいので自動では入れません。ブルーマップで確かめてください）</span></>
+            : cc ? <>・地番 <b>{cc.town}{cc.chiban}</b>（法務省の地図・地番欄に入れました）</> : <span style={{ color: C.muted }}>・この辺りは地番の地図がありません</span>}<br /><span style={{ fontSize: 10, color: C.muted }}>違う家なら、正しい家の屋根を押してください。青い点＝最初に押した所</span></>}
+      </div>
+    </div>
+  );
 }
 
 // 📍 手動でピン位置を指定するモーダル
@@ -27125,6 +27310,20 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: `ストリートビューで見つけた候補（${c.by || ""}）`, posting: false });
     }
   };
+  // 🆕 v9.649: 家を選んだら、ピンを家の真ん中へ動かし、地番欄が空(または前の自動の地番)なら地番を入れる
+  const pickHouseForPin = (b) => {
+    // 当たりが低い町(謄本との答え合わせで6割未満＝法務省の地図がずれやすい)は自動で入れない
+    const cb = b && b.chiban && !(b.q >= 0 && b.q < 60) ? `${b.town}${b.chiban}` : "";
+    setPendingPin(p => {
+      if (!p) return p;
+      return { ...p, rawLat: typeof p.rawLat === "number" ? p.rawLat : p.lat, rawLng: typeof p.rawLng === "number" ? p.rawLng : p.lng, lat: b.lat, lng: b.lng, bldgKey: b.key, autoChiban: cb };
+    });
+    setPinForm(f => {
+      const a = String(f.address || "").trim();
+      if (a && a !== f._autoChiban) return f;   // 自分で入れた地番は上書きしない
+      return { ...f, address: cb, _autoChiban: cb };
+    });
+  };
   const cancelPendingPin = () => {
     setPendingPin(null);
     setPinForm({ address: "", landmark: "", assignee: "", memo: "", posting: false });
@@ -27168,6 +27367,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       visitLog: [],
       family: [],
     };
+    // 🆕 v9.649: 家を押して選んだピン（ピン＝家の真ん中）。最初に押した所も残す
+    if (pendingPin.bldgKey) {
+      newJiage.pinSnap = "建物";
+      newJiage.rawLat = pendingPin.rawLat;
+      newJiage.rawLng = pendingPin.rawLng;
+      if (address && pendingPin.autoChiban && toNewAddr(pendingPin.autoChiban) === address) newJiage.addressSource = "地番地図(建物を選択)";
+    }
     // 🆕 v9.437: 空き家そのものへ資料を投函した記録。所有者宅への訪問とは別物なので visitLog には混ぜない。
     if (pinForm.posting) {
       newJiage.postingAt = newId;
@@ -33252,6 +33458,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
       {/* 🆕 v8.95→v8.98: 現地ピン入力モーダル（2段構え: 目印住所＋地番） */}
       {pendingPin && (
         <BottomSheet title="📍 現地ピン登録" onClose={cancelPendingPin}>
+          {/* 🆕 v9.649: 家を押して選ぶ（ピンを家の真ん中へ・地番も自動） */}
+          <HousePicker
+            lat={typeof pendingPin.rawLat === "number" ? pendingPin.rawLat : pendingPin.lat}
+            lng={typeof pendingPin.rawLng === "number" ? pendingPin.rawLng : pendingPin.lng}
+            pickedKey={pendingPin.bldgKey || null}
+            onPick={pickHouseForPin}
+          />
           {/* 🆕 v9.614: 同じ家に前のピンがあれば知らせる（絞り込みで隠れている分・他の人の分も含む）
               2026-10-29 下田さん: 一度回った道をもう一度回り、6/5のピン(過去に提案してだめだった人)の家に新しくピンを立てていた */}
           {(() => {
