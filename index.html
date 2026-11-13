@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-13-v9.641";
+const APP_VERSION = "2026-11-13-v9.642";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.642", date: "2026-11-13", title: "地図を航空写真に切り替えられるように",
+    body: "地上げの地図の右下に「🛰 写真」ボタンを足しました。押すと地図が航空写真（国土地理院の最新の空中写真）になり、家・空き地・畑の様子を上から見られます。ピンや探索候補の色はそのまま重なります。もう一度押す（🗺 地図）と元の地図に戻ります。どちらにしたかはスマホごとに覚えます。",
+    where: "地上げ → 地図 → 右下「🛰 写真」" },
   { v: "9.641", date: "2026-11-13", title: "探索候補の赤い区画が「家が建っている所だけ」に・点滅をやめました",
     body: "🎯探索候補で区画を塗る時、町の境界の中を丸ごと塗るのをやめ、家が建っている100m四方だけを塗るようにしました（畑・田んぼは塗りません。境界は点線で残ります）。おすすめ・今日回る区画の赤は、目がチカチカしないよう点滅をやめて常に点いた表示にしました。",
     where: "地上げ → 地図 → 左下「🎯 探索候補」" },
@@ -10533,6 +10536,10 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   };
   const mapRef = React.useRef(null);
   const mapInstanceRef = React.useRef(null);
+  // 🆕 v9.642: 地図 ⇄ 航空写真（国土地理院「全国最新写真」）の切り替え。端末ごとに覚える
+  const baseLayerRef = React.useRef(null);
+  const [baseMode, setBaseModeRaw] = React.useState(() => { try { return localStorage.getItem("hikari_basemap") === "photo" ? "photo" : "map"; } catch (e) { return "map"; } });
+  const setBaseMode = (v) => { setBaseModeRaw(v); try { localStorage.setItem("hikari_basemap", v); } catch (e) {} };
   const markersRef = React.useRef([]);
   // 🆕 v9.295: マーカークラスタ用レイヤー（プラグイン未ロード時は null ＝従来どおり個別に map へ addTo）
   const clusterGroupRef = React.useRef(null);
@@ -10582,10 +10589,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       map.on("moveend", remember);
       map.on("zoomend", remember);
     }
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap",
-      maxZoom: 19,
-    }).addTo(map);
+    baseLayerRef.current = _hkBaseLayer(baseMode).addTo(map);
     // 🆕 v9.295: マーカークラスタ・グループを作成し map に載せる。
     //   近いピンを1つの丸（件数付き）にまとめ、ズームすると個々のピンが出てくる（Googleマイマップ相当）。
     //   プラグインが未ロード（CDN不達など）の時は null にして、従来どおり各マーカーを直接 map に載せる方式へ自動フォールバック。
@@ -10758,6 +10762,14 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     return () => { try { map.removeLayer(grp); } catch (e) {} };
   }, [areaCircles]);
 
+  // 🆕 v9.642: 下地の切り替え（ピン・区画などの重ね物はそのまま）
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined" || !baseLayerRef.current) return;
+    try { map.removeLayer(baseLayerRef.current); } catch (e) {}
+    baseLayerRef.current = _hkBaseLayer(baseMode).addTo(map);
+    try { baseLayerRef.current.eachLayer ? baseLayerRef.current.eachLayer(l => l.bringToBack && l.bringToBack()) : baseLayerRef.current.bringToBack(); } catch (e) {}
+  }, [baseMode]);
   // 🆕 v9.558: 探索候補エリア（町丁・字の区画）。上位3区画（「今日ここを回る」を押したらその1区画だけ）を点滅。
   const kohoLayerRef = React.useRef(null);
   const kohoTapRef = React.useRef(null);
@@ -13150,6 +13162,19 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
         display: "flex", flexDirection: "column", gap: 10,
         pointerEvents: "auto",
       }}>
+        {/* 🆕 v9.642: 地図 ⇄ 航空写真 */}
+        <button
+          onClick={() => setBaseMode(baseMode === "photo" ? "map" : "photo")}
+          title={baseMode === "photo" ? "地図に戻す" : "航空写真にする"}
+          style={{
+            width: 46, height: 46, borderRadius: "50%",
+            background: baseMode === "photo" ? "#0f766e" : "#ffffff",
+            color: baseMode === "photo" ? "#fff" : "#1f2937",
+            border: "1px solid rgba(0,0,0,0.12)", boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+            cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            fontSize: 18, fontFamily: "inherit", lineHeight: 1, padding: 0,
+          }}
+        >{baseMode === "photo" ? "🗺" : "🛰"}<span style={{ fontSize: 8, fontWeight: 800, marginTop: 1 }}>{baseMode === "photo" ? "地図" : "写真"}</span></button>
         {/* 🆕 v9.37: 北矢印 ( 一番上、 ◎ と 🌐 と縦並び ) */}
         <button
           onClick={() => setHeadingMode(m => m === "north" ? "heading" : "north")}
@@ -13231,6 +13256,18 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       )}
     </div>
   );
+}
+
+// 🆕 v9.642: 地図の下地。"photo" は国土地理院の全国最新写真（シームレス空中写真・出典表示で無料）＋地名・道路の文字
+function _hkBaseLayer(mode) {
+  if (mode === "photo") {
+    return L.layerGroup([
+      L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg", {
+        attribution: "出典：国土地理院 全国最新写真（シームレス）", maxNativeZoom: 18, maxZoom: 19,
+      }),
+    ]);
+  }
+  return L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap", maxZoom: 19 });
 }
 
 // 📍 手動でピン位置を指定するモーダル
@@ -26184,6 +26221,26 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     } catch (e) {}
   }, [route]);
   const [myHomePt, setMyHomePt] = useState(null); // 🆕 v9.634: 登録した🏠自宅（クラウド homept::<名前>）
+  // 🆕 v9.642: 狙いの団地は本当に当たるか（ピンの成績を団地の中と外で比べる。画面上の集計だけ）
+  const neraiStats = useMemo(() => {
+    if (!neraiOpen || !neraiData) return null;
+    const cells = new Set();
+    neraiData.forEach(a => { for (let i = 0; i < a.m.length; i += 4) cells.add((a.r0 + a.m[i]) + "," + (a.c0 + a.m[i + 1])); });
+    const GOOD = ["仕入", "見込み", "交渉中", "媒介", "中長期見込", "見込み候補", "売却済み"];
+    const z = { in: { pins: 0, met: 0, good: 0, buy: 0 }, out: { pins: 0, met: 0, good: 0, buy: 0 } };
+    (data.jiage || []).forEach(j => {
+      if (!j || j.source !== "現地ピン" || typeof j.lat !== "number" || typeof j.lng !== "number") return;
+      const c = _takuchiPinCell(j.lat, j.lng);
+      let hit = false;
+      for (let dr = -1; dr <= 1 && !hit; dr++) for (let dc = -1; dc <= 1; dc++) if (cells.has((c[0] + dr) + "," + (c[1] + dc))) { hit = true; break; }
+      const t = z[hit ? "in" : "out"];
+      t.pins++;
+      if (Array.isArray(j.visitLog) && j.visitLog.some(v => v && v.result === "home")) t.met++;
+      if (GOOD.includes(j.status)) t.good++;
+      if (j.status === "仕入") t.buy++;
+    });
+    return z;
+  }, [neraiOpen, neraiData, data.jiage]);
   const neraiRows = useMemo(() => {
     if (!neraiOpen || !neraiData) return null;
     // 行った100mマス：現地ピンのマス＋探索ルートで合計1分以上いたマス
@@ -31671,6 +31728,30 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                 );
                               })}
                               {rows.length > shown.length && <div style={{ color: C.muted, fontSize: 11, padding: 6, textAlign: "center" }}>ほか {rows.length - shown.length}町丁（町名でしぼると出ます）</div>}
+                              {neraiStats && (() => {
+                                const pc = (a, b) => b ? (a / b * 100).toFixed(1) + "%" : "—";
+                                const row = (l, t, bold) => (
+                                  <tr style={{ fontWeight: bold ? 800 : 400 }}>
+                                    <td style={{ padding: "3px 4px" }}>{l}</td>
+                                    <td style={{ padding: "3px 4px", textAlign: "right" }}>{t.pins.toLocaleString()}</td>
+                                    <td style={{ padding: "3px 4px", textAlign: "right" }}>{t.good}（{pc(t.good, t.pins)}）</td>
+                                    <td style={{ padding: "3px 4px", textAlign: "right" }}>{t.buy}</td>
+                                  </tr>
+                                );
+                                return (
+                                  <div style={{ marginTop: 10, background: C.cardBg, border: `2px solid ${C.borderDim}`, borderRadius: 10, padding: "8px 10px", fontSize: 12, color: C.text }}>
+                                    <div style={{ fontWeight: 800, marginBottom: 4 }}>📊 狙いの団地は本当に当たる？（自動で集計）</div>
+                                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                                      <thead><tr style={{ color: C.muted, fontSize: 11 }}><th style={{ textAlign: "left", padding: "2px 4px" }}></th><th style={{ textAlign: "right", padding: "2px 4px" }}>ピン</th><th style={{ textAlign: "right", padding: "2px 4px" }}>見込み以上</th><th style={{ textAlign: "right", padding: "2px 4px" }}>仕入</th></tr></thead>
+                                      <tbody>
+                                        {row("狙いの団地の中", neraiStats.in, true)}
+                                        {row("それ以外", neraiStats.out, false)}
+                                      </tbody>
+                                    </table>
+                                    <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>見込み以上＝見込み・中長期見込・交渉中・媒介・仕入・売却済み。団地から100m以内のピンを「中」に数えます。回るほど数字がたまり、本当に差があるかが分かってきます。</div>
+                                  </div>
+                                );
+                              })()}
                               <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>押すとその町に地図が寄り、狙いの団地を<b style={{ color: "#c2410c" }}>オレンジの四角</b>で地図に出します。件数・時間はまだ回っていない部分だけの目安です（移動時間は入っていません）。出典：国土交通省 土地利用細分メッシュ（1976〜1997年）・令和2年国勢調査。</div>
                             </div>
                           </div>
