@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.662";
+const APP_VERSION = "2026-11-14-v9.663";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13546,6 +13546,8 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
   const bothRef = React.useRef(both); bothRef.current = both;
   // 🆕 v9.652: 進む速さ（端末ごとに覚える）・分かれ道で選ぶ・通った道の線
   const SV_SPEEDS = [{ ms: 3600, l: "ゆっくり" }, { ms: 2600, l: "ふつう" }, { ms: 1700, l: "はやい" }];
+  const HOUSE_MS = 2800;   // 🆕 v9.663: 1軒ごとに止まって見る時間
+  const houseRef = React.useRef({ stop: null, nextAt: 0 });
   const [speed, setSpeedRaw] = React.useState(() => { try { const v = Number(localStorage.getItem("hikari_sv_speed")); return v > 0 ? v : 2600; } catch (e) { return 2600; } });
   const setSpeed = (v) => { setSpeedRaw(v); try { localStorage.setItem("hikari_sv_speed", String(v)); } catch (e) {} };
   const [choices, setChoices] = React.useState(null);
@@ -13706,8 +13708,16 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
   // 自動で進む：1.4秒ごとに、進む向きに一番近い道へ1コマ進む
   React.useEffect(() => {
     if (!auto || !ready) return;
+    // 🆕 v9.663: 進むのは「家1軒ずつ」がルール（下田さん 2026-11-14）。約7m以上進んだら1軒ぶん止まって見る→次へ。
+    //   ストリートビューの写真の間隔が短い所（7m未満）は止まらずにもう1コマ進む。速さの切り替えは無し
+    houseRef.current = { stop: null, nextAt: 0 };
     const t = setInterval(() => {
       const pano = panoRef.current; if (!pano || !autoRef.current) return;
+      { const P0 = pano.getPosition(); const hr = houseRef.current;
+        if (P0) { const here0 = [P0.lat(), P0.lng()];
+          if (!hr.stop) hr.stop = here0;
+          else if (_hkM(hr.stop, here0) >= 7) { hr.stop = here0; hr.nextAt = Date.now() + HOUSE_MS; return; }
+          if (Date.now() < hr.nextAt) return; } }
       const links = pano.getLinks() || [];
       // 🆕 v9.657: 範囲を回っている最中＝予定の道に沿って進む（分かれ道でも止まらない）
       if (patrolRef.current && planRef.current) {
@@ -13762,9 +13772,9 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
       pano.setPano(best.pano);
       if (bothRef.current) { if (pano.__hkAim) pano.__hkAim(); }
       else pano.setPov({ heading: best.heading + (((pov.heading - want + 540) % 360) - 180), pitch: pov.pitch });
-    }, speed);
+    }, 450);
     return () => clearInterval(t);
-  }, [auto, ready, speed]);
+  }, [auto, ready]);
   // 🆕 v9.655: 分かれ道の時、下の地図に「進める道」の赤い矢印を出す（押すとその道へ）。下田さん「下の地図でどっちに行くか指定したい」
   const choiceMarksRef = React.useRef([]);
   React.useEffect(() => {
@@ -13818,8 +13828,8 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
       const from = P ? [P.lat(), P.lng()] : poly[0];
       const r = await hkPlanPatrol(poly, from);
       setPlan({ ...r, poly }); setPatrol(null);
-      const mins = Math.round(r.pts.length * (speed / 1000) * 0.9 / 60);
-      setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km（戻り道を入れて ${(r.total / 1000).toFixed(1)}km）・今の速さで約${mins}分`);
+      const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);   // 約10mで1軒
+      setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km（戻り道を入れて ${(r.total / 1000).toFixed(1)}km）・1軒ずつ見て約${mins}分`);
     } catch (er) { setPlan(null); setPlanMsg("⚠️ " + (er.message || er)); }
   };
   const startPatrol = () => {
@@ -13940,7 +13950,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
           <div style={{ display: "flex", gap: 6, padding: "6px 8px", background: "#1e293b" }}>
             <button onClick={() => { setChoices(null); if (!auto) setTravelFromView(); setAuto(a => !a); }} style={b(auto ? "#f59e0b" : "#0ea5e9", "#fff")}>{auto ? "⏸ 止める" : "▶ 自動で進む"}</button>
             <button onClick={() => { const v = !both; setBoth(v); setTimeout(() => { const pn = panoRef.current, p2 = pano2Ref.current; const gm = window.google && window.google.maps; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); if (v && pn.__hkAim) pn.__hkAim(); if (pn.__hkShowDir) pn.__hkShowDir(); } }, 120); }} style={b(both ? "#7c3aed" : "#334155", "#fff")}>{both ? "◧ 両側で見る中" : "◧ 両側で見る"}</button>
-            <button onClick={() => { const i = SV_SPEEDS.findIndex(x => x.ms === speed); setSpeed(SV_SPEEDS[(i + 1) % SV_SPEEDS.length].ms); }} style={{ ...b("#334155", "#fff"), flex: "0 0 auto", padding: "10px 10px" }}>🐢 {(SV_SPEEDS.find(x => x.ms === speed) || SV_SPEEDS[1]).l}</button>
+            {/* v9.663: 速さの切り替えは外した（1軒ずつ進むのがルール） */}
             {!both && <button onClick={() => look(-90)} style={b("#334155", "#fff")}>← 左</button>}
             {!both && <button onClick={() => look(0)} style={b("#334155", "#fff")}>正面</button>}
             {!both && <button onClick={() => look(90)} style={b("#334155", "#fff")}>右 →</button>}
