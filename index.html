@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-13-v9.646";
+const APP_VERSION = "2026-11-13-v9.647";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.647", date: "2026-11-13", title: "ストリートビューの写真が新しい所が、地図とランキングで分かるように",
+    body: "表示の切り替え「📷 ストリートビューの撮影年」を点けると、狙いの団地が撮影年で色分けされます（緑＝2025年〜・青＝2024年・黄＝2023年・灰＝2022年以前。出す年は選べます）。写真が新しい所ほど今の様子に近いので、👁 SVで探す時はここから歩くと効率的です。狙い目ランキングにも「📷2025〜 ◯%」が出て、「📷 2025年〜」を押すと新しい写真が多い町だけにしぼれます。",
+    where: "地上げ → 地図 → 表示の切り替え「📷 ストリートビューの撮影年」／🎯探索候補 →🏆ランキング" },
   { v: "9.645", date: "2026-11-13", title: "家にいながらストリートビューで空き家を探して、翌日確かめられるように",
     body: "地図の左の「👁 SVで探す」を押すと、アプリの中でストリートビューが開きます。「▶ 自動で進む」で道なりに勝手に歩き、怪しい家があれば「🏚 左の家／見ている家／右の家」を押すだけで、その家に👁の印が付きます（下の小さい地図で指でずらせます）。印は全員で見られます。翌日、地図の👁を押すと「🚗 ここに行く（Googleマップ）」「✅ 空き家だった→ピンを立てる」「✕ 住んでた」が出ます。要確認の印をまとめてGoogleマップで回るボタンもあります。ストリートビューで通った道は、地図に紫の点線で残ります（現地の足跡とは別。表示の切り替え「👁 ストリートビューで通った道」で消せます）。",
     where: "地上げ → 地図 → 左の「👁 SVで探す」／地図の👁印" },
@@ -10525,7 +10528,7 @@ if (typeof L !== "undefined" && L.Marker && L.Popup && !L.Marker.prototype._hkUp
   L.Marker.prototype._hkUprightPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho, svTracks, svCands, onSvCandTap }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho, svTracks, svCands, onSvCandTap, svYearRects }) {
   // 🆕 v9.635: ルート中に普通のピンの吹き出しから「➕ ルートに追加」できるよう、最新のルート状態を覚えておく
   const routeOverlayLiveRef = React.useRef(null);
   routeOverlayLiveRef.current = routeOverlay || null;
@@ -10724,6 +10727,22 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     svLayerRef.current = grp;
     return () => { try { map.removeLayer(grp); } catch (e) {} };
   }, [svScans]);
+  // 🆕 v9.647: ストリートビューの撮影年（100mマスを年で色分け）
+  const svYearLayerRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (svYearLayerRef.current) { try { map.removeLayer(svYearLayerRef.current); } catch (e) {} svYearLayerRef.current = null; }
+    if (!Array.isArray(svYearRects) || !svYearRects.length) return;
+    const renderer = L.canvas({ padding: 0.3 });
+    const grp = L.layerGroup();
+    svYearRects.forEach(x => {
+      L.rectangle([[x[0], x[1]], [x[2], x[3]]], { renderer, interactive: false, className: "koho-fill", weight: 1, color: x[4], opacity: 0.9, fillColor: x[4], fillOpacity: 0.32 }).addTo(grp);
+    });
+    grp.addTo(map);
+    svYearLayerRef.current = grp;
+    return () => { try { map.removeLayer(grp); } catch (e) {} };
+  }, [svYearRects]);
   // 🆕 v9.645: ストリートビューで通った道（紫の点線）。200m以上飛んだ所は線を切る
   const svTrackLayerRef = React.useRef(null);
   React.useEffect(() => {
@@ -13586,6 +13605,21 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
       )}
     </div>
   );
+}
+
+// 🆕 v9.647: 100mマスごとのストリートビュー撮影年（areas/svyear.json＝scripts/build-svyear.py）
+const SVYEAR_BANDS = [
+  { k: "2025", l: "2025年〜", c: "#16a34a", test: y => y >= 2025 },
+  { k: "2024", l: "2024年", c: "#2563eb", test: y => y === 2024 },
+  { k: "2023", l: "2023年", c: "#eab308", test: y => y === 2023 },
+  { k: "old", l: "2022年以前", c: "#9ca3af", test: y => y > 0 && y <= 2022 },
+];
+let _svYearPromise = null;
+function loadSvYear() {
+  if (!_svYearPromise) _svYearPromise = fetch("areas/svyear.json").then(r => { if (!r.ok) throw new Error("svyear " + r.status); return r.json(); })
+    .then(d => { const m = new Map(); (d.cells || []).forEach(([r, c, y]) => m.set(r + "," + c, y)); return m; })
+    .catch(e => { _svYearPromise = null; throw e; });
+  return _svYearPromise;
 }
 
 // 📍 手動でピン位置を指定するモーダル
@@ -25754,6 +25788,25 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const setShowSvTrack = (v) => { setShowSvTrackRaw(v); try { localStorage.setItem("hikari_show_svtrack", v ? "1" : "0"); } catch (e) {} };
   const [svWalker, setSvWalker] = useState(null);   // { key, start }
   const [svSelId, setSvSelId] = useState(null);
+  // 🆕 v9.647: 撮影年の表示（どの年を出すか・端末ごとに覚える）
+  const [showSvYear, setShowSvYearRaw] = useState(() => { try { return localStorage.getItem("hikari_show_svyear") === "1"; } catch (e) { return false; } });
+  const setShowSvYear = (v) => { setShowSvYearRaw(v); try { localStorage.setItem("hikari_show_svyear", v ? "1" : "0"); } catch (e) {} };
+  const [svYearKeys, setSvYearKeysRaw] = useState(() => { try { const v = JSON.parse(localStorage.getItem("hikari_svyear_keys") || "null"); return Array.isArray(v) ? v : ["2025", "2024"]; } catch (e) { return ["2025", "2024"]; } });
+  const setSvYearKeys = (v) => { setSvYearKeysRaw(v); try { localStorage.setItem("hikari_svyear_keys", JSON.stringify(v)); } catch (e) {} };
+  const [svYearMap, setSvYearMap] = useState(null);
+  useEffect(() => { if (showSvYear && !svYearMap) loadSvYear().then(setSvYearMap).catch(() => alert("撮影年のデータを読み込めませんでした（通信）")); }, [showSvYear]);
+  const svYearRects = useMemo(() => {
+    if (!showSvYear || !svYearMap) return null;
+    const bands = SVYEAR_BANDS.filter(b => svYearKeys.includes(b.k));
+    const out = [];
+    svYearMap.forEach((y, key) => {
+      const b = bands.find(bb => bb.test(y)); if (!b) return;
+      const [r, c] = key.split(",").map(Number);
+      const p = _tkyToJgd(r / 1200, 100 + c / 800), q = _tkyToJgd((r + 1) / 1200, 100 + (c + 1) / 800);
+      out.push([p[0], p[1], q[0], q[1], b.c]);
+    });
+    return out;
+  }, [showSvYear, svYearMap, svYearKeys]);
   useEffect(() => {
     let alive = true;
     loadSvCandRows().then(r => { if (alive && r) setSvCands(r); });
@@ -26274,8 +26327,10 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [neraiSort, setNeraiSort] = useState("size");   // size=狙いが広い順 / near=近い順
   const [neraiOnlyNew, setNeraiOnlyNew] = useState(true);
   const [neraiQuery, setNeraiQuery] = useState("");
+  const [neraiNewPhoto, setNeraiNewPhoto] = useState(false);   // 🆕 v9.647: 2025年以降の写真が多い町だけ
   const openNerai = () => {
     setKohoPicker(false); setNeraiOpen(true);
+    loadSvYear().then(setSvYearMap).catch(() => {});
     if (!neraiData) loadKohoFile("nerai.json").then(d => setNeraiData(d.areas || [])).catch(() => { alert("ランキングを読み込めませんでした（通信）"); setNeraiOpen(false); });
   };
   // 🆕 v9.638: 選んだ市町村の「狙いの団地」の100mマス（地図にオレンジの四角で出す）
@@ -26600,20 +26655,21 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const seen = (r, c) => { for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) if (hit.has((r + dr) + "," + (c + dc))) return true; return false; };
     const me = currentLoc && typeof currentLoc.lat === "number" ? currentLoc : (myHomePt || { lat: 36.042, lng: 139.399 });
     return neraiData.map(a => {
-      let tot = 0, done = 0, remT = 0, remT9 = 0, remHs = 0;
+      let tot = 0, done = 0, remT = 0, remT9 = 0, remHs = 0, nNew = 0, nYr = 0;
       for (let i = 0; i < a.m.length; i += 4) {
         const r = a.r0 + a.m[i], c = a.c0 + a.m[i + 1], e = a.m[i + 2], hs = a.m[i + 3] || 0;
         tot++;
+        if (svYearMap) { const y = svYearMap.get(r + "," + c); if (y) { nYr++; if (y >= 2025) nNew++; } }
         if (seen(r, c)) { done++; continue; }
         if (e === 2) remT9++; else remT++;
         remHs += hs;
       }
       const cov = tot ? done / tot : 0;
-      return { ...a, cov, remT, remT9, remHs, rem: remT + remT9 * 0.5,
+      return { ...a, cov, remT, remT9, remHs, rem: remT + remT9 * 0.5, newShare: nYr ? nNew / nYr : null,
         km: _kohoKm(me.lat, me.lng, a.lp[0], a.lp[1]),
         state: cov < 0.1 ? "none" : cov < 0.6 ? "part" : "done" };
     });
-  }, [neraiOpen, neraiData, data.jiage, data.tracks, currentLoc && Math.round(currentLoc.lat * 100), currentLoc && Math.round(currentLoc.lng * 100), myHomePt]);
+  }, [neraiOpen, neraiData, svYearMap, data.jiage, data.tracks, currentLoc && Math.round(currentLoc.lat * 100), currentLoc && Math.round(currentLoc.lng * 100), myHomePt]);
   useEffect(() => { if (!currentUser) return; let alive = true; loadRouteHomeRow(currentUser).then(d => { if (alive) setMyHomePt(d); }); return () => { alive = false; }; }, [currentUser]);
   const [routeHomePicking, setRouteHomePicking] = useState(false); // 🆕 v9.615: 地図をタップしてゴール（帰る場所）を決めている最中
   const [routeSel, setRouteSel] = useState([]); // 🆕 v9.53: ルートから一括削除する選択 stop id 群
@@ -31335,6 +31391,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         // 🆕 v9.564: 空き家・密集市街地・ストリートビュー済み・宅地化の年代は外した（探索候補エリアに役目を譲る）
                         { k: "chika", on: showChika, set: setShowChika, c: "#b45309", l: "💴 基準地価" },
                         { k: "svtrack", on: showSvTrack, set: () => setShowSvTrack(!showSvTrack), c: "#9333ea", l: "👁 ストリートビューで通った道" },
+                        { k: "svyear", on: showSvYear, set: () => setShowSvYear(!showSvYear), c: "#16a34a", l: "📷 ストリートビューの撮影年" },
                         { k: "youto", on: showYouto, set: setShowYouto, c: "#0f766e", l: "🏙 用途地域" },
                         { k: "chosei", on: showChosei, c: "#dc2626", l: "🔥 調整区域の団地",
                           // 所有者住所の表示だと団地の面は出ない（ピンが所有者の家にあるため）→ 点けたら物件住所に切り替える
@@ -31388,6 +31445,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             ...CHIKA_BANDS.map(b => sw(b[2], b[3], true)),
                           ])}
                           {showYouto && optRow("#0f766e", "用途", YOUTO_LEGEND.map(k => sw(YOUTO_ZONES[k][2], YOUTO_ZONES[k][1])))}
+                          {showSvYear && optRow("#16a34a", "撮影年", [
+                            ...SVYEAR_BANDS.map(b => chip("svy" + b.k, svYearKeys.includes(b.k), b.c, () => setSvYearKeys(svYearKeys.includes(b.k) ? svYearKeys.filter(x => x !== b.k) : [...svYearKeys, b.k]), b.l)),
+                            <span key="svyn" style={{ fontSize: 9, color: C.muted }}>狙いの団地の100m四方ごとに、ストリートビューの一番新しい写真の撮影年。新しい所ほど今の様子に近いので、👁 SVで探す時はここから</span>,
+                          ])}
                           {showDanchiNames && optRow("#4338ca", "名前", [
                             sw("#991b1b", "成果あり"), sw("#dc2626", "見込みあり"), sw("#ef4444", "🔥調整区域"), sw("#818cf8", "市街化"),
                             <span key="nt2" style={{ fontSize: 9, color: C.muted }}>埼玉県全域の戸建の団地（集合住宅の団地は出しません）。点線＝まだ行っていない。寄せると名前が出ます</span>,
@@ -31878,6 +31939,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       tracks={trackRecording ? recordingPastTracks : displayTracks}
                       svScans={null}
                       svTracks={showSvTrack ? svTracksData : null}
+                      svYearRects={svYearRects}
                       svCands={pendingPin || selected ? null : svCands}
                       onSvCandTap={placementMode ? null : (id => setSvSelId(id))}
                       trackColorMode={trackColorMode}
@@ -32089,7 +32151,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     {/* 🆕 v9.637: 🏆 埼玉県全域の狙い目ランキング */}
                     {neraiOpen && (() => {
                       const q = neraiQuery.trim();
-                      let rows = (neraiRows || []).filter(a => (!neraiOnlyNew || a.state !== "done") && a.rem >= 2 && a.remHs >= 30 && (!q || (a.cn + a.n).includes(q)));
+                      let rows = (neraiRows || []).filter(a => (!neraiOnlyNew || a.state !== "done") && a.rem >= 2 && a.remHs >= 30 && (!neraiNewPhoto || (a.newShare || 0) >= 0.5) && (!q || (a.cn + a.n).includes(q)));
                       rows = rows.slice().sort(neraiSort === "near" ? ((x, y) => x.km - y.km) : ((x, y) => y.remHs - x.remHs));
                       const shown = rows.slice(0, 150);
                       const stC = { none: "#0284c7", part: "#d97706", done: "#64748b" };
@@ -32116,6 +32178,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             <div style={{ padding: "0 16px 8px", display: "flex", gap: 6, alignItems: "center" }}>
                               <input value={neraiQuery} onChange={e => setNeraiQuery(e.target.value)} placeholder="市町村・町名でしぼる（例：所沢）"
                                 style={{ flex: 1, minWidth: 0, boxSizing: "border-box", padding: "8px 10px", fontSize: 14, borderRadius: 10, border: `1.5px solid ${C.borderDim}`, background: C.inset, color: C.text, fontFamily: "inherit" }} />
+                              <button onClick={() => setNeraiNewPhoto(v => !v)} style={{ padding: "8px 8px", borderRadius: 10, border: `1.5px solid ${neraiNewPhoto ? "#16a34a" : C.borderDim}`, background: neraiNewPhoto ? "#16a34a" : C.inset, color: neraiNewPhoto ? "#fff" : C.text, fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>📷 2025年〜</button>
                               <button onClick={() => setNeraiOnlyNew(v => !v)} style={{ padding: "8px 8px", borderRadius: 10, border: `1.5px solid ${neraiOnlyNew ? "#0284c7" : C.borderDim}`, background: neraiOnlyNew ? "#0284c7" : C.inset, color: neraiOnlyNew ? "#fff" : C.text, fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>{neraiOnlyNew ? "✓ 回った所を隠す" : "回った所も出す"}</button>
                             </div>
                             <div style={{ overflowY: "auto", padding: "0 16px 16px" }}>
@@ -32130,7 +32193,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                     <span style={{ flex: 1, minWidth: 0 }}>
                                       <span style={{ display: "block", fontSize: 11, color: C.muted }}>{a.cn}・{a.km.toFixed(1)}km</span>
                                       <span style={{ display: "block", fontSize: 14, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.n}</span>
-                                      <span style={{ display: "block", fontSize: 11, color: stC[a.state], fontWeight: 700 }}>● {stT(a)}</span>
+                                      <span style={{ display: "block", fontSize: 11, color: stC[a.state], fontWeight: 700 }}>● {stT(a)}{a.newShare != null ? <span style={{ marginLeft: 6, color: a.newShare >= 0.5 ? "#16a34a" : C.muted }}>📷2025〜 {Math.round(a.newShare * 100)}%</span> : null}</span>
                                     </span>
                                     <span style={{ flexShrink: 0, textAlign: "right" }}>
                                       <span style={{ display: "block", fontSize: 15, fontWeight: 900, color: "#b45309" }}>空き家 約{est}件</span>
