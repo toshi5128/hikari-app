@@ -5,7 +5,7 @@ build-house-cells.py -- 探索候補の区画を「家が建っている所だ�
 下田さん(2026-11-13)「区画の中の何も家が建っていない畑まで赤くなっている。家が建っている所だけ赤く囲んでほしい」
 
 国土地理院ベクトルタイル(experimental_bvmap z15 の building)で、100mマス(国交省メッシュと同じ区切り)ごとに
-戸建てサイズ(30〜400㎡)の建物を数え、MIN 軒以上のマスを「家のあるマス」として町丁(areas/*.geojson)に振り分け、
+建物(20〜3000㎡)を数え、MIN 軒以上のマスを「家のあるマス」として町丁(areas/*.geojson)に振り分け、
 properties.hc = [基準行, 基準列, 行差, 列差, 行差, 列差, ...] で持たせる（アプリはこのマスだけを塗る）。
 
 使い方: python scripts/build-house-cells.py <タイルの置き場フォルダ>
@@ -17,7 +17,7 @@ import mapbox_vector_tile as M
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AREAS = os.path.join(ROOT, "areas")
 CACHE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "_bv15")
-MIN = 4          # 100mマスにこれ以上の家があれば「家のあるマス」
+MIN = 5          # 100mマスにこれ以上の建物があれば「家のあるマス」（畑の小屋1〜4棟は塗らない）
 Z = 15; N = 2 ** Z
 
 
@@ -112,7 +112,7 @@ def main():
             for i in range(len(ring)):
                 A += ring[i - 1][0] * ring[i][1] - ring[i][0] * ring[i - 1][1]
             area = abs(A) / 2 * mx * my
-            if not (30 <= area <= 400):
+            if not (20 <= area <= 3000):   # z15 は家が数軒まとめて1つの形になることがあるので広めに
                 continue
             cx = sum(p[0] for p in ring) / len(ring); cy = sum(p[1] for p in ring) / len(ring)
             k = cellof(la1 + (la0 - la1) * cy / ext, lo0 + (lo1 - lo0) * cx / ext)
