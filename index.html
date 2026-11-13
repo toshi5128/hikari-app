@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.652";
+const APP_VERSION = "2026-11-14-v9.653";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.653", date: "2026-11-14", title: "SVで探す：空き家を見つけたその場でピン登録できるように",
+    body: "👁 SVで探すで「🏚 左の家／前の家／右の家」を押すと、その場でピン登録の画面が開きます。航空写真で屋根を押して家を選び、目印住所と地番（地図がある地域）は自動で入ります。保存するとストリートビューに戻るので、続けて探せます。下の地図には、もう立っているピンが🔴で出るので、同じ家を2回登録しません。メモには「ストリートビューで見つけた空き家・現地未確認」と入ります。",
+    where: "地上げ → 地図 → 👁 SVで探す → 🏚" },
   { v: "9.652", date: "2026-11-14", title: "SVで探す：始める場所を選べる・通った道が線で出る・速さと分かれ道",
     body: "①下の地図を押すと、その場所からストリートビューで探し始められます。②通った道が紫の線で出ます（前に通った道は点線）。現地の足跡と同じように、どこを見たか分かります。③「🐢」ボタンで進む速さを ゆっくり／ふつう／はやい に切り替えられます。④分かれ道では自動で止まり、「← 左へ／↑ まっすぐ／右へ →」から進む道を選べます。⑤両側で見る時は、真横ではなく斜め前を見るので、家全体が見やすくなりました。",
     where: "地上げ → 地図 → 👁 SVで探す" },
@@ -13529,7 +13532,7 @@ function _svOffset(lat, lng, bearingDeg, meters) {
   const r = bearingDeg * Math.PI / 180;
   return { lat: lat + (meters * Math.cos(r)) / 110574, lng: lng + (meters * Math.sin(r)) / (111320 * Math.cos(lat * Math.PI / 180)) };
 }
-function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScanSaved, pastTracks }) {
+function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScanSaved, pastTracks, onRegister, nearPins }) {
   const panoDiv = React.useRef(null), mapDiv = React.useRef(null);
   // 🆕 v9.651: 両側モード（左側と右側を上下2画面で同時に見る＝同じ道を2回通らなくていい）
   const pano2Div = React.useRef(null), pano2Ref = React.useRef(null), meRef = React.useRef(null);
@@ -13690,6 +13693,15 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
     if (bothRef.current && pano.__hkAim) setTimeout(() => pano.__hkAim(), 50);
     setAuto(true);
   };
+  // 🆕 v9.653: もう立っているピンを赤い点で出す（同じ家を2回登録しないように）
+  const pinMarksRef = React.useRef([]);
+  React.useEffect(() => {
+    const gm = window.google && window.google.maps, gmap = gmapRef.current;
+    if (!gm || !gmap) return;
+    pinMarksRef.current.forEach(m => m.setMap(null));
+    pinMarksRef.current = (nearPins || []).map(q => new gm.Marker({ map: gmap, position: { lat: q.lat, lng: q.lng }, clickable: false, zIndex: 50,
+      icon: { path: gm.SymbolPath.CIRCLE, scale: 6, fillColor: "#dc2626", fillOpacity: 0.95, strokeColor: "#fff", strokeWeight: 2 } }));
+  }, [nearPins, ready]);
   // 印を地図に出す（ドラッグで位置を直せる）
   React.useEffect(() => {
     const gm = window.google && window.google.maps, gmap = gmapRef.current;
@@ -13714,6 +13726,13 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
     const q = _svOffset(p.lat(), p.lng(), brg, side === "front" ? 18 : (bothRef.current ? 17 : 14));
     const id = "sv" + Date.now() + Math.random().toString(36).slice(2, 6);
     const pv = (side === "right" && bothRef.current && pano2Ref.current) ? pano2Ref.current.getPov() : pano.getPov();
+    // 🆕 v9.653: 見つけたその場でピン登録（下田さん 2026-11-14「見終わった後だと何軒もあって屋根を選べない。1軒ずつその場で登録したい」）
+    if (onRegister) {
+      setAuto(false); setChoices(null);
+      onRegister({ lat: q.lat, lng: q.lng, svView: { pano: pano.getPano(), heading: Math.round(side === "front" && !bothRef.current ? pv.heading : brg), pitch: Math.round(pv.pitch || 0), zoom: Math.round((pano.getZoom ? pano.getZoom() : 1) * 10) / 10, shot: shotDate || "" } });
+      setAdded(n => n + 1);
+      return;
+    }
     onAdd && onAdd({ id, lat: q.lat, lng: q.lng, by: member || "", at: Date.now(), status: "要確認", pano: pano.getPano(), heading: Math.round(brg),
       // 🆕 v9.650: 見つけた時の画面（押すと同じ景色が出る）。左右の家は家の方を向いた画面にする
       view: { heading: Math.round(side === "front" && !bothRef.current ? pv.heading : brg), pitch: Math.round(pv.pitch || 0), zoom: Math.round((pano.getZoom ? pano.getZoom() : 1) * 10) / 10 }, shot: shotDate || "" });
@@ -13781,7 +13800,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
           </div>
           <div style={{ position: "relative", flex: both ? "1 1 26%" : "1 1 34%", minHeight: 0 }}>
             <div ref={mapDiv} style={{ position: "absolute", inset: 0 }} />
-            <div style={{ position: "absolute", left: 8, bottom: 8, background: "rgba(255,255,255,0.92)", borderRadius: 8, padding: "4px 8px", fontSize: 10, color: "#334155", maxWidth: "75%" }}>🔵矢印＝今いる所　紫の線＝今回通った道・点線＝前に通った道　地図を押すとそこから探せます</div>
+            <div style={{ position: "absolute", left: 8, bottom: 8, background: "rgba(255,255,255,0.92)", borderRadius: 8, padding: "4px 8px", fontSize: 10, color: "#334155", maxWidth: "75%" }}>🔵矢印＝今いる所　🔴＝もう立っているピン　紫の線＝通った道　地図を押すとそこから探せます</div>
           </div>
         </>
       )}
@@ -26151,6 +26170,13 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [showSvTrack, setShowSvTrackRaw] = useState(() => { try { return localStorage.getItem("hikari_show_svtrack") !== "0"; } catch (e) { return true; } });
   const setShowSvTrack = (v) => { setShowSvTrackRaw(v); try { localStorage.setItem("hikari_show_svtrack", v ? "1" : "0"); } catch (e) {} };
   const [svWalker, setSvWalker] = useState(null);   // { key, start }
+  // 🆕 v9.653: SVで探す時に、近く(3km)のもう立っているピン
+  const svNearPins = useMemo(() => {
+    if (!svWalker || !svWalker.start) return [];
+    const st = svWalker.start;
+    return (data.jiage || []).filter(j => j && typeof j.lat === "number" && typeof j.lng === "number"
+      && Math.abs(j.lat - st.lat) < 0.027 && Math.abs(j.lng - st.lng) < 0.033).map(j => ({ lat: j.lat, lng: j.lng }));
+  }, [svWalker, data.jiage]);
   const [svSelId, setSvSelId] = useState(null);
   // 🆕 v9.647: 撮影年の表示（どの年を出すか・端末ごとに覚える）
   const [showSvYear, setShowSvYearRaw] = useState(() => { try { return localStorage.getItem("hikari_show_svyear") === "1"; } catch (e) { return false; } });
@@ -27555,6 +27581,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     };
     // 🆕 v9.650: ストリートビューで見つけた時の画面
     if (pendingPin.svView) newJiage.svView = pendingPin.svView;
+    // 🆕 v9.653: ストリートビューで見つけて登録したピン（現地はまだ見ていない）
+    if (pendingPin.mode === "svlive") newJiage.svFound = true;
     // 🆕 v9.649: 家を押して選んだピン（ピン＝家の真ん中）。最初に押した所も残す
     if (pendingPin.bldgKey) {
       newJiage.pinSnap = "建物";
@@ -32423,6 +32451,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     )}
                     {svWalker && (
                       <SvWalker apiKey={svWalker.key} start={svWalker.start} member={currentUser || ""} cands={svCands} pastTracks={svTracksData}
+                        nearPins={svNearPins}
+                        onRegister={(r) => {
+                          setPlacementMode(false);
+                          setPendingPin({ lat: r.lat, lng: r.lng, mode: "svlive", svView: r.svView });
+                          const sh = r.svView && r.svView.shot ? `（${String(r.svView.shot).replace("-", "年")}月の写真）` : "";
+                          setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: `ストリートビューで見つけた空き家${sh}・現地未確認`, posting: false });
+                        }}
                         onAdd={(c) => upsertSvCand(c)}
                         onScanSaved={(it) => setSvTracksData(list => [...list.filter(x => x.id !== it.id), it])}
                         onClose={() => setSvWalker(null)} />
@@ -33649,7 +33684,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
 
       {/* 🆕 v8.95→v8.98: 現地ピン入力モーダル（2段構え: 目印住所＋地番） */}
       {pendingPin && (
-        <BottomSheet title="📍 現地ピン登録" onClose={cancelPendingPin}>
+        <BottomSheet title={pendingPin.mode === "svlive" ? "📍 ピン登録（ストリートビューで発見）" : "📍 現地ピン登録"} onClose={cancelPendingPin} z={svWalker ? 4000 : undefined}>
           {/* 🆕 v9.649: 家を押して選ぶ（ピンを家の真ん中へ・地番も自動） */}
           <HousePicker
             lat={typeof pendingPin.rawLat === "number" ? pendingPin.rawLat : pendingPin.lat}
