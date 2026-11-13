@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.651";
+const APP_VERSION = "2026-11-14-v9.652";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.652", date: "2026-11-14", title: "SVで探す：始める場所を選べる・通った道が線で出る・速さと分かれ道",
+    body: "①下の地図を押すと、その場所からストリートビューで探し始められます。②通った道が紫の線で出ます（前に通った道は点線）。現地の足跡と同じように、どこを見たか分かります。③「🐢」ボタンで進む速さを ゆっくり／ふつう／はやい に切り替えられます。④分かれ道では自動で止まり、「← 左へ／↑ まっすぐ／右へ →」から進む道を選べます。⑤両側で見る時は、真横ではなく斜め前を見るので、家全体が見やすくなりました。",
+    where: "地上げ → 地図 → 👁 SVで探す" },
   { v: "9.651", date: "2026-11-14", title: "SVで探す：左右の家を同時に見られるように・地図に今いる所",
     body: "「◧ 両側で見る」を点けると、上に左側の家、下に右側の家が同時に出ます。同じ道を左右で2回通らなくてよくなりました（広く見えるよう引きの画面にしています）。「▶ 自動で進む」と一緒に使うと、両側を見ながら道なりに進みます。下の地図には、今いる所と進む向きが青い矢印で出ます。",
     where: "地上げ → 地図 → 👁 SVで探す" },
@@ -13526,12 +13529,19 @@ function _svOffset(lat, lng, bearingDeg, meters) {
   const r = bearingDeg * Math.PI / 180;
   return { lat: lat + (meters * Math.cos(r)) / 110574, lng: lng + (meters * Math.sin(r)) / (111320 * Math.cos(lat * Math.PI / 180)) };
 }
-function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScanSaved }) {
+function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScanSaved, pastTracks }) {
   const panoDiv = React.useRef(null), mapDiv = React.useRef(null);
   // 🆕 v9.651: 両側モード（左側と右側を上下2画面で同時に見る＝同じ道を2回通らなくていい）
   const pano2Div = React.useRef(null), pano2Ref = React.useRef(null), meRef = React.useRef(null);
   const [both, setBothRaw] = React.useState(() => { try { return localStorage.getItem("hikari_sv_both") !== "0"; } catch (e) { return true; } });
   const bothRef = React.useRef(both); bothRef.current = both;
+  // 🆕 v9.652: 進む速さ（端末ごとに覚える）・分かれ道で選ぶ・通った道の線
+  const SV_SPEEDS = [{ ms: 3600, l: "ゆっくり" }, { ms: 2600, l: "ふつう" }, { ms: 1700, l: "はやい" }];
+  const [speed, setSpeedRaw] = React.useState(() => { try { const v = Number(localStorage.getItem("hikari_sv_speed")); return v > 0 ? v : 2600; } catch (e) { return 2600; } });
+  const setSpeed = (v) => { setSpeedRaw(v); try { localStorage.setItem("hikari_sv_speed", String(v)); } catch (e) {} };
+  const [choices, setChoices] = React.useState(null);
+  const lineRef = React.useRef(null);
+  const SIDE = 60;   // 両側モードで見る向き＝進む向きから斜め前60度（真横だと近すぎて家が分からない）
   const setBoth = (v) => { setBothRaw(v); try { localStorage.setItem("hikari_sv_both", v ? "1" : "0"); } catch (e) {} };
   const panoRef = React.useRef(null), gmapRef = React.useRef(null), markersRef = React.useRef({});
   const travelRef = React.useRef(0);           // 進む向き（見回しても変えない）
@@ -13574,10 +13584,31 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         if (!bothRef.current) return;
         const t = travelRef.current;
         const pv = pano.getPov();
-        pano.setPov({ heading: t - 90, pitch: pv.pitch || 0 });
-        pano2.setPov({ heading: t + 90, pitch: (pano2.getPov() || {}).pitch || 0 });
+        pano.setPov({ heading: t - SIDE, pitch: pv.pitch || 0 });
+        pano2.setPov({ heading: t + SIDE, pitch: (pano2.getPov() || {}).pitch || 0 });
       };
       pano.__hkAim = aimSides;
+      // 🆕 v9.652: これまでにストリートビューで通った道（点線）
+      (pastTracks || []).forEach(tr => {
+        const pts = (tr && tr.points) || [];
+        let seg = [];
+        const flush = () => { if (seg.length >= 2) new gm.Polyline({ map: gmap, path: seg, strokeColor: "#c084fc", strokeOpacity: 0, icons: [{ icon: { path: "M 0,-1 0,1", strokeOpacity: 0.95, strokeWeight: 3, scale: 2 }, offset: "0", repeat: "10px" }], clickable: false, zIndex: 5 }); seg = []; };
+        pts.forEach((q, i) => {
+          if (i && Math.hypot((q.lat - pts[i - 1].lat) * 111000, (q.lng - pts[i - 1].lng) * 90000) > 200) flush();
+          seg.push({ lat: q.lat, lng: q.lng });
+        });
+        flush();
+      });
+      // 今回通った道（濃い紫の線）
+      lineRef.current = new gm.Polyline({ map: gmap, path: [], strokeColor: "#9333ea", strokeOpacity: 0.95, strokeWeight: 5, clickable: false, zIndex: 6 });
+      // 下の地図を押すと、その近くのストリートビューへ移動（探す場所を選ぶ）
+      gmap.addListener("click", (e) => {
+        setAuto(false); setChoices(null);
+        new gm.StreetViewService().getPanorama({ location: e.latLng, radius: 60, source: gm.StreetViewSource.OUTDOOR }, (data, st) => {
+          if (st === "OK" && data && data.location) { prevP = null; pano.setPano(data.location.pano); }
+          else alert("そこにはストリートビューがありません。道路の上を押してください。");
+        });
+      });
       // 近くのストリートビューに合わせる（無ければ知らせる）
       new gm.StreetViewService().getPanorama({ location: start, radius: 120, source: gm.StreetViewSource.OUTDOOR }, (data, status) => {
         if (status === "OK" && data && data.location) { pano.setPano(data.location.pano); setNoPano(false); }
@@ -13591,6 +13622,14 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         if (prevP) {
           const dy = (p.lat() - prevP.lat) * 111000, dx = (p.lng() - prevP.lng) * 111000 * Math.cos(p.lat() * Math.PI / 180);
           if (Math.hypot(dx, dy) > 3 && Math.hypot(dx, dy) < 80) travelRef.current = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+        }
+        // 今回の線：100m以上飛んだら(地図で場所を選び直した等)線を切る
+        if (lineRef.current) {
+          const path = lineRef.current.getPath();
+          if (prevP && Math.hypot((p.lat() - prevP.lat) * 111000, (p.lng() - prevP.lng) * 90000) > 100) {
+            lineRef.current = new gm.Polyline({ map: gmap, path: [], strokeColor: "#9333ea", strokeOpacity: 0.95, strokeWeight: 5, clickable: false, zIndex: 6 });
+          }
+          lineRef.current.getPath().push(p);
         }
         prevP = { lat: p.lat(), lng: p.lng() };
         me.setPosition(p);
@@ -13618,19 +13657,39 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
       const links = pano.getLinks() || [];
       if (!links.length) { setAuto(false); return; }
       const want = travelRef.current;
+      const rel = (l) => ((l.heading - want + 540) % 360) - 180;
       let best = null, bd = 999;
-      links.forEach(l => { let d = Math.abs(((l.heading - want + 540) % 360) - 180); if (d < bd) { bd = d; best = l; } });
-      // 🆕 v9.650: 最初の1コマは横（家の方）を向いていても、見ている向きに一番近い道へ進む
-      if (!best || (bd > 75 && !autoFirstRef.current)) { setAuto(false); return; }       // 曲がり角・行き止まりで止まる
+      links.forEach(l => { let d = Math.abs(rel(l)); if (d < bd) { bd = d; best = l; } });
+      if (!autoFirstRef.current) {
+        // 🆕 v9.652: 分かれ道（前・横に道が2本以上）では止まって、進む道を選んでもらう
+        const fwd = links.filter(l => Math.abs(rel(l)) < 115);
+        const spread = fwd.length >= 2 ? Math.max(...fwd.map(rel)) - Math.min(...fwd.map(rel)) : 0;
+        if (fwd.length >= 2 && spread > 35) {
+          setChoices(fwd.map(l => ({ pano: l.pano, heading: l.heading, rel: rel(l) })).sort((a, b) => a.rel - b.rel));
+          setAuto(false); return;
+        }
+        // 🆕 v9.650: 最初の1コマは横（家の方）を向いていても、見ている向きに一番近い道へ進む
+        if (!best || bd > 75) { setAuto(false); return; }       // 曲がり角・行き止まりで止まる
+      }
       autoFirstRef.current = false;
       travelRef.current = best.heading;
       const pov = pano.getPov();
       pano.setPano(best.pano);
       if (bothRef.current) { if (pano.__hkAim) pano.__hkAim(); }
       else pano.setPov({ heading: best.heading + (((pov.heading - want + 540) % 360) - 180), pitch: pov.pitch });
-    }, 1400);
+    }, speed);
     return () => clearInterval(t);
-  }, [auto, ready]);
+  }, [auto, ready, speed]);
+  // 🆕 v9.652: 分かれ道で選んだ道へ進んで、自動で進むを続ける
+  const goChoice = (c) => {
+    const pano = panoRef.current; if (!pano) return;
+    travelRef.current = c.heading;
+    setChoices(null);
+    autoFirstRef.current = true;   // 選んだ直後の1コマは分かれ道の判定をしない
+    pano.setPano(c.pano);
+    if (bothRef.current && pano.__hkAim) setTimeout(() => pano.__hkAim(), 50);
+    setAuto(true);
+  };
   // 印を地図に出す（ドラッグで位置を直せる）
   React.useEffect(() => {
     const gm = window.google && window.google.maps, gmap = gmapRef.current;
@@ -13650,8 +13709,9 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
     const pano = panoRef.current; if (!pano || !pano.getPosition()) return;
     const p = pano.getPosition();
     const pov = pano.getPov().heading;
-    const brg = side === "front" ? (bothRef.current ? travelRef.current : pov) : (travelRef.current + (side === "left" ? -90 : 90));
-    const q = _svOffset(p.lat(), p.lng(), brg, side === "front" ? 18 : 14);
+    const ang = bothRef.current ? SIDE : 90;
+    const brg = side === "front" ? (bothRef.current ? travelRef.current : pov) : (travelRef.current + (side === "left" ? -ang : ang));
+    const q = _svOffset(p.lat(), p.lng(), brg, side === "front" ? 18 : (bothRef.current ? 17 : 14));
     const id = "sv" + Date.now() + Math.random().toString(36).slice(2, 6);
     const pv = (side === "right" && bothRef.current && pano2Ref.current) ? pano2Ref.current.getPov() : pano.getPov();
     onAdd && onAdd({ id, lat: q.lat, lng: q.lng, by: member || "", at: Date.now(), status: "要確認", pano: pano.getPano(), heading: Math.round(brg),
@@ -13682,6 +13742,19 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
           <div style={{ position: "relative", flex: both ? "1 1 31%" : "1 1 56%", minHeight: 0 }}>
             <div ref={panoDiv} style={{ position: "absolute", inset: 0 }} />
             {both && <div style={{ position: "absolute", left: 8, top: 8, zIndex: 2, background: "rgba(225,29,72,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>◀ 左側の家</div>}
+            {choices && (
+              <div style={{ position: "absolute", left: 8, right: 8, bottom: 30, zIndex: 3, background: "rgba(15,23,42,0.92)", borderRadius: 12, padding: 10 }}>
+                <div style={{ color: "#fff", fontSize: 13, fontWeight: 900, marginBottom: 8 }}>🔀 分かれ道です。進む道を選んでください（下の地図の矢印が今の向き）</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {choices.map((c, i) => (
+                    <button key={i} onClick={() => goChoice(c)} style={b("#0ea5e9", "#fff")}>
+                      {c.rel < -30 ? "← 左へ" : c.rel > 30 ? "右へ →" : "↑ まっすぐ"}
+                    </button>
+                  ))}
+                  <button onClick={() => setChoices(null)} style={b("#475569", "#fff")}>止まる</button>
+                </div>
+              </div>
+            )}
             {shotDate && (() => {
               const y = Number(String(shotDate).slice(0, 4)), old = y && y < 2024;
               return <div style={{ position: "absolute", right: 8, top: 8, zIndex: 2, background: old ? "#b45309" : "rgba(15,23,42,0.85)", color: "#fff", borderRadius: 8, padding: "4px 8px", fontSize: 12, fontWeight: 800 }}>📷 {String(shotDate).replace("-", "年")}月撮影{old ? "（古い写真）" : ""}</div>;
@@ -13694,8 +13767,9 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
             {both && <div style={{ position: "absolute", right: 8, top: 8, zIndex: 2, background: "rgba(37,99,235,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>右側の家 ▶</div>}
           </div>
           <div style={{ display: "flex", gap: 6, padding: "6px 8px", background: "#1e293b" }}>
-            <button onClick={() => { if (!auto) setTravelFromView(); setAuto(a => !a); }} style={b(auto ? "#f59e0b" : "#0ea5e9", "#fff")}>{auto ? "⏸ 止める" : "▶ 自動で進む"}</button>
+            <button onClick={() => { setChoices(null); if (!auto) setTravelFromView(); setAuto(a => !a); }} style={b(auto ? "#f59e0b" : "#0ea5e9", "#fff")}>{auto ? "⏸ 止める" : "▶ 自動で進む"}</button>
             <button onClick={() => { const v = !both; setBoth(v); setTimeout(() => { const pn = panoRef.current, p2 = pano2Ref.current; const gm = window.google && window.google.maps; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); if (v && pn.__hkAim) pn.__hkAim(); } }, 120); }} style={b(both ? "#7c3aed" : "#334155", "#fff")}>{both ? "◧ 両側で見る中" : "◧ 両側で見る"}</button>
+            <button onClick={() => { const i = SV_SPEEDS.findIndex(x => x.ms === speed); setSpeed(SV_SPEEDS[(i + 1) % SV_SPEEDS.length].ms); }} style={{ ...b("#334155", "#fff"), flex: "0 0 auto", padding: "10px 10px" }}>🐢 {(SV_SPEEDS.find(x => x.ms === speed) || SV_SPEEDS[1]).l}</button>
             {!both && <button onClick={() => look(-90)} style={b("#334155", "#fff")}>← 左</button>}
             {!both && <button onClick={() => look(0)} style={b("#334155", "#fff")}>正面</button>}
             {!both && <button onClick={() => look(90)} style={b("#334155", "#fff")}>右 →</button>}
@@ -13707,7 +13781,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
           </div>
           <div style={{ position: "relative", flex: both ? "1 1 26%" : "1 1 34%", minHeight: 0 }}>
             <div ref={mapDiv} style={{ position: "absolute", inset: 0 }} />
-            <div style={{ position: "absolute", left: 8, bottom: 8, background: "rgba(255,255,255,0.92)", borderRadius: 8, padding: "4px 8px", fontSize: 10, color: "#334155", maxWidth: "75%" }}>🔵矢印＝今いる所と進む向き　👁＝付けた印（指でずらせます）</div>
+            <div style={{ position: "absolute", left: 8, bottom: 8, background: "rgba(255,255,255,0.92)", borderRadius: 8, padding: "4px 8px", fontSize: 10, color: "#334155", maxWidth: "75%" }}>🔵矢印＝今いる所　紫の線＝今回通った道・点線＝前に通った道　地図を押すとそこから探せます</div>
           </div>
         </>
       )}
@@ -32348,7 +32422,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       </button>
                     )}
                     {svWalker && (
-                      <SvWalker apiKey={svWalker.key} start={svWalker.start} member={currentUser || ""} cands={svCands}
+                      <SvWalker apiKey={svWalker.key} start={svWalker.start} member={currentUser || ""} cands={svCands} pastTracks={svTracksData}
                         onAdd={(c) => upsertSvCand(c)}
                         onScanSaved={(it) => setSvTracksData(list => [...list.filter(x => x.id !== it.id), it])}
                         onClose={() => setSvWalker(null)} />
