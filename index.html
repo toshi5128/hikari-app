@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.653";
+const APP_VERSION = "2026-11-14-v9.654";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13591,6 +13591,25 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         pano2.setPov({ heading: t + SIDE, pitch: (pano2.getPov() || {}).pitch || 0 });
       };
       pano.__hkAim = aimSides;
+      // 🆕 v9.654: 見ている向きを地図に（下田さん「向いてる方向が分からなくなる」）
+      const fanL = new gm.Polygon({ map: gmap, paths: [], strokeWeight: 0, fillColor: "#e11d48", fillOpacity: 0.35, clickable: false, zIndex: 9990 });
+      const fanR = new gm.Polygon({ map: gmap, paths: [], strokeWeight: 0, fillColor: "#2563eb", fillOpacity: 0.35, clickable: false, zIndex: 9990 });
+      const fan = (c, hd) => { const pts = [{ lat: c.lat(), lng: c.lng() }]; for (let a = -30; a <= 30; a += 10) { const q = _svOffset(c.lat(), c.lng(), hd + a, 45); pts.push(q); } return pts; };
+      const showDir = () => {
+        const c = pano.getPosition(); if (!c) return;
+        const ic = me.getIcon();
+        if (bothRef.current) {
+          me.setIcon({ ...ic, rotation: travelRef.current });
+          fanL.setPaths(fan(c, pano.getPov().heading)); fanR.setPaths(fan(c, pano2.getPov().heading));
+          fanL.setOptions({ fillColor: "#e11d48" }); fanR.setVisible(true);
+        } else {
+          me.setIcon({ ...ic, rotation: pano.getPov().heading });
+          fanL.setPaths(fan(c, pano.getPov().heading)); fanL.setOptions({ fillColor: "#2563eb" }); fanR.setVisible(false);
+        }
+      };
+      pano.addListener("pov_changed", showDir);
+      pano2.addListener("pov_changed", showDir);
+      pano.__hkShowDir = showDir;
       // 🆕 v9.652: これまでにストリートビューで通った道（点線）
       (pastTracks || []).forEach(tr => {
         const pts = (tr && tr.points) || [];
@@ -13636,7 +13655,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         }
         prevP = { lat: p.lat(), lng: p.lng() };
         me.setPosition(p);
-        const ic = me.getIcon(); me.setIcon({ ...ic, rotation: travelRef.current });
+        if (pano.__hkShowDir) pano.__hkShowDir();
         if (pano.getPano() && pano2.getPano() !== pano.getPano()) pano2.setPano(pano.getPano());
         aimSides();
         if (onMove) onMove({ lat: p.lat(), lng: p.lng() });
@@ -13787,7 +13806,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
           </div>
           <div style={{ display: "flex", gap: 6, padding: "6px 8px", background: "#1e293b" }}>
             <button onClick={() => { setChoices(null); if (!auto) setTravelFromView(); setAuto(a => !a); }} style={b(auto ? "#f59e0b" : "#0ea5e9", "#fff")}>{auto ? "⏸ 止める" : "▶ 自動で進む"}</button>
-            <button onClick={() => { const v = !both; setBoth(v); setTimeout(() => { const pn = panoRef.current, p2 = pano2Ref.current; const gm = window.google && window.google.maps; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); if (v && pn.__hkAim) pn.__hkAim(); } }, 120); }} style={b(both ? "#7c3aed" : "#334155", "#fff")}>{both ? "◧ 両側で見る中" : "◧ 両側で見る"}</button>
+            <button onClick={() => { const v = !both; setBoth(v); setTimeout(() => { const pn = panoRef.current, p2 = pano2Ref.current; const gm = window.google && window.google.maps; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); if (v && pn.__hkAim) pn.__hkAim(); if (pn.__hkShowDir) pn.__hkShowDir(); } }, 120); }} style={b(both ? "#7c3aed" : "#334155", "#fff")}>{both ? "◧ 両側で見る中" : "◧ 両側で見る"}</button>
             <button onClick={() => { const i = SV_SPEEDS.findIndex(x => x.ms === speed); setSpeed(SV_SPEEDS[(i + 1) % SV_SPEEDS.length].ms); }} style={{ ...b("#334155", "#fff"), flex: "0 0 auto", padding: "10px 10px" }}>🐢 {(SV_SPEEDS.find(x => x.ms === speed) || SV_SPEEDS[1]).l}</button>
             {!both && <button onClick={() => look(-90)} style={b("#334155", "#fff")}>← 左</button>}
             {!both && <button onClick={() => look(0)} style={b("#334155", "#fff")}>正面</button>}
@@ -13800,7 +13819,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
           </div>
           <div style={{ position: "relative", flex: both ? "1 1 26%" : "1 1 34%", minHeight: 0 }}>
             <div ref={mapDiv} style={{ position: "absolute", inset: 0 }} />
-            <div style={{ position: "absolute", left: 8, bottom: 8, background: "rgba(255,255,255,0.92)", borderRadius: 8, padding: "4px 8px", fontSize: 10, color: "#334155", maxWidth: "75%" }}>🔵矢印＝今いる所　🔴＝もう立っているピン　紫の線＝通った道　地図を押すとそこから探せます</div>
+            <div style={{ position: "absolute", left: 8, bottom: 8, background: "rgba(255,255,255,0.92)", borderRadius: 8, padding: "4px 8px", fontSize: 10, color: "#334155", maxWidth: "75%" }}>🔵矢印＝今いる所と向き（扇＝見ている所。両側の時は赤＝左・青＝右）　🔴＝もう立っているピン　紫の線＝通った道　地図を押すとそこから探せます</div>
           </div>
         </>
       )}
