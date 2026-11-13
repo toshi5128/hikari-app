@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.656";
+const APP_VERSION = "2026-11-14-v9.657";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.657", date: "2026-11-14", title: "SVで探す：範囲を囲うと、その中の道を全部自動で回るように",
+    body: "下の地図の「✏️ 範囲を囲って回る」を押して、回りたい所を指で1周なぞってください。囲んだ中の道を全部1回ずつ通る順番が自動で決まり、オレンジの線で出ます（道の長さと、かかる時間の目安も出ます）。「▶ 回り始める」を押すと、両側の家を見ながらその順番どおりに進みます。分かれ道でも止まりません。空き家を見つけたら🏚を押せば止まって登録でき、「▶ 続ける」で続きから回ります。",
+    where: "地上げ → 地図 → 👁 SVで探す → 下の地図の ✏️" },
   { v: "9.655", date: "2026-11-14", title: "SVで探す：分かれ道を地図の矢印で選べる／SVで登録したピンに見つけた時の画面",
     body: "①自動で進んでいて分かれ道に来ると、下の地図に進める道の赤い矢印が出ます。行きたい方の矢印を押すと、その道へ進んで自動で続けます。②ストリートビューで見つけて登録したピンは、詳細の写真欄に「見つけた時のストリートビューの画面」が出ます（指で回して周りも見られます）。",
     where: "地上げ → 👁 SVで探す／SVで登録したピンの詳細" },
@@ -13546,6 +13549,17 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
   const [speed, setSpeedRaw] = React.useState(() => { try { const v = Number(localStorage.getItem("hikari_sv_speed")); return v > 0 ? v : 2600; } catch (e) { return 2600; } });
   const setSpeed = (v) => { setSpeedRaw(v); try { localStorage.setItem("hikari_sv_speed", String(v)); } catch (e) {} };
   const [choices, setChoices] = React.useState(null);
+  // 🆕 v9.657: 範囲を囲って回る
+  const [drawMode, setDrawMode] = React.useState(false);
+  const [plan, setPlan] = React.useState(null);        // { pts, total, fresh, roads, poly }
+  const [patrol, setPatrol] = React.useState(null);    // { idx } 回っている最中
+  const [planMsg, setPlanMsg] = React.useState("");
+  const patrolRef = React.useRef(null); patrolRef.current = patrol;
+  const planRef = React.useRef(null); planRef.current = plan;
+  const drawPtsRef = React.useRef([]);
+  const planLinesRef = React.useRef([]);
+  const ovRef = React.useRef(null);
+  const stuckRef = React.useRef({ pano: "", n: 0 });
   const lineRef = React.useRef(null);
   const SIDE = 60;   // 両側モードで見る向き＝進む向きから斜め前60度（真横だと近すぎて家が分からない）
   const setBoth = (v) => { setBothRaw(v); try { localStorage.setItem("hikari_sv_both", v ? "1" : "0"); } catch (e) {} };
@@ -13578,7 +13592,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
       // 🆕 v9.651: 右側を見る2枚目（1枚目と同じ場所を、反対の向きで見る）
       const pano2 = new gm.StreetViewPanorama(pano2Div.current, {
         pov: { heading: 90, pitch: 0 }, zoom: 0, addressControl: false, fullscreenControl: false, motionTracking: false, motionTrackingControl: false,
-        showRoadLabels: false, linksControl: false, panControl: false, enableCloseButton: false, clickToGo: false, zoomControl: false, visible: true,
+        showRoadLabels: false, linksControl: false, panControl: false, enableCloseButton: false, clickToGo: false, zoomControl: true, visible: true,
       });
       pano2Ref.current = pano2;
       // 🆕 v9.651: 下の地図に「今いる所と進む向き」の矢印
@@ -13594,6 +13608,17 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         pano2.setPov({ heading: t + SIDE, pitch: (pano2.getPov() || {}).pitch || 0 });
       };
       pano.__hkAim = aimSides;
+      // 🆕 v9.657: 自分で決めた寄り具合（引き）を、進んでも曲がっても保つ（下田さん「引きにしたのに通常の寄りに戻る」）
+      const zoomKeep = { a: 0, b: 0, until: 0 };
+      try { const z = JSON.parse(localStorage.getItem("hikari_sv_zoom") || "null"); if (z && typeof z.a === "number") { zoomKeep.a = z.a; zoomKeep.b = z.b || 0; } } catch (e) {}
+      const saveZoom = () => { try { localStorage.setItem("hikari_sv_zoom", JSON.stringify({ a: zoomKeep.a, b: zoomKeep.b })); } catch (e) {} };
+      const reZoom = () => { zoomKeep.until = Date.now() + 700; try { pano.setZoom(zoomKeep.a); pano2.setZoom(zoomKeep.b); } catch (e) {} };
+      pano.addListener("zoom_changed", () => { if (Date.now() < zoomKeep.until) { if (Math.abs(pano.getZoom() - zoomKeep.a) > 0.05) setTimeout(() => { try { pano.setZoom(zoomKeep.a); } catch (e) {} }, 0); return; } zoomKeep.a = pano.getZoom(); saveZoom(); });
+      pano2.addListener("zoom_changed", () => { if (Date.now() < zoomKeep.until) { if (Math.abs(pano2.getZoom() - zoomKeep.b) > 0.05) setTimeout(() => { try { pano2.setZoom(zoomKeep.b); } catch (e) {} }, 0); return; } zoomKeep.b = pano2.getZoom(); saveZoom(); });
+      pano.addListener("pano_changed", reZoom);
+      pano2.addListener("pano_changed", reZoom);
+      reZoom();
+      const ov = new gm.OverlayView(); ov.onAdd = () => {}; ov.draw = () => {}; ov.onRemove = () => {}; ov.setMap(gmap); ovRef.current = ov;
       // 🆕 v9.654: 見ている向きを地図に（下田さん「向いてる方向が分からなくなる」）
       const fanL = new gm.Polygon({ map: gmap, paths: [], strokeWeight: 0, fillColor: "#e11d48", fillOpacity: 0.35, clickable: false, zIndex: 9990 });
       const fanR = new gm.Polygon({ map: gmap, paths: [], strokeWeight: 0, fillColor: "#2563eb", fillOpacity: 0.35, clickable: false, zIndex: 9990 });
@@ -13680,12 +13705,43 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
     const t = setInterval(() => {
       const pano = panoRef.current; if (!pano || !autoRef.current) return;
       const links = pano.getLinks() || [];
+      // 🆕 v9.657: 範囲を回っている最中＝予定の道に沿って進む（分かれ道でも止まらない）
+      if (patrolRef.current && planRef.current) {
+        const pts = planRef.current.pts, P = pano.getPosition(); if (!P) return;
+        const here = [P.lat(), P.lng()];
+        let idx = patrolRef.current.idx;
+        // 今いる所に近い予定の点まで進める（少し先まで探す）
+        let bi = idx, bdist = 1e9;
+        for (let k = idx; k < Math.min(pts.length, idx + 25); k++) { const d = _hkM(here, [pts[k].lat, pts[k].lng]); if (d < bdist) { bdist = d; bi = k; } }
+        if (bdist < 18) idx = bi + 1;
+        if (idx >= pts.length - 1) { setAuto(false); setPatrol(null); setPlanMsg("✅ 囲んだ範囲を回り終わりました"); return; }
+        let ti = idx; while (ti < pts.length - 1 && _hkM(here, [pts[ti].lat, pts[ti].lng]) < 9 && !pts[ti + 1].jump) ti++;
+        const tgt = pts[ti];
+        // 同じ場所から動けない時・離れた道へ飛ぶ時は、その点の近くのストリートビューへ移動
+        const st = stuckRef.current; if (st.pano === pano.getPano()) st.n++; else { st.pano = pano.getPano(); st.n = 0; }
+        const jumpTo = (k) => {
+          const gm = window.google.maps; const t = pts[Math.min(k, pts.length - 1)];
+          new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: 30, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => {
+            if (s2 === "OK" && d && d.location && d.location.pano !== pano.getPano()) pano.setPano(d.location.pano);
+            else setPatrol(p => p ? { idx: Math.min(pts.length - 1, k + 4) } : p);
+          });
+        };
+        setPatrol({ idx });
+        const want2 = _hkBrg(here, [tgt.lat, tgt.lng]);
+        let lb = null, ld = 999;
+        links.forEach(l => { const d = Math.abs(((l.heading - want2 + 540) % 360) - 180); if (d < ld) { ld = d; lb = l; } });
+        if (tgt.jump || st.n >= 2 || !lb || ld > 60) { st.n = 0; jumpTo(ti); return; }
+        travelRef.current = lb.heading;
+        pano.setPano(lb.pano);
+        if (bothRef.current && pano.__hkAim) pano.__hkAim();
+        return;
+      }
       if (!links.length) { setAuto(false); return; }
       const want = travelRef.current;
       const rel = (l) => ((l.heading - want + 540) % 360) - 180;
       let best = null, bd = 999;
       links.forEach(l => { let d = Math.abs(rel(l)); if (d < bd) { bd = d; best = l; } });
-      if (!autoFirstRef.current) {
+      if (!autoFirstRef.current && !patrolRef.current) {
         // 🆕 v9.652: 分かれ道（前・横に道が2本以上）では止まって、進む道を選んでもらう
         const fwd = links.filter(l => Math.abs(rel(l)) < 115);
         const spread = fwd.length >= 2 ? Math.max(...fwd.map(rel)) - Math.min(...fwd.map(rel)) : 0;
@@ -13722,6 +13778,54 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
     // 分かれ道では地図を寄せて、矢印どうしが重ならないようにする
     try { gmap.panTo(c); if (gmap.getZoom() < 20) gmap.setZoom(20); } catch (e) {}
   }, [choices]);
+  // 🆕 v9.657: 回る予定の道（オレンジ）と囲んだ範囲
+  React.useEffect(() => {
+    const gm = window.google && window.google.maps, gmap = gmapRef.current;
+    planLinesRef.current.forEach(x => x.setMap(null)); planLinesRef.current = [];
+    if (!gm || !gmap || !plan) return;
+    planLinesRef.current.push(new gm.Polygon({ map: gmap, paths: plan.poly.map(([a, b]) => ({ lat: a, lng: b })), strokeColor: "#f97316", strokeWeight: 2, fillColor: "#f97316", fillOpacity: 0.06, clickable: false, zIndex: 3 }));
+    let seg = [];
+    const flush = () => { if (seg.length >= 2) planLinesRef.current.push(new gm.Polyline({ map: gmap, path: seg, strokeColor: "#f97316", strokeOpacity: 0.75, strokeWeight: 4, clickable: false, zIndex: 4 })); seg = []; };
+    plan.pts.forEach(q => { if (q.jump) flush(); seg.push({ lat: q.lat, lng: q.lng }); });
+    flush();
+  }, [plan]);
+  // 指でなぞって範囲を囲う
+  const drawDown = (e) => { e.preventDefault(); drawPtsRef.current = [[e.nativeEvent.offsetX, e.nativeEvent.offsetY]]; try { e.currentTarget.setPointerCapture(e.pointerId); } catch (er) {} };
+  const drawMove = (e) => {
+    if (!drawPtsRef.current.length) return;
+    drawPtsRef.current.push([e.nativeEvent.offsetX, e.nativeEvent.offsetY]);
+    const svg = e.currentTarget.querySelector("polyline"); if (svg) svg.setAttribute("points", drawPtsRef.current.map(q => q.join(",")).join(" "));
+  };
+  const drawUp = async () => {
+    const px = drawPtsRef.current; drawPtsRef.current = [];
+    setDrawMode(false);
+    const gm = window.google && window.google.maps, ov = ovRef.current, pano = panoRef.current;
+    if (!gm || !ov || !ov.getProjection() || px.length < 5) { setPlanMsg("もう一度、指で大きく囲ってください"); return; }
+    const pr = ov.getProjection();
+    const poly = px.filter((q, i) => i % 2 === 0).map(([x, y]) => { const ll = pr.fromContainerPixelToLatLng(new gm.Point(x, y)); return [ll.lat(), ll.lng()]; });
+    setPlanMsg("⏳ 囲んだ中の道を調べています…");
+    try {
+      const P = pano && pano.getPosition();
+      const from = P ? [P.lat(), P.lng()] : poly[0];
+      const r = await hkPlanPatrol(poly, from);
+      setPlan({ ...r, poly }); setPatrol(null);
+      const mins = Math.round(r.pts.length * (speed / 1000) * 0.9 / 60);
+      setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km（戻り道を入れて ${(r.total / 1000).toFixed(1)}km）・今の速さで約${mins}分`);
+    } catch (er) { setPlan(null); setPlanMsg("⚠️ " + (er.message || er)); }
+  };
+  const startPatrol = () => {
+    if (!plan) return;
+    setChoices(null);
+    const pano = panoRef.current, gm = window.google && window.google.maps, t = plan.pts[0];
+    if (pano && gm && t) {
+      const P = pano.getPosition();
+      if (!P || _hkM([P.lat(), P.lng()], [t.lat, t.lng]) > 30) {
+        new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: 40, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => { if (s2 === "OK" && d && d.location) pano.setPano(d.location.pano); });
+      }
+    }
+    if (!bothRef.current) setBoth(true);
+    setPatrol({ idx: 0 }); setAuto(true);
+  };
   // 🆕 v9.652: 分かれ道で選んだ道へ進んで、自動で進むを続ける
   const goChoice = (c) => {
     const pano = panoRef.current; if (!pano) return;
@@ -13839,6 +13943,35 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
           </div>
           <div style={{ position: "relative", flex: both ? "1 1 26%" : "1 1 34%", minHeight: 0 }}>
             <div ref={mapDiv} style={{ position: "absolute", inset: 0 }} />
+            {/* 🆕 v9.657: 範囲を囲って回る */}
+            {drawMode && (
+              <div onPointerDown={drawDown} onPointerMove={drawMove} onPointerUp={drawUp}
+                style={{ position: "absolute", inset: 0, zIndex: 5, touchAction: "none", background: "rgba(249,115,22,0.08)", cursor: "crosshair" }}>
+                <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}><polyline points="" fill="rgba(249,115,22,0.15)" stroke="#f97316" strokeWidth="4" /></svg>
+                <div style={{ position: "absolute", left: 8, right: 8, top: 8, background: "rgba(15,23,42,0.88)", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 800, pointerEvents: "none" }}>✏️ 回りたい範囲を、指で1周なぞって囲ってください</div>
+              </div>
+            )}
+            <div style={{ position: "absolute", left: 8, top: 8, zIndex: 4, display: "flex", flexDirection: "column", gap: 6, maxWidth: "70%" }}>
+              {!drawMode && !patrol && (
+                <button onClick={() => { setAuto(false); setChoices(null); setDrawMode(true); setPlanMsg(""); }} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#f97316", color: "#fff", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(0,0,0,0.4)", alignSelf: "flex-start" }}>✏️ 範囲を囲って回る</button>
+              )}
+              {drawMode && <button onClick={() => setDrawMode(false)} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#475569", color: "#fff", cursor: "pointer", fontFamily: "inherit", alignSelf: "flex-start", position: "relative", zIndex: 6, marginTop: 40 }}>やめる</button>}
+              {planMsg && !drawMode && (
+                <div style={{ background: "rgba(255,255,255,0.95)", borderRadius: 10, padding: "6px 10px", fontSize: 12, fontWeight: 700, color: "#0f172a", lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}>
+                  {planMsg}
+                  {patrol && plan && <div style={{ color: "#c2410c" }}>🚶 回っています {Math.round(100 * patrol.idx / Math.max(1, plan.pts.length))}%</div>}
+                  {plan && !drawMode && (
+                    <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                      {!patrol
+                        ? <button onClick={startPatrol} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>▶ 回り始める</button>
+                        : <button onClick={() => { setAuto(false); setPatrol(null); }} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#f59e0b", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>⏸ 止める</button>}
+                      {patrol && !auto && <button onClick={() => setAuto(true)} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>▶ 続ける</button>}
+                      <button onClick={() => { setAuto(false); setPatrol(null); setPlan(null); setPlanMsg(""); }} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#e2e8f0", color: "#334155", cursor: "pointer", fontFamily: "inherit" }}>✕ 囲みを消す</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             <div style={{ position: "absolute", left: 8, bottom: 8, background: "rgba(255,255,255,0.92)", borderRadius: 8, padding: "4px 8px", fontSize: 10, color: "#334155", maxWidth: "75%" }}>🔵矢印＝今いる所と向き（扇＝見ている所。両側の時は赤＝左・青＝右）　🔴＝もう立っているピン　紫の線＝通った道　地図を押すとそこから探せます</div>
           </div>
         </>
@@ -13944,6 +14077,155 @@ function _hkLoadChiban(tx, ty) {
     return m;
   });
 }
+// 🆕 v9.657: 範囲を囲って回る — 国土地理院ベクトルタイル(z16)の道路中心線(ftCode 2701/2711・高速以外)を読む
+const _hkBvRawCache = new Map();
+function _hkLoadBvRaw(tx, ty) {
+  const k = tx + "_" + ty;
+  if (!_hkBvRawCache.has(k)) {
+    _hkBvRawCache.set(k, fetch(`https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/16/${tx}/${ty}.pbf`)
+      .then(r => r.ok ? r.arrayBuffer() : null).then(ab => ab ? new Uint8Array(ab) : null)
+      .catch(() => { _hkBvRawCache.delete(k); return null; }));
+  }
+  return _hkBvRawCache.get(k);
+}
+function _hkMvtRoads(buf, tx, ty) {
+  let pos = 0;
+  const rv = () => { let r = 0, sh = 1, b; do { b = buf[pos++]; r += (b & 0x7f) * sh; sh *= 128; } while (b & 0x80); return r; };
+  const skip = (w) => { if (w === 0) rv(); else if (w === 1) pos += 8; else if (w === 2) { const l = rv(); pos += l; } else if (w === 5) pos += 4; };
+  const N = 65536;
+  const toLL = (px, py, ext) => { const x = (tx + px / ext) / N, y = (ty + py / ext) / N; return [Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180 / Math.PI, x * 360 - 180]; };
+  const zz = (n) => (n % 2 === 1) ? -(n + 1) / 2 : n / 2;
+  while (pos < buf.length) {
+    const tag = rv(), f = Math.floor(tag / 8), w = tag & 7;
+    if (!(f === 3 && w === 2)) { skip(w); continue; }
+    const lend = rv() + pos;
+    let name = "", ext = 4096; const feats = [], keys = [], vals = [];
+    while (pos < lend) {
+      const t2 = rv(), f2 = Math.floor(t2 / 8), w2 = t2 & 7;
+      if (f2 === 1 && w2 === 2) { const l = rv(); name = new TextDecoder().decode(buf.subarray(pos, pos + l)); pos += l; }
+      else if (f2 === 2 && w2 === 2) { const l = rv(); feats.push([pos, pos + l]); pos += l; }
+      else if (f2 === 3 && w2 === 2) { const l = rv(); keys.push(new TextDecoder().decode(buf.subarray(pos, pos + l))); pos += l; }
+      else if (f2 === 4 && w2 === 2) {
+        const l = rv() + pos; let v = null;
+        while (pos < l) { const t3 = rv(), f3 = Math.floor(t3 / 8), w3 = t3 & 7;
+          if (f3 === 1 && w3 === 2) { const l2 = rv(); v = new TextDecoder().decode(buf.subarray(pos, pos + l2)); pos += l2; }
+          else if ((f3 === 4 || f3 === 5) && w3 === 0) v = rv();
+          else if (f3 === 6 && w3 === 0) v = zz(rv());
+          else if (f3 === 7 && w3 === 0) v = !!rv();
+          else skip(w3); }
+        vals.push(v);
+      }
+      else if (f2 === 5 && w2 === 0) ext = rv();
+      else skip(w2);
+    }
+    pos = lend;
+    if (name !== "road") continue;
+    const out = [];
+    feats.forEach(([a, b]) => {
+      pos = a; let type = 0, geom = null; const props = {};
+      while (pos < b) {
+        const t3 = rv(), f3 = Math.floor(t3 / 8), w3 = t3 & 7;
+        if (f3 === 3 && w3 === 0) type = rv();
+        else if (f3 === 2 && w3 === 2) { const l = rv() + pos; while (pos < l) { const ki = rv(), vi = rv(); props[keys[ki]] = vals[vi]; } }
+        else if (f3 === 4 && w3 === 2) { const l = rv() + pos; geom = []; while (pos < l) geom.push(rv()); }
+        else skip(w3);
+      }
+      if (type !== 2 || !geom) return;
+      if (!(props.ftCode === 2701 || props.ftCode === 2711) || props.motorway === 1) return;
+      let x = 0, y = 0, cur = null, i = 0;
+      while (i < geom.length) {
+        const c = geom[i++], cmd = c & 7, cnt = Math.floor(c / 8);
+        if (cmd === 1 || cmd === 2) {
+          for (let k = 0; k < cnt; k++) { x += zz(geom[i++]); y += zz(geom[i++]); if (cmd === 1) { cur = []; out.push(cur); } cur.push(toLL(x, y, ext)); }
+        }
+      }
+    });
+    return out;
+  }
+  return [];
+}
+const _hkM = (a, b) => Math.hypot((a[0] - b[0]) * 111000, (a[1] - b[1]) * 111000 * Math.cos(a[0] * Math.PI / 180));
+const _hkBrg = (a, b) => (Math.atan2((b[1] - a[1]) * Math.cos(a[0] * Math.PI / 180), b[0] - a[0]) * 180 / Math.PI + 360) % 360;
+function _hkInPoly(pt, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [yi, xi] = poly[i], [yj, xj] = poly[j];
+    if (((yi > pt[0]) !== (yj > pt[0])) && (pt[1] < (xj - xi) * (pt[0] - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+// 囲んだ範囲の道を全部1回ずつ通る順番（行き止まりに着いたら、まだ通っていない一番近い道まで最短で戻る）
+async function hkPlanPatrol(poly, from) {
+  let s0 = 90, n0 = -90, w0 = 180, e0 = -180;
+  poly.forEach(([a, b]) => { s0 = Math.min(s0, a); n0 = Math.max(n0, a); w0 = Math.min(w0, b); e0 = Math.max(e0, b); });
+  const N = 65536, tx = (lng) => Math.floor((lng + 180) / 360 * N), ty = (lat) => Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * N);
+  const tiles = [];
+  for (let x = tx(w0); x <= tx(e0); x++) for (let y = ty(n0); y <= ty(s0); y++) tiles.push([x, y]);
+  if (tiles.length > 30) throw new Error("範囲が広すぎます。町1つ分くらいに小さく囲ってください");
+  const lines = [];
+  for (const [x, y] of tiles) { const raw = await _hkLoadBvRaw(x, y); if (raw) _hkMvtRoads(raw, x, y).forEach(l => lines.push(l)); }
+  // 点をまとめる（約4m）→ 道の網
+  const nodes = [], nodeIdx = new Map(), key = (p) => Math.round(p[0] * 27000) + "," + Math.round(p[1] * 22000);
+  const nid = (p) => { const k = key(p); if (!nodeIdx.has(k)) { nodeIdx.set(k, nodes.length); nodes.push(p); } return nodeIdx.get(k); };
+  const edges = [], seen = new Set(), adj = [];
+  lines.forEach(l => {
+    for (let i = 0; i + 1 < l.length; i++) {
+      if (!_hkInPoly(l[i], poly) || !_hkInPoly(l[i + 1], poly)) continue;
+      const a = nid(l[i]), b = nid(l[i + 1]); if (a === b) continue;
+      const ek = a < b ? a + "_" + b : b + "_" + a; if (seen.has(ek)) continue; seen.add(ek);
+      const e = { a, b, len: _hkM(nodes[a], nodes[b]), done: false };
+      edges.push(e); (adj[a] = adj[a] || []).push(edges.length - 1); (adj[b] = adj[b] || []).push(edges.length - 1);
+    }
+  });
+  if (!edges.length) throw new Error("囲んだ中に道が見つかりませんでした");
+  if (edges.length > 8000) throw new Error("範囲が広すぎます。もう少し小さく囲ってください");
+  // 出発点＝今いる所に一番近い点
+  let cur = 0, bd = 1e9;
+  nodes.forEach((p, i) => { if (!adj[i]) return; const d = _hkM(p, from); if (d < bd) { bd = d; cur = i; } });
+  const route = [cur]; let heading = null, total = 0, fresh = 0;
+  const other = (e, n) => e.a === n ? e.b : e.a;
+  for (let guard = 0; guard < 200000; guard++) {
+    const open = (adj[cur] || []).filter(ei => !edges[ei].done);
+    if (open.length) {
+      // まっすぐ進める道を優先
+      let best = open[0], bdiff = 999;
+      open.forEach(ei => { const h = _hkBrg(nodes[cur], nodes[other(edges[ei], cur)]); const d = heading == null ? 0 : Math.abs(((h - heading + 540) % 360) - 180); if (d < bdiff) { bdiff = d; best = ei; } });
+      const e = edges[best], nx = other(e, cur);
+      e.done = true; heading = _hkBrg(nodes[cur], nodes[nx]); total += e.len; fresh += e.len; cur = nx; route.push(cur);
+      continue;
+    }
+    // まだ通っていない道へ、通った道を使って最短で移動
+    const dist = new Map([[cur, 0]]), prev = new Map(), q = [[0, cur]], fin = new Set(); let goal = -1;
+    while (q.length) {
+      q.sort((x, y) => x[0] - y[0]); const [d, n] = q.shift(); if (fin.has(n)) continue; fin.add(n);
+      if ((adj[n] || []).some(ei => !edges[ei].done)) { goal = n; break; }
+      (adj[n] || []).forEach(ei => { const m = other(edges[ei], n), nd = d + edges[ei].len; if (nd < (dist.has(m) ? dist.get(m) : 1e18)) { dist.set(m, nd); prev.set(m, n); q.push([nd, m]); } });
+    }
+    if (goal < 0) {
+      // つながっていない道の固まり → 一番近い所へ飛ぶ
+      let jb = -1, jd = 1e9;
+      edges.forEach(e => { if (e.done) return; [e.a, e.b].forEach(n => { const d = _hkM(nodes[n], nodes[cur]); if (d < jd) { jd = d; jb = n; } }); });
+      if (jb < 0) break;
+      route.push(-1); route.push(jb); cur = jb; heading = null; continue;   // -1 ＝ 飛ぶ印
+    }
+    const path = []; for (let n = goal; n !== cur; n = prev.get(n)) path.push(n);
+    path.reverse().forEach(n => { total += _hkM(nodes[route[route.length - 1]], nodes[n]); route.push(n); });
+    cur = goal; heading = null;
+  }
+  // 約8mごとの点に（飛ぶ所は jump:true）
+  const pts = []; let jump = false;
+  for (let i = 0; i < route.length; i++) {
+    if (route[i] === -1) { jump = true; continue; }
+    const p = nodes[route[i]];
+    if (pts.length && !jump) {
+      const a = pts[pts.length - 1], d = _hkM([a.lat, a.lng], p), k = Math.floor(d / 8);
+      for (let j = 1; j <= k; j++) pts.push({ lat: a.lat + (p[0] - a.lat) * j / (k + 1), lng: a.lng + (p[1] - a.lng) * j / (k + 1) });
+    }
+    pts.push({ lat: p[0], lng: p[1], jump }); jump = false;
+  }
+  return { pts, total, fresh, roads: edges.length };
+}
+
 function _hkTileOf(lat, lng) {
   const N = Math.pow(2, _HK_BZ);
   return [Math.floor((lng + 180) / 360 * N), Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * N)];
