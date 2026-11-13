@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-13-v9.637";
+const APP_VERSION = "2026-11-13-v9.638";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.638", date: "2026-11-13", title: "狙い目ランキングを「家が固まった団地」だけに。地図にオレンジの四角で出ます",
+    body: "田畑の中にポツポツ家がある集落は回りにくいので外し、100m四方に家が20軒以上まとまっている団地だけにしました。🎯探索候補で市町村を選ぶと、昭和51〜平成初期にできた団地（＝うちが買いたい年代の家が並ぶ所）が地図にオレンジの四角で出ます。ランキングでは家の数と「空き家 約◯件・約◯時間」の目安が出ます（団地の家のおよそ45軒に1軒が空き家ピン・1時間に約16件という、これまでの実績から計算）。",
+    where: "地上げ → 地図 → 左下「🎯 探索候補」→ 市町村を選ぶ／「🏆 埼玉県全域の狙い目ランキング」" },
   { v: "9.637", date: "2026-11-13", title: "埼玉県全域で「昭和50年代〜平成初めの家が固まっている所」が分かるように",
     body: "🎯探索候補を押すと一番上に「🏆 埼玉県全域の狙い目ランキング」が出ます。昭和51〜平成初期に田畑から戸建ての住宅地になった所（＝うちが仕入れたい年代の家が並ぶ所）を、町ごとに広い順・近い順で並べ、まだ回っていない所だけで「空き家 約◯件・約◯時間」の目安を出します（これまでの仕入7件は全部この年代の住宅地でした）。町を押すとその場所へ地図が寄ります。市町村ごとの点滅おすすめも、この年代の住宅地が広い区画ほど上に来るようにしました。",
     where: "地上げ → 地図 → 左下「🎯 探索候補」→「🏆 埼玉県全域の狙い目ランキング」" },
@@ -10761,6 +10764,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
   const kohoPinned = koho ? koho.pinnedKey || "" : "";
   const kohoOutside = !!(koho && koho.outside);
   const kohoSel = koho ? koho.selKey || "" : "";
+  const kohoCells = koho ? koho.cells || null : null;
   React.useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || typeof L === "undefined") return;
@@ -10801,6 +10805,11 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       pg.on("click", e => { if (!kohoTapRef.current) return; try { L.DomEvent.stopPropagation(e); } catch (er) {} kohoTapRef.current(a.k); });
       pg.addTo(grp);
     });
+    // 🆕 v9.638: 狙いの団地（昭和51〜平成初期・家が固まった所）の100mマス。タップは区画へ素通し
+    (kohoCells || []).forEach(x => {
+      L.rectangle([[x[0], x[1]], [x[2], x[3]]], { renderer, interactive: false,
+        color: x[5] ? "#9a3412" : "#ea580c", weight: x[5] ? 1.5 : 0.8, fillColor: x[4] === 2 ? "#fb923c" : "#ea580c", fillOpacity: x[5] ? 0.55 : 0.38 }).addTo(grp);
+    });
     // 順位の番号（区画の内側の点に出す）
     const labels = kohoPinned ? [kohoPinned] : top;
     labels.forEach((k, i) => {
@@ -10813,7 +10822,7 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     grp.addTo(map);
     kohoLayerRef.current = grp;
     return () => { try { map.removeLayer(grp); } catch (e) {} };
-  }, [kohoAreas, kohoTopSig, kohoPinned, kohoOutside, kohoSel]);
+  }, [kohoAreas, kohoTopSig, kohoPinned, kohoOutside, kohoSel, kohoCells]);
   // 市町村を選んだら、その範囲にズーム
   const kohoFitKey = koho ? koho.fitKey : 0;
   React.useEffect(() => {
@@ -24713,8 +24722,10 @@ function tansakuStateColor(untilNext) {
 // 🆕 v9.637: nerai＝狙いの年代（昭和51〜平成初期に田畑から戸建て住宅地になった所）の広さ。
 //   下田さん「昭和50年代〜平成5年くらいの家が大好物」。仕入7件は全部この年代の住宅地(と100m以内)、それ以外の1,266ピンからは0件。
 const KOHO_DEFAULT_W = { density: 40, aging: 25, detached: 15, setai: 5, near: 15, nerai: 40, minDens: 1000, minIkko: 50 };
-const NERAI_PER_HA = 0.73;   // 歩いた1haあたりの空き家ピン（2026-11 実績・場所による差はほぼ無し）
-const NERAI_PER_HOUR = 14;   // 現地を回っている1時間あたりの空き家ピン（同上・移動時間は含まない）
+// 🆕 v9.638: 団地のように家が固まっている所だけ（100mマスに戸建て20軒以上が3マス以上つながった塊）。調整区域のまばらな集落は外した。
+//   実績（団地の中を歩いた261マス）: 家約1万軒に空き家ピン220件＝約45軒に1軒・回っている1時間に約16件。
+const NERAI_PER_HOUSE = 0.022;
+const NERAI_PER_HOUR = 16;
 const _neraiHa = a => (Number(a.t) || 0) + (Number(a.t9) || 0) * 0.5;   // 平成3〜9年は半分の重み（平成5年までが狙いのため）
 const KOHO_NEAR_KM = 3;           // 近くの未訪問の所有者を数える範囲（直線3km。15kmだと市内どこでも同じ件数になり差がつかなかった）
 const KOHO_MIN_SETAI = 30;        // これ未満の世帯数は回る価値が低い→おすすめにしない
@@ -24880,8 +24891,8 @@ function computeKoho(areas, ctx) {
     if (a.d != null && rD[a.k]) r.push(`一戸建てが${Math.round(a.d * 100)}%（町内${rD[a.k]}位）`);
     r.push(`${KOHO_NEAR_KM}km以内に未訪問の所有者${a.near}件`);
     if (a.t != null) r.push(_neraiHa(a) > 0
-      ? `狙いの年代の住宅地が${a.t}ha（昭和51〜平成3年）＋${a.t9}ha（平成3〜9年）`
-      : "狙いの年代（昭和51〜平成初期）にできた住宅地はありません");
+      ? `狙いの年代の団地が${a.t}ha（昭和51〜平成3年）＋${a.t9}ha（平成3〜9年）・家${(a.hs || 0).toLocaleString()}軒`
+      : "狙いの年代（昭和51〜平成初期）にできた団地（家が固まった所）はありません");
     a.reasons = r;
   });
   const top = cand.slice(0, 3).map(a => a.k);
@@ -25848,7 +25859,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     }
   };
   const [kohoFocusK, setKohoFocusK] = useState(null);     // 🆕 v9.637: ランキングから来た時、その町丁にズーム
+  const ensureNerai = () => { if (!neraiData) loadKohoFile("nerai.json").then(d => setNeraiData(d.areas || [])).catch(() => {}); };
   const chooseKohoCity = (city, focusK) => {
+    ensureNerai();
     setKohoPicker(false); setNeraiOpen(false); setKohoSelKey(focusK || null); setKohoFocusK(focusK || null); setKohoLoading(true); setKohoCity(city);
     try { localStorage.setItem("hikari_koho_city", JSON.stringify(city)); } catch (e) {}
     loadKohoFile(city.c + ".geojson")
@@ -25868,6 +25881,20 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     setKohoPicker(false); setNeraiOpen(true);
     if (!neraiData) loadKohoFile("nerai.json").then(d => setNeraiData(d.areas || [])).catch(() => { alert("ランキングを読み込めませんでした（通信）"); setNeraiOpen(false); });
   };
+  // 🆕 v9.638: 選んだ市町村の「狙いの団地」の100mマス（地図にオレンジの四角で出す）
+  const neraiCells = useMemo(() => {
+    if (!kohoCity || !neraiData) return null;
+    const out = [];
+    neraiData.forEach(a => {
+      if (a.c !== kohoCity.c) return;
+      for (let i = 0; i < a.m.length; i += 4) {
+        const r = a.r0 + a.m[i], c = a.c0 + a.m[i + 1];
+        const p = _tkyToJgd(r / 1200, 100 + c / 800), q = _tkyToJgd((r + 1) / 1200, 100 + (c + 1) / 800);
+        out.push([p[0], p[1], q[0], q[1], a.m[i + 2], a.k === kohoFocusK]);
+      }
+    });
+    return out;
+  }, [kohoCity, neraiData, kohoFocusK]);
   const saveKohoW = (w) => {
     const clean = {};
     Object.keys(KOHO_DEFAULT_W).forEach(k => { const v = Number(w[k]); clean[k] = isFinite(v) && v >= 0 ? v : KOHO_DEFAULT_W[k]; });
@@ -26156,15 +26183,16 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const seen = (r, c) => { for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) if (hit.has((r + dr) + "," + (c + dc))) return true; return false; };
     const me = currentLoc && typeof currentLoc.lat === "number" ? currentLoc : (myHomePt || { lat: 36.042, lng: 139.399 });
     return neraiData.map(a => {
-      let tot = 0, done = 0, remT = 0, remT9 = 0;
-      for (let i = 0; i < a.m.length; i += 3) {
-        const r = a.r0 + a.m[i], c = a.c0 + a.m[i + 1], e = a.m[i + 2];
+      let tot = 0, done = 0, remT = 0, remT9 = 0, remHs = 0;
+      for (let i = 0; i < a.m.length; i += 4) {
+        const r = a.r0 + a.m[i], c = a.c0 + a.m[i + 1], e = a.m[i + 2], hs = a.m[i + 3] || 0;
         tot++;
         if (seen(r, c)) { done++; continue; }
         if (e === 2) remT9++; else remT++;
+        remHs += hs;
       }
       const cov = tot ? done / tot : 0;
-      return { ...a, cov, remT, remT9, rem: remT + remT9 * 0.5,
+      return { ...a, cov, remT, remT9, remHs, rem: remT + remT9 * 0.5,
         km: _kohoKm(me.lat, me.lng, a.lp[0], a.lp[1]),
         state: cov < 0.1 ? "none" : cov < 0.6 ? "part" : "done" };
     });
@@ -31349,7 +31377,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       koho={kohoResult ? (() => {
                         const pinnedKey = kohoPin && kohoPin.date === kohoToday && kohoResult.areas.some(a => a.k === kohoPin.k) ? kohoPin.k : "";
                         const pa = pinnedKey && kohoResult.areas.find(a => a.k === pinnedKey);
-                        return { areas: kohoResult.areas, top: kohoResult.top, pinnedKey, selKey: kohoSelKey, fitKey: kohoFitKey, focusKey: kohoFocusK,
+                        return { areas: kohoResult.areas, top: kohoResult.top, pinnedKey, selKey: kohoSelKey, fitKey: kohoFitKey, focusKey: kohoFocusK, cells: neraiCells,
                           outside: !!(pa && currentLoc && typeof currentLoc.lat === "number" && !kohoContains(pa, currentLoc.lat, currentLoc.lng)),
                           onTap: placementMode ? null : (k) => setKohoSelKey(k) };
                       })() : null}
@@ -31498,11 +31526,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#38bdf8", border: "1px solid #0284c7", marginRight: 3, verticalAlign: "middle" }} />未探索 {kohoResult.counts.none}</span>
                             <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#fbbf24", border: "1px solid #d97706", marginRight: 3, verticalAlign: "middle" }} />再探索時期 {kohoResult.counts.again}</span>
                             <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#94a3b8", border: "1px solid #64748b", marginRight: 3, verticalAlign: "middle" }} />探索済み {kohoResult.counts.done}</span>
+                            <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#ea580c", marginRight: 3, verticalAlign: "middle" }} />狙いの団地</span>
                             <span style={{ color: "#e11d48", fontWeight: 800 }}>{kohoPin && kohoPin.date === kohoToday && kohoResult.areas.some(a => a.k === kohoPin.k) ? "★ 今日回る区画を表示中" : kohoResult.top.length ? "点滅＝おすすめ上位" + kohoResult.top.length : "未探索の住宅街は残っていません"}</span>
                           </div>
                         )}
                         {kohoShowConf && (() => {
-                          const rows = [["density", "家の密集度（1km²あたりの世帯数）"], ["aging", "高齢化率"], ["detached", "一戸建て割合"], ["setai", "世帯数"], ["near", "3km以内の未訪問の所有者"], ["nerai", "狙いの年代（昭和51〜平成初期）の住宅地の広さ"], ["minDens", "これ未満の密集度はおすすめにしない（世帯/km²）"], ["minIkko", "一戸建てがこれ未満(%)はおすすめにしない"]];
+                          const rows = [["density", "家の密集度（1km²あたりの世帯数）"], ["aging", "高齢化率"], ["detached", "一戸建て割合"], ["setai", "世帯数"], ["near", "3km以内の未訪問の所有者"], ["nerai", "狙いの年代（昭和51〜平成初期）の団地の広さ"], ["minDens", "これ未満の密集度はおすすめにしない（世帯/km²）"], ["minIkko", "一戸建てがこれ未満(%)はおすすめにしない"]];
                           return (
                             <div style={{ marginTop: 6, borderTop: "1px solid #e2e8f0", paddingTop: 6 }}>
                               <div style={{ color: "#64748b", marginBottom: 4 }}>おすすめ度の重み（大きいほど重視。全員で共通）</div>
@@ -31566,7 +31595,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     {/* 🆕 v9.637: 🏆 埼玉県全域の狙い目ランキング */}
                     {neraiOpen && (() => {
                       const q = neraiQuery.trim();
-                      let rows = (neraiRows || []).filter(a => (!neraiOnlyNew || a.state !== "done") && a.rem >= 2 && (!q || (a.cn + a.n).includes(q)));
+                      let rows = (neraiRows || []).filter(a => (!neraiOnlyNew || a.state !== "done") && a.rem >= 2 && a.remHs >= 30 && (!q || (a.cn + a.n).includes(q)));
                       rows = rows.slice().sort(neraiSort === "near" ? ((x, y) => x.km - y.km) : ((x, y) => y.rem - x.rem));
                       const shown = rows.slice(0, 150);
                       const stC = { none: "#0284c7", part: "#d97706", done: "#64748b" };
@@ -31583,8 +31612,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               <button onClick={() => setNeraiOpen(false)} style={{ background: C.inset, border: "none", color: C.muted, width: 30, height: 30, borderRadius: 8, fontSize: 16, cursor: "pointer" }}>×</button>
                             </div>
                             <div style={{ padding: "0 16px 8px", fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
-                              昭和51〜平成初期に田畑から戸建ての住宅地になった所（＝昭和50年代〜平成初めの家が固まっている所）を町ごとに並べました。これまでの仕入7件は全部この年代の住宅地です。
-                              空き家の件数は「1haに約{NERAI_PER_HA}件・1時間に約{NERAI_PER_HOUR}件」（これまでの実績）で出した目安です。
+                              昭和51〜平成初期に田畑から戸建ての住宅地になった所のうち、団地のように家が固まっている所（100m四方に20軒以上がまとまっている所）だけを町ごとに並べました。家がまばらな集落は外しています。これまでの仕入7件は全部この年代の住宅地です。
+                              空き家の件数は「団地の家のおよそ45軒に1軒・1時間に約{NERAI_PER_HOUR}件」（これまでの実績）で出した目安です。
                             </div>
                             <div style={{ padding: "0 16px 6px", display: "flex", gap: 6 }}>
                               {tab(neraiSort === "size", "狙いが広い順", () => setNeraiSort("size"))}
@@ -31600,7 +31629,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                               {neraiRows && shown.length === 0 && <div style={{ color: C.muted, fontSize: 13, padding: 12 }}>見つかりません</div>}
                               {shown.map((a, i) => {
                                 const ha = a.remT + a.remT9;
-                                const est = Math.round(ha * NERAI_PER_HA);
+                                const est = Math.round(a.remHs * NERAI_PER_HOUSE);
                                 return (
                                   <button key={a.k} onClick={() => chooseKohoCity({ c: a.c, n: a.cn }, a.k)} style={{ display: "flex", width: "100%", gap: 10, alignItems: "center", marginBottom: 6, padding: "9px 10px", borderRadius: 10, border: `2px solid ${C.borderDim}`, background: C.inset, color: C.text, cursor: "pointer", fontFamily: "inherit", textAlign: "left", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
                                     <span style={{ width: 30, flexShrink: 0, fontSize: 15, fontWeight: 900, color: i < 3 ? "#b45309" : C.muted, textAlign: "center" }}>{i + 1}</span>
@@ -31611,13 +31640,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                     </span>
                                     <span style={{ flexShrink: 0, textAlign: "right" }}>
                                       <span style={{ display: "block", fontSize: 15, fontWeight: 900, color: "#b45309" }}>空き家 約{est}件</span>
-                                      <span style={{ display: "block", fontSize: 11, color: C.muted }}>約{(est / NERAI_PER_HOUR).toFixed(1)}時間・{ha}ha</span>
+                                      <span style={{ display: "block", fontSize: 11, color: C.muted }}>約{(est / NERAI_PER_HOUR).toFixed(1)}時間・家{a.remHs.toLocaleString()}軒</span>
                                     </span>
                                   </button>
                                 );
                               })}
                               {rows.length > shown.length && <div style={{ color: C.muted, fontSize: 11, padding: 6, textAlign: "center" }}>ほか {rows.length - shown.length}町丁（町名でしぼると出ます）</div>}
-                              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>押すとその町に地図が寄り、🎯探索候補の区画で表示します。件数・時間はまだ回っていない部分だけの目安です（移動時間は入っていません）。出典：国土交通省 土地利用細分メッシュ（1976〜1997年）・令和2年国勢調査。</div>
+                              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>押すとその町に地図が寄り、狙いの団地を<b style={{ color: "#c2410c" }}>オレンジの四角</b>で地図に出します。件数・時間はまだ回っていない部分だけの目安です（移動時間は入っていません）。出典：国土交通省 土地利用細分メッシュ（1976〜1997年）・令和2年国勢調査。</div>
                             </div>
                           </div>
                         </div>
@@ -31655,8 +31684,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             {cell("3km以内の未訪問の所有者", a.near + "件")}
                             {cell("家の密集度", Math.round(a.dens).toLocaleString() + "世帯/km²")}
                             {cell("人口", (a.p || 0).toLocaleString() + "人")}
-                            {a.t != null && cell("狙いの年代の住宅地", `${a.t + a.t9}ha`)}
-                            {a.t != null && cell("狙いの所の空き家（見込み）", (a.t + a.t9) > 0 ? `約${Math.round((a.t + a.t9) * NERAI_PER_HA)}件・${((a.t + a.t9) * NERAI_PER_HA / NERAI_PER_HOUR).toFixed(1)}時間` : "—")}
+                            {a.t != null && cell("狙いの年代の団地", (a.t + a.t9) > 0 ? `${a.t + a.t9}ha・家${(a.hs || 0).toLocaleString()}軒` : "なし")}
+                            {a.t != null && cell("団地の空き家（見込み）", (a.hs || 0) > 0 ? `約${Math.round(a.hs * NERAI_PER_HOUSE)}件・${(a.hs * NERAI_PER_HOUSE / NERAI_PER_HOUR).toFixed(1)}時間` : "—")}
                           </div>
                           <div style={{ fontSize: 12, color: C.text, lineHeight: 1.7, background: C.inset, borderRadius: 8, padding: "6px 10px", marginBottom: 10 }}>
                             <div style={{ fontWeight: 800, marginBottom: 2 }}>{a.state === "done" ? "探索済みなので、おすすめからは外しています" : "おすすめの理由"}</div>

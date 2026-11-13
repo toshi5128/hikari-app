@@ -15,10 +15,11 @@ build-nerai.py -- 🏆 狙い目ランキング（埼玉県全域）のデータ
        t  = 昭和51〜平成3 に住宅地になった広さ(ha)   ← 一番の狙い
        t9 = 平成3〜9 に住宅地になった広さ(ha)        ← 平成5年ごろまでを含むので準狙い
      を areas/*.geojson の properties に書き足す（探索候補の「おすすめ度」で使う）
-  2) areas/nerai.json … 県全域で t+t9 が 2ha 以上の町丁の一覧（ランキング画面用）
+  2) areas/nerai.json … 県全域で t+t9 が 3ha 以上の町丁の一覧（ランキング画面用）
        マスの位置(行・列)も持たせ、アプリ側で「もう行ったか」をピン・探索ルートから数える
 
-実績(2026-11-13 集計): 仕入7件は全部この年代の住宅地(と100m以内)。それ以外の場所 1,266ピンからは0件。
+実績(2026-11-13 集計): 団地の中を歩いた261マスで 家1万軒に空き家ピン220件(約45軒に1軒)・1時間に約16件。
+旧: 仕入7件は全部この年代の住宅地(と100m以内)。それ以外の場所 1,266ピンからは0件。
   歩いた1haあたり空き家ピン約0.73件・回っている1時間あたり約14件（場所による差はほぼ無し）。
 
 使い方:  python scripts/build-nerai.py   （takuchi / areas を作り直したら再実行）
@@ -26,6 +27,8 @@ build-nerai.py -- 🏆 狙い目ランキング（埼玉県全域）のデータ
 import glob, json, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MIN_HOUSES = 20   # 100mマスに戸建てサイズの建物がこれ以上
+MIN_BLOCK = 3     # そのマスが隣どうし(斜め含む)これ以上つながっている＝団地のような塊
 AREAS = os.path.join(ROOT, "areas")
 
 
@@ -52,12 +55,36 @@ def contains(polys, x, y):
 
 def main():
     tk = json.load(open(os.path.join(ROOT, "takuchi-nendai-2.json"), encoding="utf-8"))
-    cells = []                                       # (row, col, era, lat, lng)
+    # v9.638: 団地のように家が固まっている所だけ（下田さん「調整区域の50mに1軒みたいな所は回りにくい」）
+    #   国土地理院ベクトルタイル(z16 building)で 100mマスごとに戸建てサイズ(30〜250㎡)の建物を数えた結果
+    #   = scripts/data/bldg_cells.json（scripts/build-bldg-count.py）。20軒以上のマスが3つ以上つながった塊だけ残す。
+    #   実績: 1マス20軒以上から空き家ピンが一気に増える（0〜9軒 0.02件/マス → 30〜39軒 0.26件/マス）
+    B = {tuple(map(int, k.split(","))): v for k, v in
+         json.load(open(os.path.join(ROOT, "scripts", "data", "bldg_cells.json"))).items()}
+    dense = {k for k, v in B.items() if v[1] >= MIN_HOUSES}
+    keep, seen = set(), set()
+    for k in dense:
+        if k in seen:
+            continue
+        st, comp = [k], []
+        seen.add(k)
+        while st:
+            x = st.pop(); comp.append(x)
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    y = (x[0] + dr, x[1] + dc)
+                    if y in dense and y not in seen:
+                        seen.add(y); st.append(y)
+        if len(comp) >= MIN_BLOCK:
+            keep.update(comp)
+    cells = []                                       # (row, col, era, lat, lng, 戸建て数)
     for rec in tk["clusters"]:
         for o in rec[3]:
             r, c = rec[1] + o[0], rec[2] + o[1]
+            if (r, c) not in keep:
+                continue
             la, lo = tky2jgd((r + .5) / 1200, 100 + (c + .5) / 800)
-            cells.append((r, c, o[2] if len(o) > 2 else 0, la, lo))
+            cells.append((r, c, o[2] if len(o) > 2 else 0, la, lo, B[(r, c)][1]))
     # 0.01度の格子で振り分け（内外判定の足切り）
     grid = {}
     for cl in cells:
@@ -83,14 +110,16 @@ def main():
             pr = ft["properties"]
             pr["t"] = sum(1 for m in mine if m[2] in (0, 1))
             pr["t9"] = sum(1 for m in mine if m[2] == 2)
-            if pr["t"] + pr["t9"] >= 2:
+            pr["hs"] = sum(m[5] for m in mine)          # 団地の中の戸建ての数
+            if pr["t"] + pr["t9"] >= 3:
                 mine.sort()
                 r0, c0 = mine[0][0], mine[0][1]
                 flat = []
                 for m in mine:
-                    flat += [m[0] - r0, m[1] - c0, m[2]]
+                    flat += [m[0] - r0, m[1] - c0, m[2], m[5]]
+                houses = sum(m[5] for m in mine)
                 out.append({"k": pr["k"], "c": pr["c"], "cn": pr["cn"], "n": pr["n"], "lp": pr["lp"],
-                            "t": pr["t"], "t9": pr["t9"], "h": pr["h"], "o": pr.get("o"), "d": pr.get("d"),
+                            "t": pr["t"], "t9": pr["t9"], "hs": houses, "h": pr["h"], "o": pr.get("o"), "d": pr.get("d"),
                             "bb": [round(s, 5), round(w, 5), round(n, 5), round(e, 5)],
                             "r0": r0, "c0": c0, "m": flat})
         with open(fn, "w", encoding="utf-8") as f:
