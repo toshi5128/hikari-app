@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.649";
+const APP_VERSION = "2026-11-14-v9.650";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.650", date: "2026-11-14", title: "ピンの目印住所が自動で入るように／SVの印に「見つけた時の画面」",
+    body: "①ピンを立てると、目印住所にGoogleマップと同じ住所（〇丁目〇-〇まで）が自動で入ります。もうGoogleマップで長押しして住所をコピーしなくて大丈夫です（家を選び直すと住所も変わります。自分で書き直した住所はそのまま）。②👁 SVで探すで付けた印を押すと、見つけた時と同じストリートビューの画面が出ます。現地で目の前の家と見比べてください。③「▶ 自動で進む」は、横の家を見たままでも道なりに進むようになりました。",
+    where: "地上げ → ピン登録の目印住所／地図の👁の印" },
   { v: "9.649", date: "2026-11-14", title: "ピンを立てる時に、家の屋根を押して選べるように（地番も自動）",
     body: "ピンを立てる画面の一番上に、航空写真の小さい地図が出ます。白い線が家です。空き家の屋根を押すとオレンジに光って選ばれ、ピンがその家の真ん中に立ちます（違ったら別の家を押すだけ）。法務省の地番の地図がある地域（坂戸・鶴ヶ島・狭山・川越など）では、選んだ家の地番も地番欄に自動で入ります。ピンがずれて隣の家の謄本を取ってしまうのを防ぐためです。",
     where: "地上げ → 地図を長押し（または現在地でピン） → 現地ピン登録の一番上" },
@@ -13426,7 +13429,45 @@ function loadGoogleMapsJs(key) {
   }).catch(e => { _gmapsJsPromise = null; throw e; });
   return _gmapsJsPromise;
 }
+// 🆕 v9.650: 印を付けた時と同じストリートビューの画面（場所・向き・寄り）を出す
+function SvShot({ pano, view, lat, lng, height }) {
+  const ref = React.useRef(null);
+  const [err, setErr] = React.useState("");
+  React.useEffect(() => {
+    let alive = true;
+    loadGmapsJsKey().then(k => { if (!k) throw new Error("地図の鍵がありません"); return loadGoogleMapsJs(k); }).then(gm => {
+      if (!alive || !ref.current) return;
+      const v = view || {};
+      const sv = new gm.StreetViewPanorama(ref.current, {
+        pov: { heading: v.heading || 0, pitch: v.pitch || 0 }, zoom: typeof v.zoom === "number" ? v.zoom : 1,
+        addressControl: false, linksControl: false, panControl: false, enableCloseButton: false, fullscreenControl: false, motionTracking: false, clickToGo: false, showRoadLabels: false,
+      });
+      if (pano) sv.setPano(pano); else sv.setPosition({ lat, lng });
+    }).catch(e => { if (alive) setErr(String(e.message || e)); });
+    return () => { alive = false; };
+  }, [pano, lat, lng]);
+  return err ? <div style={{ fontSize: 11, color: C.muted, padding: 8 }}>見つけた時の画面を出せません（{err}）</div>
+    : <div ref={ref} style={{ height: height || 200, borderRadius: 10, overflow: "hidden", background: "#1f2937" }} />;
+}
+// 🆕 v9.650: 座標→住所（Googleマップで長押しした時に出るのと同じ住所）。「日本、〒xxx-xxxx 」は外す
+async function googleAddressAt(lat, lng) {
+  try {
+    const k = await loadGmapsJsKey(); if (!k) return "";
+    const gm = await loadGoogleMapsJs(k);
+    const g = new gm.Geocoder();
+    const r = await g.geocode({ location: { lat, lng }, language: "ja", region: "JP" });
+    const list = (r && r.results) || [];
+    const best = list.find(x => (x.types || []).some(t => t === "premise" || t === "street_address")) || list[0];
+    if (!best) return "";
+    return String(best.formatted_address || "").replace(/^日本、\s*/, "").replace(/^〒\d{3}-\d{4}\s*/, "").trim();
+  } catch (e) { console.warn("[googleAddressAt]", e); return ""; }
+}
+let _gmapsKeyPromise = null;
 async function loadGmapsJsKey() {
+  if (!_gmapsKeyPromise) _gmapsKeyPromise = _loadGmapsJsKeyRaw().then(k => { if (!k) _gmapsKeyPromise = null; return k; });
+  return _gmapsKeyPromise;
+}
+async function _loadGmapsJsKeyRaw() {
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.gmapsjs::main&select=data`, { headers: _TRACK_HEADERS });
     if (!res.ok) return "";
@@ -13542,7 +13583,9 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
       const want = travelRef.current;
       let best = null, bd = 999;
       links.forEach(l => { let d = Math.abs(((l.heading - want + 540) % 360) - 180); if (d < bd) { bd = d; best = l; } });
-      if (!best || bd > 75) { setAuto(false); return; }       // 曲がり角・行き止まりで止まる
+      // 🆕 v9.650: 最初の1コマは横（家の方）を向いていても、見ている向きに一番近い道へ進む
+      if (!best || (bd > 75 && !autoFirstRef.current)) { setAuto(false); return; }       // 曲がり角・行き止まりで止まる
+      autoFirstRef.current = false;
       travelRef.current = best.heading;
       const pov = pano.getPov();
       pano.setPano(best.pano);
@@ -13572,11 +13615,15 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
     const brg = side === "front" ? pov : (travelRef.current + (side === "left" ? -90 : 90));
     const q = _svOffset(p.lat(), p.lng(), brg, side === "front" ? 18 : 14);
     const id = "sv" + Date.now() + Math.random().toString(36).slice(2, 6);
-    onAdd && onAdd({ id, lat: q.lat, lng: q.lng, by: member || "", at: Date.now(), status: "要確認", pano: pano.getPano(), heading: Math.round(brg) });
+    const pv = pano.getPov();
+    onAdd && onAdd({ id, lat: q.lat, lng: q.lng, by: member || "", at: Date.now(), status: "要確認", pano: pano.getPano(), heading: Math.round(brg),
+      // 🆕 v9.650: 見つけた時の画面（押すと同じ景色が出る）。左右の家は家の方を向いた画面にする
+      view: { heading: Math.round(side === "front" ? pv.heading : brg), pitch: Math.round(pv.pitch || 0), zoom: Math.round((pano.getZoom ? pano.getZoom() : 1) * 10) / 10 }, shot: shotDate || "" });
     setAdded(n => n + 1);
   };
   const look = (deg) => { const pano = panoRef.current; if (!pano) return; const pov = pano.getPov(); pano.setPov({ heading: travelRef.current + deg, pitch: pov.pitch }); };
-  const setTravelFromView = () => { const pano = panoRef.current; if (pano) travelRef.current = pano.getPov().heading; };
+  const autoFirstRef = React.useRef(false);
+  const setTravelFromView = () => { const pano = panoRef.current; if (pano) travelRef.current = pano.getPov().heading; autoFirstRef.current = true; };
   const close = async () => {
     setAuto(false);
     const it = await saveSvTrackPoints(member, ptsRef.current);
@@ -27306,10 +27353,30 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     setSvSelId(null);
     if (status === "空き家") {
       setPlacementMode(false);
-      setPendingPin({ lat: c.lat, lng: c.lng, mode: "sv" });
+      setPendingPin({ lat: c.lat, lng: c.lng, mode: "sv", svView: c.pano ? { pano: c.pano, ...(c.view || { heading: c.heading, pitch: 0, zoom: 1 }), shot: c.shot || "" } : null });
       setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: `ストリートビューで見つけた候補（${c.by || ""}）`, posting: false });
     }
   };
+  // 🆕 v9.650: 目印住所を自動で入れる（Googleマップで長押しして住所をコピーする手間をなくす）
+  const _pinLL = pendingPin ? `${pendingPin.lat.toFixed(6)},${pendingPin.lng.toFixed(6)}` : "";
+  useEffect(() => {
+    if (!pendingPin) return;
+    let dead = false;
+    const t = setTimeout(async () => {
+      setLandmarkLoading(true);
+      const a = await googleAddressAt(pendingPin.lat, pendingPin.lng);
+      if (dead) return;
+      setLandmarkLoading(false);
+      if (!a) return;
+      setPinForm(f => {
+        const cur = String(f.landmark || "").trim();
+        if (cur && cur !== f._autoLandmark) return f;   // 自分で入れた住所は上書きしない
+        return { ...f, landmark: a, _autoLandmark: a };
+      });
+    }, 500);
+    return () => { dead = true; clearTimeout(t); };
+    // eslint-disable-next-line
+  }, [_pinLL]);
   // 🆕 v9.649: 家を選んだら、ピンを家の真ん中へ動かし、地番欄が空(または前の自動の地番)なら地番を入れる
   const pickHouseForPin = (b) => {
     // 当たりが低い町(謄本との答え合わせで6割未満＝法務省の地図がずれやすい)は自動で入れない
@@ -27367,6 +27434,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       visitLog: [],
       family: [],
     };
+    // 🆕 v9.650: ストリートビューで見つけた時の画面
+    if (pendingPin.svView) newJiage.svView = pendingPin.svView;
     // 🆕 v9.649: 家を押して選んだピン（ピン＝家の真ん中）。最初に押した所も残す
     if (pendingPin.bldgKey) {
       newJiage.pinSnap = "建物";
@@ -32262,7 +32331,11 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             <b style={{ flex: 1, fontSize: 16, color: C.text }}>👁 要現地確認</b>
                             <button onClick={() => setSvSelId(null)} style={{ background: C.inset, border: "none", color: C.muted, width: 30, height: 30, borderRadius: 8, fontSize: 16, cursor: "pointer" }}>×</button>
                           </div>
-                          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>{c.by || "—"} がストリートビューで見つけた家（{d.getMonth() + 1}/{d.getDate()}）</div>
+                          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>{c.by || "—"} がストリートビューで見つけた家（{d.getMonth() + 1}/{d.getDate()}）</div>
+                          {/* 🆕 v9.650: 見つけた時の画面（目の前の家と見比べる） */}
+                          <div style={{ fontSize: 12, fontWeight: 800, color: C.text, marginBottom: 4 }}>📷 見つけた時の画面{c.shot ? `（${String(c.shot).replace("-", "年")}月撮影）` : ""}</div>
+                          <SvShot key={c.id} pano={c.pano} view={c.view || { heading: c.heading, pitch: 0, zoom: 1 }} lat={c.lat} lng={c.lng} height={190} />
+                          <div style={{ height: 10 }} />
                           <a href={`https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${c.lat},${c.lng}`} target="_blank" rel="noopener noreferrer" style={{ ...btn("#0ea5e9", "#fff"), display: "block", textAlign: "center", textDecoration: "none", boxSizing: "border-box" }}>🚗 ここに行く（Googleマップ）</a>
                           <button onClick={() => svCandResult(c, "空き家")} style={btn("#16a34a", "#fff")}>✅ 空き家だった → ピンを立てる</button>
                           <button onClick={() => svCandResult(c, "住んでた")} style={btn("#64748b", "#fff")}>✕ 住んでた</button>
