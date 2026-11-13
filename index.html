@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-13-v9.647";
+const APP_VERSION = "2026-11-14-v9.648";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -10734,14 +10734,27 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     if (!map || typeof L === "undefined") return;
     if (svYearLayerRef.current) { try { map.removeLayer(svYearLayerRef.current); } catch (e) {} svYearLayerRef.current = null; }
     if (!Array.isArray(svYearRects) || !svYearRects.length) return;
-    const renderer = L.canvas({ padding: 0.3 });
-    const grp = L.layerGroup();
-    svYearRects.forEach(x => {
-      L.rectangle([[x[0], x[1]], [x[2], x[3]]], { renderer, interactive: false, className: "koho-fill", weight: 1, color: x[4], opacity: 0.9, fillColor: x[4], fillOpacity: 0.32 }).addTo(grp);
-    });
-    grp.addTo(map);
+    // 🆕 v9.648: 県内全部(約14万マス)になったので、見えている範囲だけ描く。寄っても屋根が見えるよう塗りは薄く・枠ははっきり
+    const renderer = L.canvas({ padding: 0.2 });
+    const grp = L.layerGroup().addTo(map);
+    const draw = () => {
+      grp.clearLayers();
+      const z = map.getZoom();
+      if (z < 12) return;
+      const b = map.getBounds().pad(0.15);
+      const s0 = b.getSouth(), n0 = b.getNorth(), w0 = b.getWest(), e0 = b.getEast();
+      const near = z >= 16;
+      let n = 0;
+      for (const x of svYearRects) {
+        if (x[2] < s0 || x[0] > n0 || x[3] < w0 || x[1] > e0) continue;
+        L.rectangle([[x[0], x[1]], [x[2], x[3]]], { renderer, interactive: false, weight: near ? 2.5 : 1, color: x[4], opacity: 0.95, fillColor: x[4], fillOpacity: near ? 0.12 : 0.35 }).addTo(grp);
+        if (++n >= 6000) break;
+      }
+    };
+    draw();
+    map.on("moveend zoomend", draw);
     svYearLayerRef.current = grp;
-    return () => { try { map.removeLayer(grp); } catch (e) {} };
+    return () => { map.off("moveend zoomend", draw); try { map.removeLayer(grp); } catch (e) {} };
   }, [svYearRects]);
   // 🆕 v9.645: ストリートビューで通った道（紫の点線）。200m以上飛んだ所は線を切る
   const svTrackLayerRef = React.useRef(null);
@@ -31447,7 +31460,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           {showYouto && optRow("#0f766e", "用途", YOUTO_LEGEND.map(k => sw(YOUTO_ZONES[k][2], YOUTO_ZONES[k][1])))}
                           {showSvYear && optRow("#16a34a", "撮影年", [
                             ...SVYEAR_BANDS.map(b => chip("svy" + b.k, svYearKeys.includes(b.k), b.c, () => setSvYearKeys(svYearKeys.includes(b.k) ? svYearKeys.filter(x => x !== b.k) : [...svYearKeys, b.k]), b.l)),
-                            <span key="svyn" style={{ fontSize: 9, color: C.muted }}>狙いの団地の100m四方ごとに、ストリートビューの一番新しい写真の撮影年。新しい所ほど今の様子に近いので、👁 SVで探す時はここから</span>,
+                            <span key="svyn" style={{ fontSize: 9, color: C.muted }}>家が建っている100m四方ごとに、ストリートビューの一番新しい写真の撮影年（県内全部）。少し寄ると出ます。新しい所ほど今の様子に近いので、👁 SVで探す時はここから</span>,
                           ])}
                           {showDanchiNames && optRow("#4338ca", "名前", [
                             sw("#991b1b", "成果あり"), sw("#dc2626", "見込みあり"), sw("#ef4444", "🔥調整区域"), sw("#818cf8", "市街化"),

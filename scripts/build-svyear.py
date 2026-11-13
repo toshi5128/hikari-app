@@ -23,6 +23,13 @@ def main():
     for a in json.load(open(os.path.join(ROOT, 'areas', 'nerai.json'), encoding='utf-8'))['areas']:
         for i in range(0, len(a['m']), 4):
             cells.append((a['r0'] + a['m'][i], a['c0'] + a['m'][i + 1]))
+    if '--all' in sys.argv:   # v9.648: 県内の「家が建っている100mマス」全部（areas/*.geojson の hc）
+        import glob
+        for fn in sorted(glob.glob(os.path.join(ROOT, 'areas', '1*.geojson'))):
+            for ft in json.load(open(fn, encoding='utf-8'))['features']:
+                hc = ft['properties'].get('hc') or []
+                for i in range(2, len(hc), 2):
+                    cells.append((hc[0] + hc[i], hc[1] + hc[i + 1]))
     cells = sorted(set(cells))
     done = {}
     if os.path.exists(OUT):
@@ -42,12 +49,12 @@ def main():
                 time.sleep(1)
         return k, None
     n = 0
-    with ThreadPoolExecutor(6) as ex:
+    with ThreadPoolExecutor(8) as ex:
         for k, y in ex.map(one, todo):
             if y is not None:
                 done[k] = y
             n += 1
-            if n % 500 == 0:
+            if n % 2000 == 0:
                 json.dump({'v': 1, 'cells': [[a, b, v] for (a, b), v in sorted(done.items())]}, open(OUT, 'w'), separators=(',', ':'))
                 print(n, flush=True)
     json.dump({'v': 1, 'cells': [[a, b, v] for (a, b), v in sorted(done.items())]}, open(OUT, 'w'), separators=(',', ':'))
