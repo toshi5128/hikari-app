@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-13-v9.645";
+const APP_VERSION = "2026-11-13-v9.646";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13457,6 +13457,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
   const [auto, setAuto] = React.useState(false);
   const [noPano, setNoPano] = React.useState(false);
   const [added, setAdded] = React.useState(0);
+  const [shotDate, setShotDate] = React.useState("");   // 🆕 v9.646: 今見ている写真の撮影年月
   const autoRef = React.useRef(false); autoRef.current = auto;
   const addPt = (lat, lng) => {
     const a = ptsRef.current, last = a[a.length - 1];
@@ -13485,7 +13486,12 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         gmap.panTo(p);
         if (onMove) onMove({ lat: p.lat(), lng: p.lng() });
       });
-      pano.addListener("pano_changed", () => setNoPano(false));
+      const svc = new gm.StreetViewService();
+      pano.addListener("pano_changed", () => {
+        setNoPano(false);
+        const id = pano.getPano(); if (!id) return;
+        svc.getPanorama({ pano: id }, (d, st) => { if (st === "OK" && d && d.imageDate) setShotDate(d.imageDate); });
+      });
       setReady(true);
     }).catch(e => { if (alive) setErr(String(e.message || e)); });
     return () => { alive = false; };
@@ -13555,6 +13561,10 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         <>
           <div style={{ position: "relative", flex: "1 1 56%", minHeight: 0 }}>
             <div ref={panoDiv} style={{ position: "absolute", inset: 0 }} />
+            {shotDate && (() => {
+              const y = Number(String(shotDate).slice(0, 4)), old = y && y < 2024;
+              return <div style={{ position: "absolute", right: 8, top: 8, zIndex: 2, background: old ? "#b45309" : "rgba(15,23,42,0.85)", color: "#fff", borderRadius: 8, padding: "4px 8px", fontSize: 12, fontWeight: 800 }}>📷 {String(shotDate).replace("-", "年")}月撮影{old ? "（古い写真）" : ""}</div>;
+            })()}
             {noPano && <div style={{ position: "absolute", left: 10, right: 10, top: 10, background: "rgba(0,0,0,0.7)", color: "#fff", borderRadius: 8, padding: 8, fontSize: 12 }}>この近くにはストリートビューがありません。下の地図で道路の上を長押しして移動してください。</div>}
           </div>
           <div style={{ display: "flex", gap: 6, padding: "6px 8px", background: "#1e293b" }}>
