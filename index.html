@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.654";
+const APP_VERSION = "2026-11-14-v9.655";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.655", date: "2026-11-14", title: "SVで探す：分かれ道を地図の矢印で選べる／SVで登録したピンに見つけた時の画面",
+    body: "①自動で進んでいて分かれ道に来ると、下の地図に進める道の赤い矢印が出ます。行きたい方の矢印を押すと、その道へ進んで自動で続けます。②ストリートビューで見つけて登録したピンは、詳細の写真欄に「見つけた時のストリートビューの画面」が出ます（指で回して周りも見られます）。",
+    where: "地上げ → 👁 SVで探す／SVで登録したピンの詳細" },
   { v: "9.653", date: "2026-11-14", title: "SVで探す：空き家を見つけたその場でピン登録できるように",
     body: "👁 SVで探すで「🏚 左の家／前の家／右の家」を押すと、その場でピン登録の画面が開きます。航空写真で屋根を押して家を選び、目印住所と地番（地図がある地域）は自動で入ります。保存するとストリートビューに戻るので、続けて探せます。下の地図には、もう立っているピンが🔴で出るので、同じ家を2回登録しません。メモには「ストリートビューで見つけた空き家・現地未確認」と入ります。",
     where: "地上げ → 地図 → 👁 SVで探す → 🏚" },
@@ -13702,6 +13705,22 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
     }, speed);
     return () => clearInterval(t);
   }, [auto, ready, speed]);
+  // 🆕 v9.655: 分かれ道の時、下の地図に「進める道」の赤い矢印を出す（押すとその道へ）。下田さん「下の地図でどっちに行くか指定したい」
+  const choiceMarksRef = React.useRef([]);
+  React.useEffect(() => {
+    const gm = window.google && window.google.maps, gmap = gmapRef.current, pano = panoRef.current;
+    choiceMarksRef.current.forEach(m => m.setMap(null)); choiceMarksRef.current = [];
+    if (!gm || !gmap || !pano || !choices || !pano.getPosition()) return;
+    const c = pano.getPosition();
+    choiceMarksRef.current = choices.map(ch => {
+      const q = _svOffset(c.lat(), c.lng(), ch.heading, 22);
+      const m = new gm.Marker({ map: gmap, position: q, zIndex: 10000, cursor: "pointer",
+        icon: { path: gm.SymbolPath.FORWARD_CLOSED_ARROW, scale: 9, rotation: ch.heading, fillColor: "#dc2626", fillOpacity: 1, strokeColor: "#fff", strokeWeight: 3 } });
+      m.addListener("click", () => goChoice(ch));
+      return m;
+    });
+    try { gmap.panTo(c); } catch (e) {}
+  }, [choices]);
   // 🆕 v9.652: 分かれ道で選んだ道へ進んで、自動で進むを続ける
   const goChoice = (c) => {
     const pano = panoRef.current; if (!pano) return;
@@ -13782,7 +13801,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
             {both && <div style={{ position: "absolute", left: 8, top: 8, zIndex: 2, background: "rgba(225,29,72,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>◀ 左側の家</div>}
             {choices && (
               <div style={{ position: "absolute", left: 8, right: 8, bottom: 30, zIndex: 3, background: "rgba(15,23,42,0.92)", borderRadius: 12, padding: 10 }}>
-                <div style={{ color: "#fff", fontSize: 13, fontWeight: 900, marginBottom: 8 }}>🔀 分かれ道です。進む道を選んでください（下の地図の矢印が今の向き）</div>
+                <div style={{ color: "#fff", fontSize: 13, fontWeight: 900, marginBottom: 8 }}>🔀 分かれ道です。下の地図の赤い矢印を押すか、ここで選んでください</div>
                 <div style={{ display: "flex", gap: 6 }}>
                   {choices.map((c, i) => (
                     <button key={i} onClick={() => goChoice(c)} style={b("#0ea5e9", "#fff")}>
@@ -33953,6 +33972,16 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             if (!_pid) return null;
             return (
               <div style={{ background: C.inset, border: `1.5px solid ${C.borderDim}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+                {/* 🆕 v9.655: ストリートビューで見つけて登録したピンは、見つけた時の画面を写真の代わりに出す（下田さん「写真が入ってない」） */}
+                {_raw.svView && _raw.svView.pano && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: C.text, marginBottom: 4 }}>
+                      👁 ストリートビューで見つけた時の画面{_raw.svView.shot ? `（${String(_raw.svView.shot).replace("-", "年")}月撮影）` : ""}
+                    </div>
+                    <SvShot key={_pid + "_sv"} pano={_raw.svView.pano} view={_raw.svView} lat={_raw.lat} lng={_raw.lng} height={220} />
+                    <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>指で回して周りも見られます。現地で撮った写真は下から足してください。</div>
+                  </div>
+                )}
                 <PinPhotoSection
                   pinId={_pid}
                   photos={(((data.pinPhotos || {})[_pid]) || []).filter(p => !isRetiredPinPhoto(p) && !(p && p.kind === "owner"))}
