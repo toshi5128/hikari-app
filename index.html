@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.664";
+const APP_VERSION = "2026-11-14-v9.665";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,8 +8978,8 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
-  { v: "9.664", date: "2026-11-14", title: "SVで探す：家を見分けて、1軒ずつ家の真ん中に画面を向けるように",
-    body: "自動で進む時、地図の建物データで家を見分けます。左右の家の正面に来たら、その家の真ん中に画面を向けて止まり（約3秒）、次の家へ進みます。家が無い所（駐車場・畑など）は止まらずに進みます。建物データが無い所は約5mごとに止まります。",
+  { v: "9.664", date: "2026-11-14", title: "SVで探す：家を見分けて、1軒ずつ止まるように",
+    body: "自動で進む時、地図の建物データで家を見分けて、左右の家の正面に来るたびに約3秒止まり、次の家へ進みます。家が無い所（駐車場・畑など）は止まらずに進みます。画面の向きは、自分で合わせた向き（道に対して）のまま、進んでも曲がっても変わりません。",
     where: "地上げ → 👁 SVで探す → ▶ 自動で進む" },
   { v: "9.657", date: "2026-11-14", title: "SVで探す：範囲を囲うと、その中の道を全部自動で回るように",
     body: "下の地図の「✏️ 範囲を囲って回る」を押して、回りたい所を指で1周なぞってください。囲んだ中の道を全部1回ずつ通る順番が自動で決まり、オレンジの線で出ます（道の長さと、かかる時間の目安も出ます）。「▶ 回り始める」を押すと、両側の家を見ながらその順番どおりに進みます。分かれ道でも止まりません。空き家を見つけたら🏚を押せば止まって登録でき、「▶ 続ける」で続きから回ります。",
@@ -13623,13 +13623,24 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         icon: { path: gm.SymbolPath.FORWARD_CLOSED_ARROW, scale: 7, rotation: 0, fillColor: "#2563eb", fillOpacity: 1, strokeColor: "#fff", strokeWeight: 2.5 } });
       meRef.current = me;
       let prevP = null;
+      // 🆕 v9.665: 進む時に向きを勝手に変えない（下田さん）。自分で合わせた「道に対する向き」を覚えて、進んでも曲がってもその向きを保つ
+      const rel = { L: -SIDE, R: SIDE, S: 0, until: 0 };
+      try { const v = JSON.parse(localStorage.getItem("hikari_sv_rel") || "null"); if (v && typeof v.L === "number") { rel.L = v.L; rel.R = v.R; rel.S = v.S || 0; } } catch (e) {}
+      const nrm = (a) => ((a + 540) % 360) - 180;
+      const saveRel = () => { try { localStorage.setItem("hikari_sv_rel", JSON.stringify({ L: rel.L, R: rel.R, S: rel.S })); } catch (e) {} };
       const aimSides = () => {
-        if (!bothRef.current) return;
         const t = travelRef.current;
-        const pv = pano.getPov();
-        pano.setPov({ heading: t - SIDE, pitch: pv.pitch || 0 });
-        pano2.setPov({ heading: t + SIDE, pitch: (pano2.getPov() || {}).pitch || 0 });
+        rel.until = Date.now() + 600;
+        if (bothRef.current) {
+          pano.setPov({ heading: t + rel.L, pitch: (pano.getPov() || {}).pitch || 0 });
+          pano2.setPov({ heading: t + rel.R, pitch: (pano2.getPov() || {}).pitch || 0 });
+        } else {
+          pano.setPov({ heading: t + rel.S, pitch: (pano.getPov() || {}).pitch || 0 });
+        }
       };
+      // 自分で画面を回した時だけ、その向きを覚える
+      pano.addListener("pov_changed", () => { if (Date.now() < rel.until) return; const r = nrm(pano.getPov().heading - travelRef.current); if (bothRef.current) rel.L = r; else rel.S = r; saveRel(); });
+      pano2.addListener("pov_changed", () => { if (Date.now() < rel.until) return; rel.R = nrm(pano2.getPov().heading - travelRef.current); saveRel(); });
       pano.__hkAim = aimSides;
       // 🆕 v9.658: 常に一番引き（一番広く見える）に固定（下田さん「常に1番引きの状態を保ってほしい。じゃないと全体が見えない」）
       const fixWide = (pn) => { try { if (pn.getZoom() !== 0) pn.setZoom(0); } catch (e) {} };
@@ -13748,7 +13759,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
               if (!found[side] || score < found[side].score) found[side] = { b, brg, d, score };
             });
             let fresh = false;
-            const aim = (pn, f) => { try { pn.setPov({ heading: f.brg, pitch: Math.max(2, Math.min(14, 120 / f.d)) }); } catch (e) {} };
+            const aim = () => {};   // v9.665: 向きは変えない（下田さん「進むときに角度勝手に変えないで」）
             const both2 = bothRef.current;
             const newL = found.L && !hr.looked.has(found.L.b.key), newR = found.R && !hr.looked.has(found.R.b.key);
             if (both2 && pano2Ref.current) {
@@ -13818,7 +13829,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
       const pov = pano.getPov();
       pano.setPano(best.pano);
       if (bothRef.current) { if (pano.__hkAim) pano.__hkAim(); }
-      else pano.setPov({ heading: best.heading + (((pov.heading - want + 540) % 360) - 180), pitch: pov.pitch });
+      else if (pano.__hkAim) pano.__hkAim();
     }, 450);
     return () => clearInterval(t);
   }, [auto, ready]);
