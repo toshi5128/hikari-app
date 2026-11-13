@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-13-v9.639";
+const APP_VERSION = "2026-11-13-v9.640";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -10797,9 +10797,18 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       const on = blink.includes(a.k);
       const s = STY[a.state] || STY.none;
       const cls = [on ? "koho-blink" : "", on && kohoPinned && kohoOutside ? "koho-out" : ""].filter(Boolean).join(" ");
+      // 🆕 v9.640: 家のマス(hcLL)がある区画は、境界は線だけにして、家が建っている100mマスだけを塗る（畑は塗らない）
+      const hasHc = Array.isArray(a.hcLL);
+      if (hasHc && a.hcLL.length) {
+        L.polygon(a.hcLL, { renderer, interactive: false, stroke: false,
+          fillColor: on ? "#e11d48" : s.fillColor, fillOpacity: on ? 0.4 : Math.min(0.5, s.fillOpacity * 2.2),
+          className: on ? "koho-blink" : undefined }).addTo(grp);
+      }
       const pg = L.polygon(toLL(a.polys), {
-        renderer, color: on ? "#e11d48" : (a.k === kohoSel ? "#111827" : s.color), weight: on ? 4 : (a.k === kohoSel ? 3 : 1.2),
-        fillColor: on ? "#e11d48" : s.fillColor, fillOpacity: on ? 0.35 : s.fillOpacity, className: cls || undefined,
+        renderer, color: on ? "#e11d48" : (a.k === kohoSel ? "#111827" : s.color), weight: on ? 3 : (a.k === kohoSel ? 3 : 1.2),
+        dashArray: on && hasHc ? "8 6" : undefined,
+        fillColor: on ? "#e11d48" : s.fillColor, fillOpacity: hasHc ? 0 : (on ? 0.35 : s.fillOpacity),
+        className: (hasHc ? [on && kohoPinned && kohoOutside ? "koho-out" : ""].filter(Boolean).join(" ") : cls) || undefined,
       });
       // ピンを置くモード中は区画のタップを地図に素通しする（区画の上にもピンを置けるように）
       pg.on("click", e => { if (!kohoTapRef.current) return; try { L.DomEvent.stopPropagation(e); } catch (er) {} kohoTapRef.current(a.k); });
@@ -24753,7 +24762,19 @@ function kohoPrepare(fc) {
       for (let i = 0, j = r.length - 1; i < r.length; j = i++) A += (r[j][0] * kx) * (r[i][1] * ky) - (r[i][0] * kx) * (r[j][1] * ky);
       km2 += (ri === 0 ? 1 : -1) * Math.abs(A) / 2;
     }));
-    return { ...f.properties, polys, bb: [s, w, n, e], km2, dens: km2 > 0 ? f.properties.h / km2 : 0 };
+    // 🆕 v9.640: 家が建っている100mマス（hc＝scripts/build-house-cells.py）。塗るのはここだけ（畑・田んぼは塗らない）
+    const hc = f.properties.hc;
+    let hcLL = null;
+    if (Array.isArray(hc) && hc.length >= 4) {
+      hcLL = [];
+      for (let i = 2; i + 1 < hc.length; i += 2) {
+        const r = hc[0] + hc[i], c = hc[1] + hc[i + 1];
+        const a1 = _tkyToJgd(r / 1200, 100 + c / 800), b1 = _tkyToJgd((r + 1) / 1200, 100 + (c + 1) / 800);
+        hcLL.push([[a1[0], a1[1]], [b1[0], a1[1]], [b1[0], b1[1]], [a1[0], b1[1]]]);
+      }
+    } else if (Array.isArray(hc)) hcLL = [];
+    const { hc: _hc, ...props } = f.properties;
+    return { ...props, polys, hcLL, bb: [s, w, n, e], km2, dens: km2 > 0 ? f.properties.h / km2 : 0 };
   });
 }
 function _kohoInRing(lat, lng, ring) {
