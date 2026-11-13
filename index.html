@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-13-v9.642";
+const APP_VERSION = "2026-11-13-v9.643";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,8 +8978,8 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
-  { v: "9.642", date: "2026-11-13", title: "地図を航空写真に切り替えられるように",
-    body: "地上げの地図の右下に「🛰 写真」ボタンを足しました。押すと地図が航空写真（国土地理院の最新の空中写真）になり、家・空き地・畑の様子を上から見られます。ピンや探索候補の色はそのまま重なります。もう一度押す（🗺 地図）と元の地図に戻ります。どちらにしたかはスマホごとに覚えます。",
+  { v: "9.643", date: "2026-11-13", title: "地図を航空写真に切り替えられるように（地名つき）",
+    body: "地上げの地図の右下に「🛰 写真」ボタンを足しました。押すと地図が航空写真（国土地理院の最新の空中写真）になり、家・空き地・畑の様子を上から見られます。写真の上には市町村名（引いた時）・町名（寄った時）が出ます。ピンや探索候補の色はそのまま重なります。もう一度押す（🗺 地図）と元の地図に戻ります。どちらにしたかはスマホごとに覚えます。",
     where: "地上げ → 地図 → 右下「🛰 写真」" },
   { v: "9.641", date: "2026-11-13", title: "探索候補の赤い区画が「家が建っている所だけ」に・点滅をやめました",
     body: "🎯探索候補で区画を塗る時、町の境界の中を丸ごと塗るのをやめ、家が建っている100m四方だけを塗るようにしました（畑・田んぼは塗りません。境界は点線で残ります）。おすすめ・今日回る区画の赤は、目がチカチカしないよう点滅をやめて常に点いた表示にしました。",
@@ -10769,6 +10769,39 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     try { map.removeLayer(baseLayerRef.current); } catch (e) {}
     baseLayerRef.current = _hkBaseLayer(baseMode).addTo(map);
     try { baseLayerRef.current.eachLayer ? baseLayerRef.current.eachLayer(l => l.bringToBack && l.bringToBack()) : baseLayerRef.current.bringToBack(); } catch (e) {}
+  }, [baseMode]);
+  // 🆕 v9.643: 航空写真の時の地名（引き＝市町村名／寄り＝町名）。見えている範囲だけ作る
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined" || baseMode !== "photo") return;
+    if (!document.getElementById("hk-photo-label-style")) {
+      const st = document.createElement("style");
+      st.id = "hk-photo-label-style";
+      st.textContent = ".hk-pl{color:#fff;font-weight:800;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000,0 0 6px #000;transform:translate(-50%,-50%);pointer-events:none;font-family:inherit}"
+        + ".hk-pl.city{font-size:16px;color:#fef08a}.hk-pl.town{font-size:12px}";
+      document.head.appendChild(st);
+    }
+    const grp = L.layerGroup().addTo(map);
+    let data = null, alive = true;
+    const draw = () => {
+      if (!alive || !data) return;
+      grp.clearLayers();
+      const z = map.getZoom(), b = map.getBounds().pad(0.1);
+      const mk = (la, lo, txt, cls) => L.marker([la, lo], { interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "", html: `<div class="hk-pl ${cls}">${txt}</div>`, iconSize: [0, 0] }) }).addTo(grp);
+      if (z < 14) {
+        data.cities.forEach(c => { if (b.contains([c[1], c[2]])) mk(c[1], c[2], c[0], "city"); });
+      } else {
+        let n = 0;
+        for (const t of data.towns) {
+          if (n >= 250) break;
+          if (b.contains([t[2], t[3]])) { mk(t[2], t[3], z < 15 ? t[1] : t[0].replace(/^.*?郡/, "") + " " + t[1], "town"); n++; }
+        }
+      }
+    };
+    _hkLoadLabels().then(d => { data = d; draw(); }).catch(() => {});
+    map.on("moveend zoomend", draw);
+    return () => { alive = false; map.off("moveend zoomend", draw); try { map.removeLayer(grp); } catch (e) {} };
   }, [baseMode]);
   // 🆕 v9.558: 探索候補エリア（町丁・字の区画）。上位3区画（「今日ここを回る」を押したらその1区画だけ）を点滅。
   const kohoLayerRef = React.useRef(null);
@@ -13268,6 +13301,14 @@ function _hkBaseLayer(mode) {
     ]);
   }
   return L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap", maxZoom: 19 });
+}
+
+// 🆕 v9.643: 航空写真の時だけ、市町村名・町名を文字で重ねる（areas/labels.json＝国勢調査の町丁の代表点）
+let _hkLabelsPromise = null;
+function _hkLoadLabels() {
+  if (!_hkLabelsPromise) _hkLabelsPromise = fetch("areas/labels.json").then(r => { if (!r.ok) throw new Error("labels " + r.status); return r.json(); })
+    .catch(e => { _hkLabelsPromise = null; throw e; });
+  return _hkLabelsPromise;
 }
 
 // 📍 手動でピン位置を指定するモーダル
