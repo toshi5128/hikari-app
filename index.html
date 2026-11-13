@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-13-v9.644";
+const APP_VERSION = "2026-11-13-v9.645";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.645", date: "2026-11-13", title: "家にいながらストリートビューで空き家を探して、翌日確かめられるように",
+    body: "地図の左の「👁 SVで探す」を押すと、アプリの中でストリートビューが開きます。「▶ 自動で進む」で道なりに勝手に歩き、怪しい家があれば「🏚 左の家／見ている家／右の家」を押すだけで、その家に👁の印が付きます（下の小さい地図で指でずらせます）。印は全員で見られます。翌日、地図の👁を押すと「🚗 ここに行く（Googleマップ）」「✅ 空き家だった→ピンを立てる」「✕ 住んでた」が出ます。要確認の印をまとめてGoogleマップで回るボタンもあります。ストリートビューで通った道は、地図に紫の点線で残ります（現地の足跡とは別。表示の切り替え「👁 ストリートビューで通った道」で消せます）。",
+    where: "地上げ → 地図 → 左の「👁 SVで探す」／地図の👁印" },
   { v: "9.644", date: "2026-11-13", title: "探索候補の色が、寄ると薄くなって家が見えるように",
     body: "🎯探索候補の赤・オレンジの塗りは、地図を大きく寄せる（建物が見えるくらい）と自動でほぼ透明になり、枠線だけが残るようにしました。航空写真でも家の屋根や庭がそのまま見えます。引くと元の色に戻ります。",
     where: "地上げ → 地図 → 🎯 探索候補（寄った時）" },
@@ -10522,7 +10525,7 @@ if (typeof L !== "undefined" && L.Marker && L.Popup && !L.Marker.prototype._hkUp
   L.Marker.prototype._hkUprightPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho, svTracks, svCands, onSvCandTap }) {
   // 🆕 v9.635: ルート中に普通のピンの吹き出しから「➕ ルートに追加」できるよう、最新のルート状態を覚えておく
   const routeOverlayLiveRef = React.useRef(null);
   routeOverlayLiveRef.current = routeOverlay || null;
@@ -10721,6 +10724,49 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     svLayerRef.current = grp;
     return () => { try { map.removeLayer(grp); } catch (e) {} };
   }, [svScans]);
+  // 🆕 v9.645: ストリートビューで通った道（紫の点線）。200m以上飛んだ所は線を切る
+  const svTrackLayerRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (svTrackLayerRef.current) { try { map.removeLayer(svTrackLayerRef.current); } catch (e) {} svTrackLayerRef.current = null; }
+    if (!Array.isArray(svTracks) || !svTracks.length) return;
+    const grp = L.layerGroup();
+    svTracks.forEach(t => {
+      let seg = [], prev = null;
+      const flush = () => { if (seg.length >= 2) L.polyline(seg, { color: "#9333ea", weight: 4, opacity: 0.85, dashArray: "6 6", interactive: false }).addTo(grp); seg = []; };
+      ((t && t.points) || []).forEach(p => {
+        if (!p || typeof p.lat !== "number") return;
+        if (prev && (Math.abs(prev.lat - p.lat) > 0.0018 || Math.abs(prev.lng - p.lng) > 0.0022)) flush();
+        seg.push([p.lat, p.lng]); prev = p;
+      });
+      flush();
+    });
+    grp.addTo(map);
+    svTrackLayerRef.current = grp;
+    return () => { try { map.removeLayer(grp); } catch (e) {} };
+  }, [svTracks]);
+  // 🆕 v9.645: 👁 要現地確認の印（ストリートビューで見つけた怪しい家）
+  const svCandLayerRef = React.useRef(null);
+  const svCandTapRef = React.useRef(null);
+  svCandTapRef.current = onSvCandTap;
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (svCandLayerRef.current) { try { map.removeLayer(svCandLayerRef.current); } catch (e) {} svCandLayerRef.current = null; }
+    const list = (svCands || []).filter(c => c && c.status === "要確認" && typeof c.lat === "number");
+    if (!list.length) return;
+    const grp = L.layerGroup();
+    list.forEach(c => {
+      L.marker([c.lat, c.lng], { zIndexOffset: 900,
+        icon: L.divIcon({ className: "", iconSize: [30, 30], iconAnchor: [15, 15],
+          html: '<div style="width:30px;height:30px;border-radius:50%;background:#7c3aed;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;font-size:16px">👁</div>' }),
+      }).on("click", e => { try { L.DomEvent.stopPropagation(e); } catch (er) {} if (svCandTapRef.current) svCandTapRef.current(c.id); }).addTo(grp);
+    });
+    grp.addTo(map);
+    svCandLayerRef.current = grp;
+    return () => { try { map.removeLayer(grp); } catch (e) {} };
+  }, [svCands]);
 
   // 🆕 v9.556: 「調べ済み」の家を灰色の小さな点で出す（絞り込みで隠れている対象外・見込無しなど）。
   //   同じエリアをもう一度探索した時に「ここは前に調べた」が分かるように。タップで中身だけ見せる。
@@ -13321,6 +13367,215 @@ function _hkLoadLabels() {
   if (!_hkLabelsPromise) _hkLabelsPromise = fetch("areas/labels.json").then(r => { if (!r.ok) throw new Error("labels " + r.status); return r.json(); })
     .catch(e => { _hkLabelsPromise = null; throw e; });
   return _hkLabelsPromise;
+}
+
+// 🆕 v9.645: 👁 ストリートビューで空き家を探す（アプリの中で歩く → 怪しい家に印 → 翌日現地で確かめる）
+//   下田さん(2026-11-13)「夜でも、ここ空き家っぽいかもってところを見つけておけるだけで効率が上がる」
+//   ・地図の鍵は app_data の行 gmapsjs::main（{key}）。ひかり不動産アプリのURLでしか動かない制限付きの鍵を入れる
+//   ・印は 1件=1行 svcand::<id>（全員共有）。✅を押した時だけ普通のピン登録画面を開く＝謄本代のムダを出さない
+//   ・通った道は 1日1人=1行 svtrack::<名前>::<日付>（{points:[{ts,lat,lng}]}）に線で残す。
+//     地図では現地の足跡と同じ「線」で、紫の点線にして区別する。行動管理・探索済みの数字には混ぜない
+let _gmapsJsPromise = null;
+function loadGoogleMapsJs(key) {
+  if (window.google && window.google.maps && window.google.maps.StreetViewPanorama) return Promise.resolve(window.google.maps);
+  if (_gmapsJsPromise) return _gmapsJsPromise;
+  _gmapsJsPromise = new Promise((resolve, reject) => {
+    const cb = "__hkGmapsReady" + Date.now();
+    window[cb] = () => { resolve(window.google.maps); try { delete window[cb]; } catch (e) {} };
+    window.gm_authFailure = () => { reject(new Error("地図の鍵が使えません（設定を確認してください）")); };
+    const s = document.createElement("script");
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&language=ja&region=JP&callback=${cb}`;
+    s.async = true;
+    s.onerror = () => reject(new Error("Googleの地図を読み込めませんでした（通信）"));
+    document.head.appendChild(s);
+  }).catch(e => { _gmapsJsPromise = null; throw e; });
+  return _gmapsJsPromise;
+}
+async function loadGmapsJsKey() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.gmapsjs::main&select=data`, { headers: _TRACK_HEADERS });
+    if (!res.ok) return "";
+    const rows = await res.json();
+    return (rows && rows[0] && rows[0].data && rows[0].data.key) || "";
+  } catch (e) { return ""; }
+}
+async function loadSvCandRows() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.svcand::*&select=id,data`, { headers: _TRACK_HEADERS });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return (rows || []).map(r => r && r.data && r.data.item).filter(Boolean);
+  } catch (e) { return null; }
+}
+function saveSvCandRow(item) {
+  return fetch(`${SUPABASE_URL}/rest/v1/app_data`, {
+    method: "POST",
+    headers: { ..._TRACK_HEADERS, Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ id: "svcand::" + item.id, data: { item } }),
+  }).then(r => r.ok).catch(() => false);
+}
+// 通った道を今日の行に足す（同じ日・同じ人の行を読んで、点を後ろにつなげて書き戻す）
+async function loadSvTrackRows() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.svtrack::*&select=id,data`, { headers: _TRACK_HEADERS });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return (rows || []).map(r => r && r.data && r.data.item).filter(Boolean);
+  } catch (e) { return null; }
+}
+async function saveSvTrackPoints(member, pts) {
+  if (!member || !pts || pts.length < 2) return null;
+  const d = new Date(); const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const id = `svtrack::${member}::${date}`;
+  let old = [];
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${encodeURIComponent(id)}&select=data`, { headers: _TRACK_HEADERS });
+    const rows = res.ok ? await res.json() : [];
+    old = (rows && rows[0] && rows[0].data && rows[0].data.item && rows[0].data.item.points) || [];
+  } catch (e) {}
+  const item = { id: `${member}::${date}`, by: member, date, points: old.concat(pts) };
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/app_data`, {
+      method: "POST", headers: { ..._TRACK_HEADERS, Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id, data: { item } }),
+    });
+    if (!r.ok) return null;
+  } catch (e) { return null; }
+  return item;
+}
+function _svOffset(lat, lng, bearingDeg, meters) {
+  const r = bearingDeg * Math.PI / 180;
+  return { lat: lat + (meters * Math.cos(r)) / 110574, lng: lng + (meters * Math.sin(r)) / (111320 * Math.cos(lat * Math.PI / 180)) };
+}
+function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScanSaved }) {
+  const panoDiv = React.useRef(null), mapDiv = React.useRef(null);
+  const panoRef = React.useRef(null), gmapRef = React.useRef(null), markersRef = React.useRef({});
+  const travelRef = React.useRef(0);           // 進む向き（見回しても変えない）
+  const ptsRef = React.useRef([]);              // 通った道（パノラマが変わるたびに1点）
+  const [err, setErr] = React.useState("");
+  const [ready, setReady] = React.useState(false);
+  const [auto, setAuto] = React.useState(false);
+  const [noPano, setNoPano] = React.useState(false);
+  const [added, setAdded] = React.useState(0);
+  const autoRef = React.useRef(false); autoRef.current = auto;
+  const addPt = (lat, lng) => {
+    const a = ptsRef.current, last = a[a.length - 1];
+    if (last && Math.abs(last.lat - lat) < 1e-6 && Math.abs(last.lng - lng) < 1e-6) return;
+    a.push({ ts: Date.now(), lat: +lat.toFixed(6), lng: +lng.toFixed(6) });   // 飛んだ所(200m以上)は地図側で線を切る
+  };
+  React.useEffect(() => {
+    let alive = true;
+    loadGoogleMapsJs(apiKey).then(gm => {
+      if (!alive) return;
+      const gmap = new gm.Map(mapDiv.current, { center: start, zoom: 18, mapTypeId: "hybrid", disableDefaultUI: true, zoomControl: true, gestureHandling: "greedy", clickableIcons: false });
+      const pano = new gm.StreetViewPanorama(panoDiv.current, {
+        position: start, pov: { heading: 0, pitch: 0 }, zoom: 0, addressControl: false, fullscreenControl: false,
+        motionTracking: false, motionTrackingControl: false, showRoadLabels: false, linksControl: true, panControl: false, enableCloseButton: false,
+      });
+      gmap.setStreetView(pano);
+      panoRef.current = pano; gmapRef.current = gmap;
+      // 近くのストリートビューに合わせる（無ければ知らせる）
+      new gm.StreetViewService().getPanorama({ location: start, radius: 120, source: gm.StreetViewSource.OUTDOOR }, (data, status) => {
+        if (status === "OK" && data && data.location) { pano.setPano(data.location.pano); setNoPano(false); }
+        else setNoPano(true);
+      });
+      pano.addListener("position_changed", () => {
+        const p = pano.getPosition(); if (!p) return;
+        addPt(p.lat(), p.lng());
+        gmap.panTo(p);
+        if (onMove) onMove({ lat: p.lat(), lng: p.lng() });
+      });
+      pano.addListener("pano_changed", () => setNoPano(false));
+      setReady(true);
+    }).catch(e => { if (alive) setErr(String(e.message || e)); });
+    return () => { alive = false; };
+    // eslint-disable-next-line
+  }, []);
+  // 自動で進む：1.4秒ごとに、進む向きに一番近い道へ1コマ進む
+  React.useEffect(() => {
+    if (!auto || !ready) return;
+    const t = setInterval(() => {
+      const pano = panoRef.current; if (!pano || !autoRef.current) return;
+      const links = pano.getLinks() || [];
+      if (!links.length) { setAuto(false); return; }
+      const want = travelRef.current;
+      let best = null, bd = 999;
+      links.forEach(l => { let d = Math.abs(((l.heading - want + 540) % 360) - 180); if (d < bd) { bd = d; best = l; } });
+      if (!best || bd > 75) { setAuto(false); return; }       // 曲がり角・行き止まりで止まる
+      travelRef.current = best.heading;
+      const pov = pano.getPov();
+      pano.setPano(best.pano);
+      pano.setPov({ heading: best.heading + (((pov.heading - want + 540) % 360) - 180), pitch: pov.pitch });
+    }, 1400);
+    return () => clearInterval(t);
+  }, [auto, ready]);
+  // 印を地図に出す（ドラッグで位置を直せる）
+  React.useEffect(() => {
+    const gm = window.google && window.google.maps, gmap = gmapRef.current;
+    if (!gm || !gmap) return;
+    const cur = markersRef.current;
+    const want = new Set();
+    (cands || []).filter(c => c.status === "要確認").forEach(c => {
+      want.add(c.id);
+      if (cur[c.id]) { cur[c.id].setPosition({ lat: c.lat, lng: c.lng }); return; }
+      const m = new gm.Marker({ map: gmap, position: { lat: c.lat, lng: c.lng }, draggable: true, label: { text: "👁", fontSize: "16px" } });
+      m.addListener("dragend", () => { const p = m.getPosition(); onAdd && onAdd({ ...c, lat: p.lat(), lng: p.lng() }, true); });
+      cur[c.id] = m;
+    });
+    Object.keys(cur).forEach(id => { if (!want.has(id)) { cur[id].setMap(null); delete cur[id]; } });
+  }, [cands, ready]);
+  const mark = (side) => {
+    const pano = panoRef.current; if (!pano || !pano.getPosition()) return;
+    const p = pano.getPosition();
+    const pov = pano.getPov().heading;
+    const brg = side === "front" ? pov : (travelRef.current + (side === "left" ? -90 : 90));
+    const q = _svOffset(p.lat(), p.lng(), brg, side === "front" ? 18 : 14);
+    const id = "sv" + Date.now() + Math.random().toString(36).slice(2, 6);
+    onAdd && onAdd({ id, lat: q.lat, lng: q.lng, by: member || "", at: Date.now(), status: "要確認", pano: pano.getPano(), heading: Math.round(brg) });
+    setAdded(n => n + 1);
+  };
+  const look = (deg) => { const pano = panoRef.current; if (!pano) return; const pov = pano.getPov(); pano.setPov({ heading: travelRef.current + deg, pitch: pov.pitch }); };
+  const setTravelFromView = () => { const pano = panoRef.current; if (pano) travelRef.current = pano.getPov().heading; };
+  const close = async () => {
+    setAuto(false);
+    const it = await saveSvTrackPoints(member, ptsRef.current);
+    if (it && onScanSaved) onScanSaved(it);
+    onClose();
+  };
+  const b = (bg, fg) => ({ border: "none", borderRadius: 10, padding: "10px 6px", fontSize: 13, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", background: bg, color: fg, flex: 1, minWidth: 0 });
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 3000, background: "#0f172a", display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", color: "#fff" }}>
+        <b style={{ flex: 1, fontSize: 14 }}>👁 ストリートビューで探す{added ? `（印 ${added}件）` : ""}</b>
+        <button onClick={close} style={{ border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 13, fontWeight: 800, background: "#fff", color: "#0f172a", cursor: "pointer", fontFamily: "inherit" }}>終わる</button>
+      </div>
+      {err ? (
+        <div style={{ color: "#fff", padding: 20, fontSize: 14, lineHeight: 1.7 }}>⚠️ {err}<br />地図の鍵がまだ入っていないか、使えない状態です。下田さんに知らせてください。</div>
+      ) : (
+        <>
+          <div style={{ position: "relative", flex: "1 1 56%", minHeight: 0 }}>
+            <div ref={panoDiv} style={{ position: "absolute", inset: 0 }} />
+            {noPano && <div style={{ position: "absolute", left: 10, right: 10, top: 10, background: "rgba(0,0,0,0.7)", color: "#fff", borderRadius: 8, padding: 8, fontSize: 12 }}>この近くにはストリートビューがありません。下の地図で道路の上を長押しして移動してください。</div>}
+          </div>
+          <div style={{ display: "flex", gap: 6, padding: "6px 8px", background: "#1e293b" }}>
+            <button onClick={() => { if (!auto) setTravelFromView(); setAuto(a => !a); }} style={b(auto ? "#f59e0b" : "#0ea5e9", "#fff")}>{auto ? "⏸ 止める" : "▶ 自動で進む"}</button>
+            <button onClick={() => look(-90)} style={b("#334155", "#fff")}>← 左を見る</button>
+            <button onClick={() => look(0)} style={b("#334155", "#fff")}>正面</button>
+            <button onClick={() => look(90)} style={b("#334155", "#fff")}>右を見る →</button>
+          </div>
+          <div style={{ display: "flex", gap: 6, padding: "0 8px 6px", background: "#1e293b" }}>
+            <button onClick={() => mark("left")} style={b("#e11d48", "#fff")}>🏚 左の家</button>
+            <button onClick={() => mark("front")} style={b("#e11d48", "#fff")}>🏚 見ている家</button>
+            <button onClick={() => mark("right")} style={b("#e11d48", "#fff")}>🏚 右の家</button>
+          </div>
+          <div style={{ position: "relative", flex: "1 1 34%", minHeight: 0 }}>
+            <div ref={mapDiv} style={{ position: "absolute", inset: 0 }} />
+            <div style={{ position: "absolute", left: 8, bottom: 8, background: "rgba(255,255,255,0.92)", borderRadius: 8, padding: "4px 8px", fontSize: 10, color: "#334155", maxWidth: "75%" }}>👁＝付けた印（指でずらせます）。人形を道路に落とすとそこへ移動します。</div>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 // 📍 手動でピン位置を指定するモーダル
@@ -25482,6 +25737,23 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [trackVisibleMembers, setTrackVisibleMembers] = useState(() => currentUser ? [currentUser] : []);
   // 🆕 v9.419: ストリートビューで確認した範囲（面）。足跡とは別レイヤーで切替できる。
   const [svScans, setSvScans] = useState([]);
+  // 🆕 v9.645: 👁 ストリートビューで探す（印＝svcand・通った道＝svtrack）
+  const [svCands, setSvCands] = useState([]);
+  const [svTracksData, setSvTracksData] = useState([]);
+  const [showSvTrack, setShowSvTrackRaw] = useState(() => { try { return localStorage.getItem("hikari_show_svtrack") !== "0"; } catch (e) { return true; } });
+  const setShowSvTrack = (v) => { setShowSvTrackRaw(v); try { localStorage.setItem("hikari_show_svtrack", v ? "1" : "0"); } catch (e) {} };
+  const [svWalker, setSvWalker] = useState(null);   // { key, start }
+  const [svSelId, setSvSelId] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    loadSvCandRows().then(r => { if (alive && r) setSvCands(r); });
+    loadSvTrackRows().then(r => { if (alive && r) setSvTracksData(r); });
+    return () => { alive = false; };
+  }, []);
+  const upsertSvCand = (item) => {
+    setSvCands(list => { const i = list.findIndex(x => x.id === item.id); if (i < 0) return [...list, item]; const n = list.slice(); n[i] = item; return n; });
+    saveSvCandRow({ ...item, updatedAt: Date.now() }).then(ok => { if (!ok) alert("👁 印を保存できませんでした（通信）"); });
+  };
   const [showSvScan, setShowSvScan] = useState(true);
   // 🆕 v9.440: 空き家が出やすいエリア（75歳以上比率）
   const [showAkiya, setShowAkiya] = useState(() => {
@@ -26753,6 +27025,26 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     setPendingPin({ lat, lng, mode: "longpress" });
     setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "", posting: false });
     // 目印住所の自動入力なし（空のまま）
+  };
+  // 🆕 v9.645: 👁 ストリートビューで探すを開く（始める場所＝狙いの町に寄っていればそこ、なければ最後に見ていた地図の真ん中）
+  const openSvWalker = async () => {
+    const key = await loadGmapsJsKey();
+    if (!key) { alert("ストリートビュー用の地図の鍵がまだ設定されていません。下田さんに知らせてください（Claudeが設定します）。"); return; }
+    let start = null;
+    try { const v = JSON.parse(localStorage.getItem("hikari_map_view_jiage") || "null"); if (v && typeof v.lat === "number") start = { lat: v.lat, lng: v.lng }; } catch (e) {}
+    if (!start && currentLoc) start = { lat: currentLoc.lat, lng: currentLoc.lng };
+    if (!start) start = { lat: 36.042, lng: 139.399 };
+    setSvWalker({ key, start });
+  };
+  // 👁 の印を現地で確かめた結果
+  const svCandResult = (c, status) => {
+    upsertSvCand({ ...c, status, checkedBy: currentUser || "", checkedAt: Date.now() });
+    setSvSelId(null);
+    if (status === "空き家") {
+      setPlacementMode(false);
+      setPendingPin({ lat: c.lat, lng: c.lng, mode: "sv" });
+      setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: `ストリートビューで見つけた候補（${c.by || ""}）`, posting: false });
+    }
   };
   const cancelPendingPin = () => {
     setPendingPin(null);
@@ -31032,6 +31324,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       const layers = [
                         // 🆕 v9.564: 空き家・密集市街地・ストリートビュー済み・宅地化の年代は外した（探索候補エリアに役目を譲る）
                         { k: "chika", on: showChika, set: setShowChika, c: "#b45309", l: "💴 基準地価" },
+                        { k: "svtrack", on: showSvTrack, set: () => setShowSvTrack(!showSvTrack), c: "#9333ea", l: "👁 ストリートビューで通った道" },
                         { k: "youto", on: showYouto, set: setShowYouto, c: "#0f766e", l: "🏙 用途地域" },
                         { k: "chosei", on: showChosei, c: "#dc2626", l: "🔥 調整区域の団地",
                           // 所有者住所の表示だと団地の面は出ない（ピンが所有者の家にあるため）→ 点けたら物件住所に切り替える
@@ -31574,6 +31867,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       })()}
                       tracks={trackRecording ? recordingPastTracks : displayTracks}
                       svScans={null}
+                      svTracks={showSvTrack ? svTracksData : null}
+                      svCands={pendingPin || selected ? null : svCands}
+                      onSvCandTap={placementMode ? null : (id => setSvSelId(id))}
                       trackColorMode={trackColorMode}
                       showAkiya={false}
                       akiyaMode={akiyaMode}
@@ -31634,6 +31930,59 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         </div>
                       </div>
                     )}
+                    {/* 🆕 v9.645: 👁 ストリートビューで探す（FAB・印の確認シート・本体） */}
+                    {!(selected || showAdd || assessmentTarget || pinEdit || pendingPin) && (
+                      <button onClick={openSvWalker} title="ストリートビューで探す" style={{
+                        position: "absolute", left: 12, bottom: 282, zIndex: 601,
+                        width: 56, height: 56, borderRadius: "50%", background: "#fff", color: "#7c3aed",
+                        border: "1px solid rgba(0,0,0,0.12)", boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                        cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "inherit", padding: 0,
+                      }}>
+                        <span style={{ fontSize: 20, lineHeight: 1 }}>👁</span>
+                        <span style={{ fontSize: 8, marginTop: 1, fontWeight: 800, color: C.muted }}>SVで探す</span>
+                      </button>
+                    )}
+                    {svWalker && (
+                      <SvWalker apiKey={svWalker.key} start={svWalker.start} member={currentUser || ""} cands={svCands}
+                        onAdd={(c) => upsertSvCand(c)}
+                        onScanSaved={(it) => setSvTracksData(list => [...list.filter(x => x.id !== it.id), it])}
+                        onClose={() => setSvWalker(null)} />
+                    )}
+                    {svSelId && !(selected || showAdd || assessmentTarget || pinEdit || pendingPin) && (() => {
+                      const c = svCands.find(x => x.id === svSelId);
+                      if (!c) return null;
+                      const open = svCands.filter(x => x.status === "要確認");
+                      // 近い順に最大9件（Googleマップのルートは経由地9か所まで）
+                      const from = currentLoc && typeof currentLoc.lat === "number" ? currentLoc : c;
+                      const order = []; let cur = from; const rest = open.slice();
+                      while (rest.length && order.length < 9) {
+                        let bi = 0, bd = 1e9;
+                        rest.forEach((x, i) => { const d = (x.lat - cur.lat) ** 2 + ((x.lng - cur.lng) * 0.81) ** 2; if (d < bd) { bd = d; bi = i; } });
+                        cur = rest.splice(bi, 1)[0]; order.push(cur);
+                      }
+                      const routeUrl = order.length ? `https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${order[order.length - 1].lat},${order[order.length - 1].lng}`
+                        + (order.length > 1 ? `&waypoints=${order.slice(0, -1).map(x => x.lat.toFixed(6) + "," + x.lng.toFixed(6)).join("|")}` : "") : "";
+                      const btn = (bg, fg) => ({ border: "none", borderRadius: 10, padding: 12, fontSize: 14, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", background: bg, color: fg, width: "100%", marginBottom: 6 });
+                      const d = new Date(c.at || 0);
+                      return (
+                        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 700, background: C.cardBg, borderTopLeftRadius: 16, borderTopRightRadius: 16,
+                          boxShadow: "0 -8px 32px rgba(0,0,0,0.45)", padding: "12px 16px 16px", maxHeight: "70%", overflowY: "auto" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                            <b style={{ flex: 1, fontSize: 16, color: C.text }}>👁 要現地確認</b>
+                            <button onClick={() => setSvSelId(null)} style={{ background: C.inset, border: "none", color: C.muted, width: 30, height: 30, borderRadius: 8, fontSize: 16, cursor: "pointer" }}>×</button>
+                          </div>
+                          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>{c.by || "—"} がストリートビューで見つけた家（{d.getMonth() + 1}/{d.getDate()}）</div>
+                          <a href={`https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${c.lat},${c.lng}`} target="_blank" rel="noopener noreferrer" style={{ ...btn("#0ea5e9", "#fff"), display: "block", textAlign: "center", textDecoration: "none", boxSizing: "border-box" }}>🚗 ここに行く（Googleマップ）</a>
+                          <button onClick={() => svCandResult(c, "空き家")} style={btn("#16a34a", "#fff")}>✅ 空き家だった → ピンを立てる</button>
+                          <button onClick={() => svCandResult(c, "住んでた")} style={btn("#64748b", "#fff")}>✕ 住んでた</button>
+                          <button onClick={() => { if (window.confirm("この印を消しますか？")) svCandResult(c, "削除"); }} style={btn(C.inset, C.muted)}>🗑 印を消す（場所違いなど）</button>
+                          {order.length > 1 && (
+                            <a href={routeUrl} target="_blank" rel="noopener noreferrer" style={{ ...btn("#7c3aed", "#fff"), display: "block", textAlign: "center", textDecoration: "none", boxSizing: "border-box", marginTop: 6 }}>🧭 要確認 {open.length}件のうち近い{order.length}件をGoogleマップで回る</a>
+                          )}
+                          <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>✅を押すと、その場所でいつものピン登録の画面が開きます（地番などを入れて登録）。✕と🗑は印だけ地図から消え、記録は残ります。</div>
+                        </div>
+                      );
+                    })()}
                     {/* 🆕 v9.558: 探索候補エリア（FAB・上の帯・市町村選び・区画のシート） */}
                     {!(selected || showAdd || assessmentTarget || pinEdit || pendingPin) && (
                       <button onClick={openKohoPicker} title="探索候補" style={{
