@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.666";
+const APP_VERSION = "2026-11-14-v9.667";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.667", date: "2026-11-14", title: "SVで探す：囲んで回る時、同じ道を2回通らないように",
+    body: "範囲を囲って自動で回る時、行き止まりや一度通った道を引き返さず、まだ見ていない次の道の入口へパッと移動します。回る距離が約4割短くなりました。",
+    where: "地上げ → 👁 SVで探す → ✏️ 範囲を囲って回る" },
   { v: "9.664", date: "2026-11-14", title: "SVで探す：家を見分けて、1軒ずつ止まるように",
     body: "自動で進む時、地図の建物データで家を見分けて、左右の家の正面に来るたびに約3秒止まり、次の家へ進みます。家が無い所（駐車場・畑など）は止まらずに進みます。画面の向きは、自分で合わせた向き（道に対して）のまま、進んでも曲がっても変わりません。",
     where: "地上げ → 👁 SVで探す → ▶ 自動で進む" },
@@ -13789,7 +13792,8 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         for (let k = idx; k < Math.min(pts.length, idx + 25); k++) { const d = _hkM(here, [pts[k].lat, pts[k].lng]); if (d < bdist) { bdist = d; bi = k; } }
         if (bdist < 18) idx = bi + 1;
         if (idx >= pts.length - 1) { setAuto(false); setPatrol(null); setPlanMsg("✅ 囲んだ範囲を回り終わりました"); return; }
-        let ti = idx; while (ti < pts.length - 1 && _hkM(here, [pts[ti].lat, pts[ti].lng]) < 9 && !pts[ti + 1].jump) ti++;
+        // v9.667: 行き止まりの奥まで来たら、来た道は戻らず次の道の入口へ飛ぶ（飛ぶ点で止める）
+        let ti = idx; while (ti < pts.length - 1 && !pts[ti].jump && _hkM(here, [pts[ti].lat, pts[ti].lng]) < 9) ti++;
         const tgt = pts[ti];
         // 同じ場所から動けない時・離れた道へ飛ぶ時は、その点の近くのストリートビューへ移動
         const st = stuckRef.current; if (st.pano === pano.getPano()) st.n++; else { st.pano = pano.getPano(); st.n = 0; }
@@ -13889,7 +13893,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
       const r = await hkPlanPatrol(poly, from);
       setPlan({ ...r, poly }); setPatrol(null);
       const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);   // 約10mで1軒
-      setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km（戻り道を入れて ${(r.total / 1000).toFixed(1)}km）・1軒ずつ見て約${mins}分`);
+      setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・同じ道は通りません（行き止まりは次の道へ飛ぶ）・1軒ずつ見て約${mins}分`);
     } catch (er) { setPlan(null); setPlanMsg("⚠️ " + (er.message || er)); }
   };
   const startPatrol = () => {
@@ -14242,7 +14246,10 @@ function _hkInPoly(pt, poly) {
   }
   return inside;
 }
-// 囲んだ範囲の道を全部1回ずつ通る順番（行き止まりに着いたら、まだ通っていない一番近い道まで最短で戻る）
+// 囲んだ範囲の道を全部通る順番（🆕 v9.667: 同じ道をなるべく通らない／下田さん「何回も同じ道通るのやめてほしい」）
+//   ① 道の網を作る（つなぎ目は4m以内でまとめる・交差点の15m未満のヒゲは捨てる）
+//   ② 行き止まりや半端な交差点（道が奇数本つながる点）を近い同士で組にして「どうしても要る戻り道」だけ足す（郵便配達ルートの考え方）
+//   ③ 一筆書きでたどる（まっすぐ進める道を優先）。一番長い戻り道は足さず、そこを出発点と終点にする
 async function hkPlanPatrol(poly, from) {
   let s0 = 90, n0 = -90, w0 = 180, e0 = -180;
   poly.forEach(([a, b]) => { s0 = Math.min(s0, a); n0 = Math.max(n0, a); w0 = Math.min(w0, b); e0 = Math.max(e0, b); });
@@ -14252,10 +14259,18 @@ async function hkPlanPatrol(poly, from) {
   if (tiles.length > 30) throw new Error("範囲が広すぎます。町1つ分くらいに小さく囲ってください");
   const lines = [];
   for (const [x, y] of tiles) { const raw = await _hkLoadBvRaw(x, y); if (raw) _hkMvtRoads(raw, x, y).forEach(l => lines.push(l)); }
-  // 点をまとめる（約4m）→ 道の網
-  const nodes = [], nodeIdx = new Map(), key = (p) => Math.round(p[0] * 27000) + "," + Math.round(p[1] * 22000);
-  const nid = (p) => { const k = key(p); if (!nodeIdx.has(k)) { nodeIdx.set(k, nodes.length); nodes.push(p); } return nodeIdx.get(k); };
-  const edges = [], seen = new Set(), adj = [];
+  // 点をまとめる（4m以内なら同じ点）→ 道の網
+  const nodes = [], grid = new Map(), CY = 27000, CX = 22000;
+  const nid = (p) => {
+    const gx = Math.round(p[1] * CX), gy = Math.round(p[0] * CY);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const arr = grid.get((gx + dx) + "," + (gy + dy)); if (!arr) continue;
+      for (const i of arr) if (_hkM(nodes[i], p) < 4) return i;
+    }
+    const k = gx + "," + gy; if (!grid.has(k)) grid.set(k, []); grid.get(k).push(nodes.length); nodes.push(p); return nodes.length - 1;
+  };
+  let edges = [];
+  const seen = new Set();
   // 🆕 v9.659: 道の端が囲みの線の外にはみ出していても、道の一部でも囲みの中(または線から25m以内)にあれば入れる
   //   （下田さん「道があるのに認識してない」＝道に沿ってきっちり囲むと、道の両端が外に出て丸ごと外れていた）
   const distEdge = (p) => {
@@ -14278,44 +14293,144 @@ async function hkPlanPatrol(poly, from) {
       if (!hit && !(nearIn(l[i]) && nearIn(l[i + 1]))) continue;
       const a = nid(l[i]), b = nid(l[i + 1]); if (a === b) continue;
       const ek = a < b ? a + "_" + b : b + "_" + a; if (seen.has(ek)) continue; seen.add(ek);
-      const e = { a, b, len: _hkM(nodes[a], nodes[b]), done: false };
-      edges.push(e); (adj[a] = adj[a] || []).push(edges.length - 1); (adj[b] = adj[b] || []).push(edges.length - 1);
+      edges.push({ a, b, len: _hkM(nodes[a], nodes[b]) });
     }
   });
   if (!edges.length) throw new Error("囲んだ中に道が見つかりませんでした");
   if (edges.length > 8000) throw new Error("範囲が広すぎます。もう少し小さく囲ってください");
-  // 出発点＝今いる所に一番近い点
-  let cur = 0, bd = 1e9;
-  nodes.forEach((p, i) => { if (!adj[i]) return; const d = _hkM(p, from); if (d < bd) { bd = d; cur = i; } });
-  const route = [cur]; let heading = null, total = 0, fresh = 0;
+  // 交差点から出ている15m未満の行き止まり（データ上のヒゲ）は捨てる＝そこだけのための往復をしない
+  for (let pass = 0; pass < 3; pass++) {
+    const deg = new Map(), adj0 = new Map();
+    edges.forEach((e, i) => { [e.a, e.b].forEach(n => { deg.set(n, (deg.get(n) || 0) + 1); if (!adj0.has(n)) adj0.set(n, []); adj0.get(n).push(i); }); });
+    const drop = new Set();
+    deg.forEach((dg, n) => {
+      if (dg !== 1) return;
+      let cur = n, prevE = -1, L = 0; const chain = [];
+      for (let g = 0; g < 50; g++) {
+        const ei = adj0.get(cur).find(x => x !== prevE); if (ei == null) break;
+        chain.push(ei); L += edges[ei].len; const e = edges[ei]; cur = e.a === cur ? e.b : e.a; prevE = ei;
+        if (deg.get(cur) !== 2) break;
+      }
+      if (L < 15 && deg.get(cur) >= 3) chain.forEach(x => drop.add(x));
+    });
+    if (!drop.size) break;
+    edges = edges.filter((e, i) => !drop.has(i));
+  }
+  const adj = [];
+  edges.forEach((e, i) => { (adj[e.a] = adj[e.a] || []).push(i); (adj[e.b] = adj[e.b] || []).push(i); });
   const other = (e, n) => e.a === n ? e.b : e.a;
-  for (let guard = 0; guard < 200000; guard++) {
-    const open = (adj[cur] || []).filter(ei => !edges[ei].done);
-    if (open.length) {
-      // まっすぐ進める道を優先
-      let best = open[0], bdiff = 999;
-      open.forEach(ei => { const h = _hkBrg(nodes[cur], nodes[other(edges[ei], cur)]); const d = heading == null ? 0 : Math.abs(((h - heading + 540) % 360) - 180); if (d < bdiff) { bdiff = d; best = ei; } });
-      const e = edges[best], nx = other(e, cur);
-      e.done = true; heading = _hkBrg(nodes[cur], nodes[nx]); total += e.len; fresh += e.len; cur = nx; route.push(cur);
-      continue;
+  const fresh = edges.reduce((s, e) => s + e.len, 0);
+  const heap = () => { const h = []; return {
+    push(x) { h.push(x); let i = h.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (h[p][0] <= h[i][0]) break; [h[p], h[i]] = [h[i], h[p]]; i = p; } },
+    pop() { const t = h[0], l = h.pop(); if (h.length) { h[0] = l; let i = 0; while (true) { const a = 2 * i + 1, b = a + 1; let m = i; if (a < h.length && h[a][0] < h[m][0]) m = a; if (b < h.length && h[b][0] < h[m][0]) m = b; if (m === i) break; [h[m], h[i]] = [h[i], h[m]]; i = m; } } return t; },
+    get size() { return h.length; } }; };
+  // 最短路（o から、止める条件 stop(n) が真になるまで）
+  const dijkstra = (o, onReach) => {
+    const dist = new Map([[o, 0]]), pe = new Map(), h = heap(), done = new Set(); h.push([0, o]);
+    while (h.size) {
+      const [d, n] = h.pop(); if (done.has(n)) continue; done.add(n);
+      if (onReach(n, d, pe)) break;
+      adj[n].forEach(ei => { const m = other(edges[ei], n), nd = d + edges[ei].len; if (nd < (dist.has(m) ? dist.get(m) : 1e18)) { dist.set(m, nd); pe.set(m, ei); h.push([nd, m]); } });
     }
-    // まだ通っていない道へ、通った道を使って最短で移動
-    const dist = new Map([[cur, 0]]), prev = new Map(), q = [[0, cur]], fin = new Set(); let goal = -1;
-    while (q.length) {
-      q.sort((x, y) => x[0] - y[0]); const [d, n] = q.shift(); if (fin.has(n)) continue; fin.add(n);
-      if ((adj[n] || []).some(ei => !edges[ei].done)) { goal = n; break; }
-      (adj[n] || []).forEach(ei => { const m = other(edges[ei], n), nd = d + edges[ei].len; if (nd < (dist.has(m) ? dist.get(m) : 1e18)) { dist.set(m, nd); prev.set(m, n); q.push([nd, m]); } });
+  };
+  const pathOf = (pe, o, n) => { const path = []; for (let x = n; x !== o; ) { const ei = pe.get(x); path.push(ei); x = other(edges[ei], x); } return path; };
+  // つながっている固まりごとに分ける
+  const comp = new Map(); let nComp = 0;
+  edges.forEach(e => {
+    if (comp.has(e.a)) return;
+    const st = [e.a]; comp.set(e.a, nComp);
+    while (st.length) { const n = st.pop(); adj[n].forEach(ei => { const m = other(edges[ei], n); if (!comp.has(m)) { comp.set(m, nComp); st.push(m); } }); }
+    nComp++;
+  });
+  const extra = [], plans = [];
+  const pkey = (a, b) => a < b ? a + "_" + b : b + "_" + a;
+  for (let c = 0; c < nComp; c++) {
+    const odd = []; comp.forEach((cc, n) => { if (cc === c && adj[n].length % 2 === 1) odd.push(n); });
+    const oddSet = new Set(odd), cand = new Map();
+    odd.forEach(o => {
+      let found = 0;
+      dijkstra(o, (n, d, pe) => {
+        if (n === o || !oddSet.has(n)) return false;
+        const k = pkey(o, n);
+        if (!cand.has(k)) cand.set(k, { a: o, b: n, d, path: pathOf(pe, o, n) });
+        return ++found >= 12;
+      });
+    });
+    // 近い組から順に結ぶ
+    const mate = new Set(), pairs = [];
+    [...cand.values()].sort((x, y) => x.d - y.d).forEach(p => { if (mate.has(p.a) || mate.has(p.b)) return; mate.add(p.a); mate.add(p.b); pairs.push(p); });
+    // 余った点（まれ）は余り同士で一番近いものと結ぶ
+    const left = odd.filter(o => !mate.has(o));
+    while (left.length >= 2) {
+      const o = left.shift(), ls = new Set(left); let got = null;
+      dijkstra(o, (n, d, pe) => { if (n !== o && ls.has(n)) { got = { a: o, b: n, d, path: pathOf(pe, o, n) }; return true; } return false; });
+      if (!got) break;
+      left.splice(left.indexOf(got.b), 1); pairs.push(got);
     }
-    if (goal < 0) {
-      // つながっていない道の固まり → 一番近い所へ飛ぶ
-      let jb = -1, jd = 1e9;
-      edges.forEach(e => { if (e.done) return; [e.a, e.b].forEach(n => { const d = _hkM(nodes[n], nodes[cur]); if (d < jd) { jd = d; jb = n; } }); });
-      if (jb < 0) break;
-      route.push(-1); route.push(jb); cur = jb; heading = null; continue;   // -1 ＝ 飛ぶ印
+    // 2組ずつ組み替えて短くなるなら入れ替える
+    for (let it = 0; it < 6; it++) {
+      let improved = false;
+      for (let i = 0; i < pairs.length; i++) for (let j = i + 1; j < pairs.length; j++) {
+        const P = pairs[i], Q = pairs[j];
+        for (const [x1, y1, x2, y2] of [[P.a, Q.a, P.b, Q.b], [P.a, Q.b, P.b, Q.a]]) {
+          const c1 = cand.get(pkey(x1, y1)), c2 = cand.get(pkey(x2, y2));
+          if (c1 && c2 && c1.d + c2.d < pairs[i].d + pairs[j].d - 0.5) { pairs[i] = c1; pairs[j] = c2; improved = true; break; }
+        }
+      }
+      if (!improved) break;
     }
-    const path = []; for (let n = goal; n !== cur; n = prev.get(n)) path.push(n);
-    path.reverse().forEach(n => { total += _hkM(nodes[route[route.length - 1]], nodes[n]); route.push(n); });
-    cur = goal; heading = null;
+    if (pairs.length) {
+      // 一番長い戻り道は足さない＝その両端が出発点と終点
+      let li = 0; pairs.forEach((p, i) => { if (p.d > pairs[li].d) li = i; });
+      const L = pairs.splice(li, 1)[0];
+      plans.push({ s: L.a, alt: L.b });
+    } else {
+      let s = -1, bd3 = 1e18; comp.forEach((cc, n) => { if (cc !== c) return; const d = _hkM(nodes[n], from); if (d < bd3) { bd3 = d; s = n; } });
+      plans.push({ s, alt: -1 });
+    }
+    pairs.forEach(p => p.path.forEach(ei => extra.push(ei)));
+  }
+  // 戻り道を足した網で一筆書き（まっすぐ進める道を優先・初めての道を先に）
+  const all = edges.map(e => ({ a: e.a, b: e.b, used: false, back: false }));
+  extra.forEach(ei => { const e = edges[ei]; all.push({ a: e.a, b: e.b, used: false, back: true }); });
+  const adj2 = [];
+  all.forEach((e, i) => { (adj2[e.a] = adj2[e.a] || []).push(i); (adj2[e.b] = adj2[e.b] || []).push(i); });
+  const euler = (s) => {
+    const stack = [[s, null, -1]], out = [];
+    while (stack.length) {
+      const [v, hd, eIn] = stack[stack.length - 1];
+      const open = (adj2[v] || []).filter(ei => !all[ei].used);
+      if (!open.length) { out.push([v, eIn]); stack.pop(); continue; }
+      let best = open[0], bs = 1e9;
+      open.forEach(ei => {
+        const h = _hkBrg(nodes[v], nodes[other(all[ei], v)]);
+        const sc = (hd == null ? 0 : Math.abs(((h - hd + 540) % 360) - 180)) + (all[ei].back ? 1000 : 0);
+        if (sc < bs) { bs = sc; best = ei; }
+      });
+      all[best].used = true;
+      const nx = other(all[best], v);
+      stack.push([nx, _hkBrg(nodes[v], nodes[nx]), best]);
+    }
+    return out.reverse();   // [点, その点に来た道]
+  };
+  // 固まりを近い順に回る（離れた固まりへは飛ぶ）。戻り道（もう通った道）は走らずに次の道の入口へ飛ぶ
+  const route = []; let pos = from, total = 0, jumps = 0;
+  const rest = plans.slice();
+  while (rest.length) {
+    let bi = 0, bd = 1e18, bs = -1;
+    rest.forEach((p, i) => [p.s, p.alt].forEach(n => { if (n < 0) return; const d = _hkM(nodes[n], pos); if (d < bd) { bd = d; bi = i; bs = n; } }));
+    rest.splice(bi, 1);
+    const seq = euler(bs);
+    if (route.length) { route.push(-1); jumps++; }
+    route.push(seq[0][0]);
+    let skip = false;
+    for (let i = 1; i < seq.length; i++) {
+      const [n, e] = seq[i];
+      if (all[e].back) { skip = true; continue; }
+      if (skip) { route.push(-1); route.push(seq[i - 1][0]); jumps++; skip = false; }
+      total += _hkM(nodes[route[route.length - 1]], nodes[n]); route.push(n);
+    }
+    pos = nodes[route[route.length - 1]];
   }
   // 約8mごとの点に（飛ぶ所は jump:true）
   const pts = []; let jump = false;
@@ -14328,7 +14443,7 @@ async function hkPlanPatrol(poly, from) {
     }
     pts.push({ lat: p[0], lng: p[1], jump }); jump = false;
   }
-  return { pts, total, fresh, roads: edges.length };
+  return { pts, total, fresh, roads: edges.length, jumps };
 }
 
 function _hkTileOf(lat, lng) {
