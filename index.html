@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.661";
+const APP_VERSION = "2026-11-14-v9.662";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13807,6 +13807,11 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
     if (!gm || !ov || !ov.getProjection() || px.length < 5) { setPlanMsg("もう一度、指で大きく囲ってください"); return; }
     const pr = ov.getProjection();
     const poly = px.filter((q, i) => i % 2 === 0).map(([x, y]) => { const ll = pr.fromContainerPixelToLatLng(new gm.Point(x, y)); return [ll.lat(), ll.lng()]; });
+    { // 囲んだ広さ（㎡）。小さすぎる＝なぞり間違い
+      let A = 0; const k = 111000 * Math.cos(poly[0][0] * Math.PI / 180);
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) A += (poly[j][1] * k) * (poly[i][0] * 111000) - (poly[i][1] * k) * (poly[j][0] * 111000);
+      if (Math.abs(A / 2) < 3000) { setDrawMode("pan"); setPlanMsg("囲みが小さすぎました。地図を動かしてから、もう一度大きく1周なぞってください"); return; }
+    }
     setPlanMsg("⏳ 囲んだ中の道を調べています…");
     try {
       const P = pano && pano.getPosition();
@@ -13948,19 +13953,26 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
           <div style={{ position: "relative", flex: bigMap ? "1 1 70%" : (both ? "1 1 26%" : "1 1 34%"), minHeight: 0 }}>
             <div ref={mapDiv} style={{ position: "absolute", inset: 0 }} />
             {/* 🆕 v9.657: 範囲を囲って回る */}
-            {drawMode && (
+            {drawMode === "pan" && (
+              <div style={{ position: "absolute", left: 8, right: 8, top: 8, zIndex: 5, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 200px", background: "rgba(15,23,42,0.88)", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 800 }}>{planMsg ? <span style={{ color: "#fdba74" }}>{planMsg}<br /></span> : null}① 地図を指で動かして、回りたい場所を出してください</div>
+                <button onClick={() => setDrawMode("draw")} style={{ border: "none", borderRadius: 10, padding: "9px 14px", fontSize: 14, fontWeight: 900, background: "#f97316", color: "#fff", cursor: "pointer", fontFamily: "inherit", flex: "0 0 auto", boxShadow: "0 2px 8px rgba(0,0,0,0.4)" }}>② ✏️ なぞり始める</button>
+                <button onClick={() => setDrawMode(false)} style={{ border: "none", borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: 900, background: "#475569", color: "#fff", cursor: "pointer", fontFamily: "inherit", flex: "0 0 auto" }}>やめる</button>
+              </div>
+            )}
+            {drawMode === "draw" && (
               <div onPointerDown={drawDown} onPointerMove={drawMove} onPointerUp={drawUp}
                 style={{ position: "absolute", inset: 0, zIndex: 5, touchAction: "none", background: "rgba(249,115,22,0.08)", cursor: "crosshair" }}>
                 <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}><polyline points="" fill="rgba(249,115,22,0.15)" stroke="#f97316" strokeWidth="4" /></svg>
                 <div style={{ position: "absolute", left: 8, right: 8, top: 8, display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ flex: 1, background: "rgba(15,23,42,0.88)", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 800, pointerEvents: "none" }}>✏️ 回りたい範囲を、指で1周なぞって囲ってください</div>
-                  <button onPointerDown={(e) => e.stopPropagation()} onPointerUp={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); drawPtsRef.current = []; setDrawMode(false); }} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#475569", color: "#fff", cursor: "pointer", fontFamily: "inherit", flex: "0 0 auto" }}>やめる</button>
+                  <div style={{ flex: 1, background: "rgba(15,23,42,0.88)", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 800, pointerEvents: "none" }}>✏️ 回りたい範囲を、指で1周なぞって囲ってください（地図は動きません）</div>
+                  <button onPointerDown={(e) => e.stopPropagation()} onPointerUp={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); drawPtsRef.current = []; setDrawMode("pan"); }} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#475569", color: "#fff", cursor: "pointer", fontFamily: "inherit", flex: "0 0 auto" }}>地図を動かす</button>
                 </div>
               </div>
             )}
             <div style={{ position: "absolute", left: 8, top: 8, zIndex: 4, display: "flex", flexDirection: "column", gap: 6, maxWidth: "70%" }}>
               {!drawMode && !patrol && (
-                <button onClick={() => { setAuto(false); setChoices(null); setDrawMode(true); setPlanMsg(""); try { const g = gmapRef.current; if (g && g.getZoom() > 17) g.setZoom(17); } catch (e) {} }} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#f97316", color: "#fff", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(0,0,0,0.4)", alignSelf: "flex-start" }}>✏️ 範囲を囲って回る</button>
+                <button onClick={() => { setAuto(false); setChoices(null); setDrawMode("pan"); setPlan(null); setPatrol(null); setPlanMsg(""); try { const g = gmapRef.current; if (g && g.getZoom() > 17) g.setZoom(17); } catch (e) {} }} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#f97316", color: "#fff", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(0,0,0,0.4)", alignSelf: "flex-start" }}>✏️ 範囲を囲って回る</button>
               )}
               {planMsg && !drawMode && (
                 <div style={{ background: "rgba(255,255,255,0.95)", borderRadius: 10, padding: "6px 10px", fontSize: 12, fontWeight: 700, color: "#0f172a", lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}>
