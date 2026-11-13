@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.663";
+const APP_VERSION = "2026-11-14-v9.664";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.664", date: "2026-11-14", title: "SVで探す：家を見分けて、1軒ずつ家の真ん中に画面を向けるように",
+    body: "自動で進む時、地図の建物データで家を見分けます。左右の家の正面に来たら、その家の真ん中に画面を向けて止まり（約3秒）、次の家へ進みます。家が無い所（駐車場・畑など）は止まらずに進みます。建物データが無い所は約5mごとに止まります。",
+    where: "地上げ → 👁 SVで探す → ▶ 自動で進む" },
   { v: "9.657", date: "2026-11-14", title: "SVで探す：範囲を囲うと、その中の道を全部自動で回るように",
     body: "下の地図の「✏️ 範囲を囲って回る」を押して、回りたい所を指で1周なぞってください。囲んだ中の道を全部1回ずつ通る順番が自動で決まり、オレンジの線で出ます（道の長さと、かかる時間の目安も出ます）。「▶ 回り始める」を押すと、両側の家を見ながらその順番どおりに進みます。分かれ道でも止まりません。空き家を見つけたら🏚を押せば止まって登録でき、「▶ 続ける」で続きから回ります。",
     where: "地上げ → 地図 → 👁 SVで探す → 下の地図の ✏️" },
@@ -13547,6 +13550,18 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
   // 🆕 v9.652: 進む速さ（端末ごとに覚える）・分かれ道で選ぶ・通った道の線
   const SV_SPEEDS = [{ ms: 3600, l: "ゆっくり" }, { ms: 2600, l: "ふつう" }, { ms: 1700, l: "はやい" }];
   const HOUSE_MS = 2800;   // 🆕 v9.663: 1軒ごとに止まって見る時間
+  // 🆕 v9.664: 今いる所のまわりの建物（読み込み済みなら配列、まだなら null を返して裏で読む）
+  const bldgTilesRef = React.useRef(new Map());
+  const nearBldgs = (here) => {
+    const [tx, ty] = _hkTileOf(here[0], here[1]);
+    const out = []; let missing = false;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const k = (tx + dx) + "_" + (ty + dy), m = bldgTilesRef.current;
+      if (m.has(k)) { const v = m.get(k); if (Array.isArray(v)) v.forEach(b => { if (_hkM(here, [b.lat, b.lng]) < 40) out.push(b); }); else missing = true; }
+      else { missing = true; m.set(k, "loading"); _hkLoadBldgTile(tx + dx, ty + dy).then(bs => m.set(k, bs || [])).catch(() => m.delete(k)); }
+    }
+    return missing ? null : out;
+  };
   const houseRef = React.useRef({ stop: null, nextAt: 0 });
   const [speed, setSpeedRaw] = React.useState(() => { try { const v = Number(localStorage.getItem("hikari_sv_speed")); return v > 0 ? v : 2600; } catch (e) { return 2600; } });
   const setSpeed = (v) => { setSpeedRaw(v); try { localStorage.setItem("hikari_sv_speed", String(v)); } catch (e) {} };
@@ -13691,7 +13706,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         me.setPosition(p);
         if (pano.__hkShowDir) pano.__hkShowDir();
         if (pano.getPano() && pano2.getPano() !== pano.getPano()) pano2.setPano(pano.getPano());
-        aimSides();
+        aimSides();   // 動いたらいったん斜め前に。家が横に来たら自動で進むがその家に向け直す
         if (onMove) onMove({ lat: p.lat(), lng: p.lng() });
       });
       const svc = new gm.StreetViewService();
@@ -13710,14 +13725,46 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
     if (!auto || !ready) return;
     // 🆕 v9.663: 進むのは「家1軒ずつ」がルール（下田さん 2026-11-14）。約7m以上進んだら1軒ぶん止まって見る→次へ。
     //   ストリートビューの写真の間隔が短い所（7m未満）は止まらずにもう1コマ進む。速さの切り替えは無し
-    houseRef.current = { stop: null, nextAt: 0 };
+    // 🆕 v9.664: 建物を見分けて1軒ずつ（下田さん「建物を認識して1軒1軒、建物全体を見渡すように画面を自動で振れないの？」）
+    //   ストリートビューの1コマごとに、左右それぞれ「横にある一番近い家」を地図の建物データで探す。
+    //   まだ見ていない家が横に来たら、その家の真ん中に画面を向けて止まる。新しい家が無ければ止まらずに次のコマへ
+    houseRef.current = { stop: null, nextAt: 0, pano: "", looked: houseRef.current.looked || new Set() };
     const t = setInterval(() => {
       const pano = panoRef.current; if (!pano || !autoRef.current) return;
       { const P0 = pano.getPosition(); const hr = houseRef.current;
-        if (P0) { const here0 = [P0.lat(), P0.lng()];
-          if (!hr.stop) hr.stop = here0;
-          else if (_hkM(hr.stop, here0) >= 7) { hr.stop = here0; hr.nextAt = Date.now() + HOUSE_MS; return; }
-          if (Date.now() < hr.nextAt) return; } }
+        if (Date.now() < hr.nextAt) return;
+        if (P0 && pano.getPano() !== hr.pano) {
+          hr.pano = pano.getPano();
+          const here0 = [P0.lat(), P0.lng()];
+          const bl = nearBldgs(here0);
+          if (bl) {
+            const t0 = travelRef.current, found = {};
+            bl.forEach(b => {
+              const d = _hkM(here0, [b.lat, b.lng]); if (d < 4 || d > 32) return;
+              const brg = _hkBrg(here0, [b.lat, b.lng]), rel = ((brg - t0 + 540) % 360) - 180;
+              const side = rel < 0 ? "L" : "R", ar = Math.abs(rel);
+              if (ar < 50 || ar > 130) return;            // 真横あたり（斜め前〜斜め後ろ）の家だけ
+              const score = d + Math.abs(ar - 85) * 0.25;
+              if (!found[side] || score < found[side].score) found[side] = { b, brg, d, score };
+            });
+            let fresh = false;
+            const aim = (pn, f) => { try { pn.setPov({ heading: f.brg, pitch: Math.max(2, Math.min(14, 120 / f.d)) }); } catch (e) {} };
+            const both2 = bothRef.current;
+            const newL = found.L && !hr.looked.has(found.L.b.key), newR = found.R && !hr.looked.has(found.R.b.key);
+            if (both2 && pano2Ref.current) {
+              if (newL) { hr.looked.add(found.L.b.key); fresh = true; aim(pano, found.L); }
+              if (newR) { hr.looked.add(found.R.b.key); fresh = true; aim(pano2Ref.current, found.R); }
+            } else if (newL) {
+              hr.looked.add(found.L.b.key); fresh = true; aim(pano, found.L);
+              if (newR) hr.pano = "";   // 1画面の時は、左を見終わったら同じ場所で右の家も見る
+            } else if (newR) { hr.looked.add(found.R.b.key); fresh = true; aim(pano, found.R); }
+            if (fresh) { hr.nextAt = Date.now() + HOUSE_MS; return; }
+          } else {
+            // 建物データがまだ無い所：約5mごとに止まる
+            if (!hr.stop) hr.stop = here0;
+            else if (_hkM(hr.stop, here0) >= 5) { hr.stop = here0; hr.nextAt = Date.now() + HOUSE_MS; return; }
+          }
+        } }
       const links = pano.getLinks() || [];
       // 🆕 v9.657: 範囲を回っている最中＝予定の道に沿って進む（分かれ道でも止まらない）
       if (patrolRef.current && planRef.current) {
