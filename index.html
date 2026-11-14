@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.716";
+const APP_VERSION = "2026-11-14-v9.717";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13819,8 +13819,16 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       };
       [pano, pano2].forEach(pn => {
         // v9.690: 自分で寄るのはOK（指2本・ホイール・＋－）。次の写真へ進むと一番引きに戻る（下田さん「建物に寄ってズームしたい。いつもは一番引き」）
-        pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); setTimeout(() => fixWide(pn), 1200); wheelHold(pn, 1200); });
+        pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); setTimeout(() => fixWide(pn), 1200); wheelHold(pn, 1600); });
         pn.addListener("status_changed", () => fixWide(pn));   // v9.713: 写真の読み込みが終わった時にも（遅い時に読み込み後に寄った状態へ戻っていた）
+        // 🆕 v9.717: 移動のたびにGoogleが自分で寄せる（画面の大きさで0.3〜1.8）→その瞬間に0へ戻す（スマホは0.3秒遅れの引き直しが見えていた）
+        //   下田さん「携帯ではまあまあ引きで移動して、移動してからマックス引きになる。はじめからマックス引きをキープして」
+        pn.addListener("zoom_changed", () => {
+          try {
+            const t = pn === pano ? touch.t1 : touch.t2; if (Date.now() - t < 4000) return;   // 自分で寄った時はそのまま
+            if (pn.getZoom() > 0.001) { pn.setZoom(0); requestAnimationFrame(() => wheelOut(pn, 6)); }
+          } catch (e) {}
+        });
         pn.setOptions({ zoomControl: true, scrollwheel: true });
         fixWide(pn);
       });
