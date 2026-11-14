@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.673";
+const APP_VERSION = "2026-11-14-v9.674";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.674", date: "2026-11-14", title: "SVで探す：「◀ 戻る」で通った所を1つずつさかのぼれるように",
+    body: "自動で進んでいて「今の空き家っぽかった？」と思ったら「◀ 戻る」を押してください。押すたびに1つ前、2つ前…と戻ります。進む向きはそのままなので、両側で見ている時も左右が入れ替わりません。家のボタンは「🏚 見ている家」の1つだけにしました。",
+    where: "地上げ → 👁 SVで探す → ◀ 戻る" },
   { v: "9.672", date: "2026-11-14", title: "SVで探す：境目で高さを変えられる・更新が入っても続きから",
     body: "①ボタンと地図の間の「・・・」を指で上下に動かすと、ストリートビューと地図の高さを自分で変えられます（スマホが覚えます）。②探している途中にアプリの更新が入っても、さっきの場所・囲んだ範囲・進み具合のまま、ストリートビューの画面に戻って続きから回ります。通った道も消えません。",
     where: "地上げ → 👁 SVで探す" },
@@ -13617,6 +13620,15 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   const [err, setErr] = React.useState("");
   const [ready, setReady] = React.useState(false);
   const [auto, setAuto] = React.useState(false);
+  // 🆕 v9.674: ◀ 戻る＝押すたびに1つ前の写真へ（下田さん「空き家か？と思った所を過ぎた時、押すたび1段階・2段階と戻りたい」）
+  const histRef = React.useRef([]), backRef = React.useRef({ skip: null, until: 0 });
+  const goBack = () => {
+    const pn = panoRef.current, h = histRef.current; if (!pn || h.length < 2) return;
+    setAuto(false); setChoices(null);
+    h.pop(); const prev = h[h.length - 1];
+    backRef.current = { skip: prev, until: Date.now() + 2000 };   // 進む向きは変えない（両側の左右が入れ替わらないように）
+    pn.setPano(prev);
+  };
   // 🆕 v9.671: SVで探す画面を開いている間は画面を暗くしない（下田さん「探索中画面暗くしないで」）。
   //   自動で進む間は画面に触らないので、スマホの自動ロックで暗くなっていた。裏に回ると外れるので戻ったら取り直す。
   React.useEffect(() => {
@@ -13748,7 +13760,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         // 🆕 v9.651: 進んだ向き＝前の場所→今の場所（矢印で押して進んだ時も向きが合う）
         if (prevP) {
           const dy = (p.lat() - prevP.lat) * 111000, dx = (p.lng() - prevP.lng) * 111000 * Math.cos(p.lat() * Math.PI / 180);
-          if (Math.hypot(dx, dy) > 3 && Math.hypot(dx, dy) < 80) travelRef.current = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+          if (Date.now() > backRef.current.until && Math.hypot(dx, dy) > 3 && Math.hypot(dx, dy) < 80) travelRef.current = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
         }
         // 今回の線：100m以上飛んだら(地図で場所を選び直した等)線を切る
         if (lineRef.current) {
@@ -13769,6 +13781,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       pano.addListener("pano_changed", () => {
         setNoPano(false);
         const id = pano.getPano(); if (!id) return;
+        // 🆕 v9.674: 通った写真を順番に覚える（戻るで1つずつさかのぼる）。戻るで移った時は足さない
+        { const h = histRef.current; if (backRef.current.skip === id) backRef.current.skip = null; else if (h[h.length - 1] !== id) { h.push(id); if (h.length > 500) h.shift(); } }
         svc.getPanorama({ pano: id }, (d, st) => { if (st === "OK" && d && d.imageDate) setShotDate(d.imageDate); });
       });
       setReady(true);
@@ -14080,7 +14094,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     const gm = window.google && window.google.maps;
     setTimeout(() => { try { [panoRef.current, pano2Ref.current, gmapRef.current].forEach(x => { if (gm && x) gm.event.trigger(x, "resize"); }); } catch (e) {} }, 60);
   };
-  const b = (bg, fg) => ({ border: "none", borderRadius: 9, padding: "7px 4px", fontSize: 13, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", background: bg, color: fg, flex: 1, minWidth: 0 });
+  const b = (bg, fg) => ({ border: "none", borderRadius: 9, padding: "7px 3px", fontSize: 13, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", background: bg, color: fg, flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden" });
   return (
     <div ref={rootRef} style={{ position: "fixed", inset: 0, zIndex: 3000, background: "#0f172a", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", color: "#fff" }}>
@@ -14119,14 +14133,15 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
             {both && <div style={{ position: "absolute", right: 8, top: 8, zIndex: 2, background: "rgba(37,99,235,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>右側の家 ▶</div>}
           </div>
           <div style={{ display: "flex", gap: 6, padding: "6px 8px", background: "#1e293b" }}>
-            <button onClick={() => { setChoices(null); if (!auto) setTravelFromView(); setAuto(a => !a); }} style={b(auto ? "#f59e0b" : "#0ea5e9", "#fff")}>{auto ? "⏸ 止める" : "▶ 進む"}</button>
-            <button onClick={() => { const v = !both; setBoth(v); setTimeout(() => { const pn = panoRef.current, p2 = pano2Ref.current; const gm = window.google && window.google.maps; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); if (v && pn.__hkAim) pn.__hkAim(); if (pn.__hkShowDir) pn.__hkShowDir(); } }, 120); }} style={b(both ? "#7c3aed" : "#334155", "#fff")}>{both ? "◧ 両側中" : "◧ 両側"}</button>
+            <button onClick={() => { setChoices(null); if (!auto) setTravelFromView(); setAuto(a => !a); }} style={b(auto ? "#f59e0b" : "#0ea5e9", "#fff")}>{auto ? (both ? "⏸ 止める" : "⏸止める") : (both ? "▶ 進む" : "▶進む")}</button>
+            <button onClick={goBack} style={b("#475569", "#fff")}>{both ? "◀ 戻る" : "◀戻る"}</button>
+            <button onClick={() => { const v = !both; setBoth(v); setTimeout(() => { const pn = panoRef.current, p2 = pano2Ref.current; const gm = window.google && window.google.maps; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); if (v && pn.__hkAim) pn.__hkAim(); if (pn.__hkShowDir) pn.__hkShowDir(); } }, 120); }} style={b(both ? "#7c3aed" : "#334155", "#fff")}>{both ? "◧ 両側中" : "◧両側"}</button>
             {/* v9.663: 速さの切り替えは外した（1軒ずつ進むのがルール） */}
-            {!both && <button onClick={() => look(-90)} style={b("#334155", "#fff")}>←</button>}
-            {!both && <button onClick={() => look(0)} style={b("#334155", "#fff")}>正面</button>}
-            {!both && <button onClick={() => look(90)} style={b("#334155", "#fff")}>→</button>}
+            {!both && <button onClick={() => look(-90)} style={{ ...b("#334155", "#fff"), flex: 0.6 }}>←</button>}
+            {!both && <button onClick={() => look(0)} style={{ ...b("#334155", "#fff"), flex: 0.8 }}>正面</button>}
+            {!both && <button onClick={() => look(90)} style={{ ...b("#334155", "#fff"), flex: 0.6 }}>→</button>}
             {/* 🆕 v9.673: 家のボタンは「見ている家」1つだけ（下田さん「左・右・前はいらない。両側を解除して指で向きを合わせて見ている家を押している」）。両側の時は出さない */}
-            {!both && <button onClick={() => mark("front")} style={{ ...b("#e11d48", "#fff"), flex: 2 }}>🏚 見ている家</button>}
+            {!both && <button onClick={() => mark("front")} style={{ ...b("#e11d48", "#fff"), flex: 1.7 }}>🏚見ている家</button>}
           </div>
           {/* 🆕 v9.672: 境目のつまみ＝上下に指で動かすとSVと地図の高さが変わる（下田さん「2画面の境目みたいに自分で幅調整したい」） */}
           {!bigMap && (
