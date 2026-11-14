@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.704";
+const APP_VERSION = "2026-11-14-v9.705";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13658,7 +13658,10 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   const covRef = React.useRef(null);   // v9.682: 予定の点のうち通った所
   // 🆕 v9.660: 範囲を囲う時は地図を大きく（下田さん「下が小さすぎて囲いにくい」）
   const [blockMode, setBlockMode] = React.useState(false);   // v9.683: 🧩 ブロックで選ぶ
-  const bigMap = drawMode || blockMode || (!!plan && !patrol);
+  // v9.705: 回る途中で一時停止した時（地図を押した・⏸止める）は地図を大きくしない（下田さん「両画面にできなくなった・地図がめっちゃ広くなった」）
+  const [patrolPaused, setPatrolPaused] = React.useState(false);
+  React.useEffect(() => { setPatrolPaused(false); }, [plan]);
+  const bigMap = drawMode || blockMode || (!!plan && !patrol && !patrolPaused);
   React.useEffect(() => {
     const gm = window.google && window.google.maps;
     setTimeout(() => { try { const pn = panoRef.current, p2 = pano2Ref.current; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); } } catch (e) {} }, 150);
@@ -13830,7 +13833,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       };
       gmap.addListener("click", (e) => {
         setAuto(false); setChoices(null);
-        if (patrolRef.current) setPatrol(null);   // 回るのは一時停止（通った道の記録は残る→「▶ 続きから回る」で再開）
+        if (patrolRef.current) { setPatrolPaused(true); setPatrol(null); }   // 回るのは一時停止（通った道の記録は残る→「▶ 続きから回る」で再開）
         new gm.StreetViewService().getPanorama({ location: e.latLng, radius: 60, source: gm.StreetViewSource.OUTDOOR }, (data, st) => {
           if (st === "OK" && data && data.location) {
             prevP = null;
@@ -14216,7 +14219,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       }
     }
     if (!bothRef.current) setBoth(true);
-    setPatrol({ idx: i0 }); setAuto(true);
+    setPatrolPaused(false); setPatrol({ idx: i0 }); setAuto(true);
   };
   // 🆕 v9.652: 分かれ道で選んだ道へ進んで、自動で進むを続ける
   const goChoice = (c) => {
@@ -14535,7 +14538,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
                     <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                       {!patrol
                         ? <button onClick={startPatrol} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>{covRef.current && covRef.current.plan === plan && covRef.current.arr.some(Boolean) ? "▶ 続きから回る" : "▶ 回り始める"}</button>
-                        : <button onClick={() => { setAuto(false); setPatrol(null); }} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#f59e0b", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>⏸ 止める</button>}
+                        : <button onClick={() => { setAuto(false); setPatrolPaused(true); setPatrol(null); }} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#f59e0b", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>⏸ 止める</button>}
                       {patrol && !auto && <button onClick={() => setAuto(true)} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>▶ 続ける</button>}
                       <button onClick={() => { setAuto(false); setPatrol(null); setPlan(null); setPlanMsg(""); }} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#e2e8f0", color: "#334155", cursor: "pointer", fontFamily: "inherit" }}>✕ 囲みを消す</button>
                     </div>
