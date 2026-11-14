@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.706";
+const APP_VERSION = "2026-11-14-v9.707";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.707", date: "2026-11-14", title: "SVで探す：回り始める前にスタート地点と道順を表示",
+    body: "範囲を囲む（またはブロックを選ぶ）と、地図に緑の「S」（スタート地点）と、曲がる所の番号・進む向きの矢印が出ます。左上には「スタートから北へ120m → 右に曲がって東へ80m…」と道順が並びます。確認してから「▶ 回り始める」を押してください。",
+    where: "地上げ → 👁 SVで探す → ✏️ 囲って選ぶ／🧩 ブロックで選ぶ" },
   { v: "9.706", date: "2026-11-14", title: "SVで探す：道なりに回るように",
     body: "これまでは、一度通った道を避けるために、行き止まりや角のたびに次の道の入口へ飛んでいました。これからは、一度通った道でも150m以内なら、道なりに走って戻ります（戻っている間は止まらずに進みます）。それより遠い時だけ飛びます。",
     where: "地上げ → 👁 SVで探す → ✏️ 囲って選ぶ／🧩 ブロックで選ぶ" },
@@ -14097,6 +14100,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     // 分かれ道では地図を寄せて、矢印どうしが重ならないようにする
     try { gmap.panTo(c); if (gmap.getZoom() < 20) gmap.setZoom(20); } catch (e) {}
   }, [choices]);
+  const planSteps = React.useMemo(() => { try { return plan && plan.pts && plan.pts.length > 1 ? hkRouteSteps(plan.pts) : null; } catch (e) { return null; } }, [plan]);
   // 🆕 v9.657: 回る予定の道（オレンジ）と囲んだ範囲
   React.useEffect(() => {
     const gm = window.google && window.google.maps, gmap = gmapRef.current;
@@ -14107,7 +14111,30 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     const flush = () => { if (seg.length >= 2) planLinesRef.current.push(new gm.Polyline({ map: gmap, path: seg, strokeColor: "#f97316", strokeOpacity: 0.75, strokeWeight: 4, clickable: false, zIndex: 4 })); seg = []; };
     plan.pts.forEach(q => { if (q.jump) flush(); seg.push({ lat: q.lat, lng: q.lng }); });
     flush();
-  }, [plan]);
+    // 🆕 v9.707: スタート地点（🚩）と、手順の番号（曲がる所）を地図に。回っている間は消す
+    if (!patrol && planSteps) {
+      const s0 = plan.pts[0];
+      planLinesRef.current.push(new gm.Marker({ map: gmap, position: { lat: s0.lat, lng: s0.lng }, zIndex: 9000, clickable: false,
+        label: { text: "S", color: "#fff", fontSize: "14px", fontWeight: "900" },
+        icon: { path: gm.SymbolPath.CIRCLE, scale: 13, fillColor: "#16a34a", fillOpacity: 1, strokeColor: "#fff", strokeWeight: 3 } }));
+      planSteps.forEach((st, i) => {
+        if (i === 0) return;
+        const q = plan.pts[Math.min(st.at, plan.pts.length - 1)]; if (!q) return;
+        planLinesRef.current.push(new gm.Marker({ map: gmap, position: { lat: q.lat, lng: q.lng }, zIndex: 8000 + i, clickable: false,
+          label: { text: String(i + 1), color: "#fff", fontSize: "11px", fontWeight: "900" },
+          icon: { path: gm.SymbolPath.CIRCLE, scale: 9, fillColor: st.type === "jump" ? "#64748b" : st.back ? "#a16207" : "#ea580c", fillOpacity: 1, strokeColor: "#fff", strokeWeight: 2 } }));
+      });
+      // 進む向きの矢印（約40mごと）
+      let acc = 0;
+      for (let k = 1; k < plan.pts.length; k++) {
+        const a = plan.pts[k - 1], b = plan.pts[k]; if (b.jump) { acc = 0; continue; }
+        acc += _hkM([a.lat, a.lng], [b.lat, b.lng]);
+        if (acc >= 40) { acc = 0; planLinesRef.current.push(new gm.Marker({ map: gmap, position: { lat: b.lat, lng: b.lng }, zIndex: 5, clickable: false,
+          icon: { path: gm.SymbolPath.FORWARD_CLOSED_ARROW, scale: 3.5, rotation: _hkBrg([a.lat, a.lng], [b.lat, b.lng]), fillColor: "#c2410c", fillOpacity: 1, strokeColor: "#fff", strokeWeight: 1 } })); }
+      }
+      try { gmap.panTo({ lat: s0.lat, lng: s0.lng }); } catch (e) {}
+    }
+  }, [plan, patrol ? 1 : 0, planSteps]);   // eslint-disable-line
   // 指でなぞって範囲を囲う
   const drawDown = (e) => { e.preventDefault(); drawPtsRef.current = [[e.nativeEvent.offsetX, e.nativeEvent.offsetY]]; try { e.currentTarget.setPointerCapture(e.pointerId); } catch (er) {} };
   const drawMove = (e) => {
@@ -14548,6 +14575,18 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
                       <button onClick={() => { setAuto(false); setPatrol(null); setPlan(null); setPlanMsg(""); }} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#e2e8f0", color: "#334155", cursor: "pointer", fontFamily: "inherit" }}>✕ 囲みを消す</button>
                     </div>
                   )}
+                  {/* 🆕 v9.707: 回り始める前に道順を見せる（地図のS＝スタート、番号＝曲がる所） */}
+                  {plan && !patrol && planSteps && planSteps.length > 0 && (
+                    <div style={{ marginTop: 6, maxHeight: "28vh", overflowY: "auto", borderTop: "1px solid #cbd5e1", paddingTop: 4 }}>
+                      <div style={{ fontWeight: 900, color: "#15803d", marginBottom: 2 }}>📍 道順（地図の S から、番号の順に回ります）</div>
+                      {planSteps.map((st, i) => (
+                        <div key={i} style={{ display: "flex", gap: 6, alignItems: "baseline", color: st.back ? "#a16207" : st.type === "jump" ? "#64748b" : "#0f172a" }}>
+                          <span style={{ flex: "0 0 auto", minWidth: 20, textAlign: "center", borderRadius: 999, background: i === 0 ? "#16a34a" : st.type === "jump" ? "#64748b" : st.back ? "#a16207" : "#ea580c", color: "#fff", fontSize: 11, fontWeight: 900, padding: "0 5px" }}>{i === 0 ? "S" : i + 1}</span>
+                          <span>{st.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -14737,6 +14776,30 @@ function _hkInPoly(pt, poly) {
 //   ① 道の網を作る（つなぎ目は4m以内でまとめる・交差点の15m未満のヒゲは捨てる）
 //   ② 行き止まりや半端な交差点（道が奇数本つながる点）を近い同士で組にして「どうしても要る戻り道」だけ足す（郵便配達ルートの考え方）
 //   ③ 一筆書きでたどる（まっすぐ進める道を優先）。一番長い戻り道は足さず、そこを出発点と終点にする
+// 🆕 v9.707: 道順を「スタート→北へ120m→右に曲がって東へ80m…」の手順に（下田さん「回り出す前にスタート地点を出して、どういう道順で回るか言った上で回って」）
+function hkRouteSteps(pts) {
+  const steps = []; let cur = null;
+  const dir8 = (h) => ["北", "北東", "東", "南東", "南", "南西", "西", "北西"][Math.round(h / 45) % 8];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    if (b.jump) { steps.push({ type: "jump", at: i, len: _hkM([a.lat, a.lng], [b.lat, b.lng]) }); cur = null; continue; }
+    const d = _hkM([a.lat, a.lng], [b.lat, b.lng]); if (d < 0.5) continue;
+    const h = _hkBrg([a.lat, a.lng], [b.lat, b.lng]), bk = !!b.back;
+    const df = cur ? ((h - cur.h + 540) % 360) - 180 : 0;
+    if (cur && Math.abs(df) < 40 && cur.back === bk) { cur.len += d; cur.h = h; continue; }
+    cur = { type: "go", at: i - 1, h, h0: h, len: d, back: bk, turn: steps.length && steps[steps.length - 1].type === "go" ? df : 0 };
+    steps.push(cur);
+  }
+  // 12m未満の細切れは前の手順にまとめる
+  const out = [];
+  steps.forEach(st => { const pv = out[out.length - 1]; if (st.type === "go" && st.len < 12 && pv && pv.type === "go") { pv.len += st.len; return; } out.push(st); });
+  return out.map((st, i) => {
+    if (st.type === "jump") return { ...st, text: `✈ 離れた道へ移動（約${Math.round(st.len)}m先）` };
+    const turn = i === 0 || !st.turn ? "" : Math.abs(st.turn) > 135 ? "Uターンして " : st.turn > 0 ? "右に曲がって " : "左に曲がって ";
+    const head = i === 0 ? "🚩 スタートから " : out[i - 1].type === "jump" ? "そこから " : turn;
+    return { ...st, text: `${head}${dir8(st.h0)}へ${Math.round(st.len)}m${st.back ? "（来た道を戻る・止まらない）" : ""}` };
+  });
+}
 async function hkPlanPatrol(poly, from, opts) {
   const strict = !!(opts && opts.strict);   // v9.683: ブロック＝道のまん中がブロックの中にある所だけ（隣のブロックと重ならない）
   let s0 = 90, n0 = -90, w0 = 180, e0 = -180;
