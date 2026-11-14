@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.679";
+const APP_VERSION = "2026-11-14-v9.680";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13570,6 +13570,9 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   const FRAC_DEF = { both: 0.704, one: 0.622 };
   const [frac, setFrac] = React.useState(() => { try { const v = JSON.parse(localStorage.getItem("hikari_sv_frac") || "null"); return v && v.both ? v : FRAC_DEF; } catch (e) { return FRAC_DEF; } });
   const fracRef = React.useRef(frac); fracRef.current = frac;
+  // 🆕 v9.680: 両側の2枚を横に並べるか（パソコンの横長画面は最初から横並び。ボタンで切り替え・端末ごとに覚える）
+  const [side, setSideRaw] = React.useState(() => { try { const v = localStorage.getItem("hikari_sv_side"); if (v === "1") return true; if (v === "0") return false; } catch (e) {} return window.innerWidth > window.innerHeight && window.innerWidth >= 700; });
+  const toggleSide = () => { const v = !side; setSideRaw(v); try { localStorage.setItem("hikari_sv_side", v ? "1" : "0"); } catch (e) {} const gm = window.google && window.google.maps; setTimeout(() => { try { [panoRef.current, pano2Ref.current, gmapRef.current].forEach(x => { if (gm && x) gm.event.trigger(x, "resize"); }); if (panoRef.current && panoRef.current.__hkAim) panoRef.current.__hkAim(); } catch (e) {} }, 120); };
   const dragRef = React.useRef(null);
   // 🆕 v9.651: 両側モード（左側と右側を上下2画面で同時に見る＝同じ道を2回通らなくていい）
   const pano2Div = React.useRef(null), pano2Ref = React.useRef(null), meRef = React.useRef(null);
@@ -14135,7 +14138,9 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         <div style={{ color: "#fff", padding: 20, fontSize: 14, lineHeight: 1.7 }}>⚠️ {err}<br />地図の鍵がまだ入っていないか、使えない状態です。下田さんに知らせてください。</div>
       ) : (
         <>
-          <div style={{ position: "relative", flex: bigMap ? "0 0 22%" : (both ? `0 1 calc((100% - 139px) * ${(frac.both / 2).toFixed(4)})` : `0 1 calc((100% - 139px) * ${frac.one.toFixed(4)})`), minHeight: 0 }}>
+          {/* 🆕 v9.680: SV2枚の入れ物。横長のパソコンでは左右に並べる（下田さん「横画面では横に並べて・切り替えボタンも」） */}
+          <div style={{ display: "flex", flexDirection: (side && both && !bigMap) ? "row" : "column", flex: bigMap ? "0 0 22%" : (both ? `0 1 calc((100% - 139px) * ${frac.both.toFixed(4)})` : `0 1 calc((100% - 139px) * ${frac.one.toFixed(4)})`), minHeight: 0 }}>
+          <div style={{ position: "relative", flex: "1 1 0px", minHeight: 0, minWidth: 0 }}>
             <div ref={panoDiv} style={{ position: "absolute", inset: 0 }} />
             {both && <div style={{ position: "absolute", left: 8, top: 8, zIndex: 2, background: "rgba(225,29,72,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>◀ 左側の家</div>}
             {choices && (
@@ -14158,14 +14163,16 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
             {noPano && <div style={{ position: "absolute", left: 10, right: 10, top: 10, background: "rgba(0,0,0,0.7)", color: "#fff", borderRadius: 8, padding: 8, fontSize: 12 }}>この近くにはストリートビューがありません。下の地図で道路の上を長押しして移動してください。</div>}
           </div>
           {/* 🆕 v9.651: 右側の家（2枚目）。1画面モードの時は隠すだけ（作り直さない） */}
-          <div style={{ position: "relative", flex: both && !bigMap ? `0 1 calc((100% - 139px) * ${(frac.both / 2).toFixed(4)})` : "0 0 0px", minHeight: 0, overflow: "hidden", borderTop: both && !bigMap ? "3px solid #0f172a" : "none" }}>
+          <div style={{ position: "relative", flex: both && !bigMap ? "1 1 0px" : "0 0 0px", minHeight: 0, minWidth: 0, overflow: "hidden", ...(both && !bigMap ? (side ? { borderLeft: "3px solid #0f172a" } : { borderTop: "3px solid #0f172a" }) : {}) }}>
             <div ref={pano2Div} style={{ position: "absolute", inset: 0 }} />
             {both && <div style={{ position: "absolute", right: 8, top: 8, zIndex: 2, background: "rgba(37,99,235,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>右側の家 ▶</div>}
+          </div>
           </div>
           <div style={{ display: "flex", gap: 6, padding: "6px 8px", background: "#1e293b" }}>
             <button onClick={() => { setChoices(null); if (!auto) setTravelFromView(); setAuto(a => !a); }} style={b(auto ? "#f59e0b" : "#0ea5e9", "#fff")}>{auto ? (both ? "⏸ 止める" : "⏸止める") : (both ? "▶ 進む" : "▶進む")}</button>
             <button onClick={goBack} style={b("#475569", "#fff")}>{both ? "◀ 戻る" : "◀戻る"}</button>
             <button onClick={() => { const v = !both; setBoth(v); setTimeout(() => { const pn = panoRef.current, p2 = pano2Ref.current; const gm = window.google && window.google.maps; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); if (v && pn.__hkAim) pn.__hkAim(); if (pn.__hkShowDir) pn.__hkShowDir(); } }, 120); }} style={b(both ? "#7c3aed" : "#334155", "#fff")}>{both ? "◧ 両側中" : "◧両側"}</button>
+            {both && <button onClick={toggleSide} style={b("#0f766e", "#fff")}>{side ? "⇅ 縦並び" : "⇆ 横並び"}</button>}
             {/* v9.663: 速さの切り替えは外した（1軒ずつ進むのがルール） */}
             {!both && <button onClick={() => look(-90)} style={{ ...b("#334155", "#fff"), flex: 0.6 }}>←</button>}
             {!both && <button onClick={() => look(0)} style={{ ...b("#334155", "#fff"), flex: 0.8 }}>正面</button>}
