@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.705";
+const APP_VERSION = "2026-11-14-v9.706";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.706", date: "2026-11-14", title: "SVで探す：道なりに回るように",
+    body: "これまでは、一度通った道を避けるために、行き止まりや角のたびに次の道の入口へ飛んでいました。これからは、一度通った道でも150m以内なら、道なりに走って戻ります（戻っている間は止まらずに進みます）。それより遠い時だけ飛びます。",
+    where: "地上げ → 👁 SVで探す → ✏️ 囲って選ぶ／🧩 ブロックで選ぶ" },
   { v: "9.704", date: "2026-11-14", title: "SVで探す：地図を押してそこへ移動→進む向きを矢印で選べる",
     body: "自動で回っている途中でも、下の地図（オレンジの道など）を押すと、そこへ移動して、進める向きに赤い矢印が出ます。矢印を押すとその向きへ自動で進みます。回るのは一時停止になるので、再開は「▶ 続きから回る」で。通った道はちゃんと覚えています。",
     where: "地上げ → 👁 SVで探す → 下の地図" },
@@ -13902,6 +13905,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       const pano = panoRef.current; if (!pano || !autoRef.current) return;
       { const P0 = pano.getPosition(); const hr = houseRef.current;
         if (Date.now() < hr.nextAt) return;
+        const onBack = (() => { const pl = planRef.current, pt = patrolRef.current; if (!pl || !pt) return false; const q = pl.pts[Math.min(pt.idx, pl.pts.length - 1)]; return !!(q && q.back); })();
+        if (onBack) hr.pano = pano.getPano();   // v9.706: もう通った道を戻っている間は止まらない
         if (P0 && pano.getPano() !== hr.pano) {
           hr.pano = pano.getPano();
           const here0 = [P0.lat(), P0.lng()];
@@ -14005,14 +14010,14 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         if (Date.now() - Math.max(st.since, houseRef.current.nextAt || 0) > 12000) {   // 家を見て止まっていた時間は数えない
           st.since = Date.now(); st.n = 0; hkPLog("watchdog", { idx, ti });
           for (let k = idx; k <= ti; k++) if (!cov.arr[k]) cov.arr[k] = 2;
-          let nu = -1; for (let k = ti + 1; k < pts.length; k++) if (!cov.arr[k]) { nu = k; break; }
+          let nu = -1; for (let k = ti + 1; k < pts.length; k++) if (!cov.arr[k] && !pts[k].back) { nu = k; break; }
           if (nu < 0) { setPatrol({ idx: pts.length - 1 }); return; }
           setPatrol({ idx: nu }); jumpTo(nu); return;
         }
         // この先（20〜50m）の予定の道がもう見た道なら、走らずに次の「まだ見ていない道」へ飛ぶ（同じ道を2回通らない）
         if (idx < pts.length - 1) {
           const ahead = []; for (let k = idx; k < Math.min(pts.length, idx + 6); k++) if (_hkM(here, [pts[k].lat, pts[k].lng]) > 18) ahead.push(k);
-          if (ahead.length >= 2 && ahead.every(k => cov.arr[k])) {
+          if (ahead.length >= 2 && ahead.every(k => cov.arr[k] && !pts[k].back)) {   // v9.706: 戻り道(back)は飛ばずに道なりに走る
             let nu = -1; for (let k = idx; k + 1 < pts.length; k++) if (!cov.arr[k] && !cov.arr[k + 1]) { nu = k; break; }
             if (nu < 0) idx = pts.length - 1; else { hkPLog("aheadSeen", { idx, nu }); setPatrol({ idx: nu }); jumpTo(nu); return; }
           }
@@ -14020,7 +14025,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         // 予定の最後まで来たら、まだ通っていない道（16m以上つながって残っている所）へ飛んで仕上げる。全部通ったら終わり
         if (idx >= pts.length - 1) {
           let u = -1;
-          for (let k = 0; k + 1 < pts.length; k++) if (!cov.arr[k] && !cov.arr[k + 1] && !cov.tried.has(k)) { u = k; break; }
+          for (let k = 0; k + 1 < pts.length; k++) if (!cov.arr[k] && !cov.arr[k + 1] && !cov.tried.has(k) && !pts[k].back) { u = k; break; }
           if (u < 0) { setAuto(false); setPatrol(null); setPlanMsg(planRef.current && planRef.current.blockId ? "✅ このブロックを回り終わりました（済）" : "✅ 囲んだ範囲を回り終わりました"); markBlockDone(planRef.current); return; }
           { const e = runEnd(u); for (let j = u; j < e; j++) cov.tried.add(j); }   // v9.691: 残った道は1回だけ試す（何度も同じ所へ飛ばない）
           hkPLog("finishRemain", { u }); setPatrol({ idx: u }); jumpTo(u); return;
@@ -14208,7 +14213,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     if (cv && cv.arr.some(Boolean)) {
       cv.lastNew = Date.now(); cv.lastTick = Date.now();
       const P0 = pano && pano.getPosition(); const h0 = P0 ? [P0.lat(), P0.lng()] : null;
-      let bd = 1e9; plan.pts.forEach((q, k) => { if (cv.arr[k]) return; const d = h0 ? _hkM(h0, [q.lat, q.lng]) : k; if (d < bd) { bd = d; i0 = k; } });
+      let bd = 1e9; plan.pts.forEach((q, k) => { if (cv.arr[k] || q.back) return; const d = h0 ? _hkM(h0, [q.lat, q.lng]) : k; if (d < bd) { bd = d; i0 = k; } });
       if (bd === 1e9) i0 = plan.pts.length - 1;
     }
     const t = plan.pts[i0];
@@ -14901,7 +14906,11 @@ async function hkPlanPatrol(poly, from, opts) {
     return out.reverse();   // [点, その点に来た道]
   };
   // 固まりを近い順に回る（離れた固まりへは飛ぶ）。戻り道（もう通った道）は走らずに次の道の入口へ飛ぶ
-  const route = []; let pos = from, total = 0, jumps = 0;
+  // 🆕 v9.706: 道なりに回る（下田さん「道なりに回ってくれないかな。不規則に回ってない？」）。
+  //   これまでは「もう通った道」を走らずに次の道の入口へ飛んでいた＝飛んでばかりで不規則に見えた（記録で1.9kmの間に飛ぶこと約120回）。
+  //   もう通った道でも150m以内なら道なりに走って戻る（その間は止まらずに進む＝back）。150mより長い時だけ飛ぶ
+  const BACK_MAX = 150;
+  const route = [], routeBack = []; let pos = from, total = 0, jumps = 0;
   const rest = plans.slice();
   while (rest.length) {
     let bi = 0, bd = 1e18, bs = -1;
@@ -14910,25 +14919,33 @@ async function hkPlanPatrol(poly, from, opts) {
     const seq = euler(bs);
     if (route.length) { route.push(-1); jumps++; }
     route.push(seq[0][0]);
-    let skip = false;
+    let backRun = [];
+    const flushBack = (endNode) => {
+      if (!backRun.length) return;
+      let L = 0, prev = route[route.length - 1]; backRun.forEach(m => { L += _hkM(nodes[prev], nodes[m]); prev = m; });
+      if (L > BACK_MAX) { route.push(-1); route.push(endNode); jumps++; }
+      else backRun.forEach(m => { route.push(m); routeBack[route.length - 1] = true; });
+      backRun = [];
+    };
     for (let i = 1; i < seq.length; i++) {
       const [n, e] = seq[i];
-      if (all[e].back) { skip = true; continue; }
-      if (skip) { route.push(-1); route.push(seq[i - 1][0]); jumps++; skip = false; }
+      if (all[e].back) { backRun.push(n); continue; }
+      flushBack(seq[i - 1][0]);
       total += _hkM(nodes[route[route.length - 1]], nodes[n]); route.push(n);
     }
+    backRun = [];   // 最後に残った戻り道は走らない
     pos = nodes[route[route.length - 1]];
   }
   // 約8mごとの点に（飛ぶ所は jump:true）
   const pts = []; let jump = false;
   for (let i = 0; i < route.length; i++) {
     if (route[i] === -1) { jump = true; continue; }
-    const p = nodes[route[i]];
+    const p = nodes[route[i]], bk = !!routeBack[i];
     if (pts.length && !jump) {
       const a = pts[pts.length - 1], d = _hkM([a.lat, a.lng], p), k = Math.floor(d / 8);
-      for (let j = 1; j <= k; j++) pts.push({ lat: a.lat + (p[0] - a.lat) * j / (k + 1), lng: a.lng + (p[1] - a.lng) * j / (k + 1) });
+      for (let j = 1; j <= k; j++) pts.push({ lat: a.lat + (p[0] - a.lat) * j / (k + 1), lng: a.lng + (p[1] - a.lng) * j / (k + 1), back: bk });
     }
-    pts.push({ lat: p[0], lng: p[1], jump }); jump = false;
+    pts.push({ lat: p[0], lng: p[1], jump, back: bk }); jump = false;
   }
   return { pts, total, fresh, roads: edges.length, jumps };
 }
