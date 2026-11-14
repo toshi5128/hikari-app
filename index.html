@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.680";
+const APP_VERSION = "2026-11-14-v9.681";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13536,6 +13536,11 @@ function svSessionGet() {
   try { const s = JSON.parse(localStorage.getItem(SV_SESSION_KEY) || "null"); if (s && s.open && typeof s.lat === "number" && Date.now() - (s.ts || 0) < 20 * 60 * 1000) return s; } catch (e) {}
   return null;
 }
+// 🆕 v9.681: 「終わる」で中断した所（24時間以内）。次に「SVで探す」を開いた時はここから（下田さん「中断してまた始める時、同じ場所から」）
+function svSessionPaused() {
+  try { const s = JSON.parse(localStorage.getItem(SV_SESSION_KEY) || "null"); if (s && s.paused && typeof s.lat === "number" && Date.now() - (s.ts || 0) < 24 * 3600 * 1000) return s; } catch (e) {}
+  return null;
+}
 function svSessionSet(s) { try { localStorage.setItem(SV_SESSION_KEY, JSON.stringify(s)); } catch (e) {} }
 function svSessionClear() { try { localStorage.removeItem(SV_SESSION_KEY); } catch (e) {} }
 async function saveSvTrackPoints(member, pts) {
@@ -14078,13 +14083,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   // 🆕 v9.672: 今の続き（場所・向き・回っている範囲・進み具合）を3秒ごとに端末へ
   React.useEffect(() => {
     if (!ready) return;
-    const save = () => {
-      if (closedRef.current) return;
-      const pn = panoRef.current, P = pn && pn.getPosition(); if (!P) return;
-      const pl = planRef.current, pt = patrolRef.current;
-      svSessionSet({ open: true, ts: Date.now(), lat: P.lat(), lng: P.lng(), pano: pn.getPano() || "", travel: travelRef.current,
-        poly: pl && pl.poly || null, from: pl && pl.from || null, idx: pt ? pt.idx : null, auto: !!autoRef.current });
-    };
+    const save = () => { if (closedRef.current) return; const sn = svSnap(); if (sn) svSessionSet({ ...sn, open: true }); };
     save();
     const t = setInterval(save, 3000);
     return () => clearInterval(t);
@@ -14103,9 +14102,17 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       }).catch(e => setPlanMsg("⚠️ " + (e.message || e)));
     } else if (resume.auto) setAuto(true);
   }, [ready]);   // eslint-disable-line
+  // 今の続き（場所・向き・回っている範囲・進み具合）
+  const svSnap = () => {
+    const pn = panoRef.current, P = pn && pn.getPosition(); if (!P) return null;
+    const pl = planRef.current, pt = patrolRef.current;
+    return { ts: Date.now(), lat: P.lat(), lng: P.lng(), pano: pn.getPano() || "", travel: travelRef.current,
+      poly: pl && pl.poly || null, from: pl && pl.from || null, idx: pt ? pt.idx : null, auto: !!autoRef.current };
+  };
   const close = async () => {
     setAuto(false);
-    closedRef.current = true; svSessionClear();
+    closedRef.current = true;
+    { const sn = svSnap(); if (sn) svSessionSet({ ...sn, auto: false, open: false, paused: true }); else svSessionClear(); }   // v9.681: 中断した所を覚える
     await flushTrack();
     onClose();
   };
@@ -28204,6 +28211,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     if (!key) { alert("ストリートビュー用の地図の鍵がまだ設定されていません。下田さんに知らせてください（Claudeが設定します）。"); return; }
     // 🆕 v9.672: 更新で再読み込みされた時は、さっきの続き（場所・回っている範囲・進み具合）から
     if (resume && resume.open && typeof resume.lat === "number") { setSvWalker({ key, start: { lat: resume.lat, lng: resume.lng }, resume }); return; }
+    // 🆕 v9.681: 「終わる」で中断した所があれば、そこから（回っていた範囲・進み具合も）
+    { const ps = svSessionPaused(); if (ps) { setSvWalker({ key, start: { lat: ps.lat, lng: ps.lng }, resume: { ...ps, auto: false } }); return; } }
     let start = null;
     // 🆕 v9.666: 今地図で見ている場所の真ん中から始める（下田さん「地図上で見ている場所をストリートビューで表示して」）
     try { const m = window.__hkJiageMap; if (m && m.getContainer && document.body.contains(m.getContainer())) { const c = m.getCenter(); start = { lat: c.lat, lng: c.lng }; } } catch (e) {}
