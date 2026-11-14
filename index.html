@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.710";
+const APP_VERSION = "2026-11-14-v9.712";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.712", date: "2026-11-14", title: "SVで探す：回った後の道を色分け・入口で写真を見失う不具合を修正",
+    body: "回り終わった（止めた）後は、通った道は薄いオレンジ、写真が無くて通れなかった道は灰色の点線、まだの道は濃いオレンジで表示します。また、道の入口で「一番近い写真」ではなく大通りの写真を拾って、その道をあきらめてしまうことがあったのを直しました。",
+    where: "地上げ → 👁 SVで探す" },
   { v: "9.708", date: "2026-11-14", title: "SVで探す：ストリートビューで通れない道を先にお知らせ",
     body: "範囲を囲む（ブロックを選ぶ）と、道ごとにストリートビューの写真があるかを先に調べます。写真の無い道（私道・細い道など）は灰色の点線で表示し、回る道順から外します。何m通れないかも表示します。",
     where: "地上げ → 👁 SVで探す → ✏️ 囲って選ぶ／🧩 ブロックで選ぶ" },
@@ -13843,7 +13846,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       gmap.addListener("click", (e) => {
         setAuto(false); setChoices(null);
         if (patrolRef.current) { setPatrolPaused(true); setPatrol(null); }   // 回るのは一時停止（通った道の記録は残る→「▶ 続きから回る」で再開）
-        new gm.StreetViewService().getPanorama({ location: e.latLng, radius: 60, source: gm.StreetViewSource.OUTDOOR }, (data, st) => {
+        new gm.StreetViewService().getPanorama({ location: e.latLng, radius: 60, preference: gm.StreetViewPreference.NEAREST, source: gm.StreetViewSource.OUTDOOR }, (data, st) => {
           if (st === "OK" && data && data.location) {
             prevP = null;
             if (data.location.pano === pano.getPano()) { askDir(); return; }
@@ -13996,7 +13999,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
             if (n >= 3) { hkPLog("skip3", { kk }); if (!cov.arr[kk]) cov.arr[kk] = 2; setPatrol(p => p ? { idx: Math.min(pts.length - 1, kk + 1) } : p); return; } }
           hkPLog("jump", { kk, tries, n: cov.jt.get(kk), lat: +t.lat.toFixed(6), lng: +t.lng.toFixed(6), here: [+here[0].toFixed(6), +here[1].toFixed(6)] });
           if (!cov.arr[kk]) cov.arr[kk] = 2;   // v9.694: 安全装置②＝飛んだ先の点は「試した」印（同じ点へ二度と飛ばない）
-          new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: tries ? 60 : 30, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => {
+          new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: tries ? 60 : 30, preference: gm.StreetViewPreference.NEAREST, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => {
             // v9.691: 一番近い写真がその道から25m以上離れている＝その道には写真が無い（私道・細い道など）→その道はあきらめて先へ
             if (s2 === "OK" && d && d.location && d.location.latLng && _hkM([t.lat, t.lng], [d.location.latLng.lat(), d.location.latLng.lng()]) > 25) {
               const e = giveUp(kk); hkPLog("nophoto", { kk, e }); setPatrol(p => p ? { idx: Math.min(pts.length - 1, e) } : p); return;
@@ -14115,13 +14118,30 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     planLinesRef.current.push(new gm.Polygon({ map: gmap, paths: plan.poly.map(([a, b]) => ({ lat: a, lng: b })), strokeOpacity: 0, strokeWeight: 0, fillColor: "#f97316", fillOpacity: 0.08, clickable: false, zIndex: 3 }));
     let seg = [];
     const flush = () => { if (seg.length >= 2) planLinesRef.current.push(new gm.Polyline({ map: gmap, path: seg, strokeColor: "#f97316", strokeOpacity: 0.75, strokeWeight: 4, clickable: false, zIndex: 4 })); seg = []; };
-    plan.pts.forEach(q => { if (q.jump) flush(); seg.push({ lat: q.lat, lng: q.lng }); });
-    flush();
+    // v9.711: 回った後は「通った道＝薄く」「写真が無くて通れなかった道＝灰色の点線」「まだの道＝オレンジ」に塗り分ける（下田さん「なんで通れないのかな？」）
+    const cvp = covRef.current && covRef.current.plan === plan ? covRef.current : null;
+    const stOf = (k) => !cvp ? 0 : cvp.arr[k] || 0;
+    let segSt = -1;
+    const flush2 = () => {
+      if (seg.length >= 2) {
+        if (segSt === 1) planLinesRef.current.push(new gm.Polyline({ map: gmap, path: seg, strokeColor: "#f97316", strokeOpacity: 0.18, strokeWeight: 4, clickable: false, zIndex: 4 }));
+        else if (segSt === 2) planLinesRef.current.push(new gm.Polyline({ map: gmap, path: seg, strokeOpacity: 0, clickable: false, zIndex: 4, icons: [{ icon: { path: "M 0,-1 0,1", strokeOpacity: 0.9, strokeColor: "#475569", strokeWeight: 3, scale: 2 }, offset: "0", repeat: "8px" }] }));
+        else planLinesRef.current.push(new gm.Polyline({ map: gmap, path: seg, strokeColor: "#f97316", strokeOpacity: 0.75, strokeWeight: 4, clickable: false, zIndex: 4 }));
+      }
+      seg = [];
+    };
+    plan.pts.forEach((q, k) => {
+      const st = q.back ? 1 : stOf(k);
+      if (q.jump) { flush2(); segSt = st; }
+      else if (st !== segSt) { const last = seg[seg.length - 1]; flush2(); if (last) seg.push(last); segSt = st; }
+      seg.push({ lat: q.lat, lng: q.lng });
+    });
+    flush2();
     // v9.708: ストリートビューで通れない道＝灰色の点線
     (plan.blocked || []).forEach(([A, B]) => planLinesRef.current.push(new gm.Polyline({ map: gmap, path: [{ lat: A[0], lng: A[1] }, { lat: B[0], lng: B[1] }], strokeOpacity: 0, clickable: false, zIndex: 4,
       icons: [{ icon: { path: "M 0,-1 0,1", strokeOpacity: 0.9, strokeColor: "#475569", strokeWeight: 3, scale: 2 }, offset: "0", repeat: "8px" }] })));
     // 🆕 v9.707: スタート地点（🚩）と、手順の番号（曲がる所）を地図に。回っている間は消す
-    if (!patrol && planSteps) {
+    if (!patrol && planSteps && !(cvp && cvp.arr.some(Boolean))) {   // v9.711: 回った後は番号を出さない（ごちゃごちゃするので）
       const s0 = plan.pts[0];
       planLinesRef.current.push(new gm.Marker({ map: gmap, position: { lat: s0.lat, lng: s0.lng }, zIndex: 9000, clickable: false,
         label: { text: "S", color: "#fff", fontSize: "14px", fontWeight: "900" },
@@ -14257,7 +14277,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     if (pano && gm && t) {
       const P = pano.getPosition();
       if (!P || _hkM([P.lat(), P.lng()], [t.lat, t.lng]) > 30) {
-        new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: 40, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => { if (s2 === "OK" && d && d.location) pano.setPano(d.location.pano); });
+        new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: 40, preference: gm.StreetViewPreference.NEAREST, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => { if (s2 === "OK" && d && d.location) pano.setPano(d.location.pano); });
       }
     }
     if (!bothRef.current) setBoth(true);
@@ -14889,7 +14909,7 @@ async function hkPlanPatrol(poly, from, opts) {
   if (gmx && !(opts && opts.noSvCheck)) {
     const svc = new gmx.StreetViewService();
     const ask = (p) => { const k = p[0].toFixed(5) + "," + p[1].toFixed(5); if (_hkSvHas.has(k)) return _hkSvHas.get(k);
-      const pr = new Promise(res => { try { svc.getPanorama({ location: { lat: p[0], lng: p[1] }, radius: 18, source: gmx.StreetViewSource.OUTDOOR }, (d, st) => res(st === "OK" && !!d && !!d.location)); } catch (e) { res(true); } });
+      const pr = new Promise(res => { try { svc.getPanorama({ location: { lat: p[0], lng: p[1] }, radius: 18, preference: gmx.StreetViewPreference.NEAREST, source: gmx.StreetViewSource.OUTDOOR }, (d, st) => res(st === "OK" && !!d && !!d.location)); } catch (e) { res(true); } });
       _hkSvHas.set(k, pr); return pr; };
     const jobs = edges.map(e => { const A = nodes[e.a], B = nodes[e.b], k = Math.max(1, Math.ceil(e.len / 30)); const sm = []; for (let j = 0; j < k; j++) { const t = (j + 0.5) / k; sm.push([A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t]); } return sm; });
     const total0 = jobs.reduce((a, x) => a + x.length, 0); let doneN = 0;
