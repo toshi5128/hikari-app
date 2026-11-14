@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-15-v9.723";
+const APP_VERSION = "2026-11-15-v9.724";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13635,6 +13635,17 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   // 🆕 v9.680: 両側の2枚を横に並べるか（パソコンの横長画面は最初から横並び。ボタンで切り替え・端末ごとに覚える）
   const [side, setSideRaw] = React.useState(() => { try { const v = localStorage.getItem("hikari_sv_side"); if (v === "1") return true; if (v === "0") return false; } catch (e) {} return window.innerWidth > window.innerHeight && window.innerWidth >= 700; });
   const sideRef = React.useRef(side); sideRef.current = side;
+  // 🆕 v9.724: 画面の形で引き方を変える。縦長・小さい＝縮めて見せる(0.6)／横長(幅÷高さ1.6以上)＝そのまま描いてホイールで引く
+  const [scA, setScA] = React.useState(1), [scB, setScB] = React.useState(1);
+  const scRef = React.useRef({ a: 1, b: 1 }); scRef.current = { a: scA, b: scB };
+  React.useEffect(() => {
+    const f = el => { const p = el && el.parentElement; const w = p ? p.clientWidth : 0, h = p ? p.clientHeight : 0; return (w > 10 && h > 10 && w / h < 1.6) ? SV_WIDE_SCALE : 1; };
+    const upd = () => { setScA(f(panoDiv.current)); setScB(f(pano2Div.current)); };
+    let ro = null; try { ro = new ResizeObserver(upd); [panoDiv.current, pano2Div.current].forEach(x => x && x.parentElement && ro.observe(x.parentElement)); } catch (e) {}
+    upd(); return () => { try { ro && ro.disconnect(); } catch (e) {} };
+  }, []);
+  React.useEffect(() => { const gm = window.google && window.google.maps; setTimeout(() => { try { [panoRef.current, pano2Ref.current].forEach(x => { if (gm && x) { gm.event.trigger(x, "resize"); if (x.setZoom) x.setZoom(0); } }); } catch (e) {} }, 60); }, [scA, scB]);
+  const svBoxStyle = s => s < 1 ? SV_WIDE_STYLE : { position: "absolute", inset: 0 };
   const svDiag = React.useRef({ at: 0, rows: [] }).current;
   const toggleSide = () => { const v = !side; setSideRaw(v); try { localStorage.setItem("hikari_sv_side", v ? "1" : "0"); } catch (e) {} const gm = window.google && window.google.maps; setTimeout(() => { try { [panoRef.current, pano2Ref.current, gmapRef.current].forEach(x => { if (gm && x) gm.event.trigger(x, "resize"); }); if (panoRef.current && panoRef.current.__hkAim) panoRef.current.__hkAim(); } catch (e) {} }, 120); };
   const dragRef = React.useRef(null);
@@ -13735,14 +13746,14 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       const gmap = new gm.Map(mapDiv.current, { center: start, zoom: 18, mapTypeId: "hybrid", disableDefaultUI: true, zoomControl: true, gestureHandling: "greedy", clickableIcons: false });
       const pano = new gm.StreetViewPanorama(panoDiv.current, {
         position: start, pov: { heading: 0, pitch: 0 }, zoom: 0, addressControl: false, fullscreenControl: false,
-        mode: "html5",   // 🆕 v9.721: 進む時の「歩く動き（寄って→着いたら引く）」を出さない描き方。移動中もずっと同じ広さ（下田さん「移動してから引きにするのやめて」）
+        // v9.724: mode "html5" はやめた（Androidの横長の画面だとGoogleの一番引きより広くできず、狭く見えた）。v9.721: 進む時の「歩く動き（寄って→着いたら引く）」を出さない描き方。移動中もずっと同じ広さ（下田さん「移動してから引きにするのやめて」）
         motionTracking: false, motionTrackingControl: false, showRoadLabels: false, linksControl: true, panControl: false, enableCloseButton: false,
       });
       gmap.setStreetView(pano);
       panoRef.current = pano; gmapRef.current = gmap;
       // 🆕 v9.651: 右側を見る2枚目（1枚目と同じ場所を、反対の向きで見る）
       const pano2 = new gm.StreetViewPanorama(pano2Div.current, {
-        pov: { heading: 90, pitch: 0 }, zoom: 0, addressControl: false, fullscreenControl: false, motionTracking: false, motionTrackingControl: false, mode: "html5",
+        pov: { heading: 90, pitch: 0 }, zoom: 0, addressControl: false, fullscreenControl: false, motionTracking: false, motionTrackingControl: false,
         showRoadLabels: false, linksControl: false, panControl: false, enableCloseButton: false, clickToGo: false, zoomControl: true, visible: true,
       });
       pano2Ref.current = pano2;
@@ -13806,8 +13817,10 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       //   → 写真が変わるたびに、画面の真ん中で「ホイールで引く」操作をアプリが自動で出す（手で触っている間は出さない）
       // 🆕 v9.719: 止める。v9.718で写真を縮めて見せる方式にしたら、真ん中に出したホイールがずれた位置に効いて
       //   1回ごとに向きが右へ約4°・下へ約3°ずれる＝動きがバグって見えた（下田さん「動きがバグる時ある」）。広さは縮める方式だけで足りる
-      const wheelOut = (pn, n = 10) => {
-        if (SV_WIDE_SCALE < 1) return;
+      // 🆕 v9.724: 横長の画面＝ホイールでGoogleの一番引きより広くなる（縮めても広くならない）。大きい1回で一瞬で引ける（細かく何回も出すと少しずつ引く動きが見えた）
+      //   縦長・小さい画面＝縮めて見せる方式の方が広い。縮めた画面にホイールを出すと向きがずれるので出さない
+      const wheelOut = (pn, n = 1) => {
+        if ((pn === pano ? scRef.current.a : scRef.current.b) < 1) return;
         try {
           const isTop = pn === pano, t = isTop ? touch.t1 : touch.t2; if (Date.now() - t < 4000) return;
           const dv = isTop ? panoDiv.current : pano2Div.current; if (!dv) return;
@@ -13815,7 +13828,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           let c = null, best = 0; dv.querySelectorAll("canvas").forEach(x => { const q = x.getBoundingClientRect(), A = q.width * q.height; if (A > best) { best = A; c = x; } });
           if (!c) return;
           const r = c.getBoundingClientRect(); if (r.width < 10 || r.height < 10) return;
-          for (let i = 0; i < n; i++) c.dispatchEvent(new WheelEvent("wheel", { deltaY: 200, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
+          for (let i = 0; i < n; i++) c.dispatchEvent(new WheelEvent("wheel", { deltaY: 5000, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
         } catch (e) {}
       };
       pano.__hkWheelOut = () => { wheelOut(pano); wheelOut(pano2); };
@@ -13823,7 +13836,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       //   写真が変わった瞬間から約1.2秒、画面が描き変わるたびに引く操作を出し続ける＝寄った絵が見えるすき間を作らない
       const wheelHold = (pn, ms) => {
         const until = Date.now() + ms;
-        const step = () => { if (!alive || Date.now() > until) return; wheelOut(pn, 3); requestAnimationFrame(step); };
+        const step = () => { if (!alive || Date.now() > until) return; wheelOut(pn, 1); requestAnimationFrame(step); };
         step();
       };
       [pano, pano2].forEach(pn => {
@@ -13835,7 +13848,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           const now = Date.now(); if (now - (svDiag.at || 0) < 20000 || pn !== pano) return; svDiag.at = now;
           const dv = panoDiv.current, box = dv && dv.parentElement; let cw = 0, ch = 0;
           dv && dv.querySelectorAll("canvas").forEach(c => { if (c.width * c.height > cw * ch) { cw = c.width; ch = c.height; } });
-          svDiag.rows.push({ t: now, v: APP_VERSION, m: pn.get("mode") || "", z: Math.round(pn.getZoom() * 100) / 100, dpr: window.devicePixelRatio, w: box ? box.clientWidth : 0, h: box ? box.clientHeight : 0, cw, ch, both: !!bothRef.current, side: !!sideRef.current, sc: SV_WIDE_SCALE, gl: dv ? dv.querySelectorAll("canvas").length : 0, hand: Date.now() - touch.t1 < 4000 });
+          svDiag.rows.push({ t: now, v: APP_VERSION, m: pn.get("mode") || "", z: Math.round(pn.getZoom() * 100) / 100, dpr: window.devicePixelRatio, w: box ? box.clientWidth : 0, h: box ? box.clientHeight : 0, cw, ch, both: !!bothRef.current, side: !!sideRef.current, sc: scRef.current.a, gl: dv ? dv.querySelectorAll("canvas").length : 0, hand: Date.now() - touch.t1 < 4000 });
           if (svDiag.rows.length > 60) svDiag.rows.splice(0, svDiag.rows.length - 60);
           const d = new Date(now + 9 * 3600000).toISOString().slice(0, 10);
           fetch(`${SUPABASE_URL}/rest/v1/app_data`, { method: "POST", headers: { ..._TRACK_HEADERS, Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -13846,7 +13859,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         pn.addListener("zoom_changed", () => {
           try {
             const t = pn === pano ? touch.t1 : touch.t2; if (Date.now() - t < 4000) return;   // 自分で寄った時はそのまま
-            if (pn.getZoom() > 0.001) { pn.setZoom(0); requestAnimationFrame(() => wheelOut(pn, 6)); }
+            if (pn.getZoom() > 0.001) { pn.setZoom(0); requestAnimationFrame(() => wheelOut(pn, 1)); }
           } catch (e) {}
         });
         pn.setOptions({ zoomControl: true, scrollwheel: true });
@@ -14570,7 +14583,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           <div style={{ display: "flex", flexDirection: (side && both && !bigMap) ? "row" : "column", flex: bigMap ? "0 0 22%" : (both ? `0 1 calc((100% - 149px) * ${frac.both.toFixed(4)})` : `0 1 calc((100% - 149px) * ${frac.one.toFixed(4)})`), minHeight: 0 }}>
           <div style={{ position: "relative", flex: "1 1 0px", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             {/* 🆕 v9.718: 一番引きを移動中も保つ＝写真を大きく描かせて縮めて見せる（Googleの寄せ直しが効かない）。下田さん「はじめから1番引きの状態をキープして移動して」 */}
-            <div ref={panoDiv} style={SV_WIDE_STYLE} />
+            <div ref={panoDiv} style={svBoxStyle(scA)} />
             {both && <div style={{ position: "absolute", left: 8, top: 8, zIndex: 2, background: "rgba(225,29,72,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>◀ 左側の家</div>}
             {choices && (
               <div style={{ position: "absolute", left: 8, right: 8, bottom: 30, zIndex: 3, background: "rgba(15,23,42,0.92)", borderRadius: 12, padding: 10 }}>
@@ -14593,7 +14606,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           </div>
           {/* 🆕 v9.651: 右側の家（2枚目）。1画面モードの時は隠すだけ（作り直さない） */}
           <div style={{ position: "relative", flex: both && !bigMap ? "1 1 0px" : "0 0 0px", minHeight: 0, minWidth: 0, overflow: "hidden", ...(both && !bigMap ? (side ? { borderLeft: "3px solid #0f172a" } : { borderTop: "3px solid #0f172a" }) : {}) }}>
-            <div ref={pano2Div} style={SV_WIDE_STYLE} />
+            <div ref={pano2Div} style={svBoxStyle(scB)} />
             {both && <div style={{ position: "absolute", right: 8, top: 8, zIndex: 2, background: "rgba(37,99,235,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>右側の家 ▶</div>}
           </div>
           </div>
