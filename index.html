@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.690";
+const APP_VERSION = "2026-11-14-v9.691";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13925,9 +13925,16 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         const st = stuckRef.current; if (st.pano === pano.getPano()) st.n++; else { st.pano = pano.getPano(); st.n = 0; }
         // 🆕 v9.682: 飛ぶ先の写真が見つからない時は、もう少し広く探し、それでも無ければ予定の先の点で探す（道を走って戻らない）
         //   （下田さん「通った道をまた戻り出した」＝飛ぶのに失敗→次の点が後ろの遠くにあり、写真の矢印で走って戻っていた）
+        // v9.691: まだ通っていない点のひと続き（その道）の終わり
+        const runEnd = (k) => { let j = k; while (j < pts.length && !cov.arr[j] && (j === k || !pts[j].jump)) j++; return j; };
+        const giveUp = (k) => { const e = runEnd(k); for (let j = k; j < e; j++) cov.arr[j] = 2; return e; };   // 写真が無い道＝あきらめる（オレンジのまま）
         const jumpTo = (k, tries = 0) => {
           const gm = window.google.maps; const kk = Math.min(k, pts.length - 1), t = pts[kk];
           new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: tries ? 60 : 30, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => {
+            // v9.691: 一番近い写真がその道から25m以上離れている＝その道には写真が無い（私道・細い道など）→その道はあきらめて先へ
+            if (s2 === "OK" && d && d.location && d.location.latLng && _hkM([t.lat, t.lng], [d.location.latLng.lat(), d.location.latLng.lng()]) > 25) {
+              const e = giveUp(kk); setPatrol(p => p ? { idx: Math.min(pts.length - 1, e) } : p); return;
+            }
             if (s2 === "OK" && d && d.location && d.location.pano !== pano.getPano()) {
               const nx = pts[Math.min(kk + 1, pts.length - 1)]; if (nx && kk + 1 < pts.length) travelRef.current = _hkBrg([t.lat, t.lng], [nx.lat, nx.lng]);   // 飛んだ先で進む向き＝予定の道の向き
               backRef.current = { skip: null, until: Date.now() + 1500 };
@@ -13935,7 +13942,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
               pano.setPano(d.location.pano);
             } else if (s2 === "OK" && d && d.location) setPatrol(p => p ? { idx: Math.min(pts.length - 1, kk + 1) } : p);   // もうその場所にいる＝着いたことにして先へ
             else if (tries < 3 && kk < pts.length - 1) jumpTo(kk + 3, tries + 1);
-            else setPatrol(p => p ? { idx: Math.min(pts.length - 1, kk + 4) } : p);
+            else { const e = giveUp(kk); setPatrol(p => p ? { idx: Math.min(pts.length - 1, Math.max(e, kk + 1)) } : p); }
           });
         };
         // この先（20〜50m）の予定の道がもう見た道なら、走らずに次の「まだ見ていない道」へ飛ぶ（同じ道を2回通らない）
@@ -13951,7 +13958,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           let u = -1;
           for (let k = 0; k + 1 < pts.length; k++) if (!cov.arr[k] && !cov.arr[k + 1] && !cov.tried.has(k)) { u = k; break; }
           if (u < 0) { setAuto(false); setPatrol(null); setPlanMsg(planRef.current && planRef.current.blockId ? "✅ このブロックを回り終わりました（済）" : "✅ 囲んだ範囲を回り終わりました"); markBlockDone(planRef.current); return; }
-          cov.tried.add(u); setPatrol({ idx: u }); jumpTo(u); return;
+          { const e = runEnd(u); for (let j = u; j < e; j++) cov.tried.add(j); }   // v9.691: 残った道は1回だけ試す（何度も同じ所へ飛ばない）
+          setPatrol({ idx: u }); jumpTo(u); return;
         }
         setPatrol({ idx });
         const want2 = _hkBrg(here, [tgt.lat, tgt.lng]);
