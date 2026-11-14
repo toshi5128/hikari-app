@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.675";
+const APP_VERSION = "2026-11-14-v9.676";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13682,6 +13682,10 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       const rel = { L: -SIDE, R: SIDE, S: 0, until: 0 };
       try { const v = JSON.parse(localStorage.getItem("hikari_sv_rel") || "null"); if (v && typeof v.L === "number") { rel.L = v.L; rel.R = v.R; rel.S = v.S || 0; } } catch (e) {}
       const nrm = (a) => ((a + 540) % 360) - 180;
+      // 🆕 v9.676: 両側は必ず「上＝左・下＝右」。片方を回したら、もう片方は鏡写しで反対側を向く（下田さん「両画面で同じ方向を向くのをやめて」）
+      const clampL = (r) => Math.max(-170, Math.min(-15, r));
+      if (!(rel.L < 0) || !(rel.R > 0)) { rel.L = -SIDE; rel.R = SIDE; }
+      rel.L = clampL(rel.L); rel.R = -rel.L;
       const saveRel = () => { try { localStorage.setItem("hikari_sv_rel", JSON.stringify({ L: rel.L, R: rel.R, S: rel.S })); } catch (e) {} };
       const aimSides = () => {
         const t = travelRef.current;
@@ -13694,8 +13698,10 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         }
       };
       // 自分で画面を回した時だけ、その向きを覚える
-      pano.addListener("pov_changed", () => { if (Date.now() < rel.until) return; const r = nrm(pano.getPov().heading - travelRef.current); if (bothRef.current) rel.L = r; else rel.S = r; saveRel(); });
-      pano2.addListener("pov_changed", () => { if (Date.now() < rel.until) return; rel.R = nrm(pano2.getPov().heading - travelRef.current); saveRel(); });
+      pano.addListener("pov_changed", () => { if (Date.now() < rel.until || Date.now() < (rel.until1 || 0)) return; const r = nrm(pano.getPov().heading - travelRef.current);
+        if (bothRef.current) { rel.L = clampL(r); rel.R = -rel.L; rel.until2 = Date.now() + 400; pano2.setPov({ heading: travelRef.current + rel.R, pitch: (pano2.getPov() || {}).pitch || 0 }); } else rel.S = r; saveRel(); });
+      pano2.addListener("pov_changed", () => { if (Date.now() < rel.until || Date.now() < (rel.until2 || 0)) return; rel.R = -clampL(-nrm(pano2.getPov().heading - travelRef.current)); rel.L = -rel.R;
+        rel.until1 = Date.now() + 400; pano.setPov({ heading: travelRef.current + rel.L, pitch: (pano.getPov() || {}).pitch || 0 }); saveRel(); });
       pano.__hkAim = aimSides;
       // 🆕 v9.658: 常に一番引き（一番広く見える）に固定（下田さん「常に1番引きの状態を保ってほしい。じゃないと全体が見えない」）
       const fixWide = (pn) => { try { if (pn.getZoom() !== 0) pn.setZoom(0); } catch (e) {} };
@@ -13828,7 +13834,9 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
               hr.looked.add(found.L.b.key); fresh = true; aim(pano, found.L);
               if (newR) hr.pano = "";   // 1画面の時は、左を見終わったら同じ場所で右の家も見る
             } else if (newR) { hr.looked.add(found.R.b.key); fresh = true; aim(pano, found.R); }
-            if (fresh) { hr.nextAt = Date.now() + HOUSE_MS; return; }
+            // 🆕 v9.676: 曲がり角・行き止まりから飛んだ直後は家を見分けにくい→家が見つからなくても約9m進んだら止まる（下田さん「ダダダッと2、3軒進む」）
+            if (!fresh && (!hr.stop || _hkM(hr.stop, here0) >= 9)) fresh = true;
+            if (fresh) { hr.stop = here0; hr.nextAt = Date.now() + HOUSE_MS; return; }
           } else {
             // 建物データがまだ無い所：約5mごとに止まる
             if (!hr.stop) hr.stop = here0;
