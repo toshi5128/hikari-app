@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.715";
+const APP_VERSION = "2026-11-14-v9.716";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13798,7 +13798,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       const fixWide = (pn) => { try { if (pn.getZoom() !== 0) pn.setZoom(0); } catch (e) {} };
       // 🆕 v9.714: プログラムで指定できる一番引き(0)より、ホイールで引いた方がさらに広くなる（Googleの作り。下田さん「こう引くとまだ引けるでしょ」）
       //   → 写真が変わるたびに、画面の真ん中で「ホイールで引く」操作をアプリが自動で出す（手で触っている間は出さない）
-      const wheelOut = (pn) => {
+      const wheelOut = (pn, n = 10) => {
         try {
           const isTop = pn === pano, t = isTop ? touch.t1 : touch.t2; if (Date.now() - t < 4000) return;
           const dv = isTop ? panoDiv.current : pano2Div.current; if (!dv) return;
@@ -13806,13 +13806,20 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           let c = null, best = 0; dv.querySelectorAll("canvas").forEach(x => { const q = x.getBoundingClientRect(), A = q.width * q.height; if (A > best) { best = A; c = x; } });
           if (!c) return;
           const r = c.getBoundingClientRect(); if (r.width < 10 || r.height < 10) return;
-          for (let i = 0; i < 10; i++) c.dispatchEvent(new WheelEvent("wheel", { deltaY: 200, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
+          for (let i = 0; i < n; i++) c.dispatchEvent(new WheelEvent("wheel", { deltaY: 200, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
         } catch (e) {}
       };
       pano.__hkWheelOut = () => { wheelOut(pano); wheelOut(pano2); };
+      // 🆕 v9.716: 「移動して寄る→引く」のチラつきをなくす（下田さん「移動して引いて、移動して引いて、になってる。最初から極限まで引いて、移動しても保って」）
+      //   写真が変わった瞬間から約1.2秒、画面が描き変わるたびに引く操作を出し続ける＝寄った絵が見えるすき間を作らない
+      const wheelHold = (pn, ms) => {
+        const until = Date.now() + ms;
+        const step = () => { if (!alive || Date.now() > until) return; wheelOut(pn, 3); requestAnimationFrame(step); };
+        step();
+      };
       [pano, pano2].forEach(pn => {
         // v9.690: 自分で寄るのはOK（指2本・ホイール・＋－）。次の写真へ進むと一番引きに戻る（下田さん「建物に寄ってズームしたい。いつもは一番引き」）
-        pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); setTimeout(() => fixWide(pn), 1200); setTimeout(() => wheelOut(pn), 500); setTimeout(() => wheelOut(pn), 1500); });
+        pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); setTimeout(() => fixWide(pn), 1200); wheelHold(pn, 1200); });
         pn.addListener("status_changed", () => fixWide(pn));   // v9.713: 写真の読み込みが終わった時にも（遅い時に読み込み後に寄った状態へ戻っていた）
         pn.setOptions({ zoomControl: true, scrollwheel: true });
         fixWide(pn);
@@ -13825,7 +13832,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         if (Date.now() - touch.t1 > 4000) { if (pano.getZoom() > 0.01 || touch.t1 > (touch.w1 || 0)) { fixWide(pano); wheelOut(pano); touch.w1 = Date.now(); } }
         if (Date.now() - touch.t2 > 4000) { if (pano2.getZoom() > 0.01 || touch.t2 > (touch.w2 || 0)) { fixWide(pano2); wheelOut(pano2); touch.w2 = Date.now(); } }
       }, 700);
-      setTimeout(() => { wheelOut(pano); wheelOut(pano2); }, 1500);
+      wheelHold(pano, 3000); wheelHold(pano2, 3000);
       const ov = new gm.OverlayView(); ov.onAdd = () => {}; ov.draw = () => {}; ov.onRemove = () => {}; ov.setMap(gmap); ovRef.current = ov;
       // 🆕 v9.654: 見ている向きを地図に（下田さん「向いてる方向が分からなくなる」）
       const fanL = new gm.Polygon({ map: gmap, paths: [], strokeWeight: 1.5, strokeColor: "#e11d48", strokeOpacity: 0.9, fillColor: "#e11d48", fillOpacity: 0.5, clickable: false, zIndex: 9990 });
