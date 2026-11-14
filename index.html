@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.721";
+const APP_VERSION = "2026-11-15-v9.722";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13634,6 +13634,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   const fracRef = React.useRef(frac); fracRef.current = frac;
   // 🆕 v9.680: 両側の2枚を横に並べるか（パソコンの横長画面は最初から横並び。ボタンで切り替え・端末ごとに覚える）
   const [side, setSideRaw] = React.useState(() => { try { const v = localStorage.getItem("hikari_sv_side"); if (v === "1") return true; if (v === "0") return false; } catch (e) {} return window.innerWidth > window.innerHeight && window.innerWidth >= 700; });
+  const sideRef = React.useRef(side); sideRef.current = side;
+  const svDiag = React.useRef({ at: 0, rows: [] }).current;
   const toggleSide = () => { const v = !side; setSideRaw(v); try { localStorage.setItem("hikari_sv_side", v ? "1" : "0"); } catch (e) {} const gm = window.google && window.google.maps; setTimeout(() => { try { [panoRef.current, pano2Ref.current, gmapRef.current].forEach(x => { if (gm && x) gm.event.trigger(x, "resize"); }); if (panoRef.current && panoRef.current.__hkAim) panoRef.current.__hkAim(); } catch (e) {} }, 120); };
   const dragRef = React.useRef(null);
   // 🆕 v9.651: 両側モード（左側と右側を上下2画面で同時に見る＝同じ道を2回通らなくていい）
@@ -13828,6 +13830,17 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         // v9.690: 自分で寄るのはOK（指2本・ホイール・＋－）。次の写真へ進むと一番引きに戻る（下田さん「建物に寄ってズームしたい。いつもは一番引き」）
         pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); setTimeout(() => fixWide(pn), 1200); wheelHold(pn, 1600); });
         pn.addListener("status_changed", () => fixWide(pn));   // v9.713: 写真の読み込みが終わった時にも（遅い時に読み込み後に寄った状態へ戻っていた）
+        // 🆕 v9.722: 見え方の記録（下田さん「途中から目いっぱい引きで表示されなくなった」の原因調べ）→ app_data svview::<名前>::<日付>（20秒に1回・最新60件）
+        pn.addListener("pano_changed", () => { try {
+          const now = Date.now(); if (now - (svDiag.at || 0) < 20000 || pn !== pano) return; svDiag.at = now;
+          const dv = panoDiv.current, box = dv && dv.parentElement; let cw = 0, ch = 0;
+          dv && dv.querySelectorAll("canvas").forEach(c => { if (c.width * c.height > cw * ch) { cw = c.width; ch = c.height; } });
+          svDiag.rows.push({ t: now, v: APP_VERSION, m: pn.get("mode") || "", z: Math.round(pn.getZoom() * 100) / 100, dpr: window.devicePixelRatio, w: box ? box.clientWidth : 0, h: box ? box.clientHeight : 0, cw, ch, both: !!bothRef.current, side: !!sideRef.current, sc: SV_WIDE_SCALE, gl: dv ? dv.querySelectorAll("canvas").length : 0, hand: Date.now() - touch.t1 < 4000 });
+          if (svDiag.rows.length > 60) svDiag.rows.splice(0, svDiag.rows.length - 60);
+          const d = new Date(now + 9 * 3600000).toISOString().slice(0, 10);
+          fetch(`${SUPABASE_URL}/rest/v1/app_data`, { method: "POST", headers: { ..._TRACK_HEADERS, Prefer: "resolution=merge-duplicates,return=minimal" },
+            body: JSON.stringify({ id: `svview::${member || "?"}::${d}`, data: { at: now, ua: navigator.userAgent.slice(0, 160), rows: svDiag.rows } }) }).catch(() => {});
+        } catch (e) {} });
         // 🆕 v9.717: 移動のたびにGoogleが自分で寄せる（画面の大きさで0.3〜1.8）→その瞬間に0へ戻す（スマホは0.3秒遅れの引き直しが見えていた）
         //   下田さん「携帯ではまあまあ引きで移動して、移動してからマックス引きになる。はじめからマックス引きをキープして」
         pn.addListener("zoom_changed", () => {
