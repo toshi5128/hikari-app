@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.713";
+const APP_VERSION = "2026-11-14-v9.714";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13770,8 +13770,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       // 🆕 v9.678: 向きを覚えるのは「指で画面を回した時」だけ。写真が切り替わった時にGoogleが勝手に向きを変えても覚えない
       //   （下田さん「左右を向いてない、変な方向を向く」＝勝手な向きを覚えて上下が同じ方向になっていた）
       const touch = { t1: 0, t2: 0 };
-      const mark1 = (e) => { if (e.type !== "pointermove" || e.buttons) touch.t1 = Date.now(); };
-      const mark2 = (e) => { if (e.type !== "pointermove" || e.buttons) touch.t2 = Date.now(); };
+      const mark1 = (e) => { if (!e.isTrusted) return; if (e.type !== "pointermove" || e.buttons) touch.t1 = Date.now(); };   // v9.714: アプリが自分で出したホイール（一番引き用）は「手で触った」に数えない
+      const mark2 = (e) => { if (!e.isTrusted) return; if (e.type !== "pointermove" || e.buttons) touch.t2 = Date.now(); };
       ["pointerdown", "pointermove", "touchstart", "touchmove", "mousedown", "wheel"].forEach(ev => {
         panoDiv.current && panoDiv.current.addEventListener(ev, mark1, { capture: true, passive: true });
         pano2Div.current && pano2Div.current.addEventListener(ev, mark2, { capture: true, passive: true });
@@ -13796,9 +13796,21 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       pano.__hkSplit = () => { rel.L = -90; rel.R = 90; saveRel(); aimSides(); if (pano.__hkShowDir) setTimeout(() => pano.__hkShowDir(), 50); };
       // 🆕 v9.658: 常に一番引き（一番広く見える）に固定（下田さん「常に1番引きの状態を保ってほしい。じゃないと全体が見えない」）
       const fixWide = (pn) => { try { if (pn.getZoom() !== 0) pn.setZoom(0); } catch (e) {} };
+      // 🆕 v9.714: プログラムで指定できる一番引き(0)より、ホイールで引いた方がさらに広くなる（Googleの作り。下田さん「こう引くとまだ引けるでしょ」）
+      //   → 写真が変わるたびに、画面の真ん中で「ホイールで引く」操作をアプリが自動で出す（手で触っている間は出さない）
+      const wheelOut = (pn) => {
+        try {
+          const isTop = pn === pano, t = isTop ? touch.t1 : touch.t2; if (Date.now() - t < 4000) return;
+          const dv = isTop ? panoDiv.current : pano2Div.current; if (!dv) return;
+          const c = dv.querySelector("canvas"); if (!c) return;
+          const r = c.getBoundingClientRect(); if (r.width < 10 || r.height < 10) return;
+          for (let i = 0; i < 10; i++) c.dispatchEvent(new WheelEvent("wheel", { deltaY: 200, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
+        } catch (e) {}
+      };
+      pano.__hkWheelOut = () => { wheelOut(pano); wheelOut(pano2); };
       [pano, pano2].forEach(pn => {
         // v9.690: 自分で寄るのはOK（指2本・ホイール・＋－）。次の写真へ進むと一番引きに戻る（下田さん「建物に寄ってズームしたい。いつもは一番引き」）
-        pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); setTimeout(() => fixWide(pn), 1200); });
+        pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); setTimeout(() => fixWide(pn), 1200); setTimeout(() => wheelOut(pn), 500); setTimeout(() => wheelOut(pn), 1500); });
         pn.addListener("status_changed", () => fixWide(pn));   // v9.713: 写真の読み込みが終わった時にも（遅い時に読み込み後に寄った状態へ戻っていた）
         pn.setOptions({ zoomControl: true, scrollwheel: true });
         fixWide(pn);
@@ -13807,9 +13819,11 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       //   自分で寄った時（指・ホイール・＋－）だけ寄ったままにし、触るのをやめて4秒たったら一番引きに戻す
       const wideT = setInterval(() => {
         if (!alive) { clearInterval(wideT); return; }
-        if (Date.now() - touch.t1 > 4000) fixWide(pano);
-        if (Date.now() - touch.t2 > 4000) fixWide(pano2);
+        // 手で寄ったあと4秒触らなければ、一番引きに戻す（ホイールで引くところまで）
+        if (Date.now() - touch.t1 > 4000) { if (pano.getZoom() > 0.01 || touch.t1 > (touch.w1 || 0)) { fixWide(pano); wheelOut(pano); touch.w1 = Date.now(); } }
+        if (Date.now() - touch.t2 > 4000) { if (pano2.getZoom() > 0.01 || touch.t2 > (touch.w2 || 0)) { fixWide(pano2); wheelOut(pano2); touch.w2 = Date.now(); } }
       }, 700);
+      setTimeout(() => { wheelOut(pano); wheelOut(pano2); }, 1500);
       const ov = new gm.OverlayView(); ov.onAdd = () => {}; ov.draw = () => {}; ov.onRemove = () => {}; ov.setMap(gmap); ovRef.current = ov;
       // 🆕 v9.654: 見ている向きを地図に（下田さん「向いてる方向が分からなくなる」）
       const fanL = new gm.Polygon({ map: gmap, paths: [], strokeWeight: 1.5, strokeColor: "#e11d48", strokeOpacity: 0.9, fillColor: "#e11d48", fillOpacity: 0.5, clickable: false, zIndex: 9990 });
