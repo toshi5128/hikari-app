@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.708";
+const APP_VERSION = "2026-11-14-v9.709";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13973,7 +13973,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         { const now = Date.now(); if (!cov.lastNew || now - (cov.lastTick || 0) > 5000) cov.lastNew = now; cov.lastTick = now; }   // 止めていた時間は数えない
         for (let k = 0; k < pts.length; k++) if (!cov.arr[k] && _hkM(here, [pts[k].lat, pts[k].lng]) < 15) { cov.arr[k] = 1; cov.lastNew = Date.now(); }
         // v9.694: 安全装置①＝1分間まだ見ていない道に1か所も入れなかったら、行ける道は見終わったとして終わる（下田さん「入れない所があるならやめろ」）
-        if (Date.now() - cov.lastNew > 60000) { setAuto(false); setPatrol(null); setPlanMsg(planRef.current && planRef.current.blockId ? "✅ このブロックの行ける道は見終わりました（済）" : "✅ 行ける道は見終わりました"); markBlockDone(planRef.current); return; }
+        if (Date.now() - cov.lastNew > 60000) { hkPLog("end60", { idx, left: cov.arr.reduce((a, v, k) => a + (!v && !pts[k].back ? 1 : 0), 0) }); hkFlushPLog(member); setAuto(false); setPatrol(null); setPlanMsg(planRef.current && planRef.current.blockId ? "✅ このブロックの行ける道は見終わりました（済）" : "✅ 行ける道は見終わりました"); markBlockDone(planRef.current); return; }
         // 今いる所に近い予定の点まで進める（すぐ先＝約50mまでだけ。遠くまで探すと、同じ交差点をあとで通る所まで飛ばしてしまい道が残っていた）
         let bi = idx, bdist = 1e9;
         for (let k = idx; k < Math.min(pts.length, idx + 6); k++) { const d = _hkM(here, [pts[k].lat, pts[k].lng]); if (d < bdist) { bdist = d; bi = k; } }
@@ -14032,7 +14032,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         if (idx >= pts.length - 1) {
           let u = -1;
           for (let k = 0; k + 1 < pts.length; k++) if (!cov.arr[k] && !cov.arr[k + 1] && !cov.tried.has(k) && !pts[k].back) { u = k; break; }
-          if (u < 0) { setAuto(false); setPatrol(null); setPlanMsg(planRef.current && planRef.current.blockId ? "✅ このブロックを回り終わりました（済）" : "✅ 囲んだ範囲を回り終わりました"); markBlockDone(planRef.current); return; }
+          if (u < 0) { hkPLog("finish", { left: cov.arr.reduce((a, v, k) => a + (!v && !pts[k].back ? 1 : 0), 0) }); hkFlushPLog(member); setAuto(false); setPatrol(null); setPlanMsg(planRef.current && planRef.current.blockId ? "✅ このブロックを回り終わりました（済）" : "✅ 囲んだ範囲を回り終わりました"); markBlockDone(planRef.current); return; }
           { const e = runEnd(u); for (let j = u; j < e; j++) cov.tried.add(j); }   // v9.691: 残った道は1回だけ試す（何度も同じ所へ飛ばない）
           hkPLog("finishRemain", { u }); setPatrol({ idx: u }); jumpTo(u); return;
         }
@@ -14236,6 +14236,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   }, [blockMode]);   // eslint-disable-line
   const startPatrol = () => {
     if (!plan) return;
+    try { const jt = new Date(Date.now() + 9 * 3600000).toISOString(); _hkPLogRun = jt.slice(11, 13) + jt.slice(14, 16); _hkPLog.length = 0; } catch (e) {}
     try { _hkPlanSnap = { at: Date.now(), poly: plan.poly, pts: plan.pts.map(q => [+q.lat.toFixed(6), +q.lng.toFixed(6), q.jump ? 1 : 0]) }; } catch (e) {}
     hkPLog("start", { n: plan.pts.length, from: plan.from, jumps: plan.pts.reduce((a, q, i) => (q.jump ? a.concat(i) : a), []).slice(0, 80) });
     setChoices(null);
@@ -15055,14 +15056,14 @@ async function hkLoadDoneBlocks() {
   } catch (e) { return new Map(); }
 }
 // 🆕 v9.701: SVで探すの「回る」の判断記録（どこで・なぜ飛んだか）。原因調べ用に1日1行 svdebug::<名前>::<日付> へ最後の600件を送る
-const _hkPLog = []; let _hkPlanSnap = null;
+const _hkPLog = []; let _hkPlanSnap = null, _hkPLogRun = "";   // v9.709: 回り始めるたびに別の行（再読み込みで前の記録が消えないように）
 function hkPLog(ev, o) { try { _hkPLog.push({ t: Date.now(), ev, ...(o || {}) }); if (_hkPLog.length > 600) _hkPLog.splice(0, _hkPLog.length - 600); } catch (e) {} }
 async function hkFlushPLog(member) {
   if (!_hkPLog.length || !member) return;
   try {
     const d = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
     await fetch(`${SUPABASE_URL}/rest/v1/app_data`, { method: "POST", headers: { ..._TRACK_HEADERS, Prefer: "resolution=merge-duplicates,return=minimal" },
-      body: JSON.stringify({ id: `svdebug::${member}::${d}`, data: { at: Date.now(), v: APP_VERSION, log: _hkPLog.slice(-600), plan: _hkPlanSnap } }) });
+      body: JSON.stringify({ id: `svdebug::${member}::${d}${_hkPLogRun ? "::" + _hkPLogRun : ""}`, data: { at: Date.now(), v: APP_VERSION, log: _hkPLog.slice(-600), plan: _hkPlanSnap } }) });
   } catch (e) {}
 }
 async function hkSaveDoneBlock(rec) {
