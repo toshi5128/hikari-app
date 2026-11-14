@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.700";
+const APP_VERSION = "2026-11-14-v9.701";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13892,7 +13892,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
               const brg = _hkBrg(here0, [b.lat, b.lng]), rel = ((brg - t0 + 540) % 360) - 180;
               const side = rel < 0 ? "L" : "R", ar = Math.abs(rel);
               // 🆕 v9.698: 斜め後ろ（〜160°）の家も拾う（下田さん「進んでる時に斜め後ろあたりの建物を映せてない」）。写真の間隔が広いと真横を飛び越えてしまうため
-              if (ar < 45 || ar > 160) return;
+              if (ar < 75 || ar > 160) return;   // v9.700b: 斜め前の家は向かない（次の写真で真横に来て同じ家を2回映していた。下田さん「同じとこ2回写してる」）
               if (ar > 110) cnt[side]++;   // v9.700: その場でもう1軒見るのは、後ろへ去っていく家（もう見られない家）だけ。前の家は次の写真で見る
               const score = (ar > 110 ? -20 : 0) + d + Math.abs(ar - 85) * 0.25;   // 後ろに去っていく家を先に見る
               if (!found[side] || score < found[side].score) found[side] = { b, brg, d, score, back: ar > 110 };
@@ -13959,12 +13959,13 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           const gm = window.google.maps; const kk = Math.min(k, pts.length - 1), t = pts[kk];
           // 🆕 v9.699: 同じ点へ2回飛んでも動けなかった（下田さん「囲って回り始めると動かない」）→その点は着いたことにして次の点へ
           { if (!cov.jt) cov.jt = new Map(); const n = (cov.jt.get(kk) || 0) + 1; cov.jt.set(kk, n);
-            if (n >= 3) { if (!cov.arr[kk]) cov.arr[kk] = 2; setPatrol(p => p ? { idx: Math.min(pts.length - 1, kk + 1) } : p); return; } }
+            if (n >= 3) { hkPLog("skip3", { kk }); if (!cov.arr[kk]) cov.arr[kk] = 2; setPatrol(p => p ? { idx: Math.min(pts.length - 1, kk + 1) } : p); return; } }
+          hkPLog("jump", { kk, tries, n: cov.jt.get(kk), lat: +t.lat.toFixed(6), lng: +t.lng.toFixed(6), here: [+here[0].toFixed(6), +here[1].toFixed(6)] });
           if (!cov.arr[kk]) cov.arr[kk] = 2;   // v9.694: 安全装置②＝飛んだ先の点は「試した」印（同じ点へ二度と飛ばない）
           new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: tries ? 60 : 30, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => {
             // v9.691: 一番近い写真がその道から25m以上離れている＝その道には写真が無い（私道・細い道など）→その道はあきらめて先へ
             if (s2 === "OK" && d && d.location && d.location.latLng && _hkM([t.lat, t.lng], [d.location.latLng.lat(), d.location.latLng.lng()]) > 25) {
-              const e = giveUp(kk); setPatrol(p => p ? { idx: Math.min(pts.length - 1, e) } : p); return;
+              const e = giveUp(kk); hkPLog("nophoto", { kk, e }); setPatrol(p => p ? { idx: Math.min(pts.length - 1, e) } : p); return;
             }
             if (s2 === "OK" && d && d.location && d.location.pano !== pano.getPano()) {
               const nx = pts[Math.min(kk + 1, pts.length - 1)]; if (nx && kk + 1 < pts.length) travelRef.current = _hkBrg([t.lat, t.lng], [nx.lat, nx.lng]);   // 飛んだ先で進む向き＝予定の道の向き
@@ -13979,7 +13980,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         // 🆕 v9.698: 安全装置③＝同じ写真で12秒以上動けない時（下田さん「なんで止まったんだこれ」）は、その先のまだ通っていない道へ飛ぶ
         if (!st.since) st.since = Date.now();
         if (Date.now() - Math.max(st.since, houseRef.current.nextAt || 0) > 12000) {   // 家を見て止まっていた時間は数えない
-          st.since = Date.now(); st.n = 0;
+          st.since = Date.now(); st.n = 0; hkPLog("watchdog", { idx, ti });
           for (let k = idx; k <= ti; k++) if (!cov.arr[k]) cov.arr[k] = 2;
           let nu = -1; for (let k = ti + 1; k < pts.length; k++) if (!cov.arr[k]) { nu = k; break; }
           if (nu < 0) { setPatrol({ idx: pts.length - 1 }); return; }
@@ -13990,7 +13991,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           const ahead = []; for (let k = idx; k < Math.min(pts.length, idx + 6); k++) if (_hkM(here, [pts[k].lat, pts[k].lng]) > 18) ahead.push(k);
           if (ahead.length >= 2 && ahead.every(k => cov.arr[k])) {
             let nu = -1; for (let k = idx; k + 1 < pts.length; k++) if (!cov.arr[k] && !cov.arr[k + 1]) { nu = k; break; }
-            if (nu < 0) idx = pts.length - 1; else { setPatrol({ idx: nu }); jumpTo(nu); return; }
+            if (nu < 0) idx = pts.length - 1; else { hkPLog("aheadSeen", { idx, nu }); setPatrol({ idx: nu }); jumpTo(nu); return; }
           }
         }
         // 予定の最後まで来たら、まだ通っていない道（16m以上つながって残っている所）へ飛んで仕上げる。全部通ったら終わり
@@ -13999,7 +14000,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           for (let k = 0; k + 1 < pts.length; k++) if (!cov.arr[k] && !cov.arr[k + 1] && !cov.tried.has(k)) { u = k; break; }
           if (u < 0) { setAuto(false); setPatrol(null); setPlanMsg(planRef.current && planRef.current.blockId ? "✅ このブロックを回り終わりました（済）" : "✅ 囲んだ範囲を回り終わりました"); markBlockDone(planRef.current); return; }
           { const e = runEnd(u); for (let j = u; j < e; j++) cov.tried.add(j); }   // v9.691: 残った道は1回だけ試す（何度も同じ所へ飛ばない）
-          setPatrol({ idx: u }); jumpTo(u); return;
+          hkPLog("finishRemain", { u }); setPatrol({ idx: u }); jumpTo(u); return;
         }
         setPatrol({ idx });
         const want2 = _hkBrg(here, [tgt.lat, tgt.lng]);
@@ -14007,12 +14008,12 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         links.forEach(l => { const d = Math.abs(((l.heading - want2 + 540) % 360) - 180); if (d < ld) { ld = d; lb = l; } });
         // 次の点が30m以上離れている時は、写真の矢印で走らずに飛ぶ（離れた所へ走ると、通った道を戻ることがある）
         const far = _hkM(here, [tgt.lat, tgt.lng]) > 30;
-        if (tgt.jump || far || st.n >= 2 || !lb || ld > 60) { st.n = 0; jumpTo(ti); return; }
+        if (tgt.jump || far || st.n >= 2 || !lb || ld > 60) { hkPLog("needJump", { idx, ti, why: tgt.jump ? "jumpPt" : far ? "far" : st.n >= 2 ? "stuck" : !lb ? "nolink" : "angle" + Math.round(ld) }); st.n = 0; jumpTo(ti); return; }
         // 🆕 v9.695: 行ったり来たり防止（下田さん「また同じところをループしだした」）。進もうとした写真がついさっき通った写真＝予定の点が道から少しずれていて着いたと判定されず、2枚の間を往復していた
         //   → その点までは見たことにして先の点へ進める
         if (histRef.current.slice(-6, -1).includes(lb.pano)) {
           for (let k = idx; k <= ti; k++) if (!cov.arr[k]) cov.arr[k] = 1;
-          cov.lastNew = Date.now(); st.n = 0;
+          cov.lastNew = Date.now(); st.n = 0; hkPLog("pingpong", { idx, ti });
           setPatrol({ idx: Math.min(pts.length - 1, ti + 1) }); return;
         }
         travelRef.current = lb.heading;
@@ -14169,6 +14170,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   }, [blockMode]);   // eslint-disable-line
   const startPatrol = () => {
     if (!plan) return;
+    try { _hkPlanSnap = { at: Date.now(), poly: plan.poly, pts: plan.pts.map(q => [+q.lat.toFixed(6), +q.lng.toFixed(6), q.jump ? 1 : 0]) }; } catch (e) {}
+    hkPLog("start", { n: plan.pts.length, from: plan.from, jumps: plan.pts.reduce((a, q, i) => (q.jump ? a.concat(i) : a), []).slice(0, 80) });
     setChoices(null);
     const pano = panoRef.current, gm = window.google && window.google.maps, t = plan.pts[0];
     if (pano && gm && t) {
@@ -14302,7 +14305,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     return seenPRef.current;
   };
   const flushTrack = () => {
-    flushSeen();
+    flushSeen(); hkFlushPLog(member);
     if (flushPRef.current) return flushPRef.current.then(() => flushTrack());
     const batch = ptsRef.current;
     if (!batch || batch.length < 2) return Promise.resolve(null);
@@ -14905,6 +14908,17 @@ async function hkLoadDoneBlocks() {
     const m = new Map(); (rows || []).forEach(x => { if (x && x.data && x.data.id) m.set(x.data.id, x.data); });
     return m;
   } catch (e) { return new Map(); }
+}
+// 🆕 v9.701: SVで探すの「回る」の判断記録（どこで・なぜ飛んだか）。原因調べ用に1日1行 svdebug::<名前>::<日付> へ最後の600件を送る
+const _hkPLog = []; let _hkPlanSnap = null;
+function hkPLog(ev, o) { try { _hkPLog.push({ t: Date.now(), ev, ...(o || {}) }); if (_hkPLog.length > 600) _hkPLog.splice(0, _hkPLog.length - 600); } catch (e) {} }
+async function hkFlushPLog(member) {
+  if (!_hkPLog.length || !member) return;
+  try {
+    const d = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+    await fetch(`${SUPABASE_URL}/rest/v1/app_data`, { method: "POST", headers: { ..._TRACK_HEADERS, Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: `svdebug::${member}::${d}`, data: { at: Date.now(), v: APP_VERSION, log: _hkPLog.slice(-600), plan: _hkPlanSnap } }) });
+  } catch (e) {}
 }
 async function hkSaveDoneBlock(rec) {
   try {
