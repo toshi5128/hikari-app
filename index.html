@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.695";
+const APP_VERSION = "2026-11-14-v9.696";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.696", date: "2026-11-14", title: "SVで探す：止まった家が画面の真ん中に来るように",
+    body: "自動で進んで家の前で止まる時、その家が画面の端で切れないよう、家の正面に向きを合わせます。進み出すと元の向きに戻ります。畑や駐車場など家が無い所は、これまで通り止まらずに進みます。",
+    where: "地上げ → 👁 SVで探す" },
   { v: "9.688", date: "2026-11-14", title: "SVで探す：見ている家が地図で点滅。押せばその家でピン登録",
     body: "下の地図で、今ストリートビューで見ている家が点滅します（両側の時は赤＝左の画面・青＝右の画面）。空き家だと思ったら、点滅している家を地図で押すだけでピン登録の画面が開き、その家が最初から選ばれています。まわりの家も白い線で出ているので、違う家なら白い家を押してください。「見ている家」ボタンはなくしました。",
     where: "地上げ → 👁 SVで探す → 下の地図" },
@@ -13753,12 +13756,15 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       const enf = setInterval(() => {
         if (!alive) { clearInterval(enf); return; }
         try {
+          if (Date.now() < (rel.lookUntil || 0)) return;   // v9.696: 家の正面に向けて止まっている間は戻さない
           if (Date.now() - (rel.movedAt || 0) > 2500) return;   // 進んだ直後だけ直す（自分で見回している時は戻さない）
           const fix = (pn, want, hand) => { if (hand()) return; const pv = pn.getPov(); if (!pv) return; if (Math.abs(nrm(pv.heading - want)) > 12) pn.setPov({ heading: want, pitch: pv.pitch || 0 }); };
           if (bothRef.current) { fix(pano, travelRef.current + rel.L, byHand1); fix(pano2, travelRef.current + rel.R, byHand2); }
         } catch (e) {}
       }, 600);
       pano.__hkAim = aimSides;
+      // 🆕 v9.696: 家の前で止まっている間だけ、その家を画面の真ん中に向ける（進むと aimSides で元の向きに戻る）
+      pano.__hkLook = (pn, heading, ms) => { rel.until = Date.now() + 600; rel.lookUntil = Date.now() + ms; try { pn.setPov({ heading, pitch: (pn.getPov() || {}).pitch || 0 }); } catch (e) {} };
       // 🆕 v9.677: ↔ 左右＝上は真左・下は真右にパッと戻す（下田さん「この状態をパッと作れるボタン」）
       pano.__hkSplit = () => { rel.L = -90; rel.R = 90; saveRel(); aimSides(); if (pano.__hkShowDir) setTimeout(() => pano.__hkShowDir(), 50); };
       // 🆕 v9.658: 常に一番引き（一番広く見える）に固定（下田さん「常に1番引きの状態を保ってほしい。じゃないと全体が見えない」）
@@ -13883,7 +13889,9 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
               if (!found[side] || score < found[side].score) found[side] = { b, brg, d, score };
             });
             let fresh = false;
-            const aim = () => {};   // v9.665: 向きは変えない（下田さん「進むときに角度勝手に変えないで」）
+            // 🆕 v9.696: 止まる時は、その家が画面の真ん中に来るよう向ける（下田さん「建物が中途半端に見切れてる時は、正面に来るように合わせてほしい」）
+            //   向けるのは止まっている約3秒だけ。進むと自分で合わせた向きに戻る（v9.665「進む時に角度を勝手に変えない」は守る）
+            const aim = (pn, f) => { const L = pano.__hkLook; if (!L || !pn) return; L(pn, f.brg, HOUSE_MS); setTimeout(() => { if (houseRef.current.stop === here0) L(pn, f.brg, HOUSE_MS - 350); }, 350); };
             const both2 = bothRef.current;
             const newL = found.L && !hr.looked.has(found.L.b.key), newR = found.R && !hr.looked.has(found.R.b.key);
             if (both2 && pano2Ref.current) {
