@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.698";
+const APP_VERSION = "2026-11-14-v9.699";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13947,7 +13947,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         let ti = idx; while (ti < pts.length - 1 && !pts[ti].jump && _hkM(here, [pts[ti].lat, pts[ti].lng]) < 9) ti++;
         const tgt = pts[ti];
         // 同じ場所から動けない時・離れた道へ飛ぶ時は、その点の近くのストリートビューへ移動
-        const st = stuckRef.current; if (st.pano === pano.getPano()) st.n++; else { st.pano = pano.getPano(); st.n = 0; st.since = Date.now(); }
+        const st = stuckRef.current; if (st.pano === pano.getPano()) st.n++; else { st.pano = pano.getPano(); st.n = 0; }
+        if (!st.at || _hkM(st.at, here) > 5) { st.at = here; st.since = Date.now(); }   // v9.699: 「動けていない」は写真の番号でなく実際に5m以上動いたかで見る
         // 🆕 v9.682: 飛ぶ先の写真が見つからない時は、もう少し広く探し、それでも無ければ予定の先の点で探す（道を走って戻らない）
         //   （下田さん「通った道をまた戻り出した」＝飛ぶのに失敗→次の点が後ろの遠くにあり、写真の矢印で走って戻っていた）
         // v9.691: まだ通っていない点のひと続き（その道）の終わり
@@ -13955,6 +13956,9 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         const giveUp = (k) => { const e = runEnd(k); for (let j = k; j < e; j++) cov.arr[j] = 2; return e; };   // 写真が無い道＝あきらめる（オレンジのまま）
         const jumpTo = (k, tries = 0) => {
           const gm = window.google.maps; const kk = Math.min(k, pts.length - 1), t = pts[kk];
+          // 🆕 v9.699: 同じ点へ2回飛んでも動けなかった（下田さん「囲って回り始めると動かない」）→その点は着いたことにして次の点へ
+          { if (!cov.jt) cov.jt = new Map(); const n = (cov.jt.get(kk) || 0) + 1; cov.jt.set(kk, n);
+            if (n >= 3) { if (!cov.arr[kk]) cov.arr[kk] = 2; setPatrol(p => p ? { idx: Math.min(pts.length - 1, kk + 1) } : p); return; } }
           if (!cov.arr[kk]) cov.arr[kk] = 2;   // v9.694: 安全装置②＝飛んだ先の点は「試した」印（同じ点へ二度と飛ばない）
           new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: tries ? 60 : 30, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => {
             // v9.691: 一番近い写真がその道から25m以上離れている＝その道には写真が無い（私道・細い道など）→その道はあきらめて先へ
