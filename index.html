@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.692";
+const APP_VERSION = "2026-11-14-v9.693";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -28540,7 +28540,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     const cb = b && b.chiban && !(b.q >= 0 && b.q < 60) ? `${b.town}${b.chiban}` : "";
     setPendingPin(p => {
       if (!p) return p;
-      return { ...p, rawLat: typeof p.rawLat === "number" ? p.rawLat : p.lat, rawLng: typeof p.rawLng === "number" ? p.rawLng : p.lng, lat: b.lat, lng: b.lng, bldgKey: b.key, autoChiban: cb };
+      return { ...p, rawLat: typeof p.rawLat === "number" ? p.rawLat : p.lat, rawLng: typeof p.rawLng === "number" ? p.rawLng : p.lng, lat: b.lat, lng: b.lng, bldgKey: b.key, bldgLL: Array.isArray(b.ll) ? b.ll : null, autoChiban: cb };
     });
     setPinForm(f => {
       const a = String(f.address || "").trim();
@@ -34710,11 +34710,25 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             const _d = (a, b) => Math.hypot((a.lat - b.lat) * 111000, (a.lng - b.lng) * 90000);
             const _nl = (x) => String(x || "").normalize("NFKC").replace(/^埼玉県/, "").replace(/[\s　]/g, "").replace(/[‐－―−ーｰ]/g, "-");
             const _lm = _nl(pinForm.landmark);
-            const near = (data.jiage || []).filter(j => j && typeof j.lat === "number" && typeof j.lng === "number"
+            // 🆕 v9.693: 「同じ家」は、選んだ家の形の中に前のピンがある時（または6m以内・同じ目印住所）だけ。
+            //   20m以内の隣の家のピンは、小さく「近くにピンあり」と出すだけ（下田さん「初めて回ったのに前のピンがあると出る」＝隣の家のピンだった）
+            const _ll = Array.isArray(pendingPin.bldgLL) && pendingPin.bldgLL.length >= 4 ? pendingPin.bldgLL : null;
+            const _same = (j) => (_ll && _hkPointInRing(j.lat, j.lng, _ll)) || _d(pendingPin, j) <= (_ll ? 6 : 10) || (_lm.length >= 6 && _nl(j.landmark) === _lm);
+            const cands = (data.jiage || []).filter(j => j && typeof j.lat === "number" && typeof j.lng === "number"
               && (_d(pendingPin, j) <= 20 || (_lm.length >= 6 && _nl(j.landmark) === _lm)))
               .map(j => ({ j, m: Math.round(_d(pendingPin, j)) }))
-              .sort((a, b) => a.m - b.m).slice(0, 3);
-            if (near.length === 0) return null;
+              .sort((a, b) => a.m - b.m);
+            const near = cands.filter(x => _same(x.j)).slice(0, 3);
+            const nb = cands.filter(x => !_same(x.j)).slice(0, 3);
+            if (near.length === 0) {
+              if (nb.length === 0) return null;
+              return (
+                <div style={{ background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 8, padding: "6px 10px", marginBottom: 12, fontSize: 11, color: "#475569", lineHeight: 1.6 }}>
+                  ℹ️ 近くの別の家にピンがあります（隣の家なら気にしなくてOK）
+                  {nb.map(({ j, m }) => <div key={j.id}>・約{m}m：{String(j.owner || j.ownerName || "").trim() || "所有者まだ不明"}（{j.createdAt ? new Date(Number(j.createdAt)).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) : ""} {j.assignee || ""}）</div>)}
+                </div>
+              );
+            }
             return (
               <div style={{ background: "#fef2f2", border: "2px solid #dc2626", borderRadius: 10, padding: 10, marginBottom: 14 }}>
                 <div style={{ fontSize: 13, fontWeight: 800, color: "#b91c1c", marginBottom: 6 }}>⚠️ この家には前のピンがあります</div>
