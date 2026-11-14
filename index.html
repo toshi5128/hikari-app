@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.684";
+const APP_VERSION = "2026-11-14-v9.685";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13924,7 +13924,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         if (idx >= pts.length - 1) {
           let u = -1;
           for (let k = 0; k + 1 < pts.length; k++) if (!cov.arr[k] && !cov.arr[k + 1] && !cov.tried.has(k)) { u = k; break; }
-          if (u < 0) { setAuto(false); setPatrol(null); setPlanMsg("✅ 囲んだ範囲を回り終わりました"); return; }
+          if (u < 0) { setAuto(false); setPatrol(null); setPlanMsg(planRef.current && planRef.current.blockId ? "✅ このブロックを回り終わりました（済）" : "✅ 囲んだ範囲を回り終わりました"); markBlockDone(planRef.current); return; }
           cov.tried.add(u); setPatrol({ idx: u }); jumpTo(u); return;
         }
         setPatrol({ idx });
@@ -14024,6 +14024,16 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   // 🆕 v9.683: 🧩 ブロック＝見えている範囲のブロックを地図に出す（押すとそのブロックを回る道順を作る）
   const [blockMsg, setBlockMsg] = React.useState("");
   const blockObjsRef = React.useRef([]);
+  const doneRef = React.useRef(null);   // v9.685: 回り終わったブロック（ブロックを出すたびに読み直す）
+  // 🆕 v9.685: ブロックを回り終わったら「済」として全員に共有（道の5か所の写真の撮影年月も一緒に覚える）
+  const markBlockDone = async (pl) => {
+    if (!pl || !pl.blockId || !Array.isArray(pl.pts) || pl.pts.length < 2) return;
+    const pts = pl.pts.filter(q => !q.jump), samples = [];
+    for (let i = 0; i < 5 && pts.length; i++) { const q = pts[Math.floor((i + 0.5) * pts.length / 5)]; if (!q) continue; const d = await hkPanoDateAt(q.lat, q.lng); samples.push({ lat: +q.lat.toFixed(6), lng: +q.lng.toFixed(6), d }); }
+    const rec = { id: pl.blockId, by: member || "", at: Date.now(), samples };
+    _hkUpdChecked.set(rec.id, false);
+    hkSaveDoneBlock(rec);
+  };
   const pickBlock = async (bk) => {
     setBlockMode(false);
     const poly = [[bk.n, bk.w], [bk.n, bk.e], [bk.s, bk.e], [bk.s, bk.w]];
@@ -14032,7 +14042,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     setPlanMsg("⏳ ブロックの道を調べています…");
     try {
       const r = await hkPlanPatrol(poly, from, { strict: true });
-      setPlan({ ...r, poly, from, strict: true }); setPatrol(null);
+      setPlan({ ...r, poly, from, strict: true, blockId: bk.id }); setPatrol(null);
       const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);
       setPlanMsg(`🧩 道 ${(r.fresh / 1000).toFixed(1)}km・1軒ずつ見て約${mins}分`);
     } catch (er) { setPlan(null); setPlanMsg("⚠️ " + (er.message || er)); }
@@ -14041,7 +14051,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     const gm = window.google && window.google.maps, gmap = gmapRef.current;
     const clear = () => { blockObjsRef.current.forEach(o => o.setMap(null)); blockObjsRef.current = []; };
     if (!blockMode || !gm || !gmap) { clear(); setBlockMsg(""); return; }
-    if (!document.getElementById("hk-blk-style")) { const st = document.createElement("style"); st.id = "hk-blk-style"; st.textContent = ".hk-blk-label{background:#7c3aed;padding:2px 7px;border-radius:9px;box-shadow:0 1px 4px rgba(0,0,0,.5)}"; document.head.appendChild(st); }
+    doneRef.current = null;
+    if (!document.getElementById("hk-blk-style")) { const st = document.createElement("style"); st.id = "hk-blk-style"; st.textContent = ".hk-blk-label{background:#7c3aed;padding:2px 7px;border-radius:9px;box-shadow:0 1px 4px rgba(0,0,0,.5)}.hk-blk-done{background:#475569}.hk-blk-new{background:#d97706}"; document.head.appendChild(st); }
     let gen = 0;
     const draw = async () => {
       const my = ++gen;
@@ -14053,14 +14064,20 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       if (tiles.length > 64) { clear(); setBlockMsg("🔍 もう少し地図を拡大してください"); return; }
       setBlockMsg("⏳ ブロックを分けています…");
       const all = []; for (const [x, y] of tiles) { const bl = await hkBlocksOfTile(x, y); if (my !== gen) return; bl.forEach(b => all.push(b)); }
+      if (!doneRef.current) doneRef.current = await hkLoadDoneBlocks();
+      if (my !== gen) return;
+      const done = doneRef.current;
       clear();
       all.forEach(bk => {
-        const rect = new gm.Rectangle({ map: gmap, bounds: { north: bk.n, south: bk.s, east: bk.e, west: bk.w }, strokeColor: "#7c3aed", strokeOpacity: 0.9, strokeWeight: 2, fillColor: "#a78bfa", fillOpacity: 0.12, zIndex: 20 });
+        const rec = done.get(bk.id);
+        const rect = new gm.Rectangle({ map: gmap, bounds: { north: bk.n, south: bk.s, east: bk.e, west: bk.w }, strokeColor: rec ? "#64748b" : "#7c3aed", strokeOpacity: 0.9, strokeWeight: 2, fillColor: rec ? "#334155" : "#a78bfa", fillOpacity: rec ? 0.45 : 0.12, zIndex: 20 });
         rect.addListener("click", () => pickBlock(bk));
         const lab = new gm.Marker({ map: gmap, position: { lat: (bk.n + bk.s) / 2, lng: (bk.w + bk.e) / 2 }, zIndex: 21, clickable: true,
-          icon: { path: gm.SymbolPath.CIRCLE, scale: 0 }, label: { text: Math.max(1, Math.round(bk.min)) + "分", color: "#fff", fontSize: "12px", fontWeight: "900", className: "hk-blk-label" } });
+          icon: { path: gm.SymbolPath.CIRCLE, scale: 0 }, label: { text: rec ? "済" : Math.max(1, Math.round(bk.min)) + "分", color: "#fff", fontSize: "12px", fontWeight: "900", className: rec ? "hk-blk-label hk-blk-done" : "hk-blk-label" } });
         lab.addListener("click", () => pickBlock(bk));
         blockObjsRef.current.push(rect, lab);
+        // 済のブロックは、写真が新しくなっていないか裏で調べる（新しければ「🆕 写真更新」＝もう一度回る価値あり）
+        if (rec) hkBlockUpdated(rec).then(upd => { if (!upd || my !== gen) return; try { rect.setOptions({ fillColor: "#f59e0b", fillOpacity: 0.3, strokeColor: "#d97706" }); lab.setLabel({ text: "🆕 写真更新", color: "#fff", fontSize: "12px", fontWeight: "900", className: "hk-blk-label hk-blk-new" }); } catch (e) {} });
       });
       setBlockMsg("");
     };
@@ -14175,7 +14192,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       const from = resume.from || resume.poly[0];
       setPlanMsg("⏳ さっきの続きを準備しています…");
       hkPlanPatrol(resume.poly, from, resume.strict ? { strict: true } : undefined).then(r => {
-        setPlan({ ...r, poly: resume.poly, from, strict: !!resume.strict });
+        setPlan({ ...r, poly: resume.poly, from, strict: !!resume.strict, blockId: resume.blockId || null });
         const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);
         setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・同じ道は通りません（行き止まりは次の道へ飛ぶ）・1軒ずつ見て約${mins}分`);
         if (typeof resume.idx === "number") { setBoth(true); setPatrol({ idx: Math.min(resume.idx, r.pts.length - 1) }); if (resume.auto) setAuto(true); }
@@ -14187,7 +14204,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     const pn = panoRef.current, P = pn && pn.getPosition(); if (!P) return null;
     const pl = planRef.current, pt = patrolRef.current;
     return { ts: Date.now(), lat: P.lat(), lng: P.lng(), pano: pn.getPano() || "", travel: travelRef.current,
-      poly: pl && pl.poly || null, from: pl && pl.from || null, strict: !!(pl && pl.strict), idx: pt ? pt.idx : null, auto: !!autoRef.current };
+      poly: pl && pl.poly || null, from: pl && pl.from || null, strict: !!(pl && pl.strict), blockId: pl && pl.blockId || null, idx: pt ? pt.idx : null, auto: !!autoRef.current };
   };
   const close = async () => {
     setAuto(false);
@@ -14726,6 +14743,38 @@ async function hkPlanPatrol(poly, from, opts) {
 //   国土地理院の道路タイル(z16＝約500m四方)ごとに道の長さを測り、30分を超えれば4つ(約250m)、さらに超えれば16(約125m)に割る。
 //   分数＝道の長さ10mごとに約3.4秒（1軒ずつ止まる速さ）。どの端末でも同じ分け方になる。
 const HK_BLOCK_MIN = 30;
+// 🆕 v9.685: 回り終わったブロックの記録（全員共有）＝ app_data 行 svblk::<ブロックid> {by, at, samples:[{lat,lng,d}]}
+//   samples＝回り終わった時に、そのブロックの道の5か所で見た写真の撮影年月。あとで同じ5か所を調べ直して、新しい年月になっていれば「写真が新しくなった」
+async function hkLoadDoneBlocks() {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=like.svblk::*&select=id,data`, { headers: _TRACK_HEADERS });
+    const rows = r.ok ? await r.json() : [];
+    const m = new Map(); (rows || []).forEach(x => { if (x && x.data && x.data.id) m.set(x.data.id, x.data); });
+    return m;
+  } catch (e) { return new Map(); }
+}
+async function hkSaveDoneBlock(rec) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/app_data`, { method: "POST", headers: { ..._TRACK_HEADERS, Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: "svblk::" + rec.id, data: rec }) });
+  } catch (e) {}
+}
+function hkPanoDateAt(lat, lng) {
+  return new Promise(res => {
+    try {
+      const gm = window.google && window.google.maps; if (!gm) return res("");
+      new gm.StreetViewService().getPanorama({ location: { lat, lng }, radius: 30, source: gm.StreetViewSource.OUTDOOR }, (d, st) => res(st === "OK" && d && d.imageDate ? String(d.imageDate) : ""));
+    } catch (e) { res(""); }
+  });
+}
+const _hkUpdChecked = new Map();   // ブロックid → true(新しい写真あり)/false（開いている間だけ覚える）
+async function hkBlockUpdated(rec) {
+  if (!rec || !Array.isArray(rec.samples) || !rec.samples.length) return false;
+  if (_hkUpdChecked.has(rec.id)) return _hkUpdChecked.get(rec.id);
+  let upd = false;
+  for (const sp of rec.samples) { if (!sp.d) continue; const d = await hkPanoDateAt(sp.lat, sp.lng); if (d && d > sp.d) { upd = true; break; } }
+  _hkUpdChecked.set(rec.id, upd); return upd;
+}
 const _hkBlkMin = (m) => (m / 10) * 3.4 / 60;
 const _hkBlkCache = new Map();
 function _hkTileBounds(x, y, z) { const n = Math.pow(2, z), la = (yy) => Math.atan(Math.sinh(Math.PI * (1 - 2 * yy / n))) * 180 / Math.PI; return { w: x / n * 360 - 180, e: (x + 1) / n * 360 - 180, n: la(y), s: la(y + 1) }; }
