@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.707";
+const APP_VERSION = "2026-11-14-v9.708";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.708", date: "2026-11-14", title: "SVで探す：ストリートビューで通れない道を先にお知らせ",
+    body: "範囲を囲む（ブロックを選ぶ）と、道ごとにストリートビューの写真があるかを先に調べます。写真の無い道（私道・細い道など）は灰色の点線で表示し、回る道順から外します。何m通れないかも表示します。",
+    where: "地上げ → 👁 SVで探す → ✏️ 囲って選ぶ／🧩 ブロックで選ぶ" },
   { v: "9.707", date: "2026-11-14", title: "SVで探す：回り始める前にスタート地点と道順を表示",
     body: "範囲を囲む（またはブロックを選ぶ）と、地図に緑の「S」（スタート地点）と、曲がる所の番号・進む向きの矢印が出ます。左上には「スタートから北へ120m → 右に曲がって東へ80m…」と道順が並びます。確認してから「▶ 回り始める」を押してください。",
     where: "地上げ → 👁 SVで探す → ✏️ 囲って選ぶ／🧩 ブロックで選ぶ" },
@@ -14111,6 +14114,9 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     const flush = () => { if (seg.length >= 2) planLinesRef.current.push(new gm.Polyline({ map: gmap, path: seg, strokeColor: "#f97316", strokeOpacity: 0.75, strokeWeight: 4, clickable: false, zIndex: 4 })); seg = []; };
     plan.pts.forEach(q => { if (q.jump) flush(); seg.push({ lat: q.lat, lng: q.lng }); });
     flush();
+    // v9.708: ストリートビューで通れない道＝灰色の点線
+    (plan.blocked || []).forEach(([A, B]) => planLinesRef.current.push(new gm.Polyline({ map: gmap, path: [{ lat: A[0], lng: A[1] }, { lat: B[0], lng: B[1] }], strokeOpacity: 0, clickable: false, zIndex: 4,
+      icons: [{ icon: { path: "M 0,-1 0,1", strokeOpacity: 0.9, strokeColor: "#475569", strokeWeight: 3, scale: 2 }, offset: "0", repeat: "8px" }] })));
     // 🆕 v9.707: スタート地点（🚩）と、手順の番号（曲がる所）を地図に。回っている間は消す
     if (!patrol && planSteps) {
       const s0 = plan.pts[0];
@@ -14158,10 +14164,10 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     try {
       const P = pano && pano.getPosition();
       const from = P ? [P.lat(), P.lng()] : poly[0];
-      const r = await hkPlanPatrol(poly, from);
+      const r = await hkPlanPatrol(poly, from, { onProgress: (d, t) => setPlanMsg(`⏳ ストリートビューで通れる道か調べています… ${Math.min(99, Math.round(100 * d / Math.max(1, t)))}%`) });
       setPlan({ ...r, poly, from }); setPatrol(null);
       const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);   // 約10mで1軒
-      setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・同じ道は通りません（行き止まりは次の道へ飛ぶ）・1軒ずつ見て約${mins}分`);
+      setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・1軒ずつ見て約${mins}分` + (r.blocked && r.blocked.length ? `／⚠️ ストリートビューで通れない道 約${Math.round(r.blockedLen)}m（灰色の点線）は回りません` : "／通れない道はありません"));
     } catch (er) { setPlan(null); setPlanMsg("⚠️ " + (er.message || er)); }
   };
   // 🆕 v9.683: 🧩 ブロック＝見えている範囲のブロックを地図に出す（押すとそのブロックを回る道順を作る）
@@ -14184,10 +14190,10 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     const from = P ? [P.lat(), P.lng()] : [bk.n, bk.w];
     setPlanMsg("⏳ ブロックの道を調べています…");
     try {
-      const r = await hkPlanPatrol(poly, from, { strict: true });
+      const r = await hkPlanPatrol(poly, from, { strict: true, onProgress: (d, t) => setPlanMsg(`⏳ ストリートビューで通れる道か調べています… ${Math.min(99, Math.round(100 * d / Math.max(1, t)))}%`) });
       setPlan({ ...r, poly, from, strict: true, blockId: bk.id }); setPatrol(null);
       const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);
-      setPlanMsg(`🧩 道 ${(r.fresh / 1000).toFixed(1)}km・1軒ずつ見て約${mins}分`);
+      setPlanMsg(`🧩 道 ${(r.fresh / 1000).toFixed(1)}km・1軒ずつ見て約${mins}分` + (r.blocked && r.blocked.length ? `／⚠️ ストリートビューで通れない道 約${Math.round(r.blockedLen)}m（灰色の点線）は回りません` : "／通れない道はありません"));
     } catch (er) { setPlan(null); setPlanMsg("⚠️ " + (er.message || er)); }
   };
   React.useEffect(() => {
@@ -14411,7 +14417,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       hkPlanPatrol(resume.poly, from, resume.strict ? { strict: true } : undefined).then(r => {
         setPlan({ ...r, poly: resume.poly, from, strict: !!resume.strict, blockId: resume.blockId || null });
         const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);
-        setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・同じ道は通りません（行き止まりは次の道へ飛ぶ）・1軒ずつ見て約${mins}分`);
+        setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・1軒ずつ見て約${mins}分` + (r.blocked && r.blocked.length ? `／⚠️ ストリートビューで通れない道 約${Math.round(r.blockedLen)}m（灰色の点線）は回りません` : "／通れない道はありません"));
         if (typeof resume.idx === "number") { setBoth(true); setPatrol({ idx: Math.min(resume.idx, r.pts.length - 1) }); if (resume.auto) setAuto(true); }
       }).catch(e => setPlanMsg("⚠️ " + (e.message || e)));
     } else if (resume.auto) setAuto(true);
@@ -14800,6 +14806,7 @@ function hkRouteSteps(pts) {
     return { ...st, text: `${head}${dir8(st.h0)}へ${Math.round(st.len)}m${st.back ? "（来た道を戻る・止まらない）" : ""}` };
   });
 }
+const _hkSvHas = new Map();   // v9.708: 「その点の近くに写真があるか」の覚え（開いている間だけ）
 async function hkPlanPatrol(poly, from, opts) {
   const strict = !!(opts && opts.strict);   // v9.683: ブロック＝道のまん中がブロックの中にある所だけ（隣のブロックと重ならない）
   let s0 = 90, n0 = -90, w0 = 180, e0 = -180;
@@ -14870,6 +14877,26 @@ async function hkPlanPatrol(poly, from, opts) {
     });
     if (!drop.size) break;
     edges = edges.filter((e, i) => !drop.has(i));
+  }
+  // 🆕 v9.708: ストリートビューで通れない道（写真が無い道）を先に調べて外す（下田さん「通れない道もオレンジになってる。先に言っといて」）
+  //   道を約30mごとに区切った点で、18m以内に写真があるか聞く。半分以上の点で写真が無い道＝通れない道（灰色の点線で見せる）
+  const blocked = []; let blockedLen = 0;
+  const gmx = typeof window !== "undefined" && window.google && window.google.maps;
+  if (gmx && !(opts && opts.noSvCheck)) {
+    const svc = new gmx.StreetViewService();
+    const ask = (p) => { const k = p[0].toFixed(5) + "," + p[1].toFixed(5); if (_hkSvHas.has(k)) return _hkSvHas.get(k);
+      const pr = new Promise(res => { try { svc.getPanorama({ location: { lat: p[0], lng: p[1] }, radius: 18, source: gmx.StreetViewSource.OUTDOOR }, (d, st) => res(st === "OK" && !!d && !!d.location)); } catch (e) { res(true); } });
+      _hkSvHas.set(k, pr); return pr; };
+    const jobs = edges.map(e => { const A = nodes[e.a], B = nodes[e.b], k = Math.max(1, Math.ceil(e.len / 30)); const sm = []; for (let j = 0; j < k; j++) { const t = (j + 0.5) / k; sm.push([A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t]); } return sm; });
+    const total0 = jobs.reduce((a, x) => a + x.length, 0); let doneN = 0;
+    const res = new Array(edges.length);
+    let qi = 0;
+    const worker = async () => { while (qi < edges.length) { const i = qi++; const r = await Promise.all(jobs[i].map(ask)); doneN += r.length; res[i] = r.filter(Boolean).length * 2 >= r.length; if (opts && opts.onProgress && doneN % 20 < r.length) opts.onProgress(doneN, total0); } };
+    await Promise.all(Array.from({ length: 8 }, worker));
+    const keep = [];
+    edges.forEach((e, i) => { if (res[i] === false) { blocked.push([nodes[e.a], nodes[e.b]]); blockedLen += e.len; } else keep.push(e); });
+    edges = keep;
+    if (!edges.length) throw new Error("囲んだ中の道には、ストリートビューの写真がありませんでした");
   }
   const adj = [];
   edges.forEach((e, i) => { (adj[e.a] = adj[e.a] || []).push(i); (adj[e.b] = adj[e.b] || []).push(i); });
@@ -15010,7 +15037,7 @@ async function hkPlanPatrol(poly, from, opts) {
     }
     pts.push({ lat: p[0], lng: p[1], jump, back: bk }); jump = false;
   }
-  return { pts, total, fresh, roads: edges.length, jumps };
+  return { pts, total, fresh, roads: edges.length, jumps, blocked, blockedLen };
 }
 
 // 🆕 v9.683: 地図を「約30分で回りきれるブロック」に分ける（下田さん「全部の場所を30分ぐらいのブロックに分けて、選んで回りたい」）
