@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.678";
+const APP_VERSION = "2026-11-14-v9.679";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13686,6 +13686,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       const clampL = (r) => Math.max(-170, Math.min(-15, r));
       if (!(rel.L < 0) || !(rel.R > 0)) { rel.L = -SIDE; rel.R = SIDE; }
       rel.L = clampL(rel.L); rel.R = -rel.L;
+      // 🆕 v9.679: 両側の時は常に「上＝真左・下＝真右」がきまり（下田さん「道が変わっても両隣を向いている形を常にデフォルトに」）。指で見回しても、次へ進むと真左・真右に戻る
+      rel.L = -90; rel.R = 90;
       const saveRel = () => { try { localStorage.setItem("hikari_sv_rel", JSON.stringify({ L: rel.L, R: rel.R, S: rel.S })); } catch (e) {} };
       const aimSides = () => {
         const t = travelRef.current;
@@ -13709,13 +13711,12 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       });
       const byHand1 = () => Date.now() - touch.t1 < 1500, byHand2 = () => Date.now() - touch.t2 < 1500;
       pano.addListener("pov_changed", () => { if (!byHand1()) return; const r = nrm(pano.getPov().heading - travelRef.current);
-        if (bothRef.current) { rel.L = clampL(r); rel.R = -rel.L; pano2.setPov({ heading: travelRef.current + rel.R, pitch: (pano2.getPov() || {}).pitch || 0 }); } else rel.S = r; saveRel(); });
-      pano2.addListener("pov_changed", () => { if (!byHand2()) return; rel.R = -clampL(-nrm(pano2.getPov().heading - travelRef.current)); rel.L = -rel.R;
-        pano.setPov({ heading: travelRef.current + rel.L, pitch: (pano.getPov() || {}).pitch || 0 }); saveRel(); });
+        if (!bothRef.current) { rel.S = r; saveRel(); } });
       // 指で触っていない画面は、0.6秒ごとに「覚えた向き」へ戻す（両側＝上は左・下は右から外れない）
       const enf = setInterval(() => {
         if (!alive) { clearInterval(enf); return; }
         try {
+          if (Date.now() - (rel.movedAt || 0) > 2500) return;   // 進んだ直後だけ直す（自分で見回している時は戻さない）
           const fix = (pn, want, hand) => { if (hand()) return; const pv = pn.getPov(); if (!pv) return; if (Math.abs(nrm(pv.heading - want)) > 12) pn.setPov({ heading: want, pitch: pv.pitch || 0 }); };
           if (bothRef.current) { fix(pano, travelRef.current + rel.L, byHand1); fix(pano2, travelRef.current + rel.R, byHand2); }
         } catch (e) {}
@@ -13800,6 +13801,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         me.setPosition(p);
         if (pano.__hkShowDir) pano.__hkShowDir();
         if (pano.getPano() && pano2.getPano() !== pano.getPano()) pano2.setPano(pano.getPano());
+        rel.movedAt = Date.now(); touch.t1 = 0; touch.t2 = 0;
         aimSides();   // 動いたらいったん斜め前に。家が横に来たら自動で進むがその家に向け直す
         if (onMove) onMove({ lat: p.lat(), lng: p.lng() });
       });
@@ -14164,7 +14166,6 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
             <button onClick={() => { setChoices(null); if (!auto) setTravelFromView(); setAuto(a => !a); }} style={b(auto ? "#f59e0b" : "#0ea5e9", "#fff")}>{auto ? (both ? "⏸ 止める" : "⏸止める") : (both ? "▶ 進む" : "▶進む")}</button>
             <button onClick={goBack} style={b("#475569", "#fff")}>{both ? "◀ 戻る" : "◀戻る"}</button>
             <button onClick={() => { const v = !both; setBoth(v); setTimeout(() => { const pn = panoRef.current, p2 = pano2Ref.current; const gm = window.google && window.google.maps; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); if (v && pn.__hkAim) pn.__hkAim(); if (pn.__hkShowDir) pn.__hkShowDir(); } }, 120); }} style={b(both ? "#7c3aed" : "#334155", "#fff")}>{both ? "◧ 両側中" : "◧両側"}</button>
-            {both && <button onClick={() => { const pn = panoRef.current; if (pn && pn.__hkSplit) pn.__hkSplit(); }} style={b("#0f766e", "#fff")}>↔ 左右</button>}
             {/* v9.663: 速さの切り替えは外した（1軒ずつ進むのがルール） */}
             {!both && <button onClick={() => look(-90)} style={{ ...b("#334155", "#fff"), flex: 0.6 }}>←</button>}
             {!both && <button onClick={() => look(0)} style={{ ...b("#334155", "#fff"), flex: 0.8 }}>正面</button>}
