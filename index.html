@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.677";
+const APP_VERSION = "2026-11-14-v9.678";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13698,10 +13698,28 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         }
       };
       // 自分で画面を回した時だけ、その向きを覚える
-      pano.addListener("pov_changed", () => { if (Date.now() < rel.until || Date.now() < (rel.until1 || 0)) return; const r = nrm(pano.getPov().heading - travelRef.current);
-        if (bothRef.current) { rel.L = clampL(r); rel.R = -rel.L; rel.until2 = Date.now() + 400; pano2.setPov({ heading: travelRef.current + rel.R, pitch: (pano2.getPov() || {}).pitch || 0 }); } else rel.S = r; saveRel(); });
-      pano2.addListener("pov_changed", () => { if (Date.now() < rel.until || Date.now() < (rel.until2 || 0)) return; rel.R = -clampL(-nrm(pano2.getPov().heading - travelRef.current)); rel.L = -rel.R;
-        rel.until1 = Date.now() + 400; pano.setPov({ heading: travelRef.current + rel.L, pitch: (pano.getPov() || {}).pitch || 0 }); saveRel(); });
+      // 🆕 v9.678: 向きを覚えるのは「指で画面を回した時」だけ。写真が切り替わった時にGoogleが勝手に向きを変えても覚えない
+      //   （下田さん「左右を向いてない、変な方向を向く」＝勝手な向きを覚えて上下が同じ方向になっていた）
+      const touch = { t1: 0, t2: 0 };
+      const mark1 = (e) => { if (e.type !== "pointermove" || e.buttons) touch.t1 = Date.now(); };
+      const mark2 = (e) => { if (e.type !== "pointermove" || e.buttons) touch.t2 = Date.now(); };
+      ["pointerdown", "pointermove", "touchstart", "touchmove", "mousedown", "wheel"].forEach(ev => {
+        panoDiv.current && panoDiv.current.addEventListener(ev, mark1, { capture: true, passive: true });
+        pano2Div.current && pano2Div.current.addEventListener(ev, mark2, { capture: true, passive: true });
+      });
+      const byHand1 = () => Date.now() - touch.t1 < 1500, byHand2 = () => Date.now() - touch.t2 < 1500;
+      pano.addListener("pov_changed", () => { if (!byHand1()) return; const r = nrm(pano.getPov().heading - travelRef.current);
+        if (bothRef.current) { rel.L = clampL(r); rel.R = -rel.L; pano2.setPov({ heading: travelRef.current + rel.R, pitch: (pano2.getPov() || {}).pitch || 0 }); } else rel.S = r; saveRel(); });
+      pano2.addListener("pov_changed", () => { if (!byHand2()) return; rel.R = -clampL(-nrm(pano2.getPov().heading - travelRef.current)); rel.L = -rel.R;
+        pano.setPov({ heading: travelRef.current + rel.L, pitch: (pano.getPov() || {}).pitch || 0 }); saveRel(); });
+      // 指で触っていない画面は、0.6秒ごとに「覚えた向き」へ戻す（両側＝上は左・下は右から外れない）
+      const enf = setInterval(() => {
+        if (!alive) { clearInterval(enf); return; }
+        try {
+          const fix = (pn, want, hand) => { if (hand()) return; const pv = pn.getPov(); if (!pv) return; if (Math.abs(nrm(pv.heading - want)) > 12) pn.setPov({ heading: want, pitch: pv.pitch || 0 }); };
+          if (bothRef.current) { fix(pano, travelRef.current + rel.L, byHand1); fix(pano2, travelRef.current + rel.R, byHand2); }
+        } catch (e) {}
+      }, 600);
       pano.__hkAim = aimSides;
       // 🆕 v9.677: ↔ 左右＝上は真左・下は真右にパッと戻す（下田さん「この状態をパッと作れるボタン」）
       pano.__hkSplit = () => { rel.L = -90; rel.R = 90; saveRel(); aimSides(); if (pano.__hkShowDir) setTimeout(() => pano.__hkShowDir(), 50); };
