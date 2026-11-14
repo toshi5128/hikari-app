@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.670";
+const APP_VERSION = "2026-11-14-v9.671";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13597,6 +13597,24 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
   const [err, setErr] = React.useState("");
   const [ready, setReady] = React.useState(false);
   const [auto, setAuto] = React.useState(false);
+  // 🆕 v9.671: SVで探す画面を開いている間は画面を暗くしない（下田さん「探索中画面暗くしないで」）。
+  //   自動で進む間は画面に触らないので、スマホの自動ロックで暗くなっていた。裏に回ると外れるので戻ったら取り直す。
+  React.useEffect(() => {
+    let lock = null, alive = true;
+    const acquire = async () => {
+      try {
+        if (alive && !lock && "wakeLock" in navigator && document.visibilityState === "visible") {
+          lock = await navigator.wakeLock.request("screen");
+          if (!alive) { lock.release().catch(() => {}); lock = null; return; }
+          lock.addEventListener && lock.addEventListener("release", () => { lock = null; });
+        }
+      } catch (e) {}
+    };
+    acquire();
+    const onVis = () => { if (document.visibilityState === "visible") acquire(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { alive = false; document.removeEventListener("visibilitychange", onVis); try { if (lock) lock.release(); } catch (e) {} lock = null; };
+  }, []);
   const [noPano, setNoPano] = React.useState(false);
   const [added, setAdded] = React.useState(0);
   const [shotDate, setShotDate] = React.useState("");   // 🆕 v9.646: 今見ている写真の撮影年月
