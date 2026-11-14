@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.697";
+const APP_VERSION = "2026-11-14-v9.698";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.698", date: "2026-11-14", title: "SVで探す：「✏️ 囲って選ぶ」が復活・斜め後ろの家も見る",
+    body: "「🧩 ブロックで選ぶ」の他に、地図を指でなぞって回る範囲を囲む「✏️ 囲って選ぶ」を戻しました。また、進む時に見逃していた斜め後ろの家も止まって見るようにしました。途中で動けなくなった時は、12秒で先の道へ自動で飛びます。",
+    where: "地上げ → 👁 SVで探す" },
   { v: "9.697", date: "2026-11-14", title: "SVで探す：建物が無い所は止まらずに早く進む",
     body: "畑・駐車場・川沿いなど、周りに建物が無い所では止まらずにどんどん進みます。家がある所に来たら、これまで通り1軒ずつ止まります。",
     where: "地上げ → 👁 SVで探す" },
@@ -13882,13 +13885,16 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           const here0 = [P0.lat(), P0.lng()];
           const bl = nearBldgs(here0);
           if (bl) {
-            const t0 = travelRef.current, found = {};
+            const t0 = travelRef.current, found = {}, cnt = { L: 0, R: 0 };
             bl.forEach(b => {
               const d = _hkM(here0, [b.lat, b.lng]); if (d < 4 || d > 32) return;
+              if (hr.looked.has(b.key)) return;            // v9.698: まだ見ていない家だけから選ぶ
               const brg = _hkBrg(here0, [b.lat, b.lng]), rel = ((brg - t0 + 540) % 360) - 180;
               const side = rel < 0 ? "L" : "R", ar = Math.abs(rel);
-              if (ar < 50 || ar > 130) return;            // 真横あたり（斜め前〜斜め後ろ）の家だけ
-              const score = d + Math.abs(ar - 85) * 0.25;
+              // 🆕 v9.698: 斜め後ろ（〜160°）の家も拾う（下田さん「進んでる時に斜め後ろあたりの建物を映せてない」）。写真の間隔が広いと真横を飛び越えてしまうため
+              if (ar < 45 || ar > 160) return;
+              cnt[side]++;
+              const score = (ar > 110 ? -20 : 0) + d + Math.abs(ar - 85) * 0.25;   // 後ろに去っていく家を先に見る
               if (!found[side] || score < found[side].score) found[side] = { b, brg, d, score };
             });
             let fresh = false;
@@ -13904,6 +13910,9 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
               hr.looked.add(found.L.b.key); fresh = true; aim(pano, found.L);
               if (newR) hr.pano = "";   // 1画面の時は、左を見終わったら同じ場所で右の家も見る
             } else if (newR) { hr.looked.add(found.R.b.key); fresh = true; aim(pano, found.R); }
+            // v9.698: まだ見ていない家が残っていれば、進まずに同じ場所でもう1軒見る
+            { const added = (newL && hr.looked.has(found.L.b.key) ? 1 : 0) + (newR && hr.looked.has(found.R.b.key) ? 1 : 0);
+              if (fresh && added > 0 && cnt.L + cnt.R > added) hr.pano = ""; }
             // 🆕 v9.676: 曲がり角・行き止まりから飛んだ直後は家を見分けにくい→家が見つからなくても約9m進んだら止まる（下田さん「ダダダッと2、3軒進む」）
             // 🆕 v9.697: 周り（約35m）に建物が1つも無い所＝畑・駐車場・川などは止まらずにどんどん進む（下田さん「建物がないところは早く移動して」）
             const anyNear = bl.some(b => _hkM(here0, [b.lat, b.lng]) <= 35);
@@ -13938,7 +13947,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         let ti = idx; while (ti < pts.length - 1 && !pts[ti].jump && _hkM(here, [pts[ti].lat, pts[ti].lng]) < 9) ti++;
         const tgt = pts[ti];
         // 同じ場所から動けない時・離れた道へ飛ぶ時は、その点の近くのストリートビューへ移動
-        const st = stuckRef.current; if (st.pano === pano.getPano()) st.n++; else { st.pano = pano.getPano(); st.n = 0; }
+        const st = stuckRef.current; if (st.pano === pano.getPano()) st.n++; else { st.pano = pano.getPano(); st.n = 0; st.since = Date.now(); }
         // 🆕 v9.682: 飛ぶ先の写真が見つからない時は、もう少し広く探し、それでも無ければ予定の先の点で探す（道を走って戻らない）
         //   （下田さん「通った道をまた戻り出した」＝飛ぶのに失敗→次の点が後ろの遠くにあり、写真の矢印で走って戻っていた）
         // v9.691: まだ通っていない点のひと続き（その道）の終わり
@@ -13962,6 +13971,15 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
             else { const e = giveUp(kk); setPatrol(p => p ? { idx: Math.min(pts.length - 1, Math.max(e, kk + 1)) } : p); }
           });
         };
+        // 🆕 v9.698: 安全装置③＝同じ写真で12秒以上動けない時（下田さん「なんで止まったんだこれ」）は、その先のまだ通っていない道へ飛ぶ
+        if (!st.since) st.since = Date.now();
+        if (Date.now() - Math.max(st.since, houseRef.current.nextAt || 0) > 12000) {   // 家を見て止まっていた時間は数えない
+          st.since = Date.now(); st.n = 0;
+          for (let k = idx; k <= ti; k++) if (!cov.arr[k]) cov.arr[k] = 2;
+          let nu = -1; for (let k = ti + 1; k < pts.length; k++) if (!cov.arr[k]) { nu = k; break; }
+          if (nu < 0) { setPatrol({ idx: pts.length - 1 }); return; }
+          setPatrol({ idx: nu }); jumpTo(nu); return;
+        }
         // この先（20〜50m）の予定の道がもう見た道なら、走らずに次の「まだ見ていない道」へ飛ぶ（同じ道を2回通らない）
         if (idx < pts.length - 1) {
           const ahead = []; for (let k = idx; k < Math.min(pts.length, idx + 6); k++) if (_hkM(here, [pts[k].lat, pts[k].lng]) > 18) ahead.push(k);
@@ -14448,7 +14466,10 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
               </div>
             )}
             <div style={{ position: "absolute", left: 8, top: 8, zIndex: 4, display: "flex", flexDirection: "column", gap: 6, maxWidth: "70%" }}>
-              {/* v9.687: ✏️ 範囲を囲って回るボタンは外した（下田さん「ブロックで選ぶがあるから不要」）。囲う仕組み自体は残してある */}
+              {/* 🆕 v9.698: ✏️ 囲って選ぶを復活（下田さん「ブロックで選ぶ以外にも、囲って選ぶやり方も追加したい」） */}
+              {!drawMode && !patrol && !blockMode && (
+                <button onClick={() => { setAuto(false); setChoices(null); setDrawMode("pan"); setPlan(null); setPatrol(null); setPlanMsg(""); try { const g = gmapRef.current; if (g && g.getZoom() > 17) g.setZoom(17); } catch (e) {} }} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#f97316", color: "#fff", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(0,0,0,0.4)", alignSelf: "flex-start" }}>✏️ 囲って選ぶ</button>
+              )}
               {!drawMode && !patrol && !blockMode && (
                 <button onClick={() => { setAuto(false); setChoices(null); setPlan(null); setPatrol(null); setPlanMsg(""); setBlockMode(true); try { const g = gmapRef.current; if (g && g.getZoom() > 16) g.setZoom(16); } catch (e) {} }} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(0,0,0,0.4)", alignSelf: "flex-start" }}>🧩 ブロックで選ぶ</button>
               )}
