@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.687";
+const APP_VERSION = "2026-11-14-v9.688";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.688", date: "2026-11-14", title: "SVで探す：見ている家が地図で点滅。押せばその家でピン登録",
+    body: "下の地図で、今ストリートビューで見ている家が点滅します（両側の時は赤＝左の画面・青＝右の画面）。空き家だと思ったら、点滅している家を地図で押すだけでピン登録の画面が開き、その家が最初から選ばれています。まわりの家も白い線で出ているので、違う家なら白い家を押してください。「見ている家」ボタンはなくしました。",
+    where: "地上げ → 👁 SVで探す → 下の地図" },
   { v: "9.683", date: "2026-11-14", title: "SVで探す：地図を「約30分で回れるブロック」に分けて、選んで回れるように",
     body: "下の地図の「🧩 ブロックで選ぶ」を押すと、地図が紫の四角（ブロック）に分かれ、それぞれに回るのにかかる分数が出ます。回りたいブロックを押して「▶ 回り始める」で、そのブロックの道を全部自動で回ります。道が多い所はブロックが小さく、少ない所は大きくなります。",
     where: "地上げ → 👁 SVで探す → 🧩 ブロックで選ぶ" },
@@ -14176,6 +14179,56 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       view: { heading: Math.round(side === "front" && !bothRef.current ? pv.heading : brg), pitch: Math.round(pv.pitch || 0), zoom: Math.round((pano.getZoom ? pano.getZoom() : 1) * 10) / 10 }, shot: shotDate || "" });
     setAdded(n => n + 1);
   };
+  // 🆕 v9.688: 下の地図で「今見ている家」を点滅（赤＝左の画面・青＝右の画面）。押すとその家でピン登録
+  //   （下田さん「屋根を押して選ぶ時にたまに違う所を選ぶ。見ている方向の家が光って、押せば登録に」→「見ている家」ボタンは不要に）
+  //   まわりの家は白い細線。光っている家が違う時は、白い家を押してもよい
+  const blockModeRef = React.useRef(false); blockModeRef.current = blockMode;
+  const registerHouse = (b) => {
+    const pano = panoRef.current; if (!pano || !pano.getPosition() || !onRegister) return;
+    const P = pano.getPosition(), pv = pano.getPov();
+    setAuto(false); setChoices(null);
+    onRegister({ lat: b.lat, lng: b.lng, svView: { pano: pano.getPano(), heading: Math.round(_hkBrg([P.lat(), P.lng()], [b.lat, b.lng])), pitch: Math.round(pv.pitch || 0), zoom: Math.round((pano.getZoom ? pano.getZoom() : 1) * 10) / 10, shot: shotRef.current || "" } });
+    setAdded(n => n + 1);
+  };
+  const regRef = React.useRef(registerHouse); regRef.current = registerHouse;
+  React.useEffect(() => {
+    if (!ready) return;
+    const gm = window.google && window.google.maps, gmap = gmapRef.current, pano = panoRef.current, pano2 = pano2Ref.current;
+    if (!gm || !gmap || !pano) return;
+    let objs = [], hits = [], sig = "", tmr = null, blink = null, on = false, dead = false;
+    const clear = () => { objs.forEach(o => o.setMap(null)); objs = []; hits = []; };
+    const upd = () => {
+      tmr = null; if (dead) return;
+      if (blockModeRef.current) { if (objs.length) { clear(); sig = ""; } return; }
+      const P = pano.getPosition(); if (!P) return;
+      const here = [P.lat(), P.lng()];
+      const bl = nearBldgs(here); if (!bl) { tmr = setTimeout(upd, 500); return; }
+      const near = bl.filter(b => _hkM(here, [b.lat, b.lng]) <= 45);
+      const tg = bothRef.current && pano2 ? [{ h: pano.getPov().heading, c: "#e11d48" }, { h: pano2.getPov().heading, c: "#2563eb" }] : [{ h: pano.getPov().heading, c: "#2563eb" }];
+      const hit = {};
+      tg.forEach(t => {
+        let best = null, bs = 1e9;
+        near.forEach(b => { const d = _hkM(here, [b.lat, b.lng]); if (d < 3) return; const df = Math.abs(((_hkBrg(here, [b.lat, b.lng]) - t.h + 540) % 360) - 180); if (df > 30) return; const sc = d + df * 0.5; if (sc < bs) { bs = sc; best = b; } });
+        if (best && !hit[best.key]) hit[best.key] = t.c;
+      });
+      const ns = near.map(b => b.key).join(",") + "|" + Object.entries(hit).map(x => x.join(":")).join(",");
+      if (ns === sig) return; sig = ns;
+      clear();
+      near.forEach(b => {
+        const c = hit[b.key];
+        const pg = new gm.Polygon({ map: gmap, paths: b.ll.map(([la, ln]) => ({ lat: la, lng: ln })), clickable: true, zIndex: c ? 9995 : 9980,
+          strokeColor: c || "#ffffff", strokeOpacity: c ? 1 : 0.8, strokeWeight: c ? 3 : 1.5, fillColor: c || "#ffffff", fillOpacity: c ? 0.5 : 0.06 });
+        pg.addListener("click", () => regRef.current(b));
+        objs.push(pg); if (c) hits.push({ pg, c });
+      });
+    };
+    const sched = () => { if (!tmr) tmr = setTimeout(upd, 250); };
+    const ls = [pano.addListener("position_changed", sched), pano.addListener("pov_changed", sched)];
+    if (pano2) ls.push(pano2.addListener("pov_changed", sched));
+    blink = setInterval(() => { on = !on; hits.forEach(h => { try { h.pg.setOptions({ fillOpacity: on ? 0.6 : 0.15 }); } catch (e) {} }); }, 450);
+    upd();
+    return () => { dead = true; ls.forEach(l => l.remove()); if (tmr) clearTimeout(tmr); clearInterval(blink); clear(); };
+  }, [ready, both, blockMode]);   // eslint-disable-line
   const look = (deg) => { const pano = panoRef.current; if (!pano) return; const pov = pano.getPov(); pano.setPov({ heading: travelRef.current + deg, pitch: pov.pitch }); };
   const autoFirstRef = React.useRef(false);
   const setTravelFromView = () => { const pano = panoRef.current; if (pano && !bothRef.current) travelRef.current = pano.getPov().heading; autoFirstRef.current = true; };
@@ -14317,7 +14370,6 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
             {!both && <button onClick={() => look(0)} style={{ ...b("#334155", "#fff"), flex: 0.8 }}>正面</button>}
             {!both && <button onClick={() => look(90)} style={{ ...b("#334155", "#fff"), flex: 0.6 }}>→</button>}
             {/* 🆕 v9.673: 家のボタンは「見ている家」1つだけ（下田さん「左・右・前はいらない。両側を解除して指で向きを合わせて見ている家を押している」）。両側の時は出さない */}
-            {!both && <button onClick={() => mark("front")} style={{ ...b("#e11d48", "#fff"), flex: 1.7 }}>🏚見ている家</button>}
           </div>
           {/* 🆕 v9.672: 境目のつまみ＝上下に指で動かすとSVと地図の高さが変わる（下田さん「2画面の境目みたいに自分で幅調整したい」） */}
           {!bigMap && (
