@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.712";
+const APP_VERSION = "2026-11-14-v9.713";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13798,10 +13798,18 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       const fixWide = (pn) => { try { if (pn.getZoom() !== 0) pn.setZoom(0); } catch (e) {} };
       [pano, pano2].forEach(pn => {
         // v9.690: 自分で寄るのはOK（指2本・ホイール・＋－）。次の写真へ進むと一番引きに戻る（下田さん「建物に寄ってズームしたい。いつもは一番引き」）
-        pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); });
+        pn.addListener("pano_changed", () => { fixWide(pn); setTimeout(() => fixWide(pn), 300); setTimeout(() => fixWide(pn), 1200); });
+        pn.addListener("status_changed", () => fixWide(pn));   // v9.713: 写真の読み込みが終わった時にも（遅い時に読み込み後に寄った状態へ戻っていた）
         pn.setOptions({ zoomControl: true, scrollwheel: true });
         fixWide(pn);
       });
+      // 🆕 v9.713: 引きが基本（下田さん「引きで写すことをデフォルトにしろって言ったよね」）。
+      //   自分で寄った時（指・ホイール・＋－）だけ寄ったままにし、触るのをやめて4秒たったら一番引きに戻す
+      const wideT = setInterval(() => {
+        if (!alive) { clearInterval(wideT); return; }
+        if (Date.now() - touch.t1 > 4000) fixWide(pano);
+        if (Date.now() - touch.t2 > 4000) fixWide(pano2);
+      }, 700);
       const ov = new gm.OverlayView(); ov.onAdd = () => {}; ov.draw = () => {}; ov.onRemove = () => {}; ov.setMap(gmap); ovRef.current = ov;
       // 🆕 v9.654: 見ている向きを地図に（下田さん「向いてる方向が分からなくなる」）
       const fanL = new gm.Polygon({ map: gmap, paths: [], strokeWeight: 1.5, strokeColor: "#e11d48", strokeOpacity: 0.9, fillColor: "#e11d48", fillOpacity: 0.5, clickable: false, zIndex: 9990 });
