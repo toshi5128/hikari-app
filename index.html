@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.671";
+const APP_VERSION = "2026-11-14-v9.672";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7338,7 +7338,7 @@ function PinScreen({ onUnlock }) {
 }
 
 function MainApp({ onLock, onSwitchUser }) {
-  const [page, setPage] = useState("dashboard");
+  const [page, setPage] = useState(() => svSessionGet() ? "jiage" : "dashboard");   // v9.672: SVで探している途中の再読み込み→地上げへ戻る
   const [data, setDataRaw] = useState(() => loadFromCache() || DEFAULT_DATA);
   const [savedMsg, setSavedMsg] = useState(false);
   const [syncing, setSyncing] = useState(true);
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.672", date: "2026-11-14", title: "SVで探す：境目で高さを変えられる・更新が入っても続きから",
+    body: "①ボタンと地図の間の「・・・」を指で上下に動かすと、ストリートビューと地図の高さを自分で変えられます（スマホが覚えます）。②探している途中にアプリの更新が入っても、さっきの場所・囲んだ範囲・進み具合のまま、ストリートビューの画面に戻って続きから回ります。通った道も消えません。",
+    where: "地上げ → 👁 SVで探す" },
   { v: "9.667", date: "2026-11-14", title: "SVで探す：囲んで回る時、同じ道を2回通らないように",
     body: "範囲を囲って自動で回る時、行き止まりや一度通った道を引き返さず、まだ見ていない次の道の入口へパッと移動します。回る距離が約4割短くなりました。",
     where: "地上げ → 👁 SVで探す → ✏️ 範囲を囲って回る" },
@@ -13522,6 +13525,16 @@ async function loadSvTrackRows() {
     return (rows || []).map(r => r && r.data && r.data.item).filter(Boolean);
   } catch (e) { return null; }
 }
+// 🆕 v9.672: SVで探している途中にアプリの更新（再読み込み）が入っても続きから再開する（下田さん）。
+//   端末の localStorage に「今いる所・回っている範囲・進み具合」だけを覚える（小さい）。通った道はクラウドへ1分ごとに送る。
+//   「終わる」で消す。20分以上前のものは使わない（閉じ忘れて翌日開いた時に勝手に出ないように）。
+const SV_SESSION_KEY = "hikari_sv_session";
+function svSessionGet() {
+  try { const s = JSON.parse(localStorage.getItem(SV_SESSION_KEY) || "null"); if (s && s.open && typeof s.lat === "number" && Date.now() - (s.ts || 0) < 20 * 60 * 1000) return s; } catch (e) {}
+  return null;
+}
+function svSessionSet(s) { try { localStorage.setItem(SV_SESSION_KEY, JSON.stringify(s)); } catch (e) {} }
+function svSessionClear() { try { localStorage.removeItem(SV_SESSION_KEY); } catch (e) {} }
 async function saveSvTrackPoints(member, pts) {
   if (!member || !pts || pts.length < 2) return null;
   const d = new Date(); const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -13546,8 +13559,15 @@ function _svOffset(lat, lng, bearingDeg, meters) {
   const r = bearingDeg * Math.PI / 180;
   return { lat: lat + (meters * Math.cos(r)) / 110574, lng: lng + (meters * Math.sin(r)) / (111320 * Math.cos(lat * Math.PI / 180)) };
 }
-function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScanSaved, pastTracks, onRegister, nearPins }) {
+function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onAdd, onMove, onScanSaved, pastTracks, onRegister, nearPins }) {
   const panoDiv = React.useRef(null), mapDiv = React.useRef(null);
+  const resume = resumeIn || null;   // 🆕 v9.672: 再読み込み前の続き
+  const rootRef = React.useRef(null);
+  // 🆕 v9.672: SVと地図の境目を指で動かして高さを変える（端末ごと・1画面/両側で別々に覚える）
+  const FRAC_DEF = { both: 0.704, one: 0.622 };
+  const [frac, setFrac] = React.useState(() => { try { const v = JSON.parse(localStorage.getItem("hikari_sv_frac") || "null"); return v && v.both ? v : FRAC_DEF; } catch (e) { return FRAC_DEF; } });
+  const fracRef = React.useRef(frac); fracRef.current = frac;
+  const dragRef = React.useRef(null);
   // 🆕 v9.651: 両側モード（左側と右側を上下2画面で同時に見る＝同じ道を2回通らなくていい）
   const pano2Div = React.useRef(null), pano2Ref = React.useRef(null), meRef = React.useRef(null);
   const [both, setBothRaw] = React.useState(() => { try { return localStorage.getItem("hikari_sv_both") !== "0"; } catch (e) { return true; } });
@@ -13715,7 +13735,9 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         });
       });
       // 近くのストリートビューに合わせる（無ければ知らせる）
-      new gm.StreetViewService().getPanorama({ location: start, radius: 300, preference: gm.StreetViewPreference.NEAREST, source: gm.StreetViewSource.OUTDOOR }, (data, status) => {
+      // 🆕 v9.672: 再読み込みからの続きなら、さっきと同じ写真・進む向きから
+      if (resume && resume.pano) { travelRef.current = Number(resume.travel) || 0; pano.setPano(resume.pano); }
+      else new gm.StreetViewService().getPanorama({ location: start, radius: 300, preference: gm.StreetViewPreference.NEAREST, source: gm.StreetViewSource.OUTDOOR }, (data, status) => {
         if (status === "OK" && data && data.location) { pano.setPano(data.location.pano); setNoPano(false); }
         else setNoPano(true);
       });
@@ -13909,7 +13931,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
       const P = pano && pano.getPosition();
       const from = P ? [P.lat(), P.lng()] : poly[0];
       const r = await hkPlanPatrol(poly, from);
-      setPlan({ ...r, poly }); setPatrol(null);
+      setPlan({ ...r, poly, from }); setPatrol(null);
       const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);   // 約10mで1軒
       setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・同じ道は通りません（行き止まりは次の道へ飛ぶ）・1軒ずつ見て約${mins}分`);
     } catch (er) { setPlan(null); setPlanMsg("⚠️ " + (er.message || er)); }
@@ -13985,15 +14007,82 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
   const look = (deg) => { const pano = panoRef.current; if (!pano) return; const pov = pano.getPov(); pano.setPov({ heading: travelRef.current + deg, pitch: pov.pitch }); };
   const autoFirstRef = React.useRef(false);
   const setTravelFromView = () => { const pano = panoRef.current; if (pano && !bothRef.current) travelRef.current = pano.getPov().heading; autoFirstRef.current = true; };
+  // 🆕 v9.672: 通った道は1分ごと（と裏に回った時）にクラウドへ送る＝再読み込みされても消えない
+  const flushPRef = React.useRef(null), closedRef = React.useRef(false);
+  const flushTrack = () => {
+    if (flushPRef.current) return flushPRef.current.then(() => flushTrack());
+    const batch = ptsRef.current;
+    if (!batch || batch.length < 2) return Promise.resolve(null);
+    ptsRef.current = [batch[batch.length - 1]];   // 次の分は最後の点からつなぐ
+    flushPRef.current = saveSvTrackPoints(member, batch).then(it => {
+      if (!it) ptsRef.current = batch.concat(ptsRef.current.slice(1));   // 送れなかったら戻す
+      else if (onScanSaved) onScanSaved(it);
+      return it;
+    }).catch(() => { ptsRef.current = batch.concat(ptsRef.current.slice(1)); return null; })
+      .finally(() => { flushPRef.current = null; });
+    return flushPRef.current;
+  };
+  React.useEffect(() => {
+    const t = setInterval(() => { flushTrack(); }, 60000);
+    const onVis = () => { if (document.visibilityState === "hidden") flushTrack(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
+  }, []);   // eslint-disable-line
+  // 🆕 v9.672: 今の続き（場所・向き・回っている範囲・進み具合）を3秒ごとに端末へ
+  React.useEffect(() => {
+    if (!ready) return;
+    const save = () => {
+      if (closedRef.current) return;
+      const pn = panoRef.current, P = pn && pn.getPosition(); if (!P) return;
+      const pl = planRef.current, pt = patrolRef.current;
+      svSessionSet({ open: true, ts: Date.now(), lat: P.lat(), lng: P.lng(), pano: pn.getPano() || "", travel: travelRef.current,
+        poly: pl && pl.poly || null, from: pl && pl.from || null, idx: pt ? pt.idx : null, auto: !!autoRef.current });
+    };
+    save();
+    const t = setInterval(save, 3000);
+    return () => clearInterval(t);
+  }, [ready]);
+  // 🆕 v9.672: 続きから＝囲んだ範囲の道順を同じ形で作り直し、さっきの所から回り続ける
+  React.useEffect(() => {
+    if (!ready || !resume) return;
+    if (Array.isArray(resume.poly) && resume.poly.length >= 3) {
+      const from = resume.from || resume.poly[0];
+      setPlanMsg("⏳ さっきの続きを準備しています…");
+      hkPlanPatrol(resume.poly, from).then(r => {
+        setPlan({ ...r, poly: resume.poly, from });
+        const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);
+        setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・同じ道は通りません（行き止まりは次の道へ飛ぶ）・1軒ずつ見て約${mins}分`);
+        if (typeof resume.idx === "number") { setBoth(true); setPatrol({ idx: Math.min(resume.idx, r.pts.length - 1) }); if (resume.auto) setAuto(true); }
+      }).catch(e => setPlanMsg("⚠️ " + (e.message || e)));
+    } else if (resume.auto) setAuto(true);
+  }, [ready]);   // eslint-disable-line
   const close = async () => {
     setAuto(false);
-    const it = await saveSvTrackPoints(member, ptsRef.current);
-    if (it && onScanSaved) onScanSaved(it);
+    closedRef.current = true; svSessionClear();
+    await flushTrack();
     onClose();
+  };
+  // 境目を指で動かす
+  const dragDown = (e) => {
+    e.preventDefault();
+    const H = Math.max(200, ((rootRef.current && rootRef.current.clientHeight) || 700) - 139);
+    dragRef.current = { y: e.clientY, f: fracRef.current[bothRef.current ? "both" : "one"], H };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (er) {}
+  };
+  const dragMove = (e) => {
+    const d = dragRef.current; if (!d) return;
+    const f = Math.max(0.25, Math.min(0.92, d.f + (e.clientY - d.y) / d.H));
+    setFrac(fr => ({ ...fr, [bothRef.current ? "both" : "one"]: f }));
+  };
+  const dragUp = () => {
+    if (!dragRef.current) return; dragRef.current = null;
+    try { localStorage.setItem("hikari_sv_frac", JSON.stringify(fracRef.current)); } catch (e) {}
+    const gm = window.google && window.google.maps;
+    setTimeout(() => { try { [panoRef.current, pano2Ref.current, gmapRef.current].forEach(x => { if (gm && x) gm.event.trigger(x, "resize"); }); } catch (e) {} }, 60);
   };
   const b = (bg, fg) => ({ border: "none", borderRadius: 9, padding: "7px 4px", fontSize: 13, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", background: bg, color: fg, flex: 1, minWidth: 0 });
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 3000, background: "#0f172a", display: "flex", flexDirection: "column" }}>
+    <div ref={rootRef} style={{ position: "fixed", inset: 0, zIndex: 3000, background: "#0f172a", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", color: "#fff" }}>
         <b style={{ flex: 1, fontSize: 14 }}>👁 ストリートビューで探す{added ? `（印 ${added}件）` : ""}</b>
         <button onClick={close} style={{ border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 13, fontWeight: 800, background: "#fff", color: "#0f172a", cursor: "pointer", fontFamily: "inherit" }}>終わる</button>
@@ -14002,7 +14091,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
         <div style={{ color: "#fff", padding: 20, fontSize: 14, lineHeight: 1.7 }}>⚠️ {err}<br />地図の鍵がまだ入っていないか、使えない状態です。下田さんに知らせてください。</div>
       ) : (
         <>
-          <div style={{ position: "relative", flex: bigMap ? "0 0 22%" : (both ? "0 1 calc((100% - 139px) * 0.352)" : "0 1 calc((100% - 139px) * 0.622)"), minHeight: 0 }}>
+          <div style={{ position: "relative", flex: bigMap ? "0 0 22%" : (both ? `0 1 calc((100% - 139px) * ${(frac.both / 2).toFixed(4)})` : `0 1 calc((100% - 139px) * ${frac.one.toFixed(4)})`), minHeight: 0 }}>
             <div ref={panoDiv} style={{ position: "absolute", inset: 0 }} />
             {both && <div style={{ position: "absolute", left: 8, top: 8, zIndex: 2, background: "rgba(225,29,72,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>◀ 左側の家</div>}
             {choices && (
@@ -14025,7 +14114,7 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
             {noPano && <div style={{ position: "absolute", left: 10, right: 10, top: 10, background: "rgba(0,0,0,0.7)", color: "#fff", borderRadius: 8, padding: 8, fontSize: 12 }}>この近くにはストリートビューがありません。下の地図で道路の上を長押しして移動してください。</div>}
           </div>
           {/* 🆕 v9.651: 右側の家（2枚目）。1画面モードの時は隠すだけ（作り直さない） */}
-          <div style={{ position: "relative", flex: both && !bigMap ? "0 1 calc((100% - 139px) * 0.352)" : "0 0 0px", minHeight: 0, overflow: "hidden", borderTop: both && !bigMap ? "3px solid #0f172a" : "none" }}>
+          <div style={{ position: "relative", flex: both && !bigMap ? `0 1 calc((100% - 139px) * ${(frac.both / 2).toFixed(4)})` : "0 0 0px", minHeight: 0, overflow: "hidden", borderTop: both && !bigMap ? "3px solid #0f172a" : "none" }}>
             <div ref={pano2Div} style={{ position: "absolute", inset: 0 }} />
             {both && <div style={{ position: "absolute", right: 8, top: 8, zIndex: 2, background: "rgba(37,99,235,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>右側の家 ▶</div>}
           </div>
@@ -14046,6 +14135,13 @@ function SvWalker({ apiKey, start, member, cands, onClose, onAdd, onMove, onScan
             <button onClick={() => mark("front")} style={b("#e11d48", "#fff")}>🏚 見ている家</button>
             <button onClick={() => mark("right")} style={b("#e11d48", "#fff")}>🏚 右の家</button>
           </div>}
+          {/* 🆕 v9.672: 境目のつまみ＝上下に指で動かすとSVと地図の高さが変わる（下田さん「2画面の境目みたいに自分で幅調整したい」） */}
+          {!bigMap && (
+            <div onPointerDown={dragDown} onPointerMove={dragMove} onPointerUp={dragUp} onPointerCancel={dragUp}
+              style={{ flex: "0 0 auto", height: 16, background: "#1e293b", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "none", cursor: "row-resize" }}>
+              {[0, 1, 2].map(i => <span key={i} style={{ width: 5, height: 5, borderRadius: "50%", background: "#cbd5e1" }} />)}
+            </div>
+          )}
           <div style={{ position: "relative", flex: bigMap ? "1 1 70%" : "1 1 0px", minHeight: 120 }}>
             <div ref={mapDiv} style={{ position: "absolute", inset: 0 }} />
             {/* 🆕 v9.657: 範囲を囲って回る */}
@@ -27215,6 +27311,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const JIAGE_VIEW_MODE_KEY = "hikari_jiage_view_mode";
   const JIAGE_SCROLL_KEY = "hikari_jiage_scroll";
   const [viewMode, setViewModeRaw] = useState(() => {
+    if (svSessionGet()) return "map";   // v9.672: SVの続きは地図の上で開く
     try { return localStorage.getItem(JIAGE_VIEW_MODE_KEY) || "list"; } catch (e) { return "list"; }
   });
   const setViewMode = (v) => {
@@ -28057,9 +28154,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     // 目印住所の自動入力なし（空のまま）
   };
   // 🆕 v9.645: 👁 ストリートビューで探すを開く（始める場所＝狙いの町に寄っていればそこ、なければ最後に見ていた地図の真ん中）
-  const openSvWalker = async () => {
+  const openSvWalker = async (resume) => {
     const key = await loadGmapsJsKey();
     if (!key) { alert("ストリートビュー用の地図の鍵がまだ設定されていません。下田さんに知らせてください（Claudeが設定します）。"); return; }
+    // 🆕 v9.672: 更新で再読み込みされた時は、さっきの続き（場所・回っている範囲・進み具合）から
+    if (resume && resume.open && typeof resume.lat === "number") { setSvWalker({ key, start: { lat: resume.lat, lng: resume.lng }, resume }); return; }
     let start = null;
     // 🆕 v9.666: 今地図で見ている場所の真ん中から始める（下田さん「地図上で見ている場所をストリートビューで表示して」）
     try { const m = window.__hkJiageMap; if (m && m.getContainer && document.body.contains(m.getContainer())) { const c = m.getCenter(); start = { lat: c.lat, lng: c.lng }; } } catch (e) {}
@@ -28068,6 +28167,8 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     if (!start) start = { lat: 36.042, lng: 139.399 };
     setSvWalker({ key, start });
   };
+  // 🆕 v9.672: 開いた時にSVの続きが残っていれば、そのままSVの画面を開き直す
+  React.useEffect(() => { const s = svSessionGet(); if (s) { if (viewMode !== "map") setViewMode("map"); openSvWalker(s); } }, []);   // eslint-disable-line
   // 👁 の印を現地で確かめた結果
   const svCandResult = (c, status) => {
     upsertSvCand({ ...c, status, checkedBy: currentUser || "", checkedAt: Date.now() });
@@ -33026,7 +33127,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       </button>
                     )}
                     {svWalker && (
-                      <SvWalker apiKey={svWalker.key} start={svWalker.start} member={currentUser || ""} cands={svCands} pastTracks={svTracksData}
+                      <SvWalker apiKey={svWalker.key} start={svWalker.start} resume={svWalker.resume || null} member={currentUser || ""} cands={svCands} pastTracks={svTracksData}
                         nearPins={svNearPins}
                         onRegister={(r) => {
                           setPlacementMode(false);
