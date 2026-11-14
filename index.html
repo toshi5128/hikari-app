@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.693";
+const APP_VERSION = "2026-11-14-v9.694";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13913,7 +13913,10 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         // 🆕 v9.682: 通った点に印（写真の位置から15m以内）。仕上げで「まだ通っていない道」を拾うのに使う
         if (!covRef.current || covRef.current.plan !== planRef.current) covRef.current = { plan: planRef.current, arr: new Uint8Array(pts.length), tried: new Set() };
         const cov = covRef.current;
-        for (let k = 0; k < pts.length; k++) if (!cov.arr[k] && _hkM(here, [pts[k].lat, pts[k].lng]) < 15) cov.arr[k] = 1;
+        { const now = Date.now(); if (!cov.lastNew || now - (cov.lastTick || 0) > 5000) cov.lastNew = now; cov.lastTick = now; }   // 止めていた時間は数えない
+        for (let k = 0; k < pts.length; k++) if (!cov.arr[k] && _hkM(here, [pts[k].lat, pts[k].lng]) < 15) { cov.arr[k] = 1; cov.lastNew = Date.now(); }
+        // v9.694: 安全装置①＝1分間まだ見ていない道に1か所も入れなかったら、行ける道は見終わったとして終わる（下田さん「入れない所があるならやめろ」）
+        if (Date.now() - cov.lastNew > 60000) { setAuto(false); setPatrol(null); setPlanMsg(planRef.current && planRef.current.blockId ? "✅ このブロックの行ける道は見終わりました（済）" : "✅ 行ける道は見終わりました"); markBlockDone(planRef.current); return; }
         // 今いる所に近い予定の点まで進める（すぐ先＝約50mまでだけ。遠くまで探すと、同じ交差点をあとで通る所まで飛ばしてしまい道が残っていた）
         let bi = idx, bdist = 1e9;
         for (let k = idx; k < Math.min(pts.length, idx + 6); k++) { const d = _hkM(here, [pts[k].lat, pts[k].lng]); if (d < bdist) { bdist = d; bi = k; } }
@@ -13930,6 +13933,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         const giveUp = (k) => { const e = runEnd(k); for (let j = k; j < e; j++) cov.arr[j] = 2; return e; };   // 写真が無い道＝あきらめる（オレンジのまま）
         const jumpTo = (k, tries = 0) => {
           const gm = window.google.maps; const kk = Math.min(k, pts.length - 1), t = pts[kk];
+          if (!cov.arr[kk]) cov.arr[kk] = 2;   // v9.694: 安全装置②＝飛んだ先の点は「試した」印（同じ点へ二度と飛ばない）
           new gm.StreetViewService().getPanorama({ location: { lat: t.lat, lng: t.lng }, radius: tries ? 60 : 30, source: gm.StreetViewSource.OUTDOOR }, (d, s2) => {
             // v9.691: 一番近い写真がその道から25m以上離れている＝その道には写真が無い（私道・細い道など）→その道はあきらめて先へ
             if (s2 === "OK" && d && d.location && d.location.latLng && _hkM([t.lat, t.lng], [d.location.latLng.lat(), d.location.latLng.lng()]) > 25) {
