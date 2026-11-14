@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.703";
+const APP_VERSION = "2026-11-14-v9.704";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.704", date: "2026-11-14", title: "SVで探す：地図を押してそこへ移動→進む向きを矢印で選べる",
+    body: "自動で回っている途中でも、下の地図（オレンジの道など）を押すと、そこへ移動して、進める向きに赤い矢印が出ます。矢印を押すとその向きへ自動で進みます。回るのは一時停止になるので、再開は「▶ 続きから回る」で。通った道はちゃんと覚えています。",
+    where: "地上げ → 👁 SVで探す → 下の地図" },
   { v: "9.702", date: "2026-11-14", title: "SVで探す：家の方へ首を振るのをやめました",
     body: "止まった時に家の方へ画面を向ける動きをやめ、いつもの「上は左・下は右」を向いたまま進みます。見えない所は、指やマウスで画面を回して見てください。1軒ごとの止まる時間は約1.5秒のままです。",
     where: "地上げ → 👁 SVで探す" },
@@ -13818,10 +13821,23 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       // 今回通った道（濃い紫の線）
       lineRef.current = new gm.Polyline({ map: gmap, path: [], strokeColor: "#9333ea", strokeOpacity: 0.95, strokeWeight: 5, clickable: false, zIndex: 6 });
       // 下の地図を押すと、その近くのストリートビューへ移動（探す場所を選ぶ）
+      // 🆕 v9.704: 回っている途中でも、地図（オレンジの道など）を押すとそこへ飛び、進む向きを地図の赤い矢印で選べる
+      //   （下田さん「自動で回らせてる時に見たい所に行ってくれない時がある。オレンジの所を押して移動して、どっちに進むか矢印を出して」）
+      const askDir = () => {
+        const links = pano.getLinks() || []; if (!links.length) return;
+        const want = travelRef.current || 0;
+        setChoices(links.map(l => ({ pano: l.pano, heading: l.heading, rel: ((l.heading - want + 540) % 360) - 180, map: true })).sort((a, b) => a.rel - b.rel));
+      };
       gmap.addListener("click", (e) => {
         setAuto(false); setChoices(null);
+        if (patrolRef.current) setPatrol(null);   // 回るのは一時停止（通った道の記録は残る→「▶ 続きから回る」で再開）
         new gm.StreetViewService().getPanorama({ location: e.latLng, radius: 60, source: gm.StreetViewSource.OUTDOOR }, (data, st) => {
-          if (st === "OK" && data && data.location) { prevP = null; pano.setPano(data.location.pano); }
+          if (st === "OK" && data && data.location) {
+            prevP = null;
+            if (data.location.pano === pano.getPano()) { askDir(); return; }
+            const lis = pano.addListener("links_changed", () => { lis.remove(); setTimeout(askDir, 50); });
+            pano.setPano(data.location.pano);
+          }
           else alert("そこにはストリートビューがありません。道路の上を押してください。");
         });
       });
@@ -14025,6 +14041,11 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         if (bothRef.current && pano.__hkAim) pano.__hkAim();
         return;
       }
+      // v9.704: 自分で選んだ道を進んでいる時も、予定の道の「通った」印をつける（続きから回る時に同じ道を通らない）
+      if (planRef.current && covRef.current && covRef.current.plan === planRef.current) {
+        const P1 = pano.getPosition();
+        if (P1) { const h1 = [P1.lat(), P1.lng()], pts1 = planRef.current.pts, c1 = covRef.current; for (let k = 0; k < pts1.length; k++) if (!c1.arr[k] && _hkM(h1, [pts1[k].lat, pts1[k].lng]) < 15) { c1.arr[k] = 1; c1.lastNew = Date.now(); } }
+      }
       if (!links.length) { setAuto(false); return; }
       const want = travelRef.current;
       const rel = (l) => ((l.heading - want + 540) % 360) - 180;
@@ -14177,7 +14198,17 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     try { _hkPlanSnap = { at: Date.now(), poly: plan.poly, pts: plan.pts.map(q => [+q.lat.toFixed(6), +q.lng.toFixed(6), q.jump ? 1 : 0]) }; } catch (e) {}
     hkPLog("start", { n: plan.pts.length, from: plan.from, jumps: plan.pts.reduce((a, q, i) => (q.jump ? a.concat(i) : a), []).slice(0, 80) });
     setChoices(null);
-    const pano = panoRef.current, gm = window.google && window.google.maps, t = plan.pts[0];
+    const pano = panoRef.current, gm = window.google && window.google.maps;
+    // 🆕 v9.704: 途中まで回った予定なら、今いる所から一番近い「まだ通っていない道」から続ける（最初に戻らない）
+    let i0 = 0;
+    const cv = covRef.current && covRef.current.plan === plan ? covRef.current : null;
+    if (cv && cv.arr.some(Boolean)) {
+      cv.lastNew = Date.now(); cv.lastTick = Date.now();
+      const P0 = pano && pano.getPosition(); const h0 = P0 ? [P0.lat(), P0.lng()] : null;
+      let bd = 1e9; plan.pts.forEach((q, k) => { if (cv.arr[k]) return; const d = h0 ? _hkM(h0, [q.lat, q.lng]) : k; if (d < bd) { bd = d; i0 = k; } });
+      if (bd === 1e9) i0 = plan.pts.length - 1;
+    }
+    const t = plan.pts[i0];
     if (pano && gm && t) {
       const P = pano.getPosition();
       if (!P || _hkM([P.lat(), P.lng()], [t.lat, t.lng]) > 30) {
@@ -14185,7 +14216,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       }
     }
     if (!bothRef.current) setBoth(true);
-    setPatrol({ idx: 0 }); setAuto(true);
+    setPatrol({ idx: i0 }); setAuto(true);
   };
   // 🆕 v9.652: 分かれ道で選んだ道へ進んで、自動で進むを続ける
   const goChoice = (c) => {
@@ -14409,7 +14440,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
             {both && <div style={{ position: "absolute", left: 8, top: 8, zIndex: 2, background: "rgba(225,29,72,0.9)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 12, fontWeight: 900 }}>◀ 左側の家</div>}
             {choices && (
               <div style={{ position: "absolute", left: 8, right: 8, bottom: 30, zIndex: 3, background: "rgba(15,23,42,0.92)", borderRadius: 12, padding: 10 }}>
-                <div style={{ color: "#fff", fontSize: 13, fontWeight: 900, marginBottom: 8 }}>🔀 分かれ道です。下の地図の赤い矢印を押すか、ここで選んでください</div>
+                <div style={{ color: "#fff", fontSize: 13, fontWeight: 900, marginBottom: 8 }}>{choices.some(c => c.map) ? "🧭 どっちへ進みますか？下の地図の赤い矢印を押してください" : "🔀 分かれ道です。下の地図の赤い矢印を押すか、ここで選んでください"}</div>
                 <div style={{ display: "flex", gap: 6 }}>
                   {choices.map((c, i) => (
                     <button key={i} onClick={() => goChoice(c)} style={b("#0ea5e9", "#fff")}>
@@ -14503,7 +14534,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
                   {plan && !drawMode && (
                     <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                       {!patrol
-                        ? <button onClick={startPatrol} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>▶ 回り始める</button>
+                        ? <button onClick={startPatrol} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>{covRef.current && covRef.current.plan === plan && covRef.current.arr.some(Boolean) ? "▶ 続きから回る" : "▶ 回り始める"}</button>
                         : <button onClick={() => { setAuto(false); setPatrol(null); }} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#f59e0b", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>⏸ 止める</button>}
                       {patrol && !auto && <button onClick={() => setAuto(true)} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#16a34a", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>▶ 続ける</button>}
                       <button onClick={() => { setAuto(false); setPatrol(null); setPlan(null); setPlanMsg(""); }} style={{ border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 900, background: "#e2e8f0", color: "#334155", cursor: "pointer", fontFamily: "inherit" }}>✕ 囲みを消す</button>
