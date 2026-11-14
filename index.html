@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.685";
+const APP_VERSION = "2026-11-14-v9.686";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -13546,6 +13546,27 @@ function svSessionPaused() {
 }
 function svSessionSet(s) { try { localStorage.setItem(SV_SESSION_KEY, JSON.stringify(s)); } catch (e) {} }
 function svSessionClear() { try { localStorage.removeItem(SV_SESSION_KEY); } catch (e) {} }
+// 🆕 v9.686: 下田さんの「空き家の見分け方」を覚えるための記録（下田さん「俺が空き家と判断したものから判断基準を覚えて、ゆくゆく全自動に」）
+//   SVで1軒ずつ止まって見た家を全部残す＝ app_data 行 svseen::<名前>::<日付> {items:[{ts,pano,hd,lat,lng,shot}]}
+//   空き家として登録した家（ピンの svView）＝「空き家」の見本。見たのに登録しなかった家＝「住んでいる」の見本。
+//   さらにピンのその後（謄本で住所違い・訪問結果）で「本当に空き家だったか」の答え合わせもできる。
+async function saveSvSeen(member, items) {
+  if (!member || !items || !items.length) return true;
+  const d = new Date(); const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const id = `svseen::${member}::${date}`;
+  let old = [];
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.${encodeURIComponent(id)}&select=data`, { headers: _TRACK_HEADERS });
+    if (!res.ok) return false;
+    const rows = await res.json();
+    old = (rows && rows[0] && rows[0].data && rows[0].data.items) || [];
+  } catch (e) { return false; }
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/app_data`, { method: "POST", headers: { ..._TRACK_HEADERS, Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id, data: { by: member, date, items: old.concat(items) } }) });
+    return r.ok;
+  } catch (e) { return false; }
+}
 async function saveSvTrackPoints(member, pts) {
   if (!member || !pts || pts.length < 2) return null;
   const d = new Date(); const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -13824,7 +13845,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
         const id = pano.getPano(); if (!id) return;
         // 🆕 v9.674: 通った写真を順番に覚える（戻るで1つずつさかのぼる）。戻るで移った時は足さない
         { const h = histRef.current; if (backRef.current.skip === id) backRef.current.skip = null; else if (h[h.length - 1] !== id) { h.push(id); if (h.length > 500) h.shift(); } }
-        svc.getPanorama({ pano: id }, (d, st) => { if (st === "OK" && d && d.imageDate) setShotDate(d.imageDate); });
+        svc.getPanorama({ pano: id }, (d, st) => { if (st === "OK" && d && d.imageDate) { setShotDate(d.imageDate); shotRef.current = String(d.imageDate); } });
       });
       setReady(true);
     }).catch(e => { if (alive) setErr(String(e.message || e)); });
@@ -13871,6 +13892,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
             } else if (newR) { hr.looked.add(found.R.b.key); fresh = true; aim(pano, found.R); }
             // 🆕 v9.676: 曲がり角・行き止まりから飛んだ直後は家を見分けにくい→家が見つからなくても約9m進んだら止まる（下田さん「ダダダッと2、3軒進む」）
             if (!fresh && (!hr.stop || _hkM(hr.stop, here0) >= 9)) fresh = true;
+            // 見た家を記録（空き家の見分け方を覚えるため）
+            [newL && found.L, newR && found.R].forEach(f => { if (f) seenRef.current.push({ ts: Date.now(), pano: pano.getPano() || "", hd: Math.round(f.brg), lat: +f.b.lat.toFixed(6), lng: +f.b.lng.toFixed(6), shot: shotRef.current || "" }); });
             if (fresh) { hr.stop = here0; hr.nextAt = Date.now() + HOUSE_MS; return; }
           } else {
             // 建物データがまだ無い所：約5mごとに止まる
@@ -14158,7 +14181,19 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   const setTravelFromView = () => { const pano = panoRef.current; if (pano && !bothRef.current) travelRef.current = pano.getPov().heading; autoFirstRef.current = true; };
   // 🆕 v9.672: 通った道は1分ごと（と裏に回った時）にクラウドへ送る＝再読み込みされても消えない
   const flushPRef = React.useRef(null), closedRef = React.useRef(false);
+  const seenRef = React.useRef([]);    // v9.686: 1軒ずつ止まって見た家
+  const shotRef = React.useRef("");   // 今の写真の撮影年月
+  const seenPRef = React.useRef(Promise.resolve());
+  const flushSeen = () => {   // 1つずつ順番に送る（同時に送って上書きし合わないように）
+    seenPRef.current = seenPRef.current.then(() => {
+      const batch = seenRef.current; if (!batch.length) return;
+      seenRef.current = [];
+      return saveSvSeen(member, batch).then(ok => { if (!ok) seenRef.current = batch.concat(seenRef.current); });
+    }).catch(() => {});
+    return seenPRef.current;
+  };
   const flushTrack = () => {
+    flushSeen();
     if (flushPRef.current) return flushPRef.current.then(() => flushTrack());
     const batch = ptsRef.current;
     if (!batch || batch.length < 2) return Promise.resolve(null);
