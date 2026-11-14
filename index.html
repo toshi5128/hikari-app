@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-14-v9.682";
+const APP_VERSION = "2026-11-14-v9.683";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8978,6 +8978,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.683", date: "2026-11-14", title: "SVで探す：地図を「約30分で回れるブロック」に分けて、選んで回れるように",
+    body: "下の地図の「🧩 ブロックで選ぶ」を押すと、地図が紫の四角（ブロック）に分かれ、それぞれに回るのにかかる分数が出ます。回りたいブロックを押して「▶ 回り始める」で、そのブロックの道を全部自動で回ります。道が多い所はブロックが小さく、少ない所は大きくなります。",
+    where: "地上げ → 👁 SVで探す → 🧩 ブロックで選ぶ" },
   { v: "9.674", date: "2026-11-14", title: "SVで探す：「◀ 戻る」で通った所を1つずつさかのぼれるように",
     body: "自動で進んでいて「今の空き家っぽかった？」と思ったら「◀ 戻る」を押してください。押すたびに1つ前、2つ前…と戻ります。進む向きはそのままなので、両側で見ている時も左右が入れ替わりません。家のボタンは「🏚 見ている家」の1つだけにしました。",
     where: "地上げ → 👁 SVで探す → ◀ 戻る" },
@@ -13615,7 +13618,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
   const stuckRef = React.useRef({ pano: "", n: 0 });
   const covRef = React.useRef(null);   // v9.682: 予定の点のうち通った所
   // 🆕 v9.660: 範囲を囲う時は地図を大きく（下田さん「下が小さすぎて囲いにくい」）
-  const bigMap = drawMode || (!!plan && !patrol);
+  const [blockMode, setBlockMode] = React.useState(false);   // v9.683: 🧩 ブロックで選ぶ
+  const bigMap = drawMode || blockMode || (!!plan && !patrol);
   React.useEffect(() => {
     const gm = window.google && window.google.maps;
     setTimeout(() => { try { const pn = panoRef.current, p2 = pano2Ref.current; if (gm && pn) { gm.event.trigger(pn, "resize"); if (p2) gm.event.trigger(p2, "resize"); } } catch (e) {} }, 150);
@@ -14017,6 +14021,53 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
       setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・同じ道は通りません（行き止まりは次の道へ飛ぶ）・1軒ずつ見て約${mins}分`);
     } catch (er) { setPlan(null); setPlanMsg("⚠️ " + (er.message || er)); }
   };
+  // 🆕 v9.683: 🧩 ブロック＝見えている範囲のブロックを地図に出す（押すとそのブロックを回る道順を作る）
+  const [blockMsg, setBlockMsg] = React.useState("");
+  const blockObjsRef = React.useRef([]);
+  const pickBlock = async (bk) => {
+    setBlockMode(false);
+    const poly = [[bk.n, bk.w], [bk.n, bk.e], [bk.s, bk.e], [bk.s, bk.w]];
+    const P = panoRef.current && panoRef.current.getPosition();
+    const from = P ? [P.lat(), P.lng()] : [bk.n, bk.w];
+    setPlanMsg("⏳ ブロックの道を調べています…");
+    try {
+      const r = await hkPlanPatrol(poly, from, { strict: true });
+      setPlan({ ...r, poly, from, strict: true }); setPatrol(null);
+      const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);
+      setPlanMsg(`🧩 道 ${(r.fresh / 1000).toFixed(1)}km・1軒ずつ見て約${mins}分`);
+    } catch (er) { setPlan(null); setPlanMsg("⚠️ " + (er.message || er)); }
+  };
+  React.useEffect(() => {
+    const gm = window.google && window.google.maps, gmap = gmapRef.current;
+    const clear = () => { blockObjsRef.current.forEach(o => o.setMap(null)); blockObjsRef.current = []; };
+    if (!blockMode || !gm || !gmap) { clear(); setBlockMsg(""); return; }
+    if (!document.getElementById("hk-blk-style")) { const st = document.createElement("style"); st.id = "hk-blk-style"; st.textContent = ".hk-blk-label{background:#7c3aed;padding:2px 7px;border-radius:9px;box-shadow:0 1px 4px rgba(0,0,0,.5)}"; document.head.appendChild(st); }
+    let gen = 0;
+    const draw = async () => {
+      const my = ++gen;
+      const bd = gmap.getBounds(); if (!bd) return;
+      if (gmap.getZoom() < 14) { clear(); setBlockMsg("🔍 もう少し地図を拡大してください"); return; }
+      const ne = bd.getNorthEast(), sw = bd.getSouthWest(), N = 65536;
+      const tX = (lng) => Math.floor((lng + 180) / 360 * N), tY = (lat) => Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * N);
+      const tiles = []; for (let x = tX(sw.lng()); x <= tX(ne.lng()); x++) for (let y = tY(ne.lat()); y <= tY(sw.lat()); y++) tiles.push([x, y]);
+      if (tiles.length > 64) { clear(); setBlockMsg("🔍 もう少し地図を拡大してください"); return; }
+      setBlockMsg("⏳ ブロックを分けています…");
+      const all = []; for (const [x, y] of tiles) { const bl = await hkBlocksOfTile(x, y); if (my !== gen) return; bl.forEach(b => all.push(b)); }
+      clear();
+      all.forEach(bk => {
+        const rect = new gm.Rectangle({ map: gmap, bounds: { north: bk.n, south: bk.s, east: bk.e, west: bk.w }, strokeColor: "#7c3aed", strokeOpacity: 0.9, strokeWeight: 2, fillColor: "#a78bfa", fillOpacity: 0.12, zIndex: 20 });
+        rect.addListener("click", () => pickBlock(bk));
+        const lab = new gm.Marker({ map: gmap, position: { lat: (bk.n + bk.s) / 2, lng: (bk.w + bk.e) / 2 }, zIndex: 21, clickable: true,
+          icon: { path: gm.SymbolPath.CIRCLE, scale: 0 }, label: { text: Math.max(1, Math.round(bk.min)) + "分", color: "#fff", fontSize: "12px", fontWeight: "900", className: "hk-blk-label" } });
+        lab.addListener("click", () => pickBlock(bk));
+        blockObjsRef.current.push(rect, lab);
+      });
+      setBlockMsg("");
+    };
+    draw();
+    const lis = gmap.addListener("idle", draw);
+    return () => { gen++; lis.remove(); clear(); };
+  }, [blockMode]);   // eslint-disable-line
   const startPatrol = () => {
     if (!plan) return;
     setChoices(null);
@@ -14123,8 +14174,8 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     if (Array.isArray(resume.poly) && resume.poly.length >= 3) {
       const from = resume.from || resume.poly[0];
       setPlanMsg("⏳ さっきの続きを準備しています…");
-      hkPlanPatrol(resume.poly, from).then(r => {
-        setPlan({ ...r, poly: resume.poly, from });
+      hkPlanPatrol(resume.poly, from, resume.strict ? { strict: true } : undefined).then(r => {
+        setPlan({ ...r, poly: resume.poly, from, strict: !!resume.strict });
         const mins = Math.round((r.total / 10) * (HOUSE_MS / 1000 + 0.6) / 60);
         setPlanMsg(`道 ${(r.fresh / 1000).toFixed(1)}km・同じ道は通りません（行き止まりは次の道へ飛ぶ）・1軒ずつ見て約${mins}分`);
         if (typeof resume.idx === "number") { setBoth(true); setPatrol({ idx: Math.min(resume.idx, r.pts.length - 1) }); if (resume.auto) setAuto(true); }
@@ -14136,7 +14187,7 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
     const pn = panoRef.current, P = pn && pn.getPosition(); if (!P) return null;
     const pl = planRef.current, pt = patrolRef.current;
     return { ts: Date.now(), lat: P.lat(), lng: P.lng(), pano: pn.getPano() || "", travel: travelRef.current,
-      poly: pl && pl.poly || null, from: pl && pl.from || null, idx: pt ? pt.idx : null, auto: !!autoRef.current };
+      poly: pl && pl.poly || null, from: pl && pl.from || null, strict: !!(pl && pl.strict), idx: pt ? pt.idx : null, auto: !!autoRef.current };
   };
   const close = async () => {
     setAuto(false);
@@ -14226,6 +14277,13 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
           <div style={{ position: "relative", flex: bigMap ? "1 1 70%" : "1 1 0px", minHeight: 120 }}>
             <div ref={mapDiv} style={{ position: "absolute", inset: 0 }} />
             {/* 🆕 v9.657: 範囲を囲って回る */}
+            {/* 🆕 v9.683: ブロックを選ぶ時の案内 */}
+            {blockMode && (
+              <div style={{ position: "absolute", left: 8, right: 60, top: 8, zIndex: 5, display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ flex: 1, background: "rgba(15,23,42,0.88)", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 800 }}>{blockMsg || "🧩 回りたいブロックを押してください（数字＝回るのにかかる分）"}</div>
+                <button onClick={() => setBlockMode(false)} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#475569", color: "#fff", cursor: "pointer", fontFamily: "inherit", flex: "0 0 auto" }}>やめる</button>
+              </div>
+            )}
             {drawMode === "pan" && (
               <div style={{ position: "absolute", left: 8, right: 8, top: 8, zIndex: 5, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <div style={{ flex: "1 1 200px", background: "rgba(15,23,42,0.88)", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 800 }}>{planMsg ? <span style={{ color: "#fdba74" }}>{planMsg}<br /></span> : null}① 地図を指で動かして、回りたい場所を出してください</div>
@@ -14246,6 +14304,9 @@ function SvWalker({ apiKey, start, resume: resumeIn, member, cands, onClose, onA
             <div style={{ position: "absolute", left: 8, top: 8, zIndex: 4, display: "flex", flexDirection: "column", gap: 6, maxWidth: "70%" }}>
               {!drawMode && !patrol && (
                 <button onClick={() => { setAuto(false); setChoices(null); setDrawMode("pan"); setPlan(null); setPatrol(null); setPlanMsg(""); try { const g = gmapRef.current; if (g && g.getZoom() > 17) g.setZoom(17); } catch (e) {} }} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#f97316", color: "#fff", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(0,0,0,0.4)", alignSelf: "flex-start" }}>✏️ 範囲を囲って回る</button>
+              )}
+              {!drawMode && !patrol && !blockMode && (
+                <button onClick={() => { setAuto(false); setChoices(null); setPlan(null); setPatrol(null); setPlanMsg(""); setBlockMode(true); try { const g = gmapRef.current; if (g && g.getZoom() > 16) g.setZoom(16); } catch (e) {} }} style={{ border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 900, background: "#7c3aed", color: "#fff", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(0,0,0,0.4)", alignSelf: "flex-start" }}>🧩 ブロックで選ぶ</button>
               )}
               {/* 🆕 v9.669: 回っている最中は小さな1行だけ（下田さん「地図に干渉してじゃま・シンプルに」）。止める/進むは上のボタンで */}
               {patrol && plan && !drawMode && (() => {
@@ -14460,7 +14521,8 @@ function _hkInPoly(pt, poly) {
 //   ① 道の網を作る（つなぎ目は4m以内でまとめる・交差点の15m未満のヒゲは捨てる）
 //   ② 行き止まりや半端な交差点（道が奇数本つながる点）を近い同士で組にして「どうしても要る戻り道」だけ足す（郵便配達ルートの考え方）
 //   ③ 一筆書きでたどる（まっすぐ進める道を優先）。一番長い戻り道は足さず、そこを出発点と終点にする
-async function hkPlanPatrol(poly, from) {
+async function hkPlanPatrol(poly, from, opts) {
+  const strict = !!(opts && opts.strict);   // v9.683: ブロック＝道のまん中がブロックの中にある所だけ（隣のブロックと重ならない）
   let s0 = 90, n0 = -90, w0 = 180, e0 = -180;
   poly.forEach(([a, b]) => { s0 = Math.min(s0, a); n0 = Math.max(n0, a); w0 = Math.min(w0, b); e0 = Math.max(e0, b); });
   const N = 65536, tx = (lng) => Math.floor((lng + 180) / 360 * N), ty = (lat) => Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * N);
@@ -14495,8 +14557,12 @@ async function hkPlanPatrol(poly, from) {
     return best;
   };
   const nearIn = (p) => _hkInPoly(p, poly) || distEdge(p) < 25;
-  lines.forEach(l => {
+  lines.forEach(l0 => {
+    // ブロックの時は長い線を15mごとに区切ってから、まん中で中か外かを決める
+    let l = l0;
+    if (strict) { l = [l0[0]]; for (let i = 0; i + 1 < l0.length; i++) { const n = Math.max(1, Math.ceil(_hkM(l0[i], l0[i + 1]) / 15)); for (let j = 1; j <= n; j++) l.push([l0[i][0] + (l0[i + 1][0] - l0[i][0]) * j / n, l0[i][1] + (l0[i + 1][1] - l0[i][1]) * j / n]); } }
     for (let i = 0; i + 1 < l.length; i++) {
+      if (strict) { if (!_hkInPoly([(l[i][0] + l[i + 1][0]) / 2, (l[i][1] + l[i + 1][1]) / 2], poly)) continue; const a = nid(l[i]), b = nid(l[i + 1]); if (a === b) continue; const ek = a < b ? a + "_" + b : b + "_" + a; if (seen.has(ek)) continue; seen.add(ek); edges.push({ a, b, len: _hkM(nodes[a], nodes[b]) }); continue; }
       const sl = _hkM(l[i], l[i + 1]), k = Math.max(1, Math.ceil(sl / 10));
       let hit = false;
       for (let j = 0; j <= k && !hit; j++) { const t = j / k; if (_hkInPoly([l[i][0] + (l[i + 1][0] - l[i][0]) * t, l[i][1] + (l[i + 1][1] - l[i][1]) * t], poly)) hit = true; }
@@ -14654,6 +14720,41 @@ async function hkPlanPatrol(poly, from) {
     pts.push({ lat: p[0], lng: p[1], jump }); jump = false;
   }
   return { pts, total, fresh, roads: edges.length, jumps };
+}
+
+// 🆕 v9.683: 地図を「約30分で回りきれるブロック」に分ける（下田さん「全部の場所を30分ぐらいのブロックに分けて、選んで回りたい」）
+//   国土地理院の道路タイル(z16＝約500m四方)ごとに道の長さを測り、30分を超えれば4つ(約250m)、さらに超えれば16(約125m)に割る。
+//   分数＝道の長さ10mごとに約3.4秒（1軒ずつ止まる速さ）。どの端末でも同じ分け方になる。
+const HK_BLOCK_MIN = 30;
+const _hkBlkMin = (m) => (m / 10) * 3.4 / 60;
+const _hkBlkCache = new Map();
+function _hkTileBounds(x, y, z) { const n = Math.pow(2, z), la = (yy) => Math.atan(Math.sinh(Math.PI * (1 - 2 * yy / n))) * 180 / Math.PI; return { w: x / n * 360 - 180, e: (x + 1) / n * 360 - 180, n: la(y), s: la(y + 1) }; }
+async function hkBlocksOfTile(tx, ty) {
+  const key = tx + "_" + ty; if (_hkBlkCache.has(key)) return _hkBlkCache.get(key);
+  const raw = await _hkLoadBvRaw(tx, ty); if (!raw) return [];
+  const lines = _hkMvtRoads(raw, tx, ty), B = _hkTileBounds(tx, ty, 16), len = new Float64Array(16);
+  lines.forEach(l => { for (let i = 0; i + 1 < l.length; i++) { const a = l[i], b = l[i + 1], n = Math.max(1, Math.ceil(_hkM(a, b) / 15));
+    for (let j = 0; j < n; j++) { const la = a[0] + (b[0] - a[0]) * (j + 0.5) / n, ln = a[1] + (b[1] - a[1]) * (j + 0.5) / n;
+      if (la > B.n || la <= B.s || ln < B.w || ln >= B.e) continue;
+      const cx = Math.min(3, Math.floor((ln - B.w) / (B.e - B.w) * 4)), cy = Math.min(3, Math.floor((B.n - la) / (B.n - B.s) * 4));
+      len[cy * 4 + cx] += _hkM(a, b) / n; } } });
+  const out = [], LIM = HK_BLOCK_MIN * 1.15;
+  const mk = (x0, y0, x1, y1) => { let m = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) m += len[y * 4 + x];
+    return { id: key + "_" + x0 + y0 + x1 + y1, m, min: _hkBlkMin(m), w: B.w + (B.e - B.w) * x0 / 4, e: B.w + (B.e - B.w) * x1 / 4, n: B.n - (B.n - B.s) * y0 / 4, s: B.n - (B.n - B.s) * y1 / 4 }; };
+  // 30分を超えたら半分に割る（長い方向で・左右の差が小さい割り方）。それでも超えたらさらに半分…
+  const split = (x0, y0, x1, y1) => {
+    const r = mk(x0, y0, x1, y1);
+    if (r.min <= LIM || (x1 - x0 === 1 && y1 - y0 === 1)) { out.push(r); return; }
+    const c = [];
+    if (x1 - x0 > 1) { const xm = x0 + (x1 - x0) / 2; c.push([[x0, y0, xm, y1], [xm, y0, x1, y1]]); }
+    if (y1 - y0 > 1) { const ym = y0 + (y1 - y0) / 2; c.push([[x0, y0, x1, ym], [x0, ym, x1, y1]]); }
+    let best = c[0], bv = 1e18;
+    c.forEach(pr => { const v = Math.max(mk(...pr[0]).m, mk(...pr[1]).m); if (v < bv) { bv = v; best = pr; } });
+    split(...best[0]); split(...best[1]);
+  };
+  split(0, 0, 4, 4);
+  const res = out.filter(b => b.m >= 60);   // 道がほとんど無いブロックは出さない
+  _hkBlkCache.set(key, res); return res;
 }
 
 function _hkTileOf(lat, lng) {
