@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-15-v9.724";
+const APP_VERSION = "2026-11-15-v9.725";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -7353,6 +7353,14 @@ function MainApp({ onLock, onSwitchUser }) {
 
   // 🔔 通知タップ → 該当画面遷移用の state
   const [pendingNav, setPendingNav] = useState(null);
+  // 🆕 v9.725: 空き家管理（VISION）。管理にログインした端末だけ「管理」タブ。地上げ詳細からの登録は kanri-open イベントで受ける
+  const kanriOn = useKanriEnabled();
+  const [kanriNav, setKanriNav] = useState(null);
+  useEffect(() => {
+    const f = (e) => { if (!kanriEnabled() || !canHoldPersonal(getCurrentUser())) return; setKanriNav((e && e.detail) || null); setPage("kanri"); };
+    window.addEventListener("kanri-open", f);
+    return () => window.removeEventListener("kanri-open", f);
+  }, []);
 
   // 🆕 v9.81: インパクト通知（全画面フラッシュ・音・バイブ）
   const [flashNotif, setFlashNotif] = useState(null);
@@ -8832,9 +8840,11 @@ function MainApp({ onLock, onSwitchUser }) {
   const isMapPage = page === "jiage";
   // 🆕 v9.445: 保有物件タブは個人保有ができる人（下田さん）にだけ出す
   const currentUser = getCurrentUser();
+  const kanriTab = kanriOn && canHoldPersonal(currentUser); // 🆕 v9.725
   const navPages = canHoldPersonal(currentUser)
     ? PAGES.slice(0, 4).concat([{ key: "holdings", label: "保有", icon: "gem" },
-                                { key: "income", label: "収支", icon: "yen" }], PAGES.slice(4))
+                                { key: "income", label: "収支", icon: "yen" }],
+                               kanriTab ? [{ key: "kanri", label: "管理", icon: "key" }] : [], PAGES.slice(4))
     : PAGES;
 
   return (
@@ -8871,6 +8881,7 @@ function MainApp({ onLock, onSwitchUser }) {
         {page === "holdings" && <HoldingsPage data={data} setData={setData} currentUser={currentUser} />}
         {page === "income" && <IncomePage data={data} setData={setData} currentUser={currentUser} />}
         {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} onSwitchUser={onSwitchUser} />}
+        {page === "kanri" && kanriTab && <KanriPage nav={kanriNav} onConsumeNav={() => setKanriNav(null)} onOpenJiage={(id) => { setPendingNav({ tab: "jiage", jiageLinkId: id, returnTo: "kanri" }); setPage("jiage"); }} />}
       </div>
       {/* 🆕 v9.479: 反響のお客様へのメール作成（どの画面からでも開ける） */}
       <ViewingMailHost data={data} setData={setData} />
@@ -8978,6 +8989,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.725", date: "2026-11-15", title: "空き家管理（VISION）の「管理」タブ",
+    body: "管理物件の台帳・毎月の巡回記録（チェック・写真・集金・会話メモ・売却の気配）・所有者への報告文づくりができます。ホームに月額ストック・今月未巡回・売却の気配あり・未集金・オプション提案中・次回予定が並びます。データはひかりの共有データとは別の金庫に入り、他のメンバーの端末からは読めません。",
+    where: "その他 → 🏠 空き家管理（VISION）でログイン → 下の「管理」タブ。地上げの所有者詳細から「管理契約を登録」も可", who: ["下田"] },
   { v: "9.712", date: "2026-11-14", title: "SVで探す：回った後の道を色分け・入口で写真を見失う不具合を修正",
     body: "回り終わった（止めた）後は、通った道は薄いオレンジ、写真が無くて通れなかった道は灰色の点線、まだの道は濃いオレンジで表示します。また、道の入口で「一番近い写真」ではなく大通りの写真を拾って、その道をあきらめてしまうことがあったのを直しました。",
     where: "地上げ → 👁 SVで探す" },
@@ -36179,6 +36193,29 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               </div>
             </div>
 
+            {/* 🆕 v9.725: 空き家管理（VISION）— 管理にログイン中の下田さんの端末だけに出す。app_data には何も書かない */}
+            {kanriEnabled() && canHoldPersonal(getCurrentUser()) && (() => {
+              const _kid = kanriJiageKey(selected.item.rawId);
+              const _managed = kanriJiageIds().includes(_kid);
+              return <div style={{ marginTop: 14 }}>
+                <button onClick={() => {
+                  const r = _raw || {};
+                  const num = (x) => (x === "" || x == null || isNaN(Number(x))) ? null : Number(x);
+                  window.dispatchEvent(new CustomEvent("kanri-open", { detail: {
+                    jiage_id: _kid, owner_name: String(r.owner || r.ownerName || "").trim(), owner_kana: r.ownerKana || "",
+                    owner_addr: r.ownerAddr || r.ownerAddress || "", owner_lat: num(r.ownerLat), owner_lng: num(r.ownerLng),
+                    owner_phone: r.ownerContact || "", property_addr: r.address || selected.item.address || "",
+                    property_lat: num(r.lat), property_lng: num(r.lng),
+                  } }));
+                  setSelected(null);
+                }} style={{
+                  width: "100%", padding: "13px", background: _managed ? C.success + "22" : C.inset, border: `2px solid ${_managed ? C.success : C.border}`,
+                  color: _managed ? C.success : C.text, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+                }}>{_managed ? "🏠 管理中（VISION）→ 管理物件を開く" : "🏠 管理契約を登録（VISION）"}</button>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>この案内は下田さんの端末にだけ出ています（管理の情報は地上げのデータには入りません）</div>
+              </div>;
+            })()}
+
             {/* 🆕 v9.323: 売却ご提案書（査定書）を作成（一番上から移設・金額入り13ページ査定書） */}
             <div style={{ position: "relative", marginTop: 14 }}>
               <button onClick={() => { setProposalPin({ ..._raw, address: _raw.address || selected.item.address || "", assignee: _raw.assignee || selected.item.assignee || "" }); setSelected(null); }} style={{
@@ -42759,6 +42796,755 @@ function HoldingsPage({ data, setData, currentUser }) {
   );
 }
 
+// ===================== 🏠 v9.725: 空き家管理（VISION）— 下田さん専用 =====================
+// 【大原則】管理のデータは app_data に一切書かない。kanri_properties / kanri_visits / kanri_members
+//   と Storage の private バケット kanri-photos だけを使う。どれも Supabase Auth のログインユーザー＋
+//   kanri_members 登録者にだけ RLS で開いている（anon key では権限エラー＝他の人の端末からは読めない）。
+//   ・ログインはカード明細アプリと同じアカウント（メール＋パスワード）。supabase-js は使わず REST で直接。
+//   ・セッションは端末の localStorage（KANRI_AUTH_KEY）。ログインしていない端末は管理の通信を一切しない。
+//   ・setData / saveToSupabase を呼ぶ処理はこのブロックに無い（地上げ側へは画面遷移だけ）。
+const KANRI_AUTH_KEY = "hikari_kanri_auth_v1";
+const KANRI_JIAGE_IDS_KEY = "hikari_kanri_jiage_ids_v1"; // 管理中の地上げ案件ID（この端末の表示用キャッシュ）
+const KANRI_BUCKET = "kanri-photos";
+const KANRI_CHECKS_OUT = ["外観", "屋根", "敷地", "草木", "ポスト"];
+const KANRI_CHECKS_IN = ["換気通水", "雨漏り"];
+const KANRI_CHECK_VALS = ["ok", "注意", "異常", "未実施"];
+
+function kanriSessGet() {
+  try { const s = JSON.parse(localStorage.getItem(KANRI_AUTH_KEY) || "null"); return s && s.access_token ? s : null; } catch (e) { return null; }
+}
+function kanriSessSet(s) {
+  try { if (s) localStorage.setItem(KANRI_AUTH_KEY, JSON.stringify(s)); else localStorage.removeItem(KANRI_AUTH_KEY); } catch (e) {}
+  if (!s) { try { localStorage.removeItem(KANRI_JIAGE_IDS_KEY); } catch (e) {} }
+  try { window.dispatchEvent(new Event("kanri-auth")); } catch (e) {}
+}
+function kanriEnabled() { const s = kanriSessGet(); return !!(s && s.member); }
+function useKanriEnabled() {
+  const [on, setOn] = useState(kanriEnabled());
+  useEffect(() => {
+    const f = () => setOn(kanriEnabled());
+    window.addEventListener("kanri-auth", f); window.addEventListener("storage", f);
+    return () => { window.removeEventListener("kanri-auth", f); window.removeEventListener("storage", f); };
+  }, []);
+  return on;
+}
+function kanriJiageIds() {
+  if (!kanriEnabled()) return [];
+  try { return JSON.parse(localStorage.getItem(KANRI_JIAGE_IDS_KEY) || "[]") || []; } catch (e) { return []; }
+}
+function kanriJiageKey(rawId) { return "jiage::" + rawId; }
+
+async function _kanriAuthPost(grant, body) {
+  const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=${grant}`, {
+    method: "POST", headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(j.error_description || j.msg || j.message || ("HTTP " + r.status)); e.status = r.status; throw e; }
+  return {
+    access_token: j.access_token, refresh_token: j.refresh_token,
+    expires_at: j.expires_at || (Math.floor(Date.now() / 1000) + (j.expires_in || 3600)),
+    user_id: j.user && j.user.id, email: j.user && j.user.email,
+  };
+}
+let _kanriRefreshing = null;
+async function kanriToken(force) {
+  const s = kanriSessGet();
+  if (!s) throw new Error("管理機能にログインしていません");
+  if (!force && s.expires_at - 60 > Date.now() / 1000) return s.access_token;
+  if (!_kanriRefreshing) {
+    _kanriRefreshing = _kanriAuthPost("refresh_token", { refresh_token: s.refresh_token })
+      .then(n => { kanriSessSet({ ...s, ...n, member: s.member }); return n.access_token; })
+      .catch(e => { if (e.status === 400 || e.status === 401) kanriSessSet(null); throw e; }) // 電波切れでは消さない
+      .finally(() => { _kanriRefreshing = null; });
+  }
+  return _kanriRefreshing;
+}
+async function kanriApi(path, opt = {}, _retried) {
+  const tok = await kanriToken();
+  const headers = { apikey: SUPABASE_KEY, Authorization: "Bearer " + tok };
+  if (opt.body !== undefined) headers["Content-Type"] = opt.ctype || "application/json";
+  if (opt.prefer) headers.Prefer = opt.prefer;
+  if (opt.headers) Object.assign(headers, opt.headers);
+  const r = await fetch(SUPABASE_URL + path, {
+    method: opt.method || "GET", headers,
+    body: opt.body === undefined ? undefined : (opt.raw ? opt.body : JSON.stringify(opt.body)),
+  });
+  if (r.status === 401 && !_retried) { await kanriToken(true); return kanriApi(path, opt, true); }
+  if (opt.blob && r.ok) return r.blob();
+  const txt = await r.text();
+  let j = null; try { j = txt ? JSON.parse(txt) : null; } catch (e) {}
+  if (!r.ok) throw new Error((j && (j.message || j.error || j.msg)) || ("HTTP " + r.status));
+  return j;
+}
+async function kanriSignIn(email, password) {
+  const n = await _kanriAuthPost("password", { email: String(email || "").trim(), password });
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/kanri_members?select=user_id`, { headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + n.access_token } });
+  const rows = r.ok ? await r.json().catch(() => []) : [];
+  if (!Array.isArray(rows) || !rows.length) {
+    fetch(`${SUPABASE_URL}/auth/v1/logout`, { method: "POST", headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + n.access_token } }).catch(() => {});
+    throw new Error("このアカウントは管理機能の利用者に登録されていません");
+  }
+  kanriSessSet({ ...n, member: true });
+}
+async function kanriSignOut() {
+  const s = kanriSessGet();
+  if (s) fetch(`${SUPABASE_URL}/auth/v1/logout`, { method: "POST", headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + s.access_token } }).catch(() => {});
+  kanriSessSet(null);
+}
+
+const _KANRI_PROP_COLS = ["jiage_id", "owner_name", "owner_kana", "owner_addr", "owner_lat", "owner_lng", "owner_phone", "owner_line",
+  "property_addr", "property_lat", "property_lng", "plan", "monthly_fee", "billing", "annual_fee", "contract_start", "contract_end",
+  "end_reason", "key_kept", "key_note", "sign_installed", "sign_installed_at", "sell_rank", "contact_mode", "memo"];
+const _KANRI_VISIT_COLS = ["property_id", "visited_on", "checks", "issues", "photos", "option_proposed", "option_price", "option_status",
+  "met_owner", "collected", "collected_for", "receipt_issued", "talk_memo", "sell_signal", "sell_signal_note", "next_visit_on", "report_sent_at"];
+function _kanriPick(obj, cols) {
+  const o = {};
+  cols.forEach(k => { if (obj[k] !== undefined) o[k] = (obj[k] === "" ? null : obj[k]); });
+  return o;
+}
+async function kanriLoadAll() {
+  const [props, visits] = await Promise.all([
+    kanriApi("/rest/v1/kanri_properties?select=*&order=created_at.asc"),
+    kanriApi("/rest/v1/kanri_visits?select=*&order=visited_on.desc,created_at.desc"),
+  ]);
+  const ps = props || [];
+  try { localStorage.setItem(KANRI_JIAGE_IDS_KEY, JSON.stringify(ps.filter(p => p.jiage_id && !kanriEnded(p)).map(p => p.jiage_id))); } catch (e) {}
+  return { props: ps, visits: visits || [] };
+}
+async function kanriSaveProperty(p) {
+  const body = _kanriPick(p, _KANRI_PROP_COLS);
+  if (p.id) {
+    const r = await kanriApi(`/rest/v1/kanri_properties?id=eq.${p.id}`, { method: "PATCH", body, prefer: "return=representation" });
+    return r && r[0];
+  }
+  const r = await kanriApi("/rest/v1/kanri_properties", { method: "POST", body, prefer: "return=representation" });
+  return r && r[0];
+}
+async function kanriSaveVisit(v, isNew) {
+  const body = _kanriPick(v, _KANRI_VISIT_COLS);
+  if (!isNew) {
+    const r = await kanriApi(`/rest/v1/kanri_visits?id=eq.${v.id}`, { method: "PATCH", body, prefer: "return=representation" });
+    return r && r[0];
+  }
+  const r = await kanriApi("/rest/v1/kanri_visits", { method: "POST", body: { id: v.id, ...body }, prefer: "return=representation" });
+  return r && r[0];
+}
+async function kanriDeleteRow(table, id) { await kanriApi(`/rest/v1/${table}?id=eq.${id}`, { method: "DELETE" }); }
+async function kanriUploadPhoto(path, blob) {
+  await kanriApi(`/storage/v1/object/${KANRI_BUCKET}/${path}`, { method: "POST", body: blob, raw: true, ctype: "image/jpeg", headers: { "x-upsert": "true", "cache-control": "3600" } });
+}
+async function kanriDeletePhotos(paths) {
+  if (!paths || !paths.length) return;
+  await kanriApi(`/storage/v1/object/${KANRI_BUCKET}`, { method: "DELETE", body: { prefixes: paths } });
+}
+const _kanriSignCache = new Map(); // path -> { url, until }
+async function kanriSignedUrls(paths) {
+  const now = Date.now();
+  const need = paths.filter(p => { const c = _kanriSignCache.get(p); return !c || c.until < now; });
+  if (need.length) {
+    const r = await kanriApi(`/storage/v1/object/sign/${KANRI_BUCKET}`, { method: "POST", body: { expiresIn: 900, paths: need } });
+    (r || []).forEach(x => { if (x && x.signedURL && x.path) _kanriSignCache.set(x.path, { url: SUPABASE_URL + "/storage/v1" + x.signedURL, until: now + 800 * 1000 }); });
+  }
+  const out = {};
+  paths.forEach(p => { const c = _kanriSignCache.get(p); if (c) out[p] = c.url; });
+  return out;
+}
+function useKanriPhotoUrls(paths) {
+  const key = (paths || []).join("|");
+  const [urls, setUrls] = useState({});
+  useEffect(() => {
+    let on = true;
+    if (!paths || !paths.length) { setUrls({}); return; }
+    kanriSignedUrls(paths).then(u => { if (on) setUrls(u); }).catch(() => {});
+    return () => { on = false; };
+  }, [key]);
+  return urls;
+}
+function kanriCompressImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const max = 1600, w0 = img.naturalWidth, h0 = img.naturalHeight;
+      const sc = Math.min(1, max / Math.max(w0, h0));
+      const cv = document.createElement("canvas");
+      cv.width = Math.round(w0 * sc); cv.height = Math.round(h0 * sc);
+      cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(url);
+      cv.toBlob(b => b ? resolve(b) : reject(new Error("写真の変換に失敗しました")), "image/jpeg", 0.7);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("写真を読み込めませんでした")); };
+    img.src = url;
+  });
+}
+function kanriUuid() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  const b = new Uint8Array(16); crypto.getRandomValues(b); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+// ---- 計算 ----
+function kanriToday() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function kanriEnded(p) { return !!(p.contract_end && p.contract_end <= kanriToday()); }
+function kanriMonthly(p) { return p.billing === "年払い" && p.annual_fee ? p.annual_fee / 12 : (p.monthly_fee || 0); }
+function kanriAddMonth(ymd) {
+  const [y, m, d] = String(ymd || kanriToday()).split("-").map(Number);
+  const last = new Date(y, m + 1, 0).getDate();
+  const nd = new Date(y, m, Math.min(d, last));
+  return `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}-${String(nd.getDate()).padStart(2, "0")}`;
+}
+function kanriMD(ymd) { if (!ymd) return ""; const [, m, d] = String(ymd).split("-").map(Number); return `${m}月${d}日`; }
+function kanriYen(n) { return n == null || n === "" ? "" : "¥" + Math.round(Number(n) || 0).toLocaleString("ja-JP"); }
+function kanriShortAddr(a) { return String(a || "").replace(/^埼玉県/, ""); }
+function kanriReportText(p, v) {
+  const plan = p.plan === "室内" ? [...KANRI_CHECKS_OUT, ...KANRI_CHECKS_IN] : KANRI_CHECKS_OUT;
+  const ch = v.checks || {};
+  const bad = plan.filter(k => ch[k] === "注意" || ch[k] === "異常");
+  const lines = [`${p.owner_name}様`, "いつもお世話になっております。VISIONの下田です。",
+    `${kanriMD(v.visited_on)}に${kanriShortAddr(p.property_addr)}の物件を巡回いたしました。`];
+  if (!bad.length) lines.push(p.plan === "室内" ? "外観・屋根・敷地・室内とも大きな異常はございませんでした。" : "外観・屋根・敷地とも大きな異常はございませんでした。");
+  else {
+    const okList = plan.filter(k => ch[k] === "ok");
+    if (okList.length) lines.push(`${okList.slice(0, 4).join("・")}は大きな異常はございませんでした。`);
+    const _is = v.issues ? String(v.issues).trim() : "";
+    lines.push(`${bad.join("・")}に気になる点がございました。${_is}${_is && !/[。！？!?]$/.test(_is) ? "。" : ""}`);
+  }
+  if (v.option_proposed && v.option_status !== "見送り" && v.option_status !== "実施済") {
+    lines.push(`${String(v.option_proposed).trim()}${v.option_price ? `（${Number(v.option_price).toLocaleString("ja-JP")}円）` : ""}をご希望でしたらお知らせください。`);
+  }
+  if ((v.photos || []).length) lines.push("写真をお送りいたします。");
+  lines.push("今後ともよろしくお願いいたします。");
+  return lines.join("\n");
+}
+
+// ---- 見た目の部品 ----
+const kanriCard = { background: C.cardBg, border: `2px solid ${C.muted}aa`, boxShadow: "0 2px 6px rgba(0,0,0,0.08)", borderRadius: 14, padding: 14, marginBottom: 12 };
+const kanriInput = { width: "100%", boxSizing: "border-box", padding: "11px 12px", fontSize: 16, border: `1px solid ${C.border}`, borderRadius: 10, background: C.surface, color: C.text, fontFamily: "inherit" };
+const kanriBtn = (bg, fg, extra) => ({ padding: "13px 14px", background: bg, color: fg, border: "none", borderRadius: 10, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", touchAction: "manipulation", ...(extra || {}) });
+function KanriField({ label, children, note }) {
+  return <div style={{ marginBottom: 12 }}>
+    <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, marginBottom: 5 }}>{label}</div>
+    {children}
+    {note && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{note}</div>}
+  </div>;
+}
+function KanriSeg({ value, options, onChange, colors }) {
+  return <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+    {options.map(o => {
+      const on = value === o; const col = (colors && colors[o]) || C.accent;
+      return <button key={o} type="button" onClick={() => onChange(on && !colors ? null : o)} style={{
+        flex: "1 1 0", minWidth: 56, padding: "11px 6px", borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
+        border: `2px solid ${on ? col : C.borderDim}`, background: on ? col + "22" : C.surface, color: on ? col : C.muted, touchAction: "manipulation",
+      }}>{o}</button>;
+    })}
+  </div>;
+}
+function KanriToggle({ value, onChange, label }) {
+  return <button type="button" onClick={() => onChange(!value)} style={{
+    display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "12px 14px", borderRadius: 10, fontFamily: "inherit", cursor: "pointer",
+    border: `2px solid ${value ? C.success : C.borderDim}`, background: value ? C.success + "1a" : C.surface, color: C.text, fontSize: 15, fontWeight: 700, textAlign: "left",
+  }}><span style={{ fontSize: 20 }}>{value ? "✅" : "⬜"}</span>{label}</button>;
+}
+const KANRI_CHECK_COLORS = { ok: "#15803d", "注意": "#c2620a", "異常": "#c81e1e", "未実施": "#64748b" };
+function KanriBack({ onBack, title }) {
+  return <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+    <button onClick={onBack} style={{ background: "none", border: "none", color: C.accent, fontSize: 26, cursor: "pointer", padding: 0, lineHeight: 1 }}>←</button>
+    <div style={{ fontSize: 19, fontWeight: 800, color: C.text }}>{title}</div>
+  </div>;
+}
+
+// ---- ログイン（その他 → 空き家管理） ----
+function KanriLoginPage({ onBack }) {
+  const on = useKanriEnabled();
+  const [email, setEmail] = useState(""), [pw, setPw] = useState(""), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  const s = kanriSessGet();
+  const submit = async (e) => {
+    e.preventDefault(); setBusy(true); setErr("");
+    try { await kanriSignIn(email, pw); setPw(""); }
+    catch (x) { setErr(/invalid login|invalid_grant|credentials/i.test(x.message) ? "メールアドレスかパスワードが違います" : x.message); }
+    setBusy(false);
+  };
+  return <div>
+    <KanriBack onBack={onBack} title="🔐 空き家管理（VISION）" />
+    {on ? <div style={kanriCard}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: C.success, marginBottom: 6 }}>✅ ログイン中</div>
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>{s && s.email}　／　下のナビに「管理」タブが出ています。</div>
+      <button onClick={() => { if (window.confirm("この端末の管理機能からログアウトしますか？")) kanriSignOut(); }} style={kanriBtn(C.inset, C.danger, { width: "100%", border: `1px solid ${C.danger}66` })}>ログアウト</button>
+    </div> : <form onSubmit={submit} style={kanriCard}>
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>カード明細チェックと同じメールアドレス・パスワードでログインします。ログインすると、この端末にだけ「管理」タブが出ます（他の人には見えません）。</div>
+      <KanriField label="メールアドレス"><input type="email" autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} required style={kanriInput} /></KanriField>
+      <KanriField label="パスワード"><input type="password" autoComplete="current-password" value={pw} onChange={e => setPw(e.target.value)} required style={kanriInput} /></KanriField>
+      {err && <div style={{ background: C.dangerBg, color: C.danger, borderRadius: 8, padding: "8px 10px", fontSize: 13, marginBottom: 10 }}>{err}</div>}
+      <button type="submit" disabled={busy} style={kanriBtn(C.accent, "#fff", { width: "100%", opacity: busy ? 0.6 : 1 })}>{busy ? "確認中…" : "ログイン"}</button>
+    </form>}
+  </div>;
+}
+
+// ---- 管理タブ本体 ----
+let _kanriLastView = null; // 地上げへ行って戻った時に同じ画面を出す
+function KanriPage({ nav, onConsumeNav, onOpenJiage }) {
+  const [db, setDb] = useState(null);       // { props, visits }
+  const [err, setErr] = useState("");
+  const [view, _setView] = useState(() => _kanriLastView || { k: "home" }); // home | list | detail{id} | edit{draft} | visit{draft,isNew} | report{vid}
+  const setView = (v) => { if (["home", "list", "detail"].includes(v.k)) _kanriLastView = v; _setView(v); };
+  const reload = async () => {
+    setErr("");
+    try { setDb(await kanriLoadAll()); } catch (e) { setErr(e.message || String(e)); }
+  };
+  useEffect(() => { reload(); }, []);
+  // 地上げ → 管理（登録フォームを開く／既存を開く）
+  useEffect(() => {
+    if (!nav || !db) return;
+    if (nav.jiage_id) {
+      const hit = db.props.find(p => p.jiage_id === nav.jiage_id && !kanriEnded(p)) || db.props.find(p => p.jiage_id === nav.jiage_id);
+      if (hit) setView({ k: "detail", id: hit.id });
+      else setView({ k: "edit", draft: { ...kanriNewProp(), ...nav } });
+    }
+    onConsumeNav && onConsumeNav();
+  }, [nav, db]);
+
+  if (err && !db) return <div style={kanriCard}>
+    <div style={{ color: C.danger, fontWeight: 700, marginBottom: 8 }}>⚠ 管理データを読めませんでした</div>
+    <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>{err}</div>
+    <button onClick={reload} style={kanriBtn(C.accent, "#fff", { width: "100%" })}>もう一度読む</button>
+  </div>;
+  if (!db) return <div style={{ textAlign: "center", color: C.muted, padding: 40 }}>⟳ 管理データを読み込み中…</div>;
+
+  const props = db.props, visits = db.visits;
+  const byId = Object.fromEntries(props.map(p => [p.id, p]));
+  const visitsOf = (pid) => visits.filter(v => v.property_id === pid);
+  const upsertLocal = (kind, row) => setDb(d => {
+    const list = d[kind].filter(x => x.id !== row.id).concat([row]);
+    if (kind === "visits") list.sort((a, b) => (b.visited_on || "").localeCompare(a.visited_on || "") || (b.created_at || "").localeCompare(a.created_at || ""));
+    const nd = { ...d, [kind]: list };
+    if (kind === "props") { try { localStorage.setItem(KANRI_JIAGE_IDS_KEY, JSON.stringify(nd.props.filter(p => p.jiage_id && !kanriEnded(p)).map(p => p.jiage_id))); } catch (e) {} }
+    return nd;
+  });
+  const removeLocal = (kind, id) => setDb(d => ({ ...d, [kind]: d[kind].filter(x => x.id !== id), ...(kind === "props" ? { visits: d.visits.filter(v => v.property_id !== id) } : {}) }));
+
+  if (view.k === "edit") return <KanriPropForm draft={view.draft} onCancel={() => setView(view.draft.id ? { k: "detail", id: view.draft.id } : { k: "home" })}
+    onSaved={(row) => { upsertLocal("props", row); setView({ k: "detail", id: row.id }); }}
+    onDeleted={(id) => { removeLocal("props", id); setView({ k: "list" }); }} />;
+  if (view.k === "visit") return <KanriVisitForm prop={byId[view.draft.property_id]} draft={view.draft} isNew={view.isNew}
+    onCancel={() => setView({ k: "detail", id: view.draft.property_id })}
+    onSaved={(row) => { upsertLocal("visits", row); setView({ k: "report", vid: row.id, after: true }); }}
+    onDeleted={(id) => { removeLocal("visits", id); setView({ k: "detail", id: view.draft.property_id }); }} />;
+  if (view.k === "report") {
+    const v = visits.find(x => x.id === view.vid); const p = v && byId[v.property_id];
+    if (!v || !p) return <KanriBack onBack={() => setView({ k: "home" })} title="見つかりません" />;
+    return <KanriReport prop={p} visit={v} after={view.after} onBack={() => setView({ k: "detail", id: p.id })} onSaved={(row) => upsertLocal("visits", row)} />;
+  }
+  if (view.k === "detail") {
+    const p = byId[view.id];
+    if (!p) return <KanriBack onBack={() => setView({ k: "home" })} title="見つかりません" />;
+    return <KanriDetail prop={p} visits={visitsOf(p.id)} onBack={() => setView({ k: "list" })}
+      onEdit={() => setView({ k: "edit", draft: { ...p } })}
+      onVisit={(v) => setView(v ? { k: "visit", draft: { ...v }, isNew: false } : { k: "visit", draft: kanriNewVisit(p, visitsOf(p.id)[0]), isNew: true })}
+      onReport={(vid) => setView({ k: "report", vid })}
+      onOpenJiage={onOpenJiage} />;
+  }
+  if (view.k === "list") return <KanriList props={props} visits={visits} onBack={() => setView({ k: "home" })}
+    onOpen={(id) => setView({ k: "detail", id })} onNew={() => setView({ k: "edit", draft: kanriNewProp() })} />;
+  return <KanriHome props={props} visits={visits} err={err} onReload={reload}
+    onOpen={(id) => setView({ k: "detail", id })} onList={() => setView({ k: "list" })} onNew={() => setView({ k: "edit", draft: kanriNewProp() })} />;
+}
+function kanriNewProp() {
+  return { plan: "外回り", monthly_fee: 3000, billing: "年払い", annual_fee: null, contract_start: kanriToday(), contact_mode: "LINE報告", key_kept: false, sign_installed: false, owner_name: "", property_addr: "" };
+}
+function kanriNewVisit(p, last) {
+  const checks = {}; (p.plan === "室内" ? [...KANRI_CHECKS_OUT, ...KANRI_CHECKS_IN] : KANRI_CHECKS_OUT).forEach(k => { checks[k] = "ok"; });
+  const today = kanriToday();
+  return { id: kanriUuid(), property_id: p.id, visited_on: today, checks, photos: [], met_owner: p.contact_mode === "月1対面", next_visit_on: kanriAddMonth(today), sell_signal: false, receipt_issued: false };
+}
+function kanriLatest(visits, pid) { return visits.find(v => v.property_id === pid) || null; } // visits は新しい順
+
+function KanriHome({ props, visits, err, onReload, onOpen, onList, onNew }) {
+  const ym = kanriToday().slice(0, 7), mm = ym.slice(5, 7);
+  const active = props.filter(p => !kanriEnded(p));
+  const stock = active.reduce((s, p) => s + kanriMonthly(p), 0);
+  const visitedThisMonth = (pid) => visits.some(v => v.property_id === pid && String(v.visited_on).startsWith(ym));
+  const paidThisMonth = (pid) => visits.some(v => v.property_id === pid && String(v.visited_on).startsWith(ym) && Number(v.collected) > 0);
+  const notVisited = active.filter(p => !visitedThisMonth(p.id));
+  const unpaid = active.filter(p => (p.billing === "月払い現金" && !paidThisMonth(p.id)) ||
+    (p.billing === "年払い" && String(p.contract_start || "").slice(5, 7) === mm && !paidThisMonth(p.id)));
+  const sellSig = active.map(p => ({ p, v: kanriLatest(visits, p.id) })).filter(x => x.v && x.v.sell_signal);
+  const optPending = visits.filter(v => v.option_status === "提案中" && active.some(p => p.id === v.property_id));
+  const nextList = active.map(p => ({ p, v: kanriLatest(visits, p.id) })).filter(x => x.v && x.v.next_visit_on).sort((a, b) => a.v.next_visit_on.localeCompare(b.v.next_visit_on));
+  const byId = Object.fromEntries(props.map(p => [p.id, p]));
+  const Row = ({ p, right, sub, onClick }) => <button onClick={onClick || (() => onOpen(p.id))} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: C.surface, border: `1px solid ${C.borderDim}`, borderRadius: 10, padding: "10px 12px", marginTop: 6, cursor: "pointer", fontFamily: "inherit", color: C.text }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>{p.owner_name}様{p.sell_rank && <span style={{ marginLeft: 6, fontSize: 11, color: p.sell_rank === "A" ? C.danger : C.muted }}>売却{p.sell_rank}</span>}</div>
+      <div style={{ fontSize: 12, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub || kanriShortAddr(p.property_addr)}</div>
+    </div>
+    {right && <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, whiteSpace: "nowrap" }}>{right}</div>}
+  </button>;
+  const Section = ({ title, color, items, empty, children }) => <div style={{ ...kanriCard, borderColor: color ? color + "aa" : kanriCard.border }}>
+    <div style={{ fontSize: 15, fontWeight: 800, color: color || C.text }}>{title}<span style={{ marginLeft: 6, fontSize: 13, color: C.muted }}>{items}件</span></div>
+    {items ? children : <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>{empty}</div>}
+  </div>;
+  return <div>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+      <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>🏠 空き家管理 <span style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>VISION</span></div>
+      <button onClick={onReload} style={{ background: "none", border: "none", color: C.accent, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>⟳ 更新</button>
+    </div>
+    {err && <div style={{ background: C.dangerBg, color: C.danger, borderRadius: 8, padding: "8px 10px", fontSize: 12, marginBottom: 10 }}>⚠ {err}</div>}
+    <div style={{ ...kanriCard, display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 12, color: C.muted, fontWeight: 700 }}>月額ストック（契約中）</div>
+        <div style={{ fontSize: 28, fontWeight: 800, color: C.accent }}>{kanriYen(stock)}<span style={{ fontSize: 13, color: C.muted, marginLeft: 4 }}>/月</span></div>
+        <div style={{ fontSize: 12, color: C.muted }}>{active.length}件　年換算 {kanriYen(stock * 12)}</div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <button onClick={onList} style={kanriBtn(C.inset, C.text, { border: `1px solid ${C.border}`, fontSize: 13, padding: "10px 12px" })}>📋 一覧</button>
+        <button onClick={onNew} style={kanriBtn(C.accent, "#fff", { fontSize: 13, padding: "10px 12px" })}>＋ 登録</button>
+      </div>
+    </div>
+    <Section title="🔥 売却の気配あり" color={C.danger} items={sellSig.length} empty="直近の巡回で売却の気配がある物件はありません">
+      {sellSig.map(({ p, v }) => <Row key={p.id} p={p} right={kanriMD(v.visited_on)} sub={v.sell_signal_note || v.talk_memo || kanriShortAddr(p.property_addr)} />)}
+    </Section>
+    <Section title="🚶 今月まだ巡回していない" color={C.warn} items={notVisited.length} empty="今月の巡回はすべて済んでいます">
+      {notVisited.map(p => { const l = kanriLatest(visits, p.id); return <Row key={p.id} p={p} right={l ? "前回 " + kanriMD(l.visited_on) : "未巡回"} />; })}
+    </Section>
+    <Section title="💴 未集金" items={unpaid.length} empty="今月の集金予定はありません">
+      {unpaid.map(p => <Row key={p.id} p={p} right={p.billing === "年払い" ? kanriYen(p.annual_fee || p.monthly_fee * 12) + "（年）" : kanriYen(p.monthly_fee)} sub={p.billing + "　" + kanriShortAddr(p.property_addr)} />)}
+    </Section>
+    <Section title="🛠 オプション提案中" items={optPending.length} empty="返事待ちの提案はありません">
+      {optPending.map(v => { const p = byId[v.property_id]; return <Row key={v.id} p={p} right={v.option_price ? kanriYen(v.option_price) : ""} sub={`${v.option_proposed || "オプション"}（${kanriMD(v.visited_on)}提案）`} />; })}
+    </Section>
+    <Section title="📅 次回訪問予定" items={nextList.length} empty="予定はまだありません">
+      {nextList.map(({ p, v }) => <Row key={p.id} p={p} right={kanriMD(v.next_visit_on)} />)}
+    </Section>
+    <div style={{ fontSize: 11, color: C.muted, textAlign: "center", marginTop: 8, lineHeight: 1.6 }}>🔒 このタブのデータはログイン中の下田さんだけが読めます（他のメンバーの端末からは見えません）</div>
+  </div>;
+}
+
+function KanriList({ props, visits, onBack, onOpen, onNew }) {
+  const [sort, setSort] = useState("rank");
+  const [filt, setFilt] = useState("契約中");
+  const ym = kanriToday().slice(0, 7);
+  let rows = props.map(p => ({ p, l: kanriLatest(visits, p.id) }));
+  if (filt === "契約中") rows = rows.filter(r => !kanriEnded(r.p));
+  else if (filt === "今月未巡回") rows = rows.filter(r => !kanriEnded(r.p) && !(r.l && String(r.l.visited_on).startsWith(ym)));
+  else if (filt === "売却A") rows = rows.filter(r => !kanriEnded(r.p) && r.p.sell_rank === "A");
+  else if (filt === "解約済") rows = rows.filter(r => kanriEnded(r.p));
+  else if (["年払い", "月払い現金", "月払い振込", "口座振替"].includes(filt)) rows = rows.filter(r => r.p.billing === filt);
+  const rk = { A: 0, B: 1, C: 2 };
+  rows.sort((a, b) => sort === "rank" ? ((rk[a.p.sell_rank] ?? 3) - (rk[b.p.sell_rank] ?? 3)) :
+    sort === "last" ? String(a.l ? a.l.visited_on : "").localeCompare(String(b.l ? b.l.visited_on : "")) :
+    sort === "fee" ? kanriMonthly(b.p) - kanriMonthly(a.p) : String(a.p.owner_kana || a.p.owner_name).localeCompare(String(b.p.owner_kana || b.p.owner_name), "ja"));
+  const sel = { ...kanriInput, padding: "8px 10px", fontSize: 14, width: "auto", flex: 1 };
+  return <div>
+    <KanriBack onBack={onBack} title="📋 管理物件の一覧" />
+    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <select value={filt} onChange={e => setFilt(e.target.value)} style={sel}>
+        {["契約中", "今月未巡回", "売却A", "年払い", "月払い現金", "月払い振込", "口座振替", "解約済", "すべて"].map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+      <select value={sort} onChange={e => setSort(e.target.value)} style={sel}>
+        <option value="rank">売却ランク順</option><option value="last">巡回が古い順</option><option value="fee">月額が高い順</option><option value="name">名前順</option>
+      </select>
+    </div>
+    <button onClick={onNew} style={kanriBtn(C.accent, "#fff", { width: "100%", marginBottom: 12 })}>＋ 管理物件を登録</button>
+    {!rows.length && <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: 20 }}>該当する物件はありません</div>}
+    {rows.map(({ p, l }) => <button key={p.id} onClick={() => onOpen(p.id)} style={{ ...kanriCard, display: "block", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: C.text }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontWeight: 800, fontSize: 16 }}>{p.owner_name}様</span>
+        {p.sell_rank && <span style={{ fontSize: 11, fontWeight: 800, padding: "2px 7px", borderRadius: 8, background: p.sell_rank === "A" ? C.dangerBg : C.inset, color: p.sell_rank === "A" ? C.danger : C.muted }}>売却{p.sell_rank}</span>}
+        {kanriEnded(p) && <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 8, background: C.inset, color: C.muted }}>解約済</span>}
+        <span style={{ marginLeft: "auto", fontWeight: 800, color: C.accent }}>{kanriYen(p.monthly_fee)}</span>
+      </div>
+      <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>{kanriShortAddr(p.property_addr)}</div>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{p.plan}プラン・{p.billing}　最終巡回 {l ? kanriMD(l.visited_on) : "なし"}　看板{p.sign_installed ? "あり" : "なし"}</div>
+    </button>)}
+  </div>;
+}
+
+function KanriDetail({ prop: p, visits, onBack, onEdit, onVisit, onReport, onOpenJiage }) {
+  const allPhotos = visits.flatMap(v => v.photos || []);
+  const urls = useKanriPhotoUrls(allPhotos);
+  const rawJiage = p.jiage_id ? String(p.jiage_id).replace(/^jiage::/, "") : "";
+  const KV = ({ k, v }) => v ? <div style={{ display: "flex", gap: 10, fontSize: 13, padding: "5px 0", borderBottom: `1px solid ${C.borderDim}` }}>
+    <div style={{ width: 92, flexShrink: 0, color: C.muted }}>{k}</div><div style={{ flex: 1, color: C.text, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{v}</div></div> : null;
+  const tel = String(p.owner_phone || "").replace(/[^\d+]/g, "");
+  return <div>
+    <KanriBack onBack={onBack} title={p.owner_name + "様"} />
+    <button onClick={() => onVisit(null)} style={kanriBtn(C.accent, "#fff", { width: "100%", fontSize: 17, padding: 16, marginBottom: 10 })}>📝 巡回を記録</button>
+    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <button onClick={onEdit} style={kanriBtn(C.inset, C.text, { flex: 1, border: `1px solid ${C.border}`, fontSize: 14 })}>✏️ 台帳を編集</button>
+      {rawJiage
+        ? <button onClick={() => onOpenJiage(rawJiage)} style={kanriBtn(C.inset, C.accent, { flex: 1, border: `1px solid ${C.accent}66`, fontSize: 14 })}>🏚 仕入れ案件を開く</button>
+        : <div style={{ flex: 1, fontSize: 11, color: C.muted, alignSelf: "center", lineHeight: 1.4 }}>地上げ案件とは未連携（地上げの所有者詳細から「管理契約を登録」で連携）</div>}
+    </div>
+    <div style={kanriCard}>
+      <div style={{ fontSize: 22, fontWeight: 800, color: C.accent }}>{kanriYen(p.monthly_fee)}<span style={{ fontSize: 12, color: C.muted }}>/月</span>
+        <span style={{ fontSize: 13, color: C.text, marginLeft: 8 }}>{p.plan}プラン</span>
+        {kanriEnded(p) && <span style={{ fontSize: 12, color: C.danger, marginLeft: 8 }}>解約済（{p.end_reason || ""}）</span>}</div>
+      <KV k="物件" v={p.property_addr} />
+      <KV k="所有者住所" v={p.owner_addr} />
+      <KV k="フリガナ" v={p.owner_kana} />
+      <KV k="電話" v={p.owner_phone && <a href={"tel:" + tel} style={{ color: C.accent }}>{p.owner_phone}</a>} />
+      <KV k="LINE等" v={p.owner_line} />
+      <KV k="支払い" v={p.billing + (p.billing === "年払い" && p.annual_fee ? `（年額 ${kanriYen(p.annual_fee)}）` : "")} />
+      <KV k="契約" v={`${p.contract_start} 〜 ${p.contract_end || ""}`} />
+      <KV k="報告方法" v={p.contact_mode} />
+      <KV k="売却ランク" v={p.sell_rank} />
+      <KV k="鍵" v={p.key_kept ? "預かり中" + (p.key_note ? "（" + p.key_note + "）" : "") : "預かりなし"} />
+      <KV k="看板" v={p.sign_installed ? "設置済" + (p.sign_installed_at ? "（" + p.sign_installed_at + "）" : "") : "未設置"} />
+      <KV k="メモ" v={p.memo} />
+    </div>
+    <div style={{ fontSize: 15, fontWeight: 800, color: C.text, margin: "6px 0 8px" }}>巡回の履歴（{visits.length}回）</div>
+    {!visits.length && <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>まだ巡回の記録はありません</div>}
+    {visits.map(v => {
+      const bad = Object.entries(v.checks || {}).filter(([, x]) => x === "注意" || x === "異常");
+      return <div key={v.id} style={kanriCard}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 800, fontSize: 15 }}>{kanriMD(v.visited_on)}</span>
+          {bad.length ? bad.map(([k, x]) => <span key={k} style={{ fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 8, background: (KANRI_CHECK_COLORS[x]) + "22", color: KANRI_CHECK_COLORS[x] }}>{k}:{x}</span>)
+            : <span style={{ fontSize: 11, color: C.success, fontWeight: 700 }}>異常なし</span>}
+          {v.sell_signal && <span style={{ fontSize: 11, fontWeight: 800, padding: "2px 7px", borderRadius: 8, background: C.dangerBg, color: C.danger }}>🔥 売却の気配</span>}
+          {v.report_sent_at ? <span style={{ fontSize: 11, color: C.success }}>報告済</span> : <span style={{ fontSize: 11, color: C.warn }}>未報告</span>}
+        </div>
+        {v.issues && <div style={{ fontSize: 13, marginTop: 6, whiteSpace: "pre-wrap" }}>{v.issues}</div>}
+        {v.met_owner && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>👤 対面{v.collected ? `・集金 ${kanriYen(v.collected)}${v.collected_for ? "（" + v.collected_for + "）" : ""}${v.receipt_issued ? "・領収書済" : ""}` : ""}</div>}
+        {v.talk_memo && <div style={{ fontSize: 12, color: C.muted, marginTop: 4, whiteSpace: "pre-wrap" }}>💬 {v.talk_memo}</div>}
+        {v.sell_signal_note && <div style={{ fontSize: 12, color: C.danger, marginTop: 4, whiteSpace: "pre-wrap" }}>🔥 {v.sell_signal_note}</div>}
+        {v.option_proposed && <div style={{ fontSize: 12, marginTop: 4 }}>🛠 {v.option_proposed}{v.option_price ? " " + kanriYen(v.option_price) : ""}（{v.option_status || "提案中"}）</div>}
+        {(v.photos || []).length > 0 && <div style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 8 }}>
+          {v.photos.map(ph => urls[ph] ? <a key={ph} href={urls[ph]} target="_blank" rel="noopener"><img src={urls[ph]} alt="" style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} /></a>
+            : <div key={ph} style={{ width: 84, height: 84, borderRadius: 8, background: C.inset, flexShrink: 0 }} />)}
+        </div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <button onClick={() => onReport(v.id)} style={kanriBtn(C.inset, C.accent, { flex: 1, fontSize: 13, padding: "9px", border: `1px solid ${C.accent}66` })}>📨 報告文</button>
+          <button onClick={() => onVisit(v)} style={kanriBtn(C.inset, C.text, { flex: 1, fontSize: 13, padding: "9px", border: `1px solid ${C.border}` })}>✏️ 直す</button>
+        </div>
+      </div>;
+    })}
+  </div>;
+}
+
+function KanriPropForm({ draft, onCancel, onSaved, onDeleted }) {
+  const [f, setF] = useState(draft);
+  const [busy, setBusy] = useState(false), [err, setErr] = useState("");
+  const set = (k, v) => setF(o => ({ ...o, [k]: v }));
+  const num = (v) => { const n = parseInt(String(v).replace(/[^\d]/g, ""), 10); return isNaN(n) ? null : n; };
+  const save = async () => {
+    if (!String(f.owner_name || "").trim()) return setErr("所有者名を入れてください");
+    if (!String(f.property_addr || "").trim()) return setErr("物件の住所を入れてください");
+    if (!f.monthly_fee) return setErr("月額を入れてください");
+    setBusy(true); setErr("");
+    try {
+      const row = await kanriSaveProperty({ ...f, owner_name: f.owner_name.trim(), property_addr: f.property_addr.trim() });
+      if (!row) throw new Error("保存できませんでした");
+      onSaved(row);
+    } catch (e) { setErr(e.message || String(e)); }
+    setBusy(false);
+  };
+  const del = async () => {
+    if (!window.confirm(`${f.owner_name}様の管理物件を削除しますか？\n巡回の記録もすべて消えます（元に戻せません）。\n\n解約の場合は削除せず「解約日」を入れてください。`)) return;
+    setBusy(true);
+    try {
+      const vs = await kanriApi(`/rest/v1/kanri_visits?select=photos&property_id=eq.${f.id}`);
+      await kanriDeletePhotos((vs || []).flatMap(v => v.photos || [])).catch(() => {});
+      await kanriDeleteRow("kanri_properties", f.id); onDeleted(f.id);
+    } catch (e) { setErr(e.message || String(e)); setBusy(false); }
+  };
+  const T = (k, ph, type) => <input type={type || "text"} value={f[k] ?? ""} placeholder={ph || ""} onChange={e => set(k, e.target.value)} style={kanriInput} />;
+  return <div>
+    <KanriBack onBack={onCancel} title={f.id ? "台帳を編集" : "管理物件を登録"} />
+    {f.jiage_id && <div style={{ fontSize: 12, color: C.success, marginBottom: 10 }}>🔗 地上げ案件と連携しています（所有者・物件の情報を引き継ぎました）</div>}
+    <div style={kanriCard}>
+      <KanriField label="所有者名 *">{T("owner_name", "山田 太郎")}</KanriField>
+      <KanriField label="フリガナ">{T("owner_kana")}</KanriField>
+      <KanriField label="所有者の住所（訪問先）">{T("owner_addr")}</KanriField>
+      <KanriField label="電話">{T("owner_phone", "", "tel")}</KanriField>
+      <KanriField label="LINE名など報告先のメモ">{T("owner_line")}</KanriField>
+      <KanriField label="管理する空き家の住所 *">{T("property_addr")}</KanriField>
+    </div>
+    <div style={kanriCard}>
+      <KanriField label="プラン"><KanriSeg value={f.plan} options={["外回り", "室内"]} colors={{ "外回り": C.accent, "室内": C.accent }}
+        onChange={v => setF(o => ({ ...o, plan: v, monthly_fee: (o.monthly_fee === 3000 || o.monthly_fee === 5000 || !o.monthly_fee) ? (v === "室内" ? 5000 : 3000) : o.monthly_fee }))} /></KanriField>
+      <KanriField label="月額（円） *"><input inputMode="numeric" value={f.monthly_fee ?? ""} onChange={e => set("monthly_fee", num(e.target.value))} style={kanriInput} /></KanriField>
+      <KanriField label="支払い方法"><KanriSeg value={f.billing} options={["年払い", "月払い現金", "月払い振込", "口座振替"]} colors={{ "年払い": C.accent, "月払い現金": C.accent, "月払い振込": C.accent, "口座振替": C.accent }} onChange={v => set("billing", v)} /></KanriField>
+      {f.billing === "年払い" && <KanriField label="年額（割引後・円）" note={f.monthly_fee ? `月額×12＝${kanriYen(f.monthly_fee * 12)}` : ""}><input inputMode="numeric" value={f.annual_fee ?? ""} onChange={e => set("annual_fee", num(e.target.value))} style={kanriInput} /></KanriField>}
+      <KanriField label="契約開始日 *">{T("contract_start", "", "date")}</KanriField>
+      <KanriField label="報告方法"><KanriSeg value={f.contact_mode} options={["月1対面", "LINE報告", "郵送"]} colors={{ "月1対面": C.accent, "LINE報告": C.accent, "郵送": C.accent }} onChange={v => set("contact_mode", v)} /></KanriField>
+      <KanriField label="売却の可能性（A=高）"><KanriSeg value={f.sell_rank || null} options={["A", "B", "C"]} onChange={v => set("sell_rank", v)} /></KanriField>
+    </div>
+    <div style={kanriCard}>
+      <KanriField label="鍵"><KanriToggle value={!!f.key_kept} onChange={v => set("key_kept", v)} label="鍵を預かっている" /></KanriField>
+      {f.key_kept && <KanriField label="鍵のメモ（本数・保管場所）">{T("key_note")}</KanriField>}
+      <KanriField label="看板"><KanriToggle value={!!f.sign_installed} onChange={v => setF(o => ({ ...o, sign_installed: v, sign_installed_at: v && !o.sign_installed_at ? kanriToday() : o.sign_installed_at }))} label="「管理物件・定期巡回中 VISION」看板を設置済" /></KanriField>
+      {f.sign_installed && <KanriField label="設置日">{T("sign_installed_at", "", "date")}</KanriField>}
+      <KanriField label="メモ"><textarea value={f.memo ?? ""} onChange={e => set("memo", e.target.value)} rows={3} style={{ ...kanriInput, resize: "vertical" }} /></KanriField>
+    </div>
+    {f.id && <div style={kanriCard}>
+      <KanriField label="解約日（空欄＝契約中）">{T("contract_end", "", "date")}</KanriField>
+      {f.contract_end && <KanriField label="解約理由"><KanriSeg value={f.end_reason || null} options={["売却", "解体", "自己管理", "その他"]} onChange={v => set("end_reason", v)} /></KanriField>}
+    </div>}
+    {err && <div style={{ background: C.dangerBg, color: C.danger, borderRadius: 8, padding: "8px 10px", fontSize: 13, marginBottom: 10 }}>⚠ {err}</div>}
+    <button onClick={save} disabled={busy} style={kanriBtn(C.accent, "#fff", { width: "100%", fontSize: 17, padding: 16, opacity: busy ? 0.6 : 1 })}>{busy ? "保存中…" : "💾 保存"}</button>
+    {f.id && <button onClick={del} disabled={busy} style={kanriBtn("transparent", C.danger, { width: "100%", marginTop: 14, fontSize: 13, border: `1px solid ${C.danger}55` })}>🗑 この管理物件を削除</button>}
+  </div>;
+}
+
+function KanriVisitForm({ prop: p, draft, isNew, onCancel, onSaved, onDeleted }) {
+  const [f, setF] = useState(draft);
+  const [newPhotos, setNewPhotos] = useState([]); // { blob, url }
+  const [removed, setRemoved] = useState([]);
+  const [busy, setBusy] = useState(""), [err, setErr] = useState("");
+  const set = (k, v) => setF(o => ({ ...o, [k]: v }));
+  const num = (v) => { const n = parseInt(String(v).replace(/[^\d]/g, ""), 10); return isNaN(n) ? null : n; };
+  const urls = useKanriPhotoUrls(f.photos || []);
+  const keys = p.plan === "室内" ? [...KANRI_CHECKS_OUT, ...KANRI_CHECKS_IN] : KANRI_CHECKS_OUT;
+  useEffect(() => () => newPhotos.forEach(x => URL.revokeObjectURL(x.url)), []);
+  const addFiles = async (files) => {
+    const list = Array.from(files || []); if (!list.length) return;
+    setBusy("写真を縮めています…");
+    const out = [];
+    for (const fl of list) { try { const b = await kanriCompressImage(fl); out.push({ blob: b, url: URL.createObjectURL(b) }); } catch (e) { setErr(e.message); } }
+    setNewPhotos(a => a.concat(out)); setBusy("");
+  };
+  const save = async () => {
+    setErr("");
+    try {
+      const s = kanriSessGet(); if (!s || !s.user_id) throw new Error("ログインし直してください（その他 → 空き家管理）");
+      const kept = (f.photos || []).filter(x => !removed.includes(x));
+      const added = [];
+      const base = Date.now().toString(36);
+      for (let i = 0; i < newPhotos.length; i++) {
+        setBusy(`写真を送っています ${i + 1}/${newPhotos.length}`);
+        const path = `${s.user_id}/${p.id}/${f.id}/${base}_${String(i + 1).padStart(2, "0")}.jpg`;
+        await kanriUploadPhoto(path, newPhotos[i].blob);
+        added.push(path);
+      }
+      setBusy("保存しています…");
+      const row = await kanriSaveVisit({ ...f, photos: kept.concat(added), collected: f.met_owner ? f.collected : null }, isNew);
+      if (!row) throw new Error("保存できませんでした");
+      if (removed.length) kanriDeletePhotos(removed).catch(() => {});
+      setBusy(""); onSaved(row);
+    } catch (e) { setErr((e.message || String(e)) + "（電波の良い所でもう一度「保存」を押してください。入力は消えていません）"); setBusy(""); }
+  };
+  const del = async () => {
+    if (!window.confirm("この巡回の記録を削除しますか？写真も消えます（元に戻せません）")) return;
+    setBusy("削除しています…");
+    try { await kanriDeletePhotos(f.photos || []).catch(() => {}); await kanriDeleteRow("kanri_visits", f.id); onDeleted(f.id); }
+    catch (e) { setErr(e.message || String(e)); setBusy(""); }
+  };
+  const photoBtn = { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "14px", borderRadius: 10, border: `2px dashed ${C.accent}88`, color: C.accent, fontWeight: 800, fontSize: 15, cursor: "pointer", background: C.surface };
+  return <div>
+    <KanriBack onBack={onCancel} title={`${isNew ? "巡回を記録" : "巡回を直す"}：${p.owner_name}様`} />
+    <div style={{ fontSize: 12, color: C.muted, marginTop: -10, marginBottom: 12 }}>{kanriShortAddr(p.property_addr)}（{p.plan}プラン）</div>
+    <div style={kanriCard}>
+      <KanriField label="巡回日"><input type="date" value={f.visited_on || ""} onChange={e => setF(o => ({ ...o, visited_on: e.target.value, next_visit_on: isNew ? kanriAddMonth(e.target.value) : o.next_visit_on }))} style={kanriInput} /></KanriField>
+      {keys.map(k => <div key={k} style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.text, marginBottom: 5 }}>{k}</div>
+        <KanriSeg value={(f.checks || {})[k] || "ok"} options={["ok", "注意", "異常"]} colors={KANRI_CHECK_COLORS} onChange={v => setF(o => ({ ...o, checks: { ...(o.checks || {}), [k]: v } }))} />
+      </div>)}
+      {keys.some(k => ["注意", "異常"].includes((f.checks || {})[k])) || f.issues ? <KanriField label="気づいたこと（報告文に入ります）"><textarea value={f.issues ?? ""} onChange={e => set("issues", e.target.value)} rows={2} style={{ ...kanriInput, resize: "vertical" }} /></KanriField> : null}
+    </div>
+    <div style={kanriCard}>
+      <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>📷 写真（{(f.photos || []).filter(x => !removed.includes(x)).length + newPhotos.length}枚）</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <label style={photoBtn}>📷 撮る<input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={e => { addFiles(e.target.files); e.target.value = ""; }} /></label>
+        <label style={photoBtn}>🖼 選ぶ<input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={e => { addFiles(e.target.files); e.target.value = ""; }} /></label>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+        {(f.photos || []).filter(x => !removed.includes(x)).map(ph => <div key={ph} style={{ position: "relative" }}>
+          {urls[ph] ? <img src={urls[ph]} alt="" style={{ width: 76, height: 76, objectFit: "cover", borderRadius: 8 }} /> : <div style={{ width: 76, height: 76, borderRadius: 8, background: C.inset }} />}
+          <button onClick={() => setRemoved(r => r.concat([ph]))} style={{ position: "absolute", top: -6, right: -6, width: 24, height: 24, borderRadius: 12, border: "none", background: C.danger, color: "#fff", fontSize: 13, cursor: "pointer" }}>×</button>
+        </div>)}
+        {newPhotos.map((x, i) => <div key={x.url} style={{ position: "relative" }}>
+          <img src={x.url} alt="" style={{ width: 76, height: 76, objectFit: "cover", borderRadius: 8, outline: `2px solid ${C.accent}` }} />
+          <button onClick={() => { URL.revokeObjectURL(x.url); setNewPhotos(a => a.filter((_, j) => j !== i)); }} style={{ position: "absolute", top: -6, right: -6, width: 24, height: 24, borderRadius: 12, border: "none", background: C.danger, color: "#fff", fontSize: 13, cursor: "pointer" }}>×</button>
+        </div>)}
+      </div>
+    </div>
+    <div style={kanriCard}>
+      <KanriToggle value={!!f.met_owner} onChange={v => set("met_owner", v)} label="所有者と会った" />
+      {f.met_owner && <div style={{ marginTop: 12 }}>
+        <KanriField label="集金額（円）"><input inputMode="numeric" value={f.collected ?? ""} onChange={e => set("collected", num(e.target.value))} placeholder="なければ空欄" style={kanriInput} /></KanriField>
+        {f.collected ? <>
+          <KanriField label="何の分"><input value={f.collected_for ?? ""} onChange={e => set("collected_for", e.target.value)} placeholder={p.billing === "年払い" ? "年払い（2026年分）" : `${Number(String(f.visited_on).slice(5, 7))}月分`} style={kanriInput} /></KanriField>
+          <div style={{ marginBottom: 12 }}><KanriToggle value={!!f.receipt_issued} onChange={v => set("receipt_issued", v)} label="領収書を渡した" /></div>
+        </> : null}
+        <KanriField label="会話メモ"><textarea value={f.talk_memo ?? ""} onChange={e => set("talk_memo", e.target.value)} rows={3} style={{ ...kanriInput, resize: "vertical" }} /></KanriField>
+        <KanriToggle value={!!f.sell_signal} onChange={v => set("sell_signal", v)} label="🔥 売却の気配あり" />
+        {f.sell_signal && <div style={{ marginTop: 10 }}><KanriField label="どんな気配？"><textarea value={f.sell_signal_note ?? ""} onChange={e => set("sell_signal_note", e.target.value)} rows={2} placeholder="例：子どもが住む予定なし、固定資産税が負担" style={{ ...kanriInput, resize: "vertical" }} /></KanriField></div>}
+      </div>}
+    </div>
+    <div style={kanriCard}>
+      <KanriField label="オプションの提案（草刈り・剪定など）"><input value={f.option_proposed ?? ""} onChange={e => set("option_proposed", e.target.value)} placeholder="なければ空欄" style={kanriInput} /></KanriField>
+      {f.option_proposed ? <>
+        <KanriField label="金額（円）"><input inputMode="numeric" value={f.option_price ?? ""} onChange={e => set("option_price", num(e.target.value))} style={kanriInput} /></KanriField>
+        <KanriField label="状況"><KanriSeg value={f.option_status || "提案中"} options={["提案中", "承諾", "見送り", "実施済"]} colors={{ "提案中": C.warn, "承諾": C.accent, "見送り": "#64748b", "実施済": C.success }} onChange={v => set("option_status", v)} /></KanriField>
+      </> : null}
+      <KanriField label="次回の訪問日"><input type="date" value={f.next_visit_on || ""} onChange={e => set("next_visit_on", e.target.value)} style={kanriInput} /></KanriField>
+    </div>
+    {err && <div style={{ background: C.dangerBg, color: C.danger, borderRadius: 8, padding: "8px 10px", fontSize: 13, marginBottom: 10 }}>⚠ {err}</div>}
+    <button onClick={save} disabled={!!busy} style={kanriBtn(C.accent, "#fff", { width: "100%", fontSize: 17, padding: 16, opacity: busy ? 0.6 : 1 })}>{busy || "💾 保存して報告文へ"}</button>
+    {!isNew && <button onClick={del} disabled={!!busy} style={kanriBtn("transparent", C.danger, { width: "100%", marginTop: 14, fontSize: 13, border: `1px solid ${C.danger}55` })}>🗑 この記録を削除</button>}
+  </div>;
+}
+
+function KanriReport({ prop: p, visit: v, after, onBack, onSaved }) {
+  const [text, setText] = useState(() => kanriReportText(p, v));
+  const [msg, setMsg] = useState(""), [busy, setBusy] = useState(false);
+  const urls = useKanriPhotoUrls(v.photos || []);
+  const flash = (m) => { setMsg(m); setTimeout(() => setMsg(""), 2500); };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); flash("✅ 文をコピーしました（LINEに貼り付けてください）"); }
+    catch (e) { flash("コピーできませんでした。文を長押しして選んでください"); }
+  };
+  const getFiles = async () => {
+    const files = [];
+    for (let i = 0; i < (v.photos || []).length; i++) {
+      const b = await kanriApi(`/storage/v1/object/authenticated/${KANRI_BUCKET}/${v.photos[i]}`, { blob: true });
+      files.push(new File([b], `${v.visited_on}_${i + 1}.jpg`, { type: "image/jpeg" }));
+    }
+    return files;
+  };
+  const sharePhotos = async () => {
+    if (!(v.photos || []).length) return flash("写真がありません");
+    setBusy(true);
+    try {
+      const files = await getFiles();
+      if (navigator.canShare && navigator.canShare({ files })) { await navigator.share({ files }); }
+      else {
+        files.forEach(fl => { const a = document.createElement("a"); a.href = URL.createObjectURL(fl); a.download = fl.name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); });
+        flash("写真をダウンロードしました");
+      }
+    } catch (e) { if (e && e.name !== "AbortError") flash("写真を共有できませんでした：" + (e.message || e)); }
+    setBusy(false);
+  };
+  const markSent = async () => {
+    setBusy(true);
+    try { const row = await kanriSaveVisit({ ...v, report_sent_at: v.report_sent_at ? null : new Date().toISOString() }, false); if (row) onSaved(row); flash(v.report_sent_at ? "未報告に戻しました" : "✅ 報告済みにしました"); }
+    catch (e) { flash("保存できませんでした：" + (e.message || e)); }
+    setBusy(false);
+  };
+  return <div>
+    <KanriBack onBack={onBack} title={`📨 報告：${p.owner_name}様`} />
+    {after && <div style={{ background: C.successBg, color: C.success, borderRadius: 10, padding: "10px 12px", fontSize: 13, fontWeight: 700, marginBottom: 12 }}>✅ 巡回を保存しました。続けて所有者へ報告できます。</div>}
+    <div style={kanriCard}>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>{kanriMD(v.visited_on)}の巡回（文は直せます）</div>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={9} style={{ ...kanriInput, resize: "vertical", lineHeight: 1.6 }} />
+      <button onClick={copy} style={kanriBtn(C.accent, "#fff", { width: "100%", marginTop: 10 })}>📋 文をコピー</button>
+    </div>
+    <div style={kanriCard}>
+      <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>📷 写真 {(v.photos || []).length}枚</div>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 10 }}>
+        {(v.photos || []).map(ph => urls[ph] ? <img key={ph} src={urls[ph]} alt="" style={{ width: 76, height: 76, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} /> : <div key={ph} style={{ width: 76, height: 76, borderRadius: 8, background: C.inset, flexShrink: 0 }} />)}
+      </div>
+      <button onClick={sharePhotos} disabled={busy} style={kanriBtn(C.inset, C.accent, { width: "100%", border: `1px solid ${C.accent}66`, opacity: busy ? 0.6 : 1 })}>{busy ? "準備中…" : "📤 写真をまとめて共有（LINEなど）"}</button>
+    </div>
+    <button onClick={markSent} disabled={busy} style={kanriBtn(v.report_sent_at ? C.inset : C.success, v.report_sent_at ? C.muted : "#fff", { width: "100%", border: v.report_sent_at ? `1px solid ${C.border}` : "none" })}>
+      {v.report_sent_at ? `報告済み（${new Date(v.report_sent_at).toLocaleDateString("ja-JP")}）→ 未報告に戻す` : "✅ 送った（報告済みにする）"}</button>
+    {msg && <div style={{ position: "fixed", left: 16, right: 16, bottom: 90, background: C.text, color: C.cardBg, borderRadius: 10, padding: "12px 14px", fontSize: 14, textAlign: "center", zIndex: 500 }}>{msg}</div>}
+  </div>;
+}
+// ===================== /空き家管理（VISION） =====================
+
+
 function MorePage({ data, setData, onLock, onSwitchUser }) {
   const [subPage, setSubPage] = useState(null);
   const [currentUser, setCurrentUserState] = useState(getCurrentUser());
@@ -42780,6 +43566,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
   if (subPage === "shorui") return <ShoruiPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "dm") return <DMPage data={data} setData={setData} onBack={() => setSubPage(null)} />;
   if (subPage === "whatsnew") return <WhatsNewPage currentUser={currentUser} onBack={() => setSubPage(null)} />;
+  if (subPage === "kanrilogin") return <KanriLoginPage onBack={() => setSubPage(null)} />; // 🆕 v9.725
   const hasPin = !!getPin();
   const activityLog = data.activityLog || [];
   const notifPermission = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
@@ -43023,6 +43810,7 @@ function MorePage({ data, setData, onLock, onSwitchUser }) {
         { key: "shorui", icon: "folder", title: "書類関係", desc: "精算書ひな形・各種テンプレート", count: null },
         { key: "keiyaku", icon: "clipboard", title: "契約書自動作成ツール", desc: "重要事項説明書＋売買契約書をExcelで自動生成（会社PCで起動中のとき）", count: null, action: openKeiyakuTool },
         { key: "dm", icon: "mail", title: "DM管理", desc: "送付・返送・反応の管理／窓付き封筒の手紙を一括作成", count: (data.jiage || []).filter(j => dmStateFor(j) === "送付対象").length },
+        ...(canHoldPersonal(currentUser) ? [{ key: "kanrilogin", icon: "key", title: "🏠 空き家管理（VISION）", desc: kanriEnabled() ? "ログイン中（下の「管理」タブから使えます）" : "ログインすると下に「管理」タブが出ます（下田さん専用・他の人には見えません）", count: null }] : []), // 🆕 v9.725
         { key: "settings", icon: "settings", title: "その他・設定", desc: "ユーザー・パスワード・通知／セキュリティ・画面の明るさ・Web Push・操作履歴", count: null },
       ].map(item => (
         <button key={item.key} onClick={() => item.action ? item.action() : setSubPage(item.key)} style={{ width: "100%", background: C.cardBg, border: `2px solid ${C.muted + "aa"}`, boxShadow: "0 2px 8px rgba(0,0,0,.12)", borderRadius: 14, padding: 20, marginBottom: 12, textAlign: "left", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 16, touchAction: "manipulation" }}>
