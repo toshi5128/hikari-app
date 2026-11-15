@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-15-v9.725";
+const APP_VERSION = "2026-11-15-v9.726";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8895,6 +8895,8 @@ function MainApp({ onLock, onSwitchUser }) {
       <ReplyInboxHost data={data} setData={setData} />
       {/* 🆕 v9.532: 📁 ドライブから資料を1つ選ぶ */}
       <DrivePickerHost data={data} setData={setData} />
+      {/* 🆕 v9.726: 空き家管理を地上げの上に重ねて開く（下田さんの管理ログイン端末だけ） */}
+      {kanriTab && <KanriOverlayHost />}
 
       {/* Bottom Navigation */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.cardBg, borderTop: `1px solid ${C.borderDim}`, display: "flex", zIndex: 200, paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -8989,6 +8991,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.726", date: "2026-11-15", title: "空き家管理：地上げの地図と詳細に管理の情報を重ねて表示",
+    body: "地上げの地図に管理物件を🏠（月1で会いに行く所有者の自宅は👤）で出します。緑＝今月まだ／灰色＝今月巡回済み／赤＝売却の気配あり。ピンを開くと、地上げの頃の記録の下に「管理の履歴」と「📝 巡回を記録」が出ます。一覧にも「🏠 管理中」が付きます。どれも下田さんの端末だけで、他のメンバーには出ません。",
+    where: "地上げ → 地図の🏠／所有者の詳細", who: ["下田"] },
   { v: "9.725", date: "2026-11-15", title: "空き家管理（VISION）の「管理」タブ",
     body: "管理物件の台帳・毎月の巡回記録（チェック・写真・集金・会話メモ・売却の気配）・所有者への報告文づくりができます。ホームに月額ストック・今月未巡回・売却の気配あり・未集金・オプション提案中・次回予定が並びます。データはひかりの共有データとは別の金庫に入り、他のメンバーの端末からは読めません。",
     where: "その他 → 🏠 空き家管理（VISION）でログイン → 下の「管理」タブ。地上げの所有者詳細から「管理契約を登録」も可", who: ["下田"] },
@@ -10608,7 +10613,7 @@ if (typeof L !== "undefined" && L.Marker && L.Popup && !L.Marker.prototype._hkUp
   L.Marker.prototype._hkUprightPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho, svTracks, svCands, onSvCandTap, svYearRects }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho, svTracks, svCands, onSvCandTap, svYearRects, kanriPins, onKanriPinTap }) {
   // 🆕 v9.635: ルート中に普通のピンの吹き出しから「➕ ルートに追加」できるよう、最新のルート状態を覚えておく
   const routeOverlayLiveRef = React.useRef(null);
   routeOverlayLiveRef.current = routeOverlay || null;
@@ -10707,6 +10712,29 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
       clusterGroupRef.current = null;
     };
   }, []);
+
+  // 🆕 v9.726: 空き家管理の印（下田さんの管理ログイン端末だけ渡される）。🏠＝巡回する空き家／👤＝月1で会いに行く所有者宅
+  const kanriLayerRef = React.useRef(null);
+  const onKanriPinTapRef = React.useRef(onKanriPinTap);
+  onKanriPinTapRef.current = onKanriPinTap;
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (kanriLayerRef.current) { try { map.removeLayer(kanriLayerRef.current); } catch (e) {} kanriLayerRef.current = null; }
+    if (!kanriPins || !kanriPins.length) return;
+    const grp = L.layerGroup();
+    kanriPins.forEach(kp => {
+      const bg = kp.sell ? "#dc2626" : (kp.done ? "#64748b" : "#15803d");
+      const html = `<div style="position:relative;left:6px;top:-30px;width:24px;height:24px;border-radius:7px;background:${bg};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;">${kp.kind === "owner" ? "👤" : "🏠"}</div>`;
+      const mk = L.marker([kp.lat, kp.lng], { zIndexOffset: 1500, icon: L.divIcon({ className: "", html, iconSize: [0, 0], iconAnchor: [0, 0] }) });
+      mk.bindTooltip(`${kp.title}<br>${String(kp.sub).replace(/[<>&]/g, "")}${kp.done ? "<br>今月の巡回済み" : ""}`);
+      mk.on("click", () => { if (onKanriPinTapRef.current) onKanriPinTapRef.current(kp); });
+      mk.addTo(grp);
+    });
+    grp.addTo(map);
+    kanriLayerRef.current = grp;
+  }, [kanriPins, mapInstanceRef.current]);
+
 
   // 🆕 v8.133: 開いてるポップアップの ID を記憶（再生成後に復元）
   const openPopupIdRef = React.useRef(null);
@@ -27429,6 +27457,11 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
 }
 
 function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPage }) {
+  // 🆕 v9.726: 空き家管理（下田さんの管理ログイン端末だけ）。地上げのデータとは混ぜず、表示の時に重ねるだけ
+  const _kanriOk = kanriAllowed();
+  const kanriDb = useKanriStore(_kanriOk);
+  const kanriJiageSet = React.useMemo(() => new Set(_kanriOk && kanriDb ? kanriDb.props.filter(p => p.jiage_id && !kanriEnded(p)).map(p => p.jiage_id) : []), [kanriDb, _kanriOk]);
+  const kanriPins = React.useMemo(() => _kanriOk ? kanriMapPins(kanriDb) : [], [kanriDb, _kanriOk]);
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
@@ -33667,6 +33700,12 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     <div style={{ position: "relative" }}>
                     <LeafletMap
                       items={itemsWithCoord}
+                      kanriPins={kanriPins}
+                      onKanriPinTap={(kp) => {
+                        const rid = kp.jiage_id ? Number(String(kp.jiage_id).replace(/^jiage::/, "")) : NaN;
+                        const hit = !isNaN(rid) && (allItems || []).find(it => it.rawId === rid);
+                        if (hit) setSelected({ item: hit }); else kanriOpenOverlay({ k: "detail", id: kp.id, _t: Date.now() });
+                      }}
                       ghostPins={donePins}
                       areaCircles={tansakuCircles}
                       koho={kohoResult ? (() => {
@@ -34775,6 +34814,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   <Tag label={item.type === "jiage" ? "📍地上げ" : "👤所有者"} color={item.type === "jiage" ? C.accent : C.purple} />
                   <StatusTag status={item.status} />
                   <MemberTag name={item.assignee} />
+                  {/* 🆕 v9.726: 管理中（下田さんの管理ログイン端末だけ。地上げのデータには何も書かない） */}
+                  {item.type === "jiage" && kanriJiageSet.has(kanriJiageKey(item.rawId)) && <Tag label="🏠 管理中" color="#15803d" />}
                   {/* 🆕 v9.187: DM送信回数バッジ（訪問前にDM状況が一目で分かる） */}
                   {item.type === "jiage" && (() => {
                     const _r = item.raw || {}; const _st = dmStateFor(_r); if (_st === "対象外") return null;
@@ -34918,6 +34959,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                   <StatusTag status={item.status} />
                   {item.subStatus && <Tag label={item.subStatus} color={item.dm === "未" ? C.muted : C.accent} />}
                   <MemberTag name={item.assignee} />
+                  {/* 🆕 v9.726: 管理中（下田さんの管理ログイン端末だけ。地上げのデータには何も書かない） */}
+                  {item.type === "jiage" && kanriJiageSet.has(kanriJiageKey(item.rawId)) && <Tag label="🏠 管理中" color="#15803d" />}
                   {/* 🆕 v9.187: DM送信回数バッジ（訪問前にDM状況が一目で分かる） */}
                   {item.type === "jiage" && (() => {
                     const _r = item.raw || {}; const _st = dmStateFor(_r); if (_st === "対象外") return null;
@@ -36193,28 +36236,19 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               </div>
             </div>
 
-            {/* 🆕 v9.725: 空き家管理（VISION）— 管理にログイン中の下田さんの端末だけに出す。app_data には何も書かない */}
-            {kanriEnabled() && canHoldPersonal(getCurrentUser()) && (() => {
+            {/* 🆕 v9.725/726: 空き家管理（VISION）— 管理にログイン中の下田さんの端末だけに出す。app_data には何も書かない */}
+            {kanriAllowed() && <KanriJiageSection rawId={selected.item.rawId} onRegister={() => {
+              const r = _raw || {};
               const _kid = kanriJiageKey(selected.item.rawId);
-              const _managed = kanriJiageIds().includes(_kid);
-              return <div style={{ marginTop: 14 }}>
-                <button onClick={() => {
-                  const r = _raw || {};
-                  const num = (x) => (x === "" || x == null || isNaN(Number(x))) ? null : Number(x);
-                  window.dispatchEvent(new CustomEvent("kanri-open", { detail: {
+              const num = (x) => (x === "" || x == null || isNaN(Number(x))) ? null : Number(x);
+              window.dispatchEvent(new CustomEvent("kanri-open", { detail: {
                     jiage_id: _kid, owner_name: String(r.owner || r.ownerName || "").trim(), owner_kana: r.ownerKana || "",
                     owner_addr: r.ownerAddr || r.ownerAddress || "", owner_lat: num(r.ownerLat), owner_lng: num(r.ownerLng),
                     owner_phone: r.ownerContact || "", property_addr: r.address || selected.item.address || "",
                     property_lat: num(r.lat), property_lng: num(r.lng),
                   } }));
-                  setSelected(null);
-                }} style={{
-                  width: "100%", padding: "13px", background: _managed ? C.success + "22" : C.inset, border: `2px solid ${_managed ? C.success : C.border}`,
-                  color: _managed ? C.success : C.text, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
-                }}>{_managed ? "🏠 管理中（VISION）→ 管理物件を開く" : "🏠 管理契約を登録（VISION）"}</button>
-                <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>この案内は下田さんの端末にだけ出ています（管理の情報は地上げのデータには入りません）</div>
-              </div>;
-            })()}
+              setSelected(null);
+            }} />}
 
             {/* 🆕 v9.323: 売却ご提案書（査定書）を作成（一番上から移設・金額入り13ページ査定書） */}
             <div style={{ position: "relative", marginTop: 14 }}>
@@ -42815,7 +42849,7 @@ function kanriSessGet() {
 }
 function kanriSessSet(s) {
   try { if (s) localStorage.setItem(KANRI_AUTH_KEY, JSON.stringify(s)); else localStorage.removeItem(KANRI_AUTH_KEY); } catch (e) {}
-  if (!s) { try { localStorage.removeItem(KANRI_JIAGE_IDS_KEY); } catch (e) {} }
+  if (!s) { try { localStorage.removeItem(KANRI_JIAGE_IDS_KEY); localStorage.removeItem("hikari_kanri_cache_v1"); } catch (e) {} try { _kanriStore.db = null; _kanriStore.at = 0; } catch (e) {} }
   try { window.dispatchEvent(new Event("kanri-auth")); } catch (e) {}
 }
 function kanriEnabled() { const s = kanriSessGet(); return !!(s && s.member); }
@@ -42907,9 +42941,7 @@ async function kanriLoadAll() {
     kanriApi("/rest/v1/kanri_properties?select=*&order=created_at.asc"),
     kanriApi("/rest/v1/kanri_visits?select=*&order=visited_on.desc,created_at.desc"),
   ]);
-  const ps = props || [];
-  try { localStorage.setItem(KANRI_JIAGE_IDS_KEY, JSON.stringify(ps.filter(p => p.jiage_id && !kanriEnded(p)).map(p => p.jiage_id))); } catch (e) {}
-  return { props: ps, visits: visits || [] };
+  return { props: props || [], visits: visits || [] };
 }
 async function kanriSaveProperty(p) {
   const body = _kanriPick(p, _KANRI_PROP_COLS);
@@ -42983,6 +43015,48 @@ function kanriUuid() {
   const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
+
+// ---- 共有の入れ物（管理タブ・地上げの地図・地上げの詳細で同じデータを見る。この端末の中だけ） ----
+const KANRI_CACHE_KEY = "hikari_kanri_cache_v1";
+const _kanriStore = { db: null, subs: new Set(), loading: null, at: 0 };
+function kanriAllowed() { return kanriEnabled() && canHoldPersonal(getCurrentUser()); }
+function _kanriStoreInit() {
+  if (_kanriStore.db || !kanriEnabled()) return;
+  try { const c = JSON.parse(localStorage.getItem(KANRI_CACHE_KEY) || "null"); if (c && c.props) _kanriStore.db = c; } catch (e) {}
+}
+function kanriStoreSet(fnOrVal) {
+  const nd = typeof fnOrVal === "function" ? fnOrVal(_kanriStore.db) : fnOrVal;
+  _kanriStore.db = nd;
+  try {
+    if (nd) {
+      localStorage.setItem(KANRI_CACHE_KEY, JSON.stringify(nd));
+      localStorage.setItem(KANRI_JIAGE_IDS_KEY, JSON.stringify(nd.props.filter(p => p.jiage_id && !kanriEnded(p)).map(p => p.jiage_id)));
+    }
+  } catch (e) {}
+  _kanriStore.subs.forEach(f => { try { f(nd); } catch (e) {} });
+}
+function kanriStoreLoad() {
+  if (!kanriEnabled()) return Promise.resolve(null);
+  if (!_kanriStore.loading) {
+    _kanriStore.loading = kanriLoadAll().then(d => { _kanriStore.at = Date.now(); kanriStoreSet(d); return d; })
+      .finally(() => { _kanriStore.loading = null; });
+  }
+  return _kanriStore.loading;
+}
+// autoload: true のとき、ログイン中の端末だけ読みに行く（5分以内に読んでいれば読み直さない）
+function useKanriStore(autoload) {
+  _kanriStoreInit();
+  const [db, setDb] = useState(_kanriStore.db);
+  useEffect(() => {
+    const f = (d) => setDb(d);
+    _kanriStore.subs.add(f);
+    if (_kanriStore.db !== db) setDb(_kanriStore.db);
+    if (autoload && kanriAllowed() && Date.now() - _kanriStore.at > 5 * 60 * 1000) kanriStoreLoad().catch(() => {});
+    return () => { _kanriStore.subs.delete(f); };
+  }, []);
+  return db;
+}
+function kanriOpenOverlay(view) { try { window.dispatchEvent(new CustomEvent("kanri-overlay", { detail: view })); } catch (e) {} }
 
 // ---- 計算 ----
 function kanriToday() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
@@ -43083,14 +43157,20 @@ function KanriLoginPage({ onBack }) {
 
 // ---- 管理タブ本体 ----
 let _kanriLastView = null; // 地上げへ行って戻った時に同じ画面を出す
-function KanriPage({ nav, onConsumeNav, onOpenJiage }) {
-  const [db, setDb] = useState(null);       // { props, visits }
+function KanriPage({ nav, onConsumeNav, onOpenJiage, initialView, onClose }) {
+  // 🆕 v9.726: データは共有の入れ物（地上げの地図・詳細と同じもの）。onClose があれば地上げの上に重ねて開いた時
+  const db = useKanriStore(false);
+  const setDb = kanriStoreSet;
   const [err, setErr] = useState("");
-  const [view, _setView] = useState(() => _kanriLastView || { k: "home" }); // home | list | detail{id} | edit{draft} | visit{draft,isNew} | report{vid}
-  const setView = (v) => { if (["home", "list", "detail"].includes(v.k)) _kanriLastView = v; _setView(v); };
+  const [view, _setView] = useState(() => initialView || _kanriLastView || { k: "home" }); // home | list | detail{id} | edit{draft} | visit{draft,isNew} | report{vid}
+  const setView = (v) => {
+    if (onClose && (v.k === "list" || v.k === "home")) { onClose(); return; } // 重ねて開いた時は一覧に戻らず閉じる
+    if (!onClose && ["home", "list", "detail"].includes(v.k)) _kanriLastView = v;
+    _setView(v);
+  };
   const reload = async () => {
     setErr("");
-    try { setDb(await kanriLoadAll()); } catch (e) { setErr(e.message || String(e)); }
+    try { await kanriStoreLoad(); } catch (e) { setErr(e.message || String(e)); }
   };
   useEffect(() => { reload(); }, []);
   // 地上げ → 管理（登録フォームを開く／既存を開く）
@@ -43333,7 +43413,16 @@ function KanriPropForm({ draft, onCancel, onSaved, onDeleted }) {
     if (!f.monthly_fee) return setErr("月額を入れてください");
     setBusy(true); setErr("");
     try {
-      const row = await kanriSaveProperty({ ...f, owner_name: f.owner_name.trim(), property_addr: f.property_addr.trim() });
+      const g = { ...f, owner_name: f.owner_name.trim(), property_addr: f.property_addr.trim() };
+      // 🆕 v9.726: 地図に出すため住所から位置を出す（住所を変えた時・位置が無い時だけ）
+      const _geo = async (addrK, latK, lngK) => {
+        const a = String(g[addrK] || "").trim();
+        if (!a || (typeof g[latK] === "number" && a === String(draft[addrK] || "").trim())) return;
+        try { const r = await geocodeAddress(a); if (r) { g[latK] = r.lat; g[lngK] = r.lng; } } catch (e) {}
+      };
+      await _geo("property_addr", "property_lat", "property_lng");
+      await _geo("owner_addr", "owner_lat", "owner_lng");
+      const row = await kanriSaveProperty(g);
       if (!row) throw new Error("保存できませんでした");
       onSaved(row);
     } catch (e) { setErr(e.message || String(e)); }
@@ -43541,6 +43630,79 @@ function KanriReport({ prop: p, visit: v, after, onBack, onSaved }) {
       {v.report_sent_at ? `報告済み（${new Date(v.report_sent_at).toLocaleDateString("ja-JP")}）→ 未報告に戻す` : "✅ 送った（報告済みにする）"}</button>
     {msg && <div style={{ position: "fixed", left: 16, right: 16, bottom: 90, background: C.text, color: C.cardBg, borderRadius: 10, padding: "12px 14px", fontSize: 14, textAlign: "center", zIndex: 500 }}>{msg}</div>}
   </div>;
+}
+
+// ---- 🆕 v9.726: 地上げの画面の上に重ねて開く（巡回記録・管理の詳細）。地上げの画面はそのまま残る ----
+function KanriOverlayHost() {
+  const [view, setView] = useState(null);
+  useEffect(() => {
+    const f = (e) => { if (kanriAllowed()) setView((e && e.detail) || null); };
+    window.addEventListener("kanri-overlay", f);
+    return () => window.removeEventListener("kanri-overlay", f);
+  }, []);
+  if (!view || !kanriAllowed()) return null;
+  return <div style={{ position: "fixed", inset: 0, zIndex: 5000, background: C.bg, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+    <div style={{ padding: "16px 16px calc(40px + env(safe-area-inset-bottom))", maxWidth: 640, margin: "0 auto" }}>
+      <KanriPage key={String(view._t || "")} initialView={view} onClose={() => setView(null)} onOpenJiage={() => setView(null)} />
+    </div>
+  </div>;
+}
+function kanriOverlayVisit(p) {
+  const db = _kanriStore.db; const last = db ? db.visits.find(v => v.property_id === p.id) : null;
+  kanriOpenOverlay({ k: "visit", draft: kanriNewVisit(p, last), isNew: true, _t: Date.now() });
+}
+
+// ---- 🆕 v9.726: 地上げの所有者詳細に出す「管理の履歴」（下田さんの端末だけ） ----
+function KanriJiageSection({ rawId, onRegister }) {
+  const db = useKanriStore(true);
+  const key = kanriJiageKey(rawId);
+  const props = db ? db.props.filter(p => p.jiage_id === key) : (kanriJiageIds().includes(key) ? null : []);
+  if (props === null) return <div style={{ ...kanriCard, marginTop: 14, fontSize: 13, color: C.muted }}>🏠 管理の履歴を読み込み中…</div>;
+  if (!props.length) return <div style={{ marginTop: 14 }}>
+    <button onClick={onRegister} style={{ width: "100%", padding: "13px", background: C.inset, border: `2px solid ${C.border}`, color: C.text, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit" }}>🏠 管理契約を登録（VISION）</button>
+    <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>この案内は下田さんの端末にだけ出ています（管理の情報は地上げのデータには入りません）</div>
+  </div>;
+  return <div style={{ marginTop: 14 }}>
+    {props.map(p => {
+      const vs = db.visits.filter(v => v.property_id === p.id);
+      const ended = kanriEnded(p);
+      return <div key={p.id} style={{ ...kanriCard, border: `2px solid ${ended ? C.border : C.success}`, marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+          <span style={{ fontSize: 15, fontWeight: 800, color: ended ? C.muted : C.success }}>🏠 {ended ? "管理（解約済）" : "管理中"}</span>
+          <span style={{ fontSize: 12, color: C.muted }}>{p.plan}・{kanriYen(p.monthly_fee)}/月・{p.billing}{p.sell_rank ? "・売却" + p.sell_rank : ""}</span>
+          <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>🔒 下田さんだけ</span>
+        </div>
+        {!ended && <button onClick={() => kanriOverlayVisit(p)} style={kanriBtn(C.success, "#fff", { width: "100%", fontSize: 16, marginBottom: 8 })}>📝 巡回を記録</button>}
+        {!vs.length && <div style={{ fontSize: 12, color: C.muted }}>まだ巡回の記録はありません（契約 {p.contract_start}〜）</div>}
+        {vs.slice(0, 3).map(v => {
+          const bad = Object.entries(v.checks || {}).filter(([, x]) => x === "注意" || x === "異常").map(([k]) => k);
+          return <button key={v.id} onClick={() => kanriOpenOverlay({ k: "report", vid: v.id, _t: Date.now() })} style={{ display: "block", width: "100%", textAlign: "left", background: C.surface, border: `1px solid ${C.borderDim}`, borderRadius: 8, padding: "8px 10px", marginTop: 6, cursor: "pointer", fontFamily: "inherit", color: C.text }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>{kanriMD(v.visited_on)}　{bad.length ? <span style={{ color: C.warn }}>{bad.join("・")}に注意</span> : <span style={{ color: C.success }}>異常なし</span>}
+              {v.sell_signal && <span style={{ color: C.danger, marginLeft: 6 }}>🔥売却の気配</span>}
+              {v.collected ? <span style={{ color: C.accent, marginLeft: 6 }}>💴{kanriYen(v.collected)}</span> : null}</div>
+            {(v.talk_memo || v.sell_signal_note || v.issues) && <div style={{ fontSize: 12, color: C.muted, marginTop: 2, whiteSpace: "pre-wrap" }}>{[v.sell_signal_note, v.talk_memo, v.issues].filter(Boolean).join(" ／ ")}</div>}
+          </button>;
+        })}
+        <button onClick={() => kanriOpenOverlay({ k: "detail", id: p.id, _t: Date.now() })} style={kanriBtn(C.inset, C.text, { width: "100%", fontSize: 13, padding: "10px", marginTop: 8, border: `1px solid ${C.border}` })}>📋 管理の台帳・全部の履歴（{vs.length}回）</button>
+      </div>;
+    })}
+  </div>;
+}
+
+// ---- 🆕 v9.726: 地上げの地図に出す管理の印（🏠＝巡回する空き家／👤＝会いに行く所有者の自宅）。下田さんの端末だけ ----
+function kanriMapPins(db) {
+  if (!db) return [];
+  const out = [];
+  db.props.filter(p => !kanriEnded(p)).forEach(p => {
+    const l = db.visits.find(v => v.property_id === p.id);
+    const done = !!(l && String(l.visited_on).startsWith(kanriToday().slice(0, 7)));
+    const sub = `${p.owner_name}様・${p.plan}・最終巡回 ${l ? kanriMD(l.visited_on) : "なし"}`;
+    if (typeof p.property_lat === "number" && typeof p.property_lng === "number")
+      out.push({ key: p.id + ":p", id: p.id, jiage_id: p.jiage_id, lat: p.property_lat, lng: p.property_lng, kind: "prop", done, sell: !!(l && l.sell_signal), title: "🏠 管理物件", sub });
+    if (p.contact_mode === "月1対面" && typeof p.owner_lat === "number" && typeof p.owner_lng === "number")
+      out.push({ key: p.id + ":o", id: p.id, jiage_id: p.jiage_id, lat: p.owner_lat, lng: p.owner_lng, kind: "owner", done, sell: !!(l && l.sell_signal), title: "👤 管理の所有者宅（月1対面）", sub });
+  });
+  return out;
 }
 // ===================== /空き家管理（VISION） =====================
 
