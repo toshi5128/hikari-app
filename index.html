@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-15-v9.726";
+const APP_VERSION = "2026-11-15-v9.727";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8881,7 +8881,7 @@ function MainApp({ onLock, onSwitchUser }) {
         {page === "holdings" && <HoldingsPage data={data} setData={setData} currentUser={currentUser} />}
         {page === "income" && <IncomePage data={data} setData={setData} currentUser={currentUser} />}
         {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} onSwitchUser={onSwitchUser} />}
-        {page === "kanri" && kanriTab && <KanriPage nav={kanriNav} onConsumeNav={() => setKanriNav(null)} onOpenJiage={(id) => { setPendingNav({ tab: "jiage", jiageLinkId: id, returnTo: "kanri" }); setPage("jiage"); }} />}
+        {page === "kanri" && kanriTab && <KanriPage jiage={data.jiage} nav={kanriNav} onConsumeNav={() => setKanriNav(null)} onOpenJiage={(id) => { setPendingNav({ tab: "jiage", jiageLinkId: id, returnTo: "kanri" }); setPage("jiage"); }} />}
       </div>
       {/* 🆕 v9.479: 反響のお客様へのメール作成（どの画面からでも開ける） */}
       <ViewingMailHost data={data} setData={setData} />
@@ -8991,6 +8991,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.727", date: "2026-11-15", title: "管理営業：地上げで断られた自分の家に、空き家管理を提案しに行く",
+    body: "地上げで下田さんが担当して「見込無し・中長期見込・失注」になった家を、管理営業の候補として並べます。地図では💼（青＝未提案・赤＝興味あり・橙＝検討中・灰＝不在）。ピンを開くと、地上げの頃に言われたことの下に「💼 管理営業」の欄が出て、不在／興味あり／検討中／断られた／対象外を記録できます。契約になったらそのまま管理契約の登録へ。どれも下田さんの端末だけです。",
+    where: "管理 → 💼 管理営業／地上げの地図の💼", who: ["下田"] },
   { v: "9.726", date: "2026-11-15", title: "空き家管理：地上げの地図と詳細に管理の情報を重ねて表示",
     body: "地上げの地図に管理物件を🏠（月1で会いに行く所有者の自宅は👤）で出します。緑＝今月まだ／灰色＝今月巡回済み／赤＝売却の気配あり。ピンを開くと、地上げの頃の記録の下に「管理の履歴」と「📝 巡回を記録」が出ます。一覧にも「🏠 管理中」が付きます。どれも下田さんの端末だけで、他のメンバーには出ません。",
     where: "地上げ → 地図の🏠／所有者の詳細", who: ["下田"] },
@@ -10724,9 +10727,10 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     if (!kanriPins || !kanriPins.length) return;
     const grp = L.layerGroup();
     kanriPins.forEach(kp => {
-      const bg = kp.sell ? "#dc2626" : (kp.done ? "#64748b" : "#15803d");
-      const html = `<div style="position:relative;left:6px;top:-30px;width:24px;height:24px;border-radius:7px;background:${bg};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;">${kp.kind === "owner" ? "👤" : "🏠"}</div>`;
-      const mk = L.marker([kp.lat, kp.lng], { zIndexOffset: 1500, icon: L.divIcon({ className: "", html, iconSize: [0, 0], iconAnchor: [0, 0] }) });
+      const bg = kp.lead ? kp.color : (kp.sell ? "#dc2626" : (kp.done ? "#64748b" : "#15803d"));
+      const sz = kp.lead ? 20 : 24;
+      const html = `<div style="position:relative;left:6px;top:-${sz + 6}px;width:${sz}px;height:${sz}px;border-radius:${kp.lead ? "50%" : "7px"};background:${bg};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-size:${kp.lead ? 11 : 13}px;line-height:1;">${kp.kind === "owner" ? "👤" : kp.kind === "lead" ? "💼" : "🏠"}</div>`;
+      const mk = L.marker([kp.lat, kp.lng], { zIndexOffset: kp.lead ? 1400 : 1500, icon: L.divIcon({ className: "", html, iconSize: [0, 0], iconAnchor: [0, 0] }) });
       mk.bindTooltip(`${kp.title}<br>${String(kp.sub).replace(/[<>&]/g, "")}${kp.done ? "<br>今月の巡回済み" : ""}`);
       mk.on("click", () => { if (onKanriPinTapRef.current) onKanriPinTapRef.current(kp); });
       mk.addTo(grp);
@@ -27461,7 +27465,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const _kanriOk = kanriAllowed();
   const kanriDb = useKanriStore(_kanriOk);
   const kanriJiageSet = React.useMemo(() => new Set(_kanriOk && kanriDb ? kanriDb.props.filter(p => p.jiage_id && !kanriEnded(p)).map(p => p.jiage_id) : []), [kanriDb, _kanriOk]);
-  const kanriPins = React.useMemo(() => _kanriOk ? kanriMapPins(kanriDb) : [], [kanriDb, _kanriOk]);
+  const kanriPins = React.useMemo(() => _kanriOk ? kanriMapPins(kanriDb).concat(kanriLeadPins(data.jiage, kanriDb)) : [], [kanriDb, _kanriOk, data.jiage]);
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
@@ -36237,7 +36241,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             </div>
 
             {/* 🆕 v9.725/726: 空き家管理（VISION）— 管理にログイン中の下田さんの端末だけに出す。app_data には何も書かない */}
-            {kanriAllowed() && <KanriJiageSection rawId={selected.item.rawId} onRegister={() => {
+            {kanriAllowed() && <KanriJiageSection rawId={selected.item.rawId} raw={_raw} onRegister={() => {
               const r = _raw || {};
               const _kid = kanriJiageKey(selected.item.rawId);
               const num = (x) => (x === "" || x == null || isNaN(Number(x))) ? null : Number(x);
@@ -42937,11 +42941,18 @@ function _kanriPick(obj, cols) {
   return o;
 }
 async function kanriLoadAll() {
-  const [props, visits] = await Promise.all([
+  const [props, visits, leads] = await Promise.all([
     kanriApi("/rest/v1/kanri_properties?select=*&order=created_at.asc"),
     kanriApi("/rest/v1/kanri_visits?select=*&order=visited_on.desc,created_at.desc"),
+    kanriApi("/rest/v1/kanri_leads?select=*"),
   ]);
-  return { props: props || [], visits: visits || [] };
+  return { props: props || [], visits: visits || [], leads: leads || [] };
+}
+// 🆕 v9.727: 管理営業（地上げで「売らない」と言われた人へ管理を提案）の記録。1案件=1行・履歴は history に積む
+async function kanriSaveLead(l) {
+  const body = { jiage_id: l.jiage_id, status: l.status, next_on: l.next_on || null, memo: l.memo || null, history: l.history || [] };
+  const r = await kanriApi("/rest/v1/kanri_leads?on_conflict=owner_user,jiage_id", { method: "POST", body, prefer: "resolution=merge-duplicates,return=representation" });
+  return r && r[0];
 }
 async function kanriSaveProperty(p) {
   const body = _kanriPick(p, _KANRI_PROP_COLS);
@@ -43157,7 +43168,7 @@ function KanriLoginPage({ onBack }) {
 
 // ---- 管理タブ本体 ----
 let _kanriLastView = null; // 地上げへ行って戻った時に同じ画面を出す
-function KanriPage({ nav, onConsumeNav, onOpenJiage, initialView, onClose }) {
+function KanriPage({ nav, onConsumeNav, onOpenJiage, initialView, onClose, jiage }) {
   // 🆕 v9.726: データは共有の入れ物（地上げの地図・詳細と同じもの）。onClose があれば地上げの上に重ねて開いた時
   const db = useKanriStore(false);
   const setDb = kanriStoreSet;
@@ -43165,7 +43176,7 @@ function KanriPage({ nav, onConsumeNav, onOpenJiage, initialView, onClose }) {
   const [view, _setView] = useState(() => initialView || _kanriLastView || { k: "home" }); // home | list | detail{id} | edit{draft} | visit{draft,isNew} | report{vid}
   const setView = (v) => {
     if (onClose && (v.k === "list" || v.k === "home")) { onClose(); return; } // 重ねて開いた時は一覧に戻らず閉じる
-    if (!onClose && ["home", "list", "detail"].includes(v.k)) _kanriLastView = v;
+    if (!onClose && ["home", "list", "detail", "leads"].includes(v.k)) _kanriLastView = v;
     _setView(v);
   };
   const reload = async () => {
@@ -43224,9 +43235,14 @@ function KanriPage({ nav, onConsumeNav, onOpenJiage, initialView, onClose }) {
       onReport={(vid) => setView({ k: "report", vid })}
       onOpenJiage={onOpenJiage} />;
   }
+  if (view.k === "leads") return <KanriLeadList jiage={jiage} db={db} onBack={() => setView({ k: "home" })} onOpenJiage={onOpenJiage} />;
   if (view.k === "list") return <KanriList props={props} visits={visits} onBack={() => setView({ k: "home" })}
     onOpen={(id) => setView({ k: "detail", id })} onNew={() => setView({ k: "edit", draft: kanriNewProp() })} />;
-  return <KanriHome props={props} visits={visits} err={err} onReload={reload}
+  return <KanriHome props={props} visits={visits} err={err} onReload={reload} leadStats={(() => {
+      const c = kanriLeadCandidates(jiage, db); const t = kanriToday();
+      return { open: c.filter(x => KANRI_LEAD_OPEN.includes(x.st)).length, hot: c.filter(x => x.st === "興味あり" || x.st === "検討中").length,
+        fresh: c.filter(x => x.st === "未提案").length, due: c.filter(x => KANRI_LEAD_OPEN.includes(x.st) && x.lead && x.lead.next_on && x.lead.next_on <= t).length };
+    })()} onLeads={() => setView({ k: "leads" })}
     onOpen={(id) => setView({ k: "detail", id })} onList={() => setView({ k: "list" })} onNew={() => setView({ k: "edit", draft: kanriNewProp() })} />;
 }
 function kanriNewProp() {
@@ -43239,7 +43255,7 @@ function kanriNewVisit(p, last) {
 }
 function kanriLatest(visits, pid) { return visits.find(v => v.property_id === pid) || null; } // visits は新しい順
 
-function KanriHome({ props, visits, err, onReload, onOpen, onList, onNew }) {
+function KanriHome({ props, visits, err, onReload, onOpen, onList, onNew, leadStats, onLeads }) {
   const ym = kanriToday().slice(0, 7), mm = ym.slice(5, 7);
   const active = props.filter(p => !kanriEnded(p));
   const stock = active.reduce((s, p) => s + kanriMonthly(p), 0);
@@ -43280,6 +43296,18 @@ function KanriHome({ props, visits, err, onReload, onOpen, onList, onNew }) {
         <button onClick={onNew} style={kanriBtn(C.accent, "#fff", { fontSize: 13, padding: "10px 12px" })}>＋ 登録</button>
       </div>
     </div>
+    {leadStats && <button onClick={onLeads} style={{ ...kanriCard, display: "block", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: C.text, borderColor: "#2563ebaa" }}>
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <span style={{ fontSize: 15, fontWeight: 800, color: "#2563eb" }}>💼 管理営業（管理を取りに行く）</span>
+        <span style={{ marginLeft: "auto", fontSize: 20, color: C.muted }}>›</span>
+      </div>
+      <div style={{ display: "flex", gap: 14, marginTop: 6, fontSize: 13 }}>
+        <span>未提案 <b>{leadStats.fresh}</b></span>
+        <span style={{ color: "#dc2626" }}>興味・検討 <b>{leadStats.hot}</b></span>
+        {leadStats.due > 0 && <span style={{ color: C.danger }}>今日まで <b>{leadStats.due}</b></span>}
+      </div>
+      <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>地上げで「売らない」と言われた自分の担当の家 {leadStats.open}件。地図では💼で出ます</div>
+    </button>}
     <Section title="🔥 売却の気配あり" color={C.danger} items={sellSig.length} empty="直近の巡回で売却の気配がある物件はありません">
       {sellSig.map(({ p, v }) => <Row key={p.id} p={p} right={kanriMD(v.visited_on)} sub={v.sell_signal_note || v.talk_memo || kanriShortAddr(p.property_addr)} />)}
     </Section>
@@ -43632,6 +43660,135 @@ function KanriReport({ prop: p, visit: v, after, onBack, onSaved }) {
   </div>;
 }
 
+
+// ---- 🆕 v9.727: 管理営業（地上げで断られた自分の案件に、空き家管理を提案しに行く）。下田さんの端末だけ ----
+const KANRI_LEAD_SRC = ["見込無し", "中長期見込", "失注"];         // 地上げのこのステータスが候補
+const KANRI_LEAD_OPEN = ["未提案", "不在", "興味あり", "検討中"];  // まだ追いかける
+const KANRI_LEAD_COLORS = { "未提案": "#2563eb", "不在": "#64748b", "興味あり": "#dc2626", "検討中": "#d97706", "断られた": "#334155", "対象外": "#94a3b8", "契約": "#15803d" };
+function _kanriNum(x) { const n = Number(x); return (x === "" || x == null || isNaN(n)) ? null : n; }
+function kanriLastJiageVisit(j) {
+  const log = Array.isArray(j && j.visitLog) ? j.visitLog : [];
+  let best = null;
+  log.forEach(v => { const ts = `${v.date || ""}T${v.time || "00:00"}`; if (!best || ts > best.ts) best = { ts, v }; });
+  return best ? best.v : null;
+}
+// 候補＝自分が担当・地上げで断られた（見込無し等）・まだ管理していない。記録があるものは状況に関係なく残す
+function kanriLeadCandidates(jiage, db) {
+  if (!db || !Array.isArray(jiage)) return [];
+  const me = String(getCurrentUser() || "").trim();
+  const managed = new Set(db.props.map(p => p.jiage_id).filter(Boolean));
+  const leadBy = new Map((db.leads || []).map(l => [l.jiage_id, l]));
+  const out = [];
+  jiage.forEach(j => {
+    if (!j || j.id == null) return;
+    const key = kanriJiageKey(j.id);
+    const lead = leadBy.get(key) || null;
+    const isSrc = String(j.assignee || "").trim() === me && KANRI_LEAD_SRC.includes(j.status);
+    if (!lead && !isSrc) return;
+    if (managed.has(key)) return;
+    out.push({ j, key, lead, st: lead ? lead.status : "未提案" });
+  });
+  return out;
+}
+function kanriLeadPos(j) {
+  const ol = _kanriNum(j.ownerLat), og = _kanriNum(j.ownerLng);
+  if (ol != null && og != null) return { lat: ol, lng: og, at: "owner" };
+  const pl = _kanriNum(j.lat), pg = _kanriNum(j.lng);
+  if (pl != null && pg != null) return { lat: pl, lng: pg, at: "prop" };
+  return null;
+}
+function kanriLeadPins(jiage, db) {
+  return kanriLeadCandidates(jiage, db).filter(c => KANRI_LEAD_OPEN.includes(c.st)).map(c => {
+    const pos = kanriLeadPos(c.j); if (!pos) return null;
+    return { key: c.key + ":l", lead: true, jiage_id: c.key, lat: pos.lat, lng: pos.lng, kind: "lead", color: KANRI_LEAD_COLORS[c.st],
+      title: `💼 管理営業：${c.st}`, sub: `${c.j.owner || c.j.ownerName || ""}様・${pos.at === "owner" ? "所有者宅" : "物件"}${c.lead && c.lead.next_on ? "・次回 " + kanriMD(c.lead.next_on) : ""}` };
+  }).filter(Boolean);
+}
+
+// 地上げの詳細に出す「💼 管理営業」の記録欄
+function KanriLeadBox({ raw, lead, onContract }) {
+  const [res, setRes] = useState(null);
+  const [memo, setMemo] = useState("");
+  const [next, setNext] = useState("");
+  const [busy, setBusy] = useState(false), [err, setErr] = useState("");
+  const key = kanriJiageKey(raw.id);
+  const st = lead ? lead.status : "未提案";
+  const lastJ = kanriLastJiageVisit(raw);
+  const save = async (status, extra) => {
+    setBusy(true); setErr("");
+    try {
+      const hist = (lead && lead.history ? lead.history : []).concat([{ on: kanriToday(), result: status, memo: (extra && extra.memo) || memo || "" }]);
+      const row = await kanriSaveLead({ jiage_id: key, status, next_on: (extra && "next" in extra) ? extra.next : (next || (lead && lead.next_on) || null), memo: (lead && lead.memo) || null, history: hist });
+      if (row) kanriStoreSet(d => ({ ...d, leads: (d.leads || []).filter(x => x.jiage_id !== key).concat([row]) }));
+      setRes(null); setMemo(""); setNext("");
+      return true;
+    } catch (e) { setErr(e.message || String(e)); return false; }
+    finally { setBusy(false); }
+  };
+  const pick = (r) => { setRes(r); if (r === "不在") setNext(""); else if (r === "興味あり" || r === "検討中") { const d = new Date(); d.setDate(d.getDate() + 7); setNext(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`); } };
+  return <div style={{ ...kanriCard, border: `2px solid ${KANRI_LEAD_COLORS[st]}`, marginTop: 14 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 15, fontWeight: 800, color: KANRI_LEAD_COLORS[st] }}>💼 管理営業：{st}</span>
+      {lead && lead.next_on && KANRI_LEAD_OPEN.includes(st) && <span style={{ fontSize: 12, color: C.muted }}>次回 {kanriMD(lead.next_on)}</span>}
+      <span style={{ fontSize: 10, color: C.muted, marginLeft: "auto" }}>🔒 下田さんだけ</span>
+    </div>
+    {lastJ && <div style={{ fontSize: 12, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>地上げで最後に会った時（{kanriMD(lastJ.date)}・{lastJ.recordedBy || ""}）：{lastJ.memo || "メモなし"}</div>}
+    {(lead && lead.history && lead.history.length > 0) && <div style={{ marginTop: 8 }}>
+      {lead.history.slice(-4).reverse().map((h, i) => <div key={i} style={{ fontSize: 12, padding: "3px 0", borderTop: `1px solid ${C.borderDim}` }}>
+        <b>{kanriMD(h.on)}</b> <span style={{ color: KANRI_LEAD_COLORS[h.result] || C.text, fontWeight: 700 }}>{h.result}</span>{h.memo ? "　" + h.memo : ""}</div>)}
+    </div>}
+    <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, margin: "10px 0 6px" }}>今日の結果</div>
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {["不在", "興味あり", "検討中", "断られた", "対象外"].map(r => <button key={r} onClick={() => pick(r)} style={{
+        flex: "1 1 30%", padding: "11px 4px", borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
+        border: `2px solid ${res === r ? KANRI_LEAD_COLORS[r] : C.borderDim}`, background: res === r ? KANRI_LEAD_COLORS[r] + "22" : C.surface, color: res === r ? KANRI_LEAD_COLORS[r] : C.text,
+      }}>{r === "対象外" ? "対象外（使ってる等）" : r}</button>)}
+    </div>
+    {res && <div style={{ marginTop: 10 }}>
+      <textarea value={memo} onChange={e => setMemo(e.target.value)} rows={2} placeholder="言われたこと・様子（任意）" style={{ ...kanriInput, resize: "vertical", marginBottom: 8 }} />
+      {KANRI_LEAD_OPEN.includes(res) && <KanriField label="次に行く日（任意）"><input type="date" value={next} onChange={e => setNext(e.target.value)} style={kanriInput} /></KanriField>}
+      <button disabled={busy} onClick={() => save(res, KANRI_LEAD_OPEN.includes(res) ? undefined : { next: null })} style={kanriBtn(KANRI_LEAD_COLORS[res], "#fff", { width: "100%", opacity: busy ? 0.6 : 1 })}>{busy ? "保存中…" : `「${res}」で記録`}</button>
+    </div>}
+    {err && <div style={{ color: C.danger, fontSize: 12, marginTop: 8 }}>⚠ {err}</div>}
+    <button disabled={busy} onClick={async () => { if (await save("契約", { next: null, memo: "管理契約" })) onContract(); }} style={kanriBtn(C.success, "#fff", { width: "100%", marginTop: 10 })}>🎉 契約になった → 管理契約を登録</button>
+  </div>;
+}
+
+// 管理タブの「💼 管理営業リスト」
+function KanriLeadList({ jiage, db, onBack, onOpenJiage }) {
+  const [filt, setFilt] = useState("追いかけ中");
+  const all = kanriLeadCandidates(jiage, db);
+  const cnt = (f) => all.filter(c => f === "追いかけ中" ? KANRI_LEAD_OPEN.includes(c.st) : c.st === f).length;
+  let rows = all.filter(c => filt === "追いかけ中" ? KANRI_LEAD_OPEN.includes(c.st) : c.st === filt);
+  const rank = { "興味あり": 0, "検討中": 1, "未提案": 2, "不在": 3 };
+  rows.sort((a, b) => ((rank[a.st] ?? 9) - (rank[b.st] ?? 9)) || String((a.lead && a.lead.next_on) || "9").localeCompare(String((b.lead && b.lead.next_on) || "9")));
+  const today = kanriToday();
+  return <div>
+    <KanriBack onBack={onBack} title="💼 管理営業リスト" />
+    <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.6 }}>地上げで下田さんが担当し「見込無し・中長期見込・失注」になった家です。押すと地上げの詳細が開き、「💼 管理営業」の欄で結果を記録できます。</div>
+    <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 12, paddingBottom: 2 }}>
+      {["追いかけ中", "未提案", "興味あり", "検討中", "不在", "断られた", "対象外", "契約"].map(f => <button key={f} onClick={() => setFilt(f)} style={{
+        flexShrink: 0, padding: "8px 12px", borderRadius: 18, fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
+        border: `2px solid ${filt === f ? (KANRI_LEAD_COLORS[f] || C.accent) : C.borderDim}`, background: filt === f ? (KANRI_LEAD_COLORS[f] || C.accent) + "22" : C.surface, color: C.text,
+      }}>{f} {cnt(f)}</button>)}
+    </div>
+    {!rows.length && <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: 20 }}>該当する家はありません</div>}
+    {rows.map(c => {
+      const j = c.j, lv = kanriLastJiageVisit(j), due = c.lead && c.lead.next_on && c.lead.next_on <= today;
+      return <button key={c.key} onClick={() => onOpenJiage(String(j.id))} style={{ ...kanriCard, display: "block", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: C.text, borderColor: KANRI_LEAD_COLORS[c.st] + "aa" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 800, fontSize: 15 }}>{j.owner || j.ownerName || "（所有者名なし）"}様</span>
+          <span style={{ fontSize: 11, fontWeight: 800, padding: "2px 7px", borderRadius: 8, background: KANRI_LEAD_COLORS[c.st] + "22", color: KANRI_LEAD_COLORS[c.st] }}>{c.st}</span>
+          <span style={{ fontSize: 11, color: C.muted }}>地上げ:{j.status}</span>
+          {c.lead && c.lead.next_on && <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, color: due ? C.danger : C.muted }}>次回 {kanriMD(c.lead.next_on)}{due ? "（今日まで）" : ""}</span>}
+        </div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>物件：{kanriShortAddr(j.address)}{j.ownerAddr ? "　／　自宅：" + kanriShortAddr(j.ownerAddr) : ""}</div>
+        {lv && <div style={{ fontSize: 12, marginTop: 4, color: C.text }}>🗣 {kanriMD(lv.date)}：{lv.memo || "メモなし"}</div>}
+      </button>;
+    })}
+  </div>;
+}
+
 // ---- 🆕 v9.726: 地上げの画面の上に重ねて開く（巡回記録・管理の詳細）。地上げの画面はそのまま残る ----
 function KanriOverlayHost() {
   const [view, setView] = useState(null);
@@ -43653,11 +43810,15 @@ function kanriOverlayVisit(p) {
 }
 
 // ---- 🆕 v9.726: 地上げの所有者詳細に出す「管理の履歴」（下田さんの端末だけ） ----
-function KanriJiageSection({ rawId, onRegister }) {
+function KanriJiageSection({ rawId, raw, onRegister }) {
   const db = useKanriStore(true);
   const key = kanriJiageKey(rawId);
   const props = db ? db.props.filter(p => p.jiage_id === key) : (kanriJiageIds().includes(key) ? null : []);
   if (props === null) return <div style={{ ...kanriCard, marginTop: 14, fontSize: 13, color: C.muted }}>🏠 管理の履歴を読み込み中…</div>;
+  if (!props.length && db && raw) {
+    const cand = kanriLeadCandidates([raw], db)[0];
+    if (cand) return <KanriLeadBox raw={raw} lead={cand.lead} onContract={onRegister} />;
+  }
   if (!props.length) return <div style={{ marginTop: 14 }}>
     <button onClick={onRegister} style={{ width: "100%", padding: "13px", background: C.inset, border: `2px solid ${C.border}`, color: C.text, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "inherit" }}>🏠 管理契約を登録（VISION）</button>
     <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>この案内は下田さんの端末にだけ出ています（管理の情報は地上げのデータには入りません）</div>
