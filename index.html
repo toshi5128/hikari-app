@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-16-v9.736";
+const APP_VERSION = "2026-11-16-v9.737";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -3142,6 +3142,8 @@ const LOST_REASONS = ["他社に決定", "価格が折り合わない", "売る�
 // 🆕 v9.265: 成約理由（媒介・仕入で決まった勝因）。勝ちパターン分析用
 const WON_REASONS = ["価格・条件が良い", "対応・スピード", "信頼・人柄", "相続・現金化の事情", "紹介・人脈", "タイミング", "その他"];
 // 🆕 v8.87: 地上げステータスの色分け（一目で判別できるように）
+// 🆕 v9.737: 地上げ・管理の地図に出さない（行っても意味がない）ステータス
+const JIAGE_MAP_HIDE_STATUSES = ["見込無し", "対象外", "訪問禁止", "売却済み"];
 const JIAGE_STATUS_COLORS = {
   // 🆕 v8.131: 16色フル差別化（被りなし）
   "未訪問": "#1e40af",     // 紺青
@@ -8983,6 +8985,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.737", date: "2026-11-16", title: "地上げの地図に、行っても意味のない家を出さないように",
+    body: "地上げの地図に、見込無し・対象外・訪問禁止・売却済みの家を出さないようにしました。灰色の小さな点（👣 調べ済み）としては残るので、同じ家にもう一度ピンを立ててしまうことはありません。地図の絞り込みでそのステータスを選んだ時や、住所・名前で探した時、リスト表示では今までどおり出ます。",
+    where: "地上げ → 地図" },
   { v: "9.736", date: "2026-11-16", title: "管理の地図から、行っても意味のない家を消しました",
     body: "管理の地図には、地上げで見込無し・対象外・訪問禁止・売却済みにした家と、所有者がそこに住んでいる家（本人居住）・法人名義の家を出さないようにしました。管理の提案に行ける家だけが残ります。",
     where: "管理 → 🗺 管理の地図", who: ["下田"] },
@@ -29848,6 +29853,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
         filterStatuses.length > 0 ||           // 営業ステータスで絞った
         !!search;                              // 住所・所有者名で探している
       if (_raw.excluded === true && !_explicitPick) return false;
+      // 🆕 v9.737: 下田さん「行っても意味ないものは地上げの地図からも消して」（2026-11-16）。
+      //   地図の時だけ、見込無し・対象外・訪問禁止・売却済みは出さない（下の灰色の点「👣 調べ済み」には残るので、同じ家に2本目のピンは立たない）。
+      //   そのステータスで絞り込んだ時・住所や名前で探している時・リスト表示の時は今までどおり出す。
+      if (viewMode === "map" && JIAGE_MAP_HIDE_STATUSES.includes(item.status)
+          && !filterStatuses.includes(item.status) && !search && quickFilter !== "banned") return false;
     }
     // 🆕 v9.338: 取込日フィルタ（「7/28に取り込んだ分だけ地図に出す」）。印が無い古いピンは対象外
     if (batchFilter) {
@@ -30068,7 +30078,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
       if (sameBucketFail) return false;
     }
     return true;
-  }), [allItems, typeFilter, areaFilter, filterStatuses, resultFilters, filterMember, search, searchTarget, quickFilter, batchFilter, today, homeType, ageType]);
+  }), [allItems, typeFilter, areaFilter, filterStatuses, resultFilters, filterMember, search, searchTarget, quickFilter, batchFilter, today, homeType, ageType, viewMode]);
 
   // 🆕 v9.556: 下田さん「同じエリアをまた探索した時、前に空き家として調べたかが分からない」。
   //   絞り込みで地図から隠れたピン（対象外・見込無し・別の担当など）を、灰色の小さな点「👣 調べ済み」で出す。
@@ -32703,7 +32713,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               // 🆕 v9.736: 管理の地図では、行っても意味のない家は出さない（下田さん 2026-11-16）
               //   見込無し・対象外・訪問禁止・売却済み／本人居住（所有者が住んでいる）／法人名義
               if (kanriMode) {
-                if (["見込無し", "対象外", "訪問禁止", "売却済み"].includes(i.status)) return false;
+                if (JIAGE_MAP_HIDE_STATUSES.includes(i.status)) return false;
                 if (isOwnerResident(i)) return false;
                 if (isCorporateOwner(i.owner || i.ownerName)) return false;
               }
