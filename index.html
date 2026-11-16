@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-16-v9.731";
+const APP_VERSION = "2026-11-16-v9.732";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8983,6 +8983,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.732", date: "2026-11-16", title: "管理の地図に地上げの家を全部出すように",
+    body: "管理の地図に、地上げの家（全員分）を紫の点で出しました。地図を見て「ここに提案しに行こう」と決めたら、点を押して管理ステータスを付けてください。付けた家は💼に変わり、管理営業リストにも入ります。点が多すぎる時は上の「🟣 地上げの家」で消せます。",
+    where: "管理 → 🗺 管理の地図", who: ["下田"] },
   { v: "9.731", date: "2026-11-16", title: "ピン登録：地番が自動で出ない地区ははっきり知らせます",
     body: "蓮田・新座・ふじみ野(元福岡)などは国の地番地図が無く、目印の住所(郵便用)のままだと謄本が取れません。ピン登録で家を選んだ時に地番が出ない地区では、オレンジの枠で『ブルーマップの青い数字(地番)を地番欄に入れて』と出します。",
     where: "地上げ → ピン登録（ストリートビューで発見も同じ）" },
@@ -43660,6 +43663,24 @@ function kanriLeadPins(jiage, db) {
       title: `💼 管理営業：${c.st}`, sub: `${c.j.owner || c.j.ownerName || ""}様・${pos.at === "owner" ? "所有者宅" : "物件"}${c.lead && c.lead.next_on ? "・次回 " + kanriMD(c.lead.next_on) : ""}` };
   }).filter(Boolean);
 }
+// 🆕 v9.732: 下田さん「どこに行くかが地図で分からない」→ 地上げの家を全部（担当者を問わず）物件の位置にうすく出す。
+//   押すと営業先の詳細が開き、その場で管理ステータスを付けられる。付けた家・管理中・売却済みは出さない
+function kanriCandPins(jiage, db) {
+  if (!db || !Array.isArray(jiage)) return [];
+  const skip = new Set(db.props.map(p => p.jiage_id).filter(Boolean));
+  (db.leads || []).forEach(l => skip.add(l.jiage_id));
+  const out = [];
+  jiage.forEach(j => {
+    if (!j || j.id == null || j.status === "売却済み") return;
+    const key = kanriJiageKey(j.id);
+    if (skip.has(key)) return;
+    const pl = _kanriNum(j.lat), pg = _kanriNum(j.lng);
+    if (pl == null || pg == null) return;
+    out.push({ key: key + ":c", lead: true, cand: true, jiage_id: key, lat: pl, lng: pg, kind: "cand",
+      title: `${j.owner || j.ownerName || "（所有者名なし）"}様`, sub: `地上げ:${j.status || "—"}・${j.assignee || "担当なし"}` });
+  });
+  return out;
+}
 
 // 地上げの詳細（ステータス変更のすぐ下）に出す「💼 管理ステータス」。どの家でも付けられる。下田さんの端末だけ
 //   🆕 v9.728: 下田さん「地上げのステータスは見込みのままで、管理のステータスを追加して、俺だけ見れるように」(2026-11-15 動画)
@@ -43855,7 +43876,7 @@ function KanriLeadDetail({ j, db, managed, onBack, onOpenManaged, onContract }) 
 // 管理タブ専用の地図（地上げの地図とは別物。💼営業先・🏠管理物件・👤会いに行く自宅だけ）
 let _kanriMapView = null;
 function KanriMapView({ jiage, db, onBack, onTap }) {
-  const [show, setShow] = useState(() => { try { return JSON.parse(localStorage.getItem("hikari_kanri_mapshow") || "null") || { lead: true, prop: true }; } catch (e) { return { lead: true, prop: true }; } });
+  const [show, setShow] = useState(() => { let s = null; try { s = JSON.parse(localStorage.getItem("hikari_kanri_mapshow") || "null"); } catch (e) {} s = s || { lead: true, prop: true }; if (s.cand === undefined) s.cand = true; return s; });
   const toggle = (k) => setShow(o => { const n = { ...o, [k]: !o[k] }; try { localStorage.setItem("hikari_kanri_mapshow", JSON.stringify(n)); } catch (e) {} return n; });
   const pins = React.useMemo(() => [].concat(show.prop ? kanriMapPins(db) : [], show.lead ? kanriLeadPins(jiage, db) : []), [db, jiage, show]);
   const divRef = useRef(null), mapRef = useRef(null), layerRef = useRef(null), meRef = useRef(null), tapRef = useRef(onTap);
@@ -43875,6 +43896,16 @@ function KanriMapView({ jiage, db, onBack, onTap }) {
     const map = mapRef.current; if (!map) return;
     if (layerRef.current) { try { map.removeLayer(layerRef.current); } catch (e) {} }
     const grp = L.layerGroup();
+    // 🆕 v9.732: 地上げの家（候補）は数が多いので、軽い点（canvas）で一番下に描く
+    if (show.cand) {
+      const rd = L.canvas({ padding: 0.3 });
+      kanriCandPins(jiage, db).forEach(kp => {
+        const mk = L.circleMarker([kp.lat, kp.lng], { renderer: rd, radius: 6, color: "#fff", weight: 1.5, fillColor: "#7c3aed", fillOpacity: 0.55 });
+        mk.bindTooltip(`${String(kp.title).replace(/[<>&]/g, "")}<br>${String(kp.sub).replace(/[<>&]/g, "")}`, { direction: "top" });
+        mk.on("click", () => tapRef.current && tapRef.current(kp));
+        mk.addTo(grp);
+      });
+    }
     pins.forEach(kp => {
       const bg = kp.lead ? kp.color : (kp.sell ? "#dc2626" : (kp.done ? "#64748b" : "#15803d"));
       const sz = kp.lead ? 26 : 30;
@@ -43886,7 +43917,7 @@ function KanriMapView({ jiage, db, onBack, onTap }) {
     });
     grp.addTo(map); layerRef.current = grp;
     if (!_kanriMapView && pins.length) { try { map.fitBounds(L.latLngBounds(pins.map(x => [x.lat, x.lng])), { padding: [30, 30], maxZoom: 15 }); } catch (e) {} }
-  }, [pins]);
+  }, [pins, show.cand, jiage, db]);
   const locate = () => {
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(pos => {
@@ -43901,12 +43932,13 @@ function KanriMapView({ jiage, db, onBack, onTap }) {
   return <div>
     <KanriBack onBack={onBack} title="🗺 管理の地図" />
     <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
-      {chip("lead", "💼 営業先")}{chip("prop", "🏠 管理物件")}
+      {chip("cand", "🟣 地上げの家")}{chip("lead", "💼 営業先")}{chip("prop", "🏠 管理物件")}
       <button onClick={locate} style={{ marginLeft: "auto", padding: "8px 12px", borderRadius: 18, fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: `2px solid #2563eb`, background: C.surface, color: "#2563eb" }}>📍 現在地</button>
     </div>
     <div ref={divRef} style={{ height: "68vh", borderRadius: 12, overflow: "hidden", border: `2px solid ${C.border}` }} />
     <div style={{ fontSize: 11, color: C.muted, marginTop: 8, lineHeight: 1.7 }}>
       💼 <span style={{ color: KANRI_LEAD_COLORS["未提案"] }}>●未提案</span> <span style={{ color: KANRI_LEAD_COLORS["管理見込み"] }}>●管理見込み</span> <span style={{ color: KANRI_LEAD_COLORS["興味あり"] }}>●興味あり</span> <span style={{ color: KANRI_LEAD_COLORS["検討中"] }}>●検討中</span> <span style={{ color: KANRI_LEAD_COLORS["不在"] }}>●不在</span>（所有者宅に表示）<br />
+      <span style={{ color: "#7c3aed" }}>●</span> 地上げの家（物件の場所・全員分）＝押して管理ステータスを付けると💼になります<br />
       🏠 <span style={{ color: "#15803d" }}>■今月まだ</span> <span style={{ color: "#64748b" }}>■巡回済み</span> <span style={{ color: "#dc2626" }}>■売却の気配</span>　👤＝月1で会う所有者宅<br />
       印を押すと詳細が開きます。この地図は下田さんの端末だけで、回った道は記録しません。
     </div>
