@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-16-v9.733";
+const APP_VERSION = "2026-11-16-v9.734";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8875,7 +8875,7 @@ function MainApp({ onLock, onSwitchUser }) {
         {page === "holdings" && <HoldingsPage data={data} setData={setData} currentUser={currentUser} />}
         {page === "income" && <IncomePage data={data} setData={setData} currentUser={currentUser} />}
         {page === "more" && <MorePage data={data} setData={setData} onLock={onLock} onSwitchUser={onSwitchUser} />}
-        {page === "kanri" && kanriTab && <KanriPage jiage={data.jiage} />}
+        {page === "kanri" && kanriTab && <KanriPage jiage={data.jiage} appData={data} appSetData={setData} appSetDataRaw={setDataRaw} appSetPage={setPage} />}
       </div>
       {/* 🆕 v9.479: 反響のお客様へのメール作成（どの画面からでも開ける） */}
       <ViewingMailHost data={data} setData={setData} />
@@ -8983,6 +8983,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.734", date: "2026-11-16", title: "管理の地図を地上げの地図と全く同じにしました",
+    body: "管理の地図を開くと、地上げの地図そのもの（航空写真・担当やステータスの絞り込み・探索候補・地価などの重ね表示・検索）がそのまま使えます。その上に💼営業先・🏠管理物件が重なります。家を押すと、地上げの詳細ではなく管理の詳細（地上げの履歴は見るだけ＋管理ステータス＋管理の訪問記録）が開きます。管理の地図では探索ルートは記録せず、ピンも立てません。",
+    where: "管理 → 🗺 管理の地図", who: ["下田"] },
   { v: "9.733", date: "2026-11-16", title: "管理の地図の点を地上げのステータスの色にしました",
     body: "管理の地図の地上げの家の点を、地上げの地図と同じステータスの色（未訪問＝紺・見込み＝ピンク・見込無し＝黒・失注＝臙脂など）にしました。地図を見ただけで、前に行ってどうなった家か分かります。色の意味は地図の下に出ています。",
     where: "管理 → 🗺 管理の地図", who: ["下田"] },
@@ -10626,7 +10629,7 @@ if (typeof L !== "undefined" && L.Marker && L.Popup && !L.Marker.prototype._hkUp
   L.Marker.prototype._hkUprightPatched = true;
 }
 
-function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho, svTracks, svCands, onSvCandTap, svYearRects }) {
+function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, onMapClick, onMapLongPress, pendingPinLocation, currentLocation, centerOnLocationKey, fitBoundsKey, panToCoords, panToCoordsKey, searchProps, onCenterLocation, onFitBounds, tracks, svScans, takuchi, showAkiya, akiyaMode, showMitsu, chika, showYouto, showChosei, showDanchiNames, trackColorMode = "age", rememberViewKey, hideZoomControl, autoFollowLocation, liveRecording, initialLivePoints, hideOverlays, routeOverlay, onRouteStopTap, onRouteStopOpen, onRoutePickToggle, onRouteStopRemove, onRouteLasso, onRouteHomeMove, routeFitKey, editPin, onEditPinMove, ghostPins, areaCircles, koho, svTracks, svCands, onSvCandTap, svYearRects, extraMarkers }) {
   // 🆕 v9.635: ルート中に普通のピンの吹き出しから「➕ ルートに追加」できるよう、最新のルート状態を覚えておく
   const routeOverlayLiveRef = React.useRef(null);
   routeOverlayLiveRef.current = routeOverlay || null;
@@ -10951,6 +10954,22 @@ function LeafletMap({ items, onPinClick, pinTarget = "address", height = 480, on
     baseLayerRef.current = _hkBaseLayer(baseMode).addTo(map);
     try { baseLayerRef.current.eachLayer ? baseLayerRef.current.eachLayer(l => l.bringToBack && l.bringToBack()) : baseLayerRef.current.bringToBack(); } catch (e) {}
   }, [baseMode]);
+  // 🆕 v9.734: 管理タブで使う時だけ、💼営業先・🏠管理物件の印を一番上に重ねる（地上げタブでは extraMarkers が無いので何もしない）
+  const extraLayerRef = React.useRef(null);
+  React.useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || typeof L === "undefined") return;
+    if (extraLayerRef.current) { try { map.removeLayer(extraLayerRef.current); } catch (e) {} extraLayerRef.current = null; }
+    if (!Array.isArray(extraMarkers) || !extraMarkers.length) return;
+    const grp = L.layerGroup();
+    extraMarkers.forEach(m => {
+      const mk = L.marker([m.lat, m.lng], { zIndexOffset: 2000, icon: L.divIcon({ className: "", html: m.html, iconSize: [m.size, m.size], iconAnchor: [m.size / 2, m.size / 2] }) });
+      if (m.tip) mk.bindTooltip(m.tip, { direction: "top", offset: [0, -m.size / 2] });
+      if (m.onTap) mk.on("click", () => m.onTap());
+      mk.addTo(grp);
+    });
+    grp.addTo(map); extraLayerRef.current = grp;
+  }, [extraMarkers]);
   // 🆕 v9.643: 航空写真の時の地名（引き＝市町村名／寄り＝町名）。見えている範囲だけ作る
   React.useEffect(() => {
     const map = mapInstanceRef.current;
@@ -27446,7 +27465,9 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
   );
 }
 
-function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPage }) {
+function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPage, kanriMode, kanriMarkers, onKanriPin }) {
+  // 🆕 v9.734: kanriMode＝管理タブの中で地上げの地図をそのまま使う（下田さん専用）。
+  //   違いは3つだけ：家を押すと管理の詳細が開く／探索ルートは記録しない／ピンは立てない（地上げのデータを増やさない）
   const currentUser = getCurrentUser();
   const adminMember = data.adminMember || "下田";
   const isAdmin = isAdminUser(data, currentUser); // 🆕 管理者リスト（下田・比嘉）に含まれるか
@@ -27464,9 +27485,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 停止時に未flushのGPSバッファを即反映するため、flushBatch をハンドラから呼べるよう ref で保持
   const flushBatchRef = React.useRef(null);
   const [trackRecording, setTrackRecordingRaw] = useState(() => {
+    if (kanriMode) return false; // 🆕 v9.734: 管理では回った道を残さない
     try { return localStorage.getItem(TRACK_RECORDING_KEY) === "1"; } catch (e) { return false; }
   });
   const setTrackRecording = (v) => {
+    if (kanriMode) { alert("管理の地図では探索ルートは記録しません（回った道がみんなに見えてしまうため）"); return; }
     const next = typeof v === "function" ? v(trackRecording) : v;
     // 🆕 停止時：未flushの直近GPSバッファを即 data.tracks へ反映してから停止する。
     //   停止でライブ線が消える瞬間に履歴レイヤー（displayTracks）が「今日の全ルート」を描けるようにする
@@ -28011,6 +28034,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const JIAGE_VIEW_MODE_KEY = "hikari_jiage_view_mode";
   const JIAGE_SCROLL_KEY = "hikari_jiage_scroll";
   const [viewMode, setViewModeRaw] = useState(() => {
+    if (kanriMode) return "map";        // 🆕 v9.734
     if (svSessionGet()) return "map";   // v9.672: SVの続きは地図の上で開く
     try { return localStorage.getItem(JIAGE_VIEW_MODE_KEY) || "list"; } catch (e) { return "list"; }
   });
@@ -28349,6 +28373,12 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   //   対策: 3秒以上経過 OR 5m以上動いた時だけ setCurrentLoc を実行
   const lastCurrentLocRef = React.useRef({ ts: 0, lat: 0, lng: 0 });
   const [pendingPin, setPendingPin] = useState(null); // {lat, lng}（地番フォーム表示用）
+  // 🆕 v9.734: 管理モードでは、どこから家を開いても管理の詳細へ回す／ピン立ては始めない
+  React.useEffect(() => {
+    if (!kanriMode) return;
+    if (selected && selected.item) { const it = selected.item; setSelected(null); if (onKanriPin) onKanriPin(it); }
+    if (pendingPin) { setPendingPin(null); alert("管理の地図ではピンを立てません（地上げタブで立ててください）"); }
+  }, [kanriMode, selected, pendingPin]);
   const [centerLocKey, setCenterLocKey] = useState(0); // 現在地センタリング trigger
   // 🆕 v9.51: 訪問ルート提案
   //   route = { open, count, endId, stops:[{id,lat,lng,name}], targetIndex, road:{coords,duration}|null }
@@ -28847,7 +28877,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   //   - placementMode を介さず、長押し位置で直接モーダル
   //   - 既に登録モーダルが開いてるときは無視（誤操作防止）
   const handleMapLongPress = (lat, lng) => {
-    if (pendingPin) return;
+    if (pendingPin || kanriMode) return;
     setPlacementMode(false);
     setPendingPin({ lat, lng, mode: "longpress" });
     setPinForm({ address: "", landmark: "", assignee: currentUser || MEMBERS[0], memo: "", posting: false });
@@ -33754,6 +33784,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       svScans={null}
                       svTracks={showSvTrack ? svTracksData : null}
                       svYearRects={svYearRects}
+                      extraMarkers={kanriMode ? kanriMarkers : undefined}
                       svCands={pendingPin || selected ? null : svCands}
                       onSvCandTap={placementMode ? null : (id => setSvSelId(id))}
                       trackColorMode={trackColorMode}
@@ -43125,7 +43156,7 @@ function KanriLoginPage({ onBack }) {
 
 // ---- 管理タブ本体 ----
 let _kanriLastView = null; // 地上げへ行って戻った時に同じ画面を出す
-function KanriPage({ jiage }) {
+function KanriPage({ jiage, appData, appSetData, appSetDataRaw, appSetPage }) {
   // 🆕 v9.729: 下田さん「アプリは1つ・管理は別のタブで」→ 地上げタブには何も出さず、管理タブの中だけで完結
   //   （地図・営業先の詳細・地上げの頃の履歴〈見るだけ〉・管理ステータス・巡回・報告）
   const db = useKanriStore(false);
@@ -43185,8 +43216,24 @@ function KanriPage({ jiage }) {
       onOpenJiage={(rid) => openLead(rid, view)} />;
   }
   if (view.k === "leads") return <KanriLeadList jiage={jiage} db={db} onBack={() => setView({ k: "home" })} onOpenJiage={(rid) => openLead(rid, view)} />;
-  if (view.k === "map") return <KanriMapView jiage={jiage} db={db} onBack={() => setView({ k: "home" })}
-    onTap={(kp) => kp.lead ? openLead(String(kp.jiage_id).replace(/^jiage::/, ""), view) : setView({ k: "detail", id: kp.id })} />;
+  if (view.k === "map") {
+    // 🆕 v9.734: 下田さん「地上げの地図と仕組みは全て同じに」→ 地上げの地図そのもの（航空写真・絞り込み・レイヤー全部）を
+    //   管理モードで開き、💼営業先・🏠管理物件を上に重ねる。家を押すと管理の営業先の詳細が開く
+    const tapKp = (kp) => kp.lead ? openLead(String(kp.jiage_id).replace(/^jiage::/, ""), view) : setView({ k: "detail", id: kp.id });
+    const markers = [].concat(kanriMapPins(db), kanriLeadPins(jiage, db)).map(kp => {
+      const bg = kp.lead ? kp.color : (kp.sell ? "#dc2626" : (kp.done ? "#64748b" : "#15803d"));
+      const sz = kp.lead ? 28 : 32;
+      return { lat: kp.lat, lng: kp.lng, size: sz, onTap: () => tapKp(kp),
+        tip: `${kp.title}<br>${String(kp.sub).replace(/[<>&]/g, "")}`,
+        html: `<div style="width:${sz}px;height:${sz}px;border-radius:${kp.lead ? "50%" : "8px"};background:${bg};border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-size:${kp.lead ? 15 : 17}px;line-height:1;">${kp.kind === "owner" ? "👤" : kp.kind === "lead" ? "💼" : "🏠"}</div>` };
+    });
+    return <div>
+      <KanriBack onBack={() => setView({ k: "home" })} title="🗺 管理の地図" />
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, lineHeight: 1.6 }}>地上げの地図と同じ（航空写真・絞り込みもそのまま）。家を押すと管理の詳細が開きます。💼＝営業先（所有者宅）・🏠＝管理物件。探索ルートの記録とピン立てはしません。</div>
+      <JiagePage data={appData} setData={appSetData} setDataRaw={appSetDataRaw} setPage={appSetPage}
+        kanriMode kanriMarkers={markers} onKanriPin={(it) => openLead(String(it.id != null ? it.id : it.rawId), view)} />
+    </div>;
+  }
   if (view.k === "lead") {
     const rid = String(view.key).replace(/^jiage::/, "");
     const j = (jiage || []).find(x => x && String(x.id) === rid);
