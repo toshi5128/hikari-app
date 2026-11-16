@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-16-v9.732";
+const APP_VERSION = "2026-11-16-v9.733";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8983,6 +8983,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.733", date: "2026-11-16", title: "管理の地図の点を地上げのステータスの色にしました",
+    body: "管理の地図の地上げの家の点を、地上げの地図と同じステータスの色（未訪問＝紺・見込み＝ピンク・見込無し＝黒・失注＝臙脂など）にしました。地図を見ただけで、前に行ってどうなった家か分かります。色の意味は地図の下に出ています。",
+    where: "管理 → 🗺 管理の地図", who: ["下田"] },
   { v: "9.732", date: "2026-11-16", title: "管理の地図に地上げの家を全部出すように",
     body: "管理の地図に、地上げの家（全員分）を紫の点で出しました。地図を見て「ここに提案しに行こう」と決めたら、点を押して管理ステータスを付けてください。付けた家は💼に変わり、管理営業リストにも入ります。点が多すぎる時は上の「🟣 地上げの家」で消せます。",
     where: "管理 → 🗺 管理の地図", who: ["下田"] },
@@ -43676,7 +43679,7 @@ function kanriCandPins(jiage, db) {
     if (skip.has(key)) return;
     const pl = _kanriNum(j.lat), pg = _kanriNum(j.lng);
     if (pl == null || pg == null) return;
-    out.push({ key: key + ":c", lead: true, cand: true, jiage_id: key, lat: pl, lng: pg, kind: "cand",
+    out.push({ key: key + ":c", lead: true, cand: true, jiage_id: key, lat: pl, lng: pg, kind: "cand", st: j.status || "未訪問",
       title: `${j.owner || j.ownerName || "（所有者名なし）"}様`, sub: `地上げ:${j.status || "—"}・${j.assignee || "担当なし"}` });
   });
   return out;
@@ -43900,7 +43903,7 @@ function KanriMapView({ jiage, db, onBack, onTap }) {
     if (show.cand) {
       const rd = L.canvas({ padding: 0.3 });
       kanriCandPins(jiage, db).forEach(kp => {
-        const mk = L.circleMarker([kp.lat, kp.lng], { renderer: rd, radius: 6, color: "#fff", weight: 1.5, fillColor: "#7c3aed", fillOpacity: 0.55 });
+        const mk = L.circleMarker([kp.lat, kp.lng], { renderer: rd, radius: 6, color: "#fff", weight: 1.5, fillColor: JIAGE_STATUS_COLORS[kp.st] || "#94a3b8", fillOpacity: 0.8 }); // 🆕 v9.733: 地上げのステータスの色（地上げの地図と同じ色）
         mk.bindTooltip(`${String(kp.title).replace(/[<>&]/g, "")}<br>${String(kp.sub).replace(/[<>&]/g, "")}`, { direction: "top" });
         mk.on("click", () => tapRef.current && tapRef.current(kp));
         mk.addTo(grp);
@@ -43932,13 +43935,14 @@ function KanriMapView({ jiage, db, onBack, onTap }) {
   return <div>
     <KanriBack onBack={onBack} title="🗺 管理の地図" />
     <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
-      {chip("cand", "🟣 地上げの家")}{chip("lead", "💼 営業先")}{chip("prop", "🏠 管理物件")}
+      {chip("cand", "● 地上げの家")}{chip("lead", "💼 営業先")}{chip("prop", "🏠 管理物件")}
       <button onClick={locate} style={{ marginLeft: "auto", padding: "8px 12px", borderRadius: 18, fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: `2px solid #2563eb`, background: C.surface, color: "#2563eb" }}>📍 現在地</button>
     </div>
     <div ref={divRef} style={{ height: "68vh", borderRadius: 12, overflow: "hidden", border: `2px solid ${C.border}` }} />
     <div style={{ fontSize: 11, color: C.muted, marginTop: 8, lineHeight: 1.7 }}>
       💼 <span style={{ color: KANRI_LEAD_COLORS["未提案"] }}>●未提案</span> <span style={{ color: KANRI_LEAD_COLORS["管理見込み"] }}>●管理見込み</span> <span style={{ color: KANRI_LEAD_COLORS["興味あり"] }}>●興味あり</span> <span style={{ color: KANRI_LEAD_COLORS["検討中"] }}>●検討中</span> <span style={{ color: KANRI_LEAD_COLORS["不在"] }}>●不在</span>（所有者宅に表示）<br />
-      <span style={{ color: "#7c3aed" }}>●</span> 地上げの家（物件の場所・全員分）＝押して管理ステータスを付けると💼になります<br />
+      小さい●＝地上げの家（物件の場所・全員分）。色は地上げのステータス：{ATTACK_STATUSES.filter(s => s !== "売却済み").map(s => <span key={s} style={{ color: JIAGE_STATUS_COLORS[s] || "#94a3b8", marginRight: 6, whiteSpace: "nowrap" }}>●{s}</span>)}<br />
+      押して管理ステータスを付けると💼になります<br />
       🏠 <span style={{ color: "#15803d" }}>■今月まだ</span> <span style={{ color: "#64748b" }}>■巡回済み</span> <span style={{ color: "#dc2626" }}>■売却の気配</span>　👤＝月1で会う所有者宅<br />
       印を押すと詳細が開きます。この地図は下田さんの端末だけで、回った道は記録しません。
     </div>
