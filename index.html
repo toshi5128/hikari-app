@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-16-v9.735";
+const APP_VERSION = "2026-11-16-v9.736";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8983,6 +8983,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.736", date: "2026-11-16", title: "管理の地図から、行っても意味のない家を消しました",
+    body: "管理の地図には、地上げで見込無し・対象外・訪問禁止・売却済みにした家と、所有者がそこに住んでいる家（本人居住）・法人名義の家を出さないようにしました。管理の提案に行ける家だけが残ります。",
+    where: "管理 → 🗺 管理の地図", who: ["下田"] },
   { v: "9.735", date: "2026-11-16", title: "管理の地図から、管理の訪問に要らない物を外しました",
     body: "管理の地図は、地図の仕組み（航空写真・エリアやステータスの絞り込み・検索・現在地・物件住所／所有者住所の切り替え）だけを残しました。現地ピンや探索ルートの欄・地上げ統計・ストリートビュー・探索候補・訪問ルート・リスト切り替え・＋ボタンは出しません。",
     where: "管理 → 🗺 管理の地図", who: ["下田"] },
@@ -32665,7 +32668,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               })}
             </div>
             {/* 🆕 v9.556: 調べ済み（絞り込みで隠れているピン）を灰色の点で出す */}
-            {mapPinTarget !== "ownerAddr" && (
+            {!kanriMode && mapPinTarget !== "ownerAddr" && (
               <button onClick={() => setShowDonePins(!showDonePins)} style={{
                 marginTop: 6, width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
                 background: showDonePins ? "#47556922" : C.inset, color: showDonePins ? C.text : C.muted,
@@ -32697,6 +32700,13 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
               const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
               if (typeof lat !== "number" || typeof lng !== "number") return false;
+              // 🆕 v9.736: 管理の地図では、行っても意味のない家は出さない（下田さん 2026-11-16）
+              //   見込無し・対象外・訪問禁止・売却済み／本人居住（所有者が住んでいる）／法人名義
+              if (kanriMode) {
+                if (["見込無し", "対象外", "訪問禁止", "売却済み"].includes(i.status)) return false;
+                if (isOwnerResident(i)) return false;
+                if (isCorporateOwner(i.owner || i.ownerName)) return false;
+              }
               // 🆕 v9.87: 所有者住所モードでは、所有者住所＝物件住所のもの（同じ場所で重複）は除外
               if (mapPinTarget === "ownerAddr") {
                 // 🆕 v9.90: 手動で「所有者は物件と同じ場所」にしたものは除外
@@ -33721,7 +33731,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     <div style={{ position: "relative" }}>
                     <LeafletMap
                       items={itemsWithCoord}
-                      ghostPins={donePins}
+                      ghostPins={kanriMode ? null : donePins}
                       areaCircles={tansakuCircles}
                       koho={kohoResult ? (() => {
                         const pinnedKey = kohoPin && kohoPin.date === kohoToday && kohoResult.areas.some(a => a.k === kohoPin.k) ? kohoPin.k : "";
