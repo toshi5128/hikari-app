@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.755";
+const APP_VERSION = "2026-11-18-v9.756";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8988,6 +8988,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.756", date: "2026-11-18", title: "初訪トークを音声で聞けるように",
+    body: "地上げのピンを開くと「🔊 初訪トークを聞く」が出ます。これまでの面談メモ約450件から、話が進んだ家で響いた言葉・断られた時の返しをまとめた台本を読み上げます。入口はその家の名前と町名入り。「⭐ 最近話が進んだ家」は仲間の最新の面談メモです。訪問結果のメモに「言われたこと・響いた言葉」を書くほど、台本が良くなっていきます。",
+    where: "地上げ → 地図 → ピンを押す →「🔊 初訪トークを聞く」（訪問結果を記録するボタンのすぐ上）" },
   { v: "9.754", date: "2026-11-17", who: ["下田"], title: "休みの店・もう閉まった店は地図に出さないように",
     body: "営業先（HPの店・士業）は、最初から「今日まだ行ける店」だけを地図に出します（今日が定休日の店と、今日はもう閉まった店は出しません）。絞り込みの「🕘 営業先の営業時間」で「今開いている店」だけにしたり、「休みの店も全部」に戻したりできます。営業時間が分からない店はいつも出します。時間が進むと5分ごとに出し直します。",
     where: "地上げ → 地図 → 左下の「絞り込み」→「🕘 営業先の営業時間」" },
@@ -27681,6 +27684,105 @@ function VmapTalkBox({ place }) {
     {!(T.learned && T.learned.length) && <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>「話した内容」がたまったら、言われたこと→返しを「⭐ 現場で分かったこと」に足していきます</div>}
   </div>;
 }
+// 🆕 v9.756: 地上げの初訪トークを音声で聞く（下田さん「過去のリアクションや響いたトークを参考に最適な初訪トークを音声で」）
+//   ・台本の土台＝面談メモ約450件（話が進んだ家 vs 断られた家）を読んで作った JIAGE_TALK_BASE
+//   ・クラウドの行 talkbook::jiage があればそれで上書き（メモが溜まったらClaudeが読み直して更新＝配信なしで精度が上がる）
+//   ・「⭐ 最近話が進んだ家」は、見込み以上になった家の面談メモをアプリがその場で拾う（電話番号は読まない）
+//   ・入口はピンごとに作る（名義人の名前・物件の町名・DM済み・何度か不在）
+const JIAGE_TALK_BASE = {
+  door: [
+    "インターホンでは「不動産」から入らない。まず名前を確かめて、物件の町名を出す",
+    "こんにちは。突然すみません。{名前}様のお宅でしょうか。{会社}の{自分}と申します。{町名}にある、お家の件で少しだけお伺いしました",
+  ],
+  main: [
+    "お時間取らせません。今、{町名}のお家は、どなたかお使いになっていますか",
+    "空き家のままですと、草むしりや、空き巣、火事の心配、それに固定資産税や火災保険と、持っているだけで手間とお金がかかってしまうんですよね",
+    "今すぐ売ってください、というお話ではありません。売ったらいくら、うちが買い取ったらいくら、貸すならいくら、と、数字だけ知っておいていただくと、いざという時に慌てなくて済みます",
+    "中にお荷物が残ったままでも、そのまま買い取れます。片付けはこちらでやります",
+    "中を見なくても、机の上で出す査定なら無料で、お家に上がることもありません",
+    "地元の会社なので、この辺りでも何件か買い取らせていただいています",
+  ],
+  objection: [
+    "「売る気はない」と言われたら。　もちろん今すぐでなくて大丈夫です。数字を知っておくだけでも、ご家族で話す時の材料になりますので、と返す",
+    "「荷物がいっぱいで」と言われたら。　そのままで大丈夫です。仏壇や大事な物だけ出していただければ、残りはこちらで片付けます",
+    "「まだ気持ちの整理が」と言われたら。　そうですよね。ご実家ですものね。傷んでしまう前に、選べる道だけ知っておいてください、と寄り添う",
+    "「家族と相談しないと」と言われたら。　ぜひご相談ください。ご主人様や息子さんがいらっしゃる時間に、もう一度伺ってもいいですか、と決める人に会う日を聞く",
+    "「なんで住所を知ってるの」と言われたら。　登記簿という、誰でも見られる国の記録で、お家の持ち主の方を確認しました。ご不快でしたら申し訳ありません、と先に謝る",
+    "「あんな所、売れないでしょ」と言われたら。　そう思っている方の家ほど、うちは買い取らせていただいています。古くても、傾いていても大丈夫です",
+    "「他の不動産屋に頼んでいる」と言われたら。　比べる材料として、うちの数字も一つ持っておいてください、と名刺とチラシだけ渡す",
+  ],
+  close: [
+    "最後は必ず次につなげる。連絡先を交換するか、机上査定の資料を持ってくる日を決める",
+    "では、査定の資料ができたらお持ちします。ご都合のいい曜日と時間帯はありますか。お電話番号を伺ってもよろしいですか",
+    "だめでも、名刺とチラシは必ず渡して、何かあればいつでも、と言って帰る",
+  ],
+  tips: [
+    "お昼どきと、暗くなってからの訪問は嫌がられる。明るい時間に行く",
+    "奥様が出てきたら、管理の苦労を聞く。草むしりや空き巣の心配を一番背負っているのは奥様のことが多い",
+    "高齢の方が出てきたら、息子さんや娘さんが決めていることが多い。決める人がいる曜日と時間を聞く",
+    "相続して3年以内なら、税金が安くなる特例が使えることがある。相続したばかりの家には一言添える",
+  ],
+};
+const JIAGE_TALK_WIN = new Set(["見込み", "見込み候補", "中長期見込", "仕入", "媒介", "交渉中", "リフォーム請負", "売却済み"]);
+let _jiageTalkRemote = null;
+function loadJiageTalkRemote() {
+  if (!_jiageTalkRemote) _jiageTalkRemote = fetch(`${SUPABASE_URL}/rest/v1/app_data?id=eq.talkbook::jiage&select=data`, { headers: _TRACK_HEADERS })
+    .then(r => r.ok ? r.json() : []).then(a => (a && a[0] && a[0].data && a[0].data.talk) || null).catch(() => null);
+  return _jiageTalkRemote;
+}
+function jiageTalkTown(addr) {
+  let s = String(addr || "").replace(/^埼玉県/, "").replace(/大字/g, "");
+  s = s.split(/[0-9０-９一二三四五六七八九十]+(丁目|番|－|-|−)|[0-9０-９]/)[0] || s;
+  return s.replace(/字$/, "") || "お持ちの土地";
+}
+function jiageTalkClean(t) {
+  return String(t || "").replace(/0\d{1,4}[-ー－ \s]?\d{1,4}[-ー－ \s]?\d{3,4}/g, "").replace(/０[０-９\-－ ]{8,}/g, "").replace(/\s+/g, " ").trim();
+}
+function JiageTalkBox({ raw, allJiage }) {
+  const [T, setT] = useState(JIAGE_TALK_BASE);
+  useEffect(() => { let dead = false; loadJiageTalkRemote().then(t => { if (!dead && t) setT({ ...JIAGE_TALK_BASE, ...t }); }); return () => { dead = true; try { speechSynthesis.cancel(); } catch (e) {} }; }, []);
+  const me = (typeof getCurrentUser === "function" && getCurrentUser()) || "";
+  const name = String(raw.ownerName || raw.owner || "").split(/[、,，・\s]/)[0];
+  const town = jiageTalkTown(raw.address);
+  const log = Array.isArray(raw.visitLog) ? raw.visitLog : [];
+  const absents = log.filter(v => v && (v.result === "absent" || v.result === "ignore")).length;
+  const met = log.filter(v => v && (v.result === "home" || v.result === "intercom") && v.memo).sort((a, b) => ((b.date || "") + (b.time || "")).localeCompare((a.date || "") + (a.time || "")));
+  const fill = s => String(s || "").replaceAll("{名前}", name || "持ち主の方").replaceAll("{町名}", town).replaceAll("{自分}", me).replaceAll("{会社}", "ひかり不動産");
+  const join = arr => (arr || []).map(fill).join("。　");
+  const extra = [];
+  if (raw.dm && raw.dm !== "未") extra.push("先日、お手紙をお送りさせていただいた件です");
+  if (absents >= 2) extra.push(`これまで${absents}回ほどお伺いしていて、やっとお会いできました`);
+  const doorText = join(T.door) + (extra.length ? "。　" + extra.join("。　") : "");
+  // ⭐ 最近話が進んだ家の面談メモ（新しい順に3件・1件120字まで）
+  const wins = useMemo(() => {
+    const out = [];
+    (allJiage || []).forEach(j => {
+      if (!j || !JIAGE_TALK_WIN.has(j.status) || j.id === raw.id) return;
+      (j.visitLog || []).forEach(v => { if (v && (v.result === "home" || v.result === "intercom") && v.memo && v.memo.length > 20) out.push({ d: (v.date || "") + (v.time || ""), st: j.status, t: jiageTalkClean(v.memo).slice(0, 120) }); });
+    });
+    return out.sort((a, b) => b.d.localeCompare(a.d)).slice(0, 3);
+  }, [allJiage, raw.id]);
+  const parts = [
+    ["入口（インターホン）", doorText],
+    ["玄関で話せた時", join(T.main)],
+    ["断られた時の返し", join(T.objection)],
+    ["締め（次につなげる）", join(T.close)],
+    ["気をつけること", join(T.tips)],
+  ];
+  if (wins.length) parts.push(["⭐ 最近話が進んだ家", wins.map((w, i) => `${i + 1}件目、今は${w.st}。${w.t}`).join("。　")]);
+  if (met.length) parts.unshift(["🔁 前回この家で話したこと", jiageTalkClean(met[0].memo)]);
+  const all = parts.filter(([l]) => !l.startsWith("🔁") && !l.startsWith("⭐") && l !== "気をつけること").map(([l, t]) => l + "。　" + t).join("。　");
+  const b = { padding: "8px 10px", borderRadius: 14, border: "2px solid #0d9488", background: "transparent", color: "#0d9488", fontWeight: 800, fontSize: 12, fontFamily: "inherit", cursor: "pointer" };
+  return <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 10, background: "#0d948814", border: "2px solid #0d9488" }}>
+    <div style={{ fontSize: 13, fontWeight: 800, color: "#0d9488", marginBottom: 6 }}>🔊 {met.length ? "訪問トークを聞く" : "初訪トークを聞く"}</div>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      <button onClick={() => vmapSpeak(all)} style={{ ...b, background: "#0d9488", color: "#fff" }}>▶ 通しで聞く</button>
+      {parts.map(([l, t]) => <button key={l} onClick={() => vmapSpeak(t)} style={b}>▶ {l}</button>)}
+      <button onClick={() => { try { speechSynthesis.cancel(); } catch (e) {} }} style={{ ...b, borderColor: "#9ca3af", color: "#6b7280" }}>■ 止める</button>
+    </div>
+    <div style={{ fontSize: 10, color: C.muted, marginTop: 6 }}>面談メモ約450件から作った台本です。訪問結果のメモに「言われたこと・響いた言葉」を書くほど、台本と⭐の実例が良くなります</div>
+  </div>;
+}
 function VmapSheet({ place, onClose, onUpdated }) {
   const [kind, setKind] = useState(null);
   const [note, setNote] = useState("");
@@ -36436,6 +36538,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             );
           })()}
 
+          {/* 🆕 v9.756: 初訪トークを音声で */}
+          {selected.item.type === "jiage" && selected.item.raw && <JiageTalkBox raw={selected.item.raw} allJiage={data && data.jiage} />}
           {/* 📍 訪問記録ボタン */}
           <button onClick={() => openVisitRecord(selected.item)} style={{
             width: "100%", padding: "12px", background: "#fbbf24", color: "#000",
