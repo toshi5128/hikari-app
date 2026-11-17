@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.751";
+const APP_VERSION = "2026-11-17-v9.752";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8988,6 +8988,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.752", date: "2026-11-17", who: ["下田"], title: "営業先の画面で、その業種のトークを音声で聞けるように",
+    body: "営業先の印を押すと「🔊 美容室のトークを聞く」のように業種ごとのボタンが出ます。入口の30秒・話を聞いてもらえた時・断られた時の返しを読み上げます。書きためた「話した内容」から分かった『言われたこと→返し・響いた言葉』は「⭐ 現場で分かったこと」として一番前に足していきます。",
+    where: "地上げ → 地図 → 営業先の印を押す →「🔊 〇〇のトークを聞く」" },
   { v: "9.750", date: "2026-11-17", title: "カレンダーで夜の予定も入れられるように",
     body: "カレンダーの1日の表示が、夜の24時まで出るようになりました。19時より後の時間も、押して予定を入れられます。",
     where: "ホームのカレンダー → 日付を押す" },
@@ -27564,6 +27567,51 @@ async function vmapApi(path, opt) {
   if (!r.ok) throw new Error((await r.text()).slice(0, 120) || r.status);
   return r.status === 204 ? null : r.json();
 }
+// 🆕 v9.752: 業種別トーク（VISION営業地図の sales_talk.js / talk.js をそのまま読む）を、営業先の画面で読み上げる
+const _vmapTalkCache = {};
+function vmapLoadTalk(isShigyo) {
+  const f = isShigyo ? "talk.js" : "sales_talk.js";
+  if (!_vmapTalkCache[f]) _vmapTalkCache[f] = fetch("https://toshi5128.github.io/ai-news/vision-map/" + f + "?v=" + Math.floor(Date.now() / 3600000))
+    .then(r => r.text()).then(t => new Function(t + "\n;return typeof SALES_TALK !== 'undefined' ? SALES_TALK : TALK;")())
+    .catch(e => { delete _vmapTalkCache[f]; throw e; });
+  return _vmapTalkCache[f];
+}
+function vmapTalkKey(p, D) {
+  const k = String((p && p.kind) || "");
+  if (D[k]) return k;
+  const m = [[/美容|理容|ヘア/, "美容室"], [/飲食|カフェ|食堂|レストラン/, "飲食店"], [/工務|リフォーム|住宅|建設|設備/, "工務店"], [/整体|治療|接骨|鍼|マッサージ/, "整体"], [/塾|教室/, "学習塾"], [/司法書士/, "司法書士"], [/弁護士|法律/, "弁護士"], [/税理士/, "税理士"], [/行政書士/, "行政書士"], [/調査士/, "土地家屋調査士"]];
+  for (const [re, key] of m) if (re.test(k) && D[key]) return key;
+  return "共通";
+}
+function vmapSpeak(text) {
+  if (!("speechSynthesis" in window)) { alert("この端末は読み上げに対応していません"); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(String(text || "").replaceAll("{会社}", "ひかり不動産")); u.lang = "ja-JP";
+  const v = speechSynthesis.getVoices().find(v => /ja/i.test(v.lang)); if (v) u.voice = v;
+  speechSynthesis.speak(u);
+}
+function VmapTalkBox({ place }) {
+  const isShigyo = place.category === "士業ルート";
+  const [D, setD] = useState(null), [err, setErr] = useState("");
+  useEffect(() => { let dead = false; vmapLoadTalk(isShigyo).then(d => { if (!dead) setD(d); }).catch(() => { if (!dead) setErr("トークを読み込めませんでした（電波を確認）"); }); return () => { dead = true; try { speechSynthesis.cancel(); } catch (e) {} }; }, [isShigyo]);
+  if (err) return <div style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>{err}</div>;
+  if (!D) return <div style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>トークを読み込み中…</div>;
+  const key = vmapTalkKey(place, D), T = D[key] || {};
+  const join = v => Array.isArray(v) ? v.join("。　") : (v || "");
+  const parts = isShigyo
+    ? [["入口（受付で30秒）", join(T.qualify) + "。　" + join(T.reception)], ["先生に会えた時", join(T.sensei)]]
+    : [["入口（30秒）", join(T.opening)], ["話を聞いてもらえた時", join(T.talk)], ["断られた時の返し", join(T.objection)]];
+  if (T.learned && T.learned.length) parts.unshift(["⭐ 現場で分かったこと", join(T.learned)]);
+  const b = { padding: "7px 10px", borderRadius: 14, border: "2px solid #7c3aed", background: "transparent", color: "#7c3aed", fontWeight: 800, fontSize: 12, fontFamily: "inherit", cursor: "pointer" };
+  return <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 10, background: "#7c3aed14", border: "1px solid #7c3aed55" }}>
+    <div style={{ fontSize: 12, fontWeight: 800, color: "#7c3aed", marginBottom: 6 }}>🔊 {key}のトークを聞く</div>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      {parts.filter(([, t]) => t && t.replace(/[。　\s]/g, "")).map(([l, t]) => <button key={l} onClick={() => vmapSpeak(t)} style={l.startsWith("⭐") ? { ...b, background: "#7c3aed", color: "#fff" } : b}>▶ {l}</button>)}
+      <button onClick={() => { try { speechSynthesis.cancel(); } catch (e) {} }} style={{ ...b, borderColor: "#9ca3af", color: "#6b7280" }}>■ 止める</button>
+    </div>
+    {!(T.learned && T.learned.length) && <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>「話した内容」がたまったら、言われたこと→返しを「⭐ 現場で分かったこと」に足していきます</div>}
+  </div>;
+}
 function VmapSheet({ place, onClose, onUpdated }) {
   const [kind, setKind] = useState(null);
   const [note, setNote] = useState("");
@@ -27653,6 +27701,7 @@ function VmapSheet({ place, onClose, onUpdated }) {
         <a href={nav} target="_blank" rel="noopener" style={btn("#2563eb")}>🚗 ナビ</a>
       </div>
       <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, marginTop: 14, marginBottom: 6 }}>記録する</div>
+      <VmapTalkBox place={p} />
       {/* 🆕 v9.751: 話した内容（トーク）の欄は最初から出しておく（下田さん「トークした内容入れれるようにして」） */}
       <div style={{ fontSize: 12, fontWeight: 800, color: C.text, marginBottom: 4 }}>💬 話した内容（トーク）</div>
       <textarea value={note} onChange={e => setNote(e.target.value)} rows={4} placeholder="話した内容・言われたこと・次に話すことを書く"
