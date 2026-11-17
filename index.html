@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.742";
+const APP_VERSION = "2026-11-17-v9.743";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -580,6 +580,9 @@ function personalOwnerOf(it) { return String((it && it.personalOwner) || "").tri
 function isPersonalItem(it) { return !!personalOwnerOf(it); }
 function canHoldPersonal(user) { return PERSONAL_HOLDERS.includes(String(user || "").trim()); }
 function canSeePersonal(it, user) {
+  // 🆕 v9.743: 管理で訪問した家（privateTo="下田"）は本人以外の画面から消す。会社の数字には数える
+  const pt = String((it && it.privateTo) || "").trim();
+  if (pt && String(user == null ? getCurrentUser() : user || "").trim() !== pt) return false;
   const o = personalOwnerOf(it);
   if (!o) return true;                              // 個人保有でないものは全員見える
   return String(user == null ? getCurrentUser() : user || "").trim() === o;
@@ -8985,6 +8988,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.743", date: "2026-11-17", who: ["下田"], title: "いつもの地上げのピンから、管理の訪問を記録できるように",
+    body: "地上げのピンを開くと、「訪問結果を記録する」の下に「💼 管理ステータス」の欄が出ます。管理の話で行った時はここで不在・興味あり・検討中などを記録します（地上げの記録はいつもどおり上のボタン）。管理で記録した家は、下田さん以外の人の地図・一覧からは消えます。",
+    where: "地上げ → ピンを開く →「💼 管理ステータス」" },
   { v: "9.742", date: "2026-11-17", who: ["下田"], title: "地図の絞り込みで、訪問先の種類を選べるように",
     body: "地図の左下の「絞り込み」のいちばん上に「📍 訪問先」が増えました。🏠 地上げの家・🏪 HP（店）・⚖ 士業の先生を押して、出す／隠すを切り替えられます。たとえば「⚖ 士業の先生」だけにすると、士業の事務所だけが地図に出ます。「全部」で元に戻ります。",
     where: "地上げ → 地図 → 左下の「絞り込み」→「📍 訪問先」" },
@@ -36197,6 +36203,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
             border: "none", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 800,
             marginBottom: 14, fontFamily: "inherit",
           }}><NavIcon name="mappin" size={15} /> 訪問結果を記録する</button>
+          {/* 🆕 v9.743: 管理で訪問した時はこちらに記録（下田さんだけ・秘密の保管場所へ） */}
+          {selected.item.type === "jiage" && !kanriMode && kanriAllowed() && _raw && _raw.id != null && (
+            <KanriLeadInJiage raw={_raw} setData={setData} onContract={() => { alert("管理タブ →「💼 管理営業リスト」でこの家を開いて、管理契約を登録してください"); setSelected(null); if (setPage) setPage("kanri"); }} />
+          )}
 
           {/* 訪問履歴 & パターン分析 */}
           {selected.item.raw && selected.item.raw.visitLog && selected.item.raw.visitLog.length > 0 && (() => {
@@ -43410,6 +43420,15 @@ function KanriPage({ jiage, appData, appSetData, appSetDataRaw, appSetPage }) {
   //   （地図・営業先の詳細・地上げの頃の履歴〈見るだけ〉・管理ステータス・巡回・報告）
   const db = useKanriStore(false);
   const setDb = kanriStoreSet;
+  // 🆕 v9.743: これまでに管理で訪問した家にも「下田さんだけ」の印を付ける（まだ付いていない家だけ・最小差分）
+  useEffect(() => {
+    if (!appSetData || !db || !Array.isArray(db.leads) || !db.leads.length) return;
+    const me = String(getCurrentUser() || "").trim();
+    const want = new Set(db.leads.filter(l => l && (l.status === "契約" || (l.history || []).some(h => h && h.kind === "visit")))
+      .map(l => String(l.jiage_id || "").replace(/^jiage::/, "")));
+    if (!want.size || !(jiage || []).some(j => j && want.has(String(j.id)) && j.privateTo !== me)) return;
+    want.forEach(id => kanriMarkPrivate(appSetData, id));
+  }, [db && db.leads, jiage && jiage.length]);
   const [err, setErr] = useState("");
   const [view, _setView] = useState(() => _kanriLastView || { k: "home" }); // home | map | leads | lead{key} | list | detail{id} | edit{draft} | visit{draft,isNew} | report{vid}
   const setView = (v) => {
@@ -43489,7 +43508,7 @@ function KanriPage({ jiage, appData, appSetData, appSetDataRaw, appSetPage }) {
     const back = () => setView(view.back && view.back.k !== "lead" ? view.back : { k: "leads" });
     if (!j) return <KanriBack onBack={back} title="地上げの家が見つかりません" />;
     const managed = props.find(p => p.jiage_id === view.key);
-    return <KanriLeadDetail j={j} db={db} managed={managed} onBack={back}
+    return <KanriLeadDetail j={j} db={db} managed={managed} onBack={back} onSetData={appSetData}
       onOpenManaged={() => setView({ k: "detail", id: managed.id })}
       onContract={() => setView({ k: "edit", draft: { ...kanriNewProp(), ...kanriPrefillFromJiage(j) } })} />;
   }
@@ -43983,7 +44002,28 @@ function kanriCandPins(jiage, db) {
 
 // 地上げの詳細（ステータス変更のすぐ下）に出す「💼 管理ステータス」。どの家でも付けられる。下田さんの端末だけ
 //   🆕 v9.728: 下田さん「地上げのステータスは見込みのままで、管理のステータスを追加して、俺だけ見れるように」(2026-11-15 動画)
-function KanriLeadBox({ raw, lead, cand, onContract }) {
+// 🆕 v9.743: 管理で訪問した家に「下田さんだけに見せる」印を付ける（最小差分・中身は書かない）
+function kanriMarkPrivate(setData, rawId) {
+  const me = String(getCurrentUser() || "").trim();
+  if (!setData || rawId == null || !canHoldPersonal(me)) return;
+  const now = Date.now();
+  setData(d => ({ ...d, jiage: (d.jiage || []).map(j => (String(j.id) !== String(rawId) || j.privateTo === me) ? j : {
+    ...j, privateTo: me, updatedAt: now, _fieldUpdatedAt: { ...(j._fieldUpdatedAt || {}), privateTo: now },
+  }) }));
+}
+// 🆕 v9.743: いつもの地上げのピンの詳細に出す「💼 管理」の欄（下田さんだけ）
+function KanriLeadInJiage({ raw, setData, onContract }) {
+  const db = useKanriStore(true) || {};
+  const key = kanriJiageKey(raw.id);
+  const lead = (db.leads || []).find(l => l.jiage_id === key) || null;
+  const managed = (db.props || []).find(p => p.jiage_id === key);
+  if (managed) return <div style={{ ...kanriCard, border: `2px solid ${C.success}`, marginTop: 4, marginBottom: 14, fontSize: 13, fontWeight: 700 }}>🏠 管理中の家です（巡回の記録は管理タブで）</div>;
+  return <div style={{ marginBottom: 14 }}>
+    <KanriLeadBox key={key} raw={raw} lead={lead} cand={false} onContract={onContract} onSaved={() => kanriMarkPrivate(setData, raw.id)} />
+    {raw.privateTo && <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>🔒 管理で訪問した家なので、下田さん以外の画面には出ていません</div>}
+  </div>;
+}
+function KanriLeadBox({ raw, lead, cand, onContract, onSaved }) {
   const [res, setRes] = useState(null);
   const [memo, setMemo] = useState("");
   const [next, setNext] = useState("");
@@ -44000,6 +44040,7 @@ function KanriLeadBox({ raw, lead, cand, onContract }) {
       const nx = (extra && "next" in extra) ? extra.next : (next || (lead && lead.next_on) || null);
       const row = await kanriSaveLead({ jiage_id: key, status, next_on: KANRI_LEAD_OPEN.includes(status) ? nx : null, memo: (lead && lead.memo) || null, history: hist });
       if (row) put(row);
+      if (onSaved && (!extra || extra.kind !== "status" || status === "契約")) onSaved(status);
       setRes(null); setMemo(""); setNext("");
       return true;
     } catch (e) { setErr(e.message || String(e)); return false; }
@@ -44133,7 +44174,7 @@ function KanriJiageSearch({ jiage, onPick }) {
   </div>;
 }
 // 営業先（地上げの家）の詳細：地上げの頃の情報と履歴は見るだけ、その下に管理ステータス
-function KanriLeadDetail({ j, db, managed, onBack, onOpenManaged, onContract }) {
+function KanriLeadDetail({ j, db, managed, onBack, onOpenManaged, onContract, onSetData }) {
   const key = kanriJiageKey(j.id);
   const lead = (db.leads || []).find(l => l.jiage_id === key) || null;
   const cand = kanriLeadCandidates([j], db)[0];
@@ -44168,7 +44209,7 @@ function KanriLeadDetail({ j, db, managed, onBack, onOpenManaged, onContract }) 
         {v.memo && <div style={{ marginTop: 2, whiteSpace: "pre-wrap" }}>{v.memo}</div>}
       </div>)}
     </div>
-    {!managed && <KanriLeadBox key={key} raw={j} lead={lead} cand={!!(cand && !lead)} onContract={onContract} />}
+    {!managed && <KanriLeadBox key={key} raw={j} lead={lead} cand={!!(cand && !lead)} onContract={onContract} onSaved={() => kanriMarkPrivate(onSetData, j.id)} />}
     {!pos && <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>※ 位置が無い家なので、管理の地図には出ません</div>}
   </div>;
 }
