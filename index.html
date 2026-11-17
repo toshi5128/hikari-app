@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.747";
+const APP_VERSION = "2026-11-17-v9.748";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8988,6 +8988,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.748", date: "2026-11-17", who: ["下田"], title: "営業先（HPの店・士業）の営業時間が見られるように",
+    body: "営業先の印を押すと、曜日ごとの営業時間と定休日が出ます。今日は太字、定休日は赤。「今日は休み／今は営業時間外／今は営業中」も出ます。今日が休みの店は、地図の印が薄い灰色になるので、行っても意味のない店がひと目で分かります。営業時間はGoogleの情報で、東松山から順に入れています。",
+    where: "地上げ → 地図 → 営業先の印を押す →「🕘 営業時間」" },
   { v: "9.747", date: "2026-11-17", who: ["下田"], title: "営業先（HPの店・士業）のステータスを地上げのように細かく",
     body: "営業先の印を開くと「ステータスを変える」が出ます。未連絡・不在・資料渡し済・訪問済・見込み候補・見込みあり・打合せ・成約・見込無し・見送り・対象外から選べます。「訪問した」の結果ボタンにも「考えておく（→見込み候補）」「閉業・HPあり（→対象外）」が増え、押すとステータスが自動で変わります。見込無し・見送り・対象外・成約は地図から消えます。",
     where: "地上げ → 地図 → 営業先の印を押す →「ステータスを変える」" },
@@ -27526,6 +27529,19 @@ const VMAP_ST = {"未連絡":"#9aa5a0","メール済":"#2f6fd6","電話済":"#7b
 const VMAP_STATUSES = Object.keys(VMAP_ST).filter(k => k !== "興味あり"); // 興味あり＝昔の名前（見込みありと同じ）
 const VMAP_HIDE_ST = ["成約", "見込無し", "見送り", "対象外"]; // 地図に出さない
 const VMAP_RESULTS = { "訪問": ["不在", "受付に資料を渡した", "会えた・話せた", "考えておく", "興味あり", "断られた", "閉業・HPあり"], "電話": ["出なかった", "話せた", "折り返し待ち", "考えておく", "興味あり", "断られた"] };
+// 🆕 v9.748: 営業時間（Googleの regularOpeningHours.periods）から「今日は休み／今は営業時間外」を出す
+function vmapOpenState(p, now) {
+  const per = p && Array.isArray(p.hours_periods) ? p.hours_periods : null;
+  if (!per || !per.length) return null;
+  now = now || new Date();
+  if (per.length === 1 && per[0].open && !per[0].close) return "open"; // 24時間
+  const dow = now.getDay(), mins = now.getHours() * 60 + now.getMinutes();
+  const today = per.filter(x => x.open && x.open.day === dow);
+  if (!today.length) return "closedToday";
+  const inNow = today.some(x => { const o = x.open.hour * 60 + (x.open.minute || 0);
+    const c = x.close ? (x.close.day !== dow ? 24 * 60 : x.close.hour * 60 + (x.close.minute || 0)) : 24 * 60; return mins >= o && mins < c; });
+  return inNow ? "open" : "closedNow";
+}
 function vmapStFromResult(k, r, cur) {
   const m = { "不在": "不在", "受付に資料を渡した": "資料渡し済", "会えた・話せた": "訪問済", "考えておく": "見込み候補", "閉業・HPあり": "対象外", "成約": "成約", "日程が決まった": "打合せ", "打合せした": "打合せ", "見積りを出す": "打合せ" };
   let st = m[r] || (/興味あり/.test(r) ? "見込みあり" : /断/.test(r) ? "見込無し" : (VMAP_NEXT_ST[k] || cur));
@@ -27590,6 +27606,14 @@ function VmapSheet({ place, onClose, onUpdated }) {
           </div>
           {p.address && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{p.address}</div>}
           {p.next_action && <div style={{ fontSize: 12, color: C.text, marginTop: 4, fontWeight: 700 }}>次にやること：{p.next_action}</div>}
+          {(() => { const os = vmapOpenState(p); const lines = String(p.hours || "").split(/\n/).filter(Boolean);
+            const wd = ["日", "月", "火", "水", "木", "金", "土"][new Date().getDay()];
+            return <div style={{ marginTop: 8, fontSize: 12, color: C.text, background: C.inset, borderRadius: 8, padding: "6px 8px" }}>
+              <div style={{ fontWeight: 800, marginBottom: 2 }}>🕘 営業時間{os === "closedToday" ? <span style={{ color: "#dc2626" }}>　今日は休み</span> : os === "closedNow" ? <span style={{ color: "#d97706" }}>　今は営業時間外</span> : os === "open" ? <span style={{ color: "#16a34a" }}>　今は営業中</span> : null}</div>
+              {lines.length ? lines.map((l, i) => <div key={i} style={{ fontWeight: l.startsWith(wd) ? 800 : 400, color: /定休日|休業/.test(l) ? "#dc2626" : C.text }}>{l}</div>)
+                : <div style={{ color: C.muted }}>まだ調べていません</div>}
+              <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((p.name || "") + " " + (p.address || ""))}`} target="_blank" rel="noopener" style={{ fontSize: 11, color: "#2563eb" }}>Googleマップで確かめる ↗</a>
+            </div>; })()}
         </div>
         <button onClick={onClose} style={{ border: "none", background: "transparent", fontSize: 22, color: C.muted, cursor: "pointer", padding: 4 }}>×</button>
       </div>
@@ -27849,8 +27873,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
     return vmapPlaces.filter(p => p && p.lat && p.lon && !VMAP_HIDE_ST.includes(p.status) && visitKinds.includes(p.category === "士業ルート" ? "shigyo" : "sys")).map(p => {
       const col = VMAP_ST[p.status] || "#999";
       const em = p.category === "士業ルート" ? "⚖" : "🏪";
-      return { lat: +p.lat, lng: +p.lon, size: 26, tip: p.name,
-        html: `<div style="width:26px;height:26px;border-radius:7px;background:${col};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1">${em}</div>`,
+      const os = vmapOpenState(p);
+      return { lat: +p.lat, lng: +p.lon, size: 26, tip: p.name + (os === "closedToday" ? "（今日は休み）" : os === "closedNow" ? "（今は営業時間外）" : ""),
+        html: `<div style="${os === "closedToday" ? "opacity:.35;filter:grayscale(1);" : ""}width:26px;height:26px;border-radius:7px;background:${col};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1">${em}</div>`,
         onTap: () => setVmapSel(p) };
     });
   }, [vmapAllowed, showVmap, vmapPlaces, visitKinds]);
