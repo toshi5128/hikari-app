@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.739";
+const APP_VERSION = "2026-11-17-v9.740";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -27766,6 +27766,9 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   const [vmapPlaces, setVmapPlaces] = useState([]);
   const [vmapSel, setVmapSel] = useState(null);
   const [vmapReload, setVmapReload] = useState(0);
+  // 🆕 v9.740: 営業先の絞り込み（all=全部／sys=🏪HPなしの店／shigyo=⚖士業）。この端末だけの表示設定
+  const [vmapCat, setVmapCat] = useState(() => { try { return localStorage.getItem("hikari_vmap_cat") || "all"; } catch (e) { return "all"; } });
+  useEffect(() => { try { localStorage.setItem("hikari_vmap_cat", vmapCat); } catch (e) {} }, [vmapCat]);
   useEffect(() => {
     if (!vmapAllowed || !showVmap || !_vmapKey()) return;
     let dead = false;
@@ -27785,14 +27788,14 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   };
   const vmapMarkers = useMemo(() => {
     if (!vmapAllowed || !showVmap) return null;
-    return vmapPlaces.filter(p => p && p.lat && p.lon && p.status !== "見送り" && p.status !== "成約").map(p => {
+    return vmapPlaces.filter(p => p && p.lat && p.lon && p.status !== "見送り" && p.status !== "成約" && (vmapCat === "all" || (vmapCat === "shigyo") === (p.category === "士業ルート"))).map(p => {
       const col = VMAP_ST[p.status] || "#999";
       const em = p.category === "士業ルート" ? "⚖" : "🏪";
       return { lat: +p.lat, lng: +p.lon, size: 26, tip: p.name,
         html: `<div style="width:26px;height:26px;border-radius:7px;background:${col};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1">${em}</div>`,
         onTap: () => setVmapSel(p) };
     });
-  }, [vmapAllowed, showVmap, vmapPlaces]);
+  }, [vmapAllowed, showVmap, vmapPlaces, vmapCat]);
   // 🆕 v9.534: 用途地域の色塗り。この端末だけの表示設定。
   const [showYouto, setShowYouto] = useState(() => {
     try { return localStorage.getItem("hikari_show_youto") === "1"; } catch (e) { return false; }
@@ -33471,6 +33474,9 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             sw("#991b1b", "成果あり"), sw("#dc2626", "見込みあり"), sw("#ef4444", "🔥調整区域"), sw("#818cf8", "市街化"),
                             <span key="nt2" style={{ fontSize: 9, color: C.muted }}>埼玉県全域の戸建の団地（集合住宅の団地は出しません）。点線＝まだ行っていない。寄せると名前が出ます</span>,
                           ])}
+                          {vmapAllowed && showVmap && optRow("#7c3aed", "営業先", [
+                            ["all", "全部"], ["sys", "🏪 HPなしの店"], ["shigyo", "⚖ 士業"],
+                          ].map(([k, l]) => chip("vc-" + k, vmapCat === k, "#7c3aed", () => setVmapCat(k), l)))}
                           {showChosei && optRow("#dc2626", "団地", [
                             sw("#991b1b", "成果あり"), sw("#dc2626", "見込みあり"), sw("#f97316", "ピンあり"), sw("#ef4444", "🚩 未踏（点線）"),
                             <span key="nt" style={{ fontSize: 9, color: C.muted }}>1976〜97年に造成された調整区域の分譲地＋東武台。農村集落は出しません。🏠物件住所の表示の時に出ます</span>,
