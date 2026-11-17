@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.752";
+const APP_VERSION = "2026-11-17-v9.753";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8988,6 +8988,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.753", date: "2026-11-17", who: ["下田"], title: "カレンダーの予定に営業先の名前を入れると、詳細が見られるように",
+    body: "予定のタイトルに営業先（HPの店・士業）の名前を入れると、地上げの予定と同じように「関連する営業先」が出ます。ステータス・業種・今日休みかどうか・住所・電話がひと目で分かり、「営業先の詳細を開く」で記録・トーク・営業時間の画面がそのまま開きます。",
+    where: "ホームのカレンダー → 予定を追加／予定を押す" },
   { v: "9.752", date: "2026-11-17", who: ["下田"], title: "営業先の画面で、その業種のトークを音声で聞けるように",
     body: "営業先の印を押すと「🔊 美容室のトークを聞く」のように業種ごとのボタンが出ます。入口の30秒・話を聞いてもらえた時・断られた時の返しを読み上げます。書きためた「話した内容」から分かった『言われたこと→返し・響いた言葉』は「⭐ 現場で分かったこと」として一番前に足していきます。",
     where: "地上げ → 地図 → 営業先の印を押す →「🔊 〇〇のトークを聞く」" },
@@ -16129,6 +16132,10 @@ function FilterChips({ options, value, onChange, multi = false }) {
 // ===================== DASHBOARD =====================
 function Dashboard({ data, setData, setPage, setPendingNav }) {
   const today = useTodayDate();
+  // 🆕 v9.753: 予定のタイトルから営業先（VISION）を見つける（下田さんだけ）
+  const vmapCalOn = canHoldPersonal(getCurrentUser()) && !!_vmapKey();
+  const vmapCalPlaces = useVmapPlaces(vmapCalOn);
+  const [vmapCalOpen, setVmapCalOpen] = useState(null);
   const currentYear = new Date().getFullYear();
   // 権限制御用
   const currentUser = getCurrentUser();
@@ -18393,6 +18400,12 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
       )}
 
       {/* 📌 カスタム予定の追加・編集 BottomSheet */}
+      {/* 🆕 v9.753: 営業先（VISION）の詳細を、カレンダーの上に重ねて開く */}
+      {vmapCalOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 4000, background: "rgba(0,0,0,0.45)" }} onClick={ev => { if (ev.target === ev.currentTarget) setVmapCalOpen(null); }}>
+          <VmapSheet place={vmapCalOpen} onClose={() => setVmapCalOpen(null)} onUpdated={np => { setVmapCalOpen(np); vmapLoadPlaces(true); }} />
+        </div>
+      )}
       {/* 🆕 v9.137: 予定の詳細（読むだけ）ポップアップ */}
       {eventDetail && (() => {
         const e = eventDetail.e;
@@ -18405,6 +18418,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           if (rel) relNav = { type: e.type, rawId: e.rawId };
         }
         const relOwner = rel ? String(rel.owner || rel.ownerName || "").trim() : "";
+        const relVmap = vmapCalOn && e.isCustom ? findRelatedVmap(e.title, vmapCalPlaces) : null; // 🆕 v9.753
         const assignees = e.assignees && e.assignees.length ? e.assignees : (e.assignee ? [e.assignee] : []);
         const Row = ({ label, children }) => (
           <div style={{ display: "flex", gap: 8, padding: "8px 0", borderBottom: `1px solid ${C.borderDim}`, fontSize: 13 }}>
@@ -18420,6 +18434,7 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
             {/* 🆕 v9.633: 場所は押すとGoogleマップで開く */}
             {e.location ? <Row label="場所"><a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(e.location)}`} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, fontWeight: 700 }}>📍 {e.location}</a></Row> : null}
             {e.memo ? <Row label="メモ"><span style={{ whiteSpace: "pre-wrap" }}>{e.memo}</span></Row> : null}
+            {relVmap ? <VmapRelCard place={relVmap} onOpen={() => setVmapCalOpen(relVmap)} /> : null}
             {assignees.length ? <Row label="担当">{assignees.map((m, i) => <span key={i} style={{ marginRight: 4 }}><MemberTag name={m} /></span>)}</Row> : null}
             {customEv && customEv.private ? <Row label="公開">🔒 自分だけ（非公開）</Row> : null}
             {/* 🆕 v9.516: 内見（反響の案内予定）は、どんなお客様かと反響カードへの入口をここにも出す（スマホはこの画面が開く） */}
@@ -18464,6 +18479,8 @@ function Dashboard({ data, setData, setPage, setPendingNav }) {
           <Field label="タイトル *">
             <input style={inp} value={eventForm.title} onChange={e => setEventForm(p => ({ ...p, title: e.target.value }))} placeholder="比嘉さんとMTG" autoFocus />
           </Field>
+          {/* 🆕 v9.753: タイトルに営業先（VISION）の名前があれば詳細を出す（下田さんだけ） */}
+          {vmapCalOn && (() => { const rv = findRelatedVmap(eventForm.title, vmapCalPlaces); return rv ? <VmapRelCard place={rv} onOpen={() => setVmapCalOpen(rv)} /> : null; })()}
           {/* 🆕 v9.135: タイトルから関連する地上げ物件を自動判定して詳細＋「物件を開く」を表示 */}
           {(() => {
             const rel = findRelatedJiage(eventForm.title);
@@ -27566,6 +27583,50 @@ async function vmapApi(path, opt) {
   const r = await fetch(VMAP_SB + path, { ...opt, headers: { apikey: VMAP_PK, "x-vmap-key": _vmapKey(), "Content-Type": "application/json", Prefer: "return=representation", ...(opt.headers || {}) } });
   if (!r.ok) throw new Error((await r.text()).slice(0, 120) || r.status);
   return r.status === 204 ? null : r.json();
+}
+// 🆕 v9.753: カレンダーから営業先（VISION）を見つけるための全件キャッシュ（下田さんだけ）
+let _vmapPlacesP = null;
+function vmapLoadPlaces(force) {
+  if (!_vmapKey()) return Promise.resolve([]);
+  if (_vmapPlacesP && !force) return _vmapPlacesP;
+  _vmapPlacesP = (async () => { const all = []; for (let off = 0; off < 20000; off += 1000) {
+      const rows = await vmapApi(`vmap_places?select=*&order=id&limit=1000&offset=${off}`);
+      if (!Array.isArray(rows)) break; all.push(...rows); if (rows.length < 1000) break; }
+    return all; })().catch(e => { _vmapPlacesP = null; return []; });
+  return _vmapPlacesP;
+}
+function useVmapPlaces(on) {
+  const [ps, setPs] = useState([]);
+  useEffect(() => { if (!on) return; let dead = false; vmapLoadPlaces().then(r => { if (!dead) setPs(r || []); }); return () => { dead = true; }; }, [on]);
+  return ps;
+}
+const _vmapNorm = (x) => String(x || "").normalize("NFKC").replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|様|さん|事務所|[\s・　()（）「」【】\-ー－]/g, "").toLowerCase();
+// 予定のタイトルに営業先の名前が入っていたら、その営業先を返す（いちばん長く一致したもの）
+function findRelatedVmap(title, places) {
+  const t = _vmapNorm(title);
+  if (t.length < 2 || !places || !places.length) return null;
+  let best = null, bestLen = 0;
+  for (const p of places) {
+    const n = _vmapNorm(p.name);
+    if (n.length < 3) continue;
+    if (t.includes(n) && n.length > bestLen) { best = p; bestLen = n.length; }
+  }
+  return best;
+}
+function VmapRelCard({ place, onOpen }) {
+  const p = place, col = VMAP_ST[p.status] || "#999", os = vmapOpenState(p);
+  return <div style={{ marginTop: 12, marginBottom: 12, background: C.panelBg, border: "1px solid #7c3aed55", borderLeft: "4px solid #7c3aed", borderRadius: 8, padding: "10px 12px" }}>
+    <div style={{ fontSize: 11, color: "#7c3aed", fontWeight: 800, marginBottom: 4 }}>{p.category === "士業ルート" ? "⚖" : "🏪"} 関連する営業先（VISION）</div>
+    <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{p.name}</div>
+    <div style={{ fontSize: 12, color: C.muted, marginTop: 3, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+      <span style={{ background: col, color: "#fff", borderRadius: 10, padding: "1px 8px", fontWeight: 800 }}>{p.status}</span>
+      <span>{p.kind || ""}</span>
+      {os === "closedToday" ? <b style={{ color: "#dc2626" }}>今日は休み</b> : os === "closedNow" ? <b style={{ color: "#d97706" }}>今は営業時間外</b> : os === "open" ? <b style={{ color: "#16a34a" }}>今は営業中</b> : null}
+    </div>
+    {p.address && <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{p.address}</div>}
+    {p.phone && <div style={{ fontSize: 12, marginTop: 3 }}><a href={`tel:${String(p.phone).replace(/[^0-9+]/g, "")}`} style={{ color: "#2563eb", fontWeight: 700 }}>📞 {p.phone}</a></div>}
+    <button type="button" onClick={onOpen} style={{ width: "100%", marginTop: 8, padding: "9px", background: "#7c3aed22", border: "1.5px solid #7c3aed", color: "#7c3aed", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 800, fontFamily: "inherit" }}>営業先の詳細を開く（記録・トーク・営業時間）</button>
+  </div>;
 }
 // 🆕 v9.752: 業種別トーク（VISION営業地図の sales_talk.js / talk.js をそのまま読む）を、営業先の画面で読み上げる
 const _vmapTalkCache = {};
