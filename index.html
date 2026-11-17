@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.748";
+const APP_VERSION = "2026-11-17-v9.749";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8988,6 +8988,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.749", date: "2026-11-17", who: ["下田"], title: "営業先で話した内容を書き残せるように",
+    body: "営業先の印を押すと「🚪訪問した／📞電話した／📝メモ」が並びます。訪問・電話は、話した内容を書いてから結果を押すと一緒に残ります。「📝メモ」はステータスを変えずに話した内容だけを残せます。これまでの記録は全部（50件まで）並び、✏️で書き直し、🗑で消せます。",
+    where: "地上げ → 地図 → 営業先の印を押す →「📝 メモ」" },
   { v: "9.748", date: "2026-11-17", who: ["下田"], title: "営業先（HPの店・士業）の営業時間が見られるように",
     body: "営業先の印を押すと、曜日ごとの営業時間と定休日が出ます。今日は太字、定休日は赤。「今日は休み／今は営業時間外／今は営業中」も出ます。今日が休みの店は、地図の印が薄い灰色になるので、行っても意味のない店がひと目で分かります。営業時間はGoogleの情報で、東松山から順に入れています。",
     where: "地上げ → 地図 → 営業先の印を押す →「🕘 営業時間」" },
@@ -27563,10 +27566,12 @@ function VmapSheet({ place, onClose, onUpdated }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [logs, setLogs] = useState(null);
+  const [editId, setEditId] = useState(null), [editText, setEditText] = useState(""); // 🆕 v9.749: 記録の書き直し
   const p = place;
+  const loadLogs = () => vmapApi(`vmap_logs?place_id=eq.${encodeURIComponent(p.id)}&order=at.desc&limit=50`);
   useEffect(() => {
     let dead = false; setLogs(null); setKind(null); setNote("");
-    vmapApi(`vmap_logs?place_id=eq.${encodeURIComponent(p.id)}&order=at.desc&limit=5`).then(l => { if (!dead) setLogs(l || []); }).catch(() => { if (!dead) setLogs([]); });
+    loadLogs().then(l => { if (!dead) setLogs(l || []); }).catch(() => { if (!dead) setLogs([]); });
     return () => { dead = true; };
   }, [p.id]);
   const record = async (k, r) => {
@@ -27577,9 +27582,32 @@ function VmapSheet({ place, onClose, onUpdated }) {
       const rows = await vmapApi(`vmap_places?id=eq.${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ status: st, updated_at: new Date().toISOString() }) });
       onUpdated(rows && rows[0] ? rows[0] : { ...p, status: st });
       setKind(null); setNote("");
-      const l = await vmapApi(`vmap_logs?place_id=eq.${encodeURIComponent(p.id)}&order=at.desc&limit=5`).catch(() => null);
+      const l = await loadLogs().catch(() => null);
       if (l) setLogs(l);
     } catch (e) { alert("⚠️ 記録できませんでした：" + e.message); }
+    setBusy(false);
+  };
+  // 🆕 v9.749: トークの中身だけを残す（ステータスは変えない）
+  const saveMemo = async () => {
+    if (busy || !note.trim()) return; setBusy(true);
+    try {
+      await vmapApi("vmap_logs", { method: "POST", body: JSON.stringify({ place_id: p.id, kind: "メモ", result: "", note }) });
+      await vmapApi(`vmap_places?id=eq.${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ updated_at: new Date().toISOString() }) }).catch(() => null);
+      setKind(null); setNote(""); const l = await loadLogs().catch(() => null); if (l) setLogs(l);
+    } catch (e) { alert("⚠️ 保存できませんでした：" + e.message); }
+    setBusy(false);
+  };
+  const saveEdit = async (id) => {
+    if (busy) return; setBusy(true);
+    try { await vmapApi(`vmap_logs?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ note: editText }) });
+      setEditId(null); const l = await loadLogs().catch(() => null); if (l) setLogs(l);
+    } catch (e) { alert("⚠️ 直せませんでした：" + e.message); }
+    setBusy(false);
+  };
+  const delLog = async (id) => {
+    if (busy || !window.confirm("この記録を消しますか？")) return; setBusy(true);
+    try { await vmapApi(`vmap_logs?id=eq.${id}`, { method: "DELETE" }); const l = await loadLogs().catch(() => null); if (l) setLogs(l); }
+    catch (e) { alert("⚠️ 消せませんでした：" + e.message); }
     setBusy(false);
   };
   const setSt = async (st) => {
@@ -27622,20 +27650,25 @@ function VmapSheet({ place, onClose, onUpdated }) {
         <a href={nav} target="_blank" rel="noopener" style={btn("#2563eb")}>🚗 ナビ</a>
       </div>
       <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, marginTop: 14, marginBottom: 6 }}>記録する</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-        {["訪問", "電話"].map(k => (
-          <button key={k} onClick={() => setKind(kind === k ? null : k)} style={btn("#ea580c", kind === k)}>{k === "訪問" ? "🚪 訪問した" : "📞 電話した"}</button>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+        {["訪問", "電話", "メモ"].map(k => (
+          <button key={k} onClick={() => setKind(kind === k ? null : k)} style={btn("#ea580c", kind === k)}>{k === "訪問" ? "🚪 訪問した" : k === "電話" ? "📞 電話した" : "📝 メモ"}</button>
         ))}
       </div>
       {kind && (
         <div style={{ marginTop: 8 }}>
-          <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="ひとこと（なくてもOK）"
-            style={{ width: "100%", boxSizing: "border-box", borderRadius: 8, border: `1px solid ${C.border || "#ccc"}`, padding: 8, fontFamily: "inherit", fontSize: 13, background: C.inset, color: C.text }} />
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-            {VMAP_RESULTS[kind].map(r => (
-              <button key={r} disabled={busy} onClick={() => record(kind, r)} style={{ ...btn("#ea580c"), padding: "8px 10px", fontSize: 12 }}>{r}</button>
-            ))}
-          </div>
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={4} placeholder={kind === "メモ" ? "話した内容・言われたこと・次に話すこと" : "話した内容・言われたこと（なくてもOK）"}
+            style={{ width: "100%", boxSizing: "border-box", borderRadius: 8, border: `1px solid ${C.border || "#ccc"}`, padding: 8, fontFamily: "inherit", fontSize: 14, lineHeight: 1.5, background: C.inset, color: C.text }} />
+          {kind === "メモ" ? (
+            <button disabled={busy || !note.trim()} onClick={saveMemo} style={{ ...btn("#ea580c", true), width: "100%", marginTop: 6, opacity: note.trim() ? 1 : 0.5 }}>{busy ? "保存中…" : "📝 メモを残す（ステータスは変えない）"}</button>
+          ) : (<>
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>結果を押すと、上に書いた内容と一緒に記録されます</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+              {VMAP_RESULTS[kind].map(r => (
+                <button key={r} disabled={busy} onClick={() => record(kind, r)} style={{ ...btn("#ea580c"), padding: "8px 10px", fontSize: 12 }}>{r}</button>
+              ))}
+            </div>
+          </>)}
         </div>
       )}
       <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, marginTop: 14, marginBottom: 6 }}>ステータスを変える</div>
@@ -27649,8 +27682,21 @@ function VmapSheet({ place, onClose, onUpdated }) {
       {logs === null ? <div style={{ fontSize: 12, color: C.muted }}>読み込み中…</div>
         : !logs.length ? <div style={{ fontSize: 12, color: C.muted }}>まだありません</div>
         : logs.map((l, i) => (
-          <div key={i} style={{ fontSize: 12, color: C.text, padding: "4px 0", borderBottom: `1px solid ${C.border || "#eee"}` }}>
-            <b>{l.kind}</b> {new Date(l.at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} {l.result || ""}{l.note ? <div style={{ color: C.muted }}>{l.note}</div> : null}
+          <div key={l.id || i} style={{ fontSize: 12, color: C.text, padding: "6px 0", borderBottom: `1px solid ${C.border || "#eee"}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ flex: 1 }}><b>{l.kind === "メモ" ? "📝 メモ" : l.kind}</b> {new Date(l.at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} <b style={{ color: "#ea580c" }}>{l.result || ""}</b></span>
+              {l.id != null && editId !== l.id && <>
+                <button onClick={() => { setEditId(l.id); setEditText(l.note || ""); }} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 14, padding: 2 }}>✏️</button>
+                <button onClick={() => delLog(l.id)} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 14, padding: 2 }}>🗑</button>
+              </>}
+            </div>
+            {editId === l.id ? <div style={{ marginTop: 4 }}>
+              <textarea value={editText} onChange={e => setEditText(e.target.value)} rows={4} style={{ width: "100%", boxSizing: "border-box", borderRadius: 8, border: `1px solid ${C.border || "#ccc"}`, padding: 8, fontFamily: "inherit", fontSize: 14, background: C.inset, color: C.text }} />
+              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                <button disabled={busy} onClick={() => saveEdit(l.id)} style={{ ...btn("#ea580c", true), flex: 1, padding: "7px" }}>保存</button>
+                <button onClick={() => setEditId(null)} style={{ ...btn("#9ca3af"), flex: 1, padding: "7px" }}>やめる</button>
+              </div>
+            </div> : l.note ? <div style={{ color: C.text, marginTop: 2, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{l.note}</div> : null}
           </div>
         ))}
       <a href="https://toshi5128.github.io/ai-news/vision-map/" target="_blank" rel="noopener" style={{ display: "block", marginTop: 12, fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>トーク・メモは VISION営業地図で ↗</a>
