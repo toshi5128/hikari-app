@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-16-v9.738-ai-24b9bb46";
+const APP_VERSION = "2026-11-17-v9.739";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8985,6 +8985,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.739", date: "2026-11-17", who: ["下田"], title: "地上げの地図に営業先（VISION）を重ねられるように",
+    body: "VISION営業地図に入れたホームページのない店（🏪）と士業の事務所（⚖）が、地上げの地図に四角い印で出ます。押すと電話・ナビ・「訪問した／電話した」の記録ができ、VISION営業地図にもそのまま残ります。初めての時だけ合言葉を聞きます。成約・見送りの所は出しません。ひかりのデータには入らず、下田さんの画面にしか出ません。",
+    where: "地上げ → 地図 → 表示の切り替え『🏪⚖ 営業先（VISION）』" },
   { v: "9.738", date: "2026-11-16", title: "🎯探索候補に「古い団地」が上がってくるように",
     body: "調整区域の中で家がかたまっている所（昔の分譲団地）を国勢調査から自動で見つけ、お年寄りが多く・長く住み続けている人が多い団地ほど、おすすめ上位に出します。名前を登録しなくても東武台団地（東松山 大字野田）のような所が上がります。区画を押すと「5年前も同じ家に住む人」「調整区域」の割合も見られます。",
     where: "地上げ → 地図 → 左下「🎯 探索候補」→ 区画を押す（重みは「⚙ 重み」の『古い団地らしさ』）" },
@@ -27492,6 +27495,99 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
   );
 }
 
+// 🆕 v9.738: 営業先（VISION営業地図のデータ）を地上げの地図に重ねる。下田さんの端末だけ。
+//   データはひかりのDBに入れない＝ai-newsのSupabase vmap_* を合言葉ヘッダ(x-vmap-key)で読み書きするだけ。
+//   合言葉はこの端末のlocalStorage(vmap_key)にだけ置く。ソースには書かない。
+const VMAP_SB = "https://aevqdsozxiklyjfavvhf.supabase.co/rest/v1/", VMAP_PK = "sb_publishable_3J-KuCCmuO_d7WLzQrsrTg_U3QiaF_I";
+const VMAP_ST = {"未連絡":"#9aa5a0","メール済":"#2f6fd6","電話済":"#7b4fc9","訪問済":"#e08a1e","興味あり":"#18a058","打合せ":"#0b6b3a","成約":"#c9a400","見送り":"#c0392b"};
+const VMAP_RESULTS = { "訪問": ["不在", "受付に資料を渡した", "会えた・話せた", "興味あり", "断られた"], "電話": ["出なかった", "話せた", "興味あり", "折り返し待ち", "断られた"] };
+const VMAP_NEXT_ST = { "訪問": "訪問済", "電話": "電話済" };
+function _vmapKey() { try { return localStorage.getItem("vmap_key") || ""; } catch (e) { return ""; } }
+(function () { try { const m = location.hash.match(/vk=([A-Za-z0-9]+)/); if (m) { localStorage.setItem("vmap_key", m[1]); history.replaceState(null, "", location.pathname + location.search); } } catch (e) {} })();
+async function vmapApi(path, opt) {
+  opt = opt || {};
+  const r = await fetch(VMAP_SB + path, { ...opt, headers: { apikey: VMAP_PK, "x-vmap-key": _vmapKey(), "Content-Type": "application/json", Prefer: "return=representation", ...(opt.headers || {}) } });
+  if (!r.ok) throw new Error((await r.text()).slice(0, 120) || r.status);
+  return r.status === 204 ? null : r.json();
+}
+function VmapSheet({ place, onClose, onUpdated }) {
+  const [kind, setKind] = useState(null);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [logs, setLogs] = useState(null);
+  const p = place;
+  useEffect(() => {
+    let dead = false; setLogs(null); setKind(null); setNote("");
+    vmapApi(`vmap_logs?place_id=eq.${encodeURIComponent(p.id)}&order=at.desc&limit=5`).then(l => { if (!dead) setLogs(l || []); }).catch(() => { if (!dead) setLogs([]); });
+    return () => { dead = true; };
+  }, [p.id]);
+  const record = async (k, r) => {
+    if (busy) return; setBusy(true);
+    try {
+      await vmapApi("vmap_logs", { method: "POST", body: JSON.stringify({ place_id: p.id, kind: k, result: r, note }) });
+      let st = /興味あり/.test(r) ? "興味あり" : /断/.test(r) ? "見送り" : (VMAP_NEXT_ST[k] || p.status);
+      if (["興味あり", "打合せ", "成約"].includes(p.status) && st !== "見送り") st = p.status;  // 良い状態を下げない
+      const rows = await vmapApi(`vmap_places?id=eq.${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ status: st, updated_at: new Date().toISOString() }) });
+      onUpdated(rows && rows[0] ? rows[0] : { ...p, status: st });
+      setKind(null); setNote("");
+      const l = await vmapApi(`vmap_logs?place_id=eq.${encodeURIComponent(p.id)}&order=at.desc&limit=5`).catch(() => null);
+      if (l) setLogs(l);
+    } catch (e) { alert("⚠️ 記録できませんでした：" + e.message); }
+    setBusy(false);
+  };
+  const nav = p.lat ? `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.address || p.name)}`;
+  const btn = (bg, fg) => ({ padding: "10px 12px", borderRadius: 10, border: `2px solid ${bg}`, background: fg ? bg : "transparent", color: fg ? "#fff" : bg, fontWeight: 800, fontSize: 13, fontFamily: "inherit", cursor: "pointer", textDecoration: "none", textAlign: "center" });
+  const col = VMAP_ST[p.status] || "#999";
+  return (
+    <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 760, maxHeight: "70%", overflowY: "auto",
+      background: C.cardBg, borderTopLeftRadius: 16, borderTopRightRadius: 16, boxShadow: "0 -8px 32px rgba(0,0,0,0.45)", padding: "14px 16px 18px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#7c3aed" }}>{p.category === "士業ルート" ? "⚖ 士業ルート" : "🏪 システム営業"}（VISION・下田さんだけに表示）</div>
+          <div style={{ fontSize: 17, fontWeight: 900, color: C.text, marginTop: 2 }}>{p.name}</div>
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 4, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+            <span style={{ background: col, color: "#fff", borderRadius: 10, padding: "2px 8px", fontWeight: 800 }}>{p.status}</span>
+            <span>{p.kind || ""}</span>
+          </div>
+          {p.address && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{p.address}</div>}
+          {p.next_action && <div style={{ fontSize: 12, color: C.text, marginTop: 4, fontWeight: 700 }}>次にやること：{p.next_action}</div>}
+        </div>
+        <button onClick={onClose} style={{ border: "none", background: "transparent", fontSize: 22, color: C.muted, cursor: "pointer", padding: 4 }}>×</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}>
+        {p.phone ? <a href={`tel:${String(p.phone).replace(/[^0-9+]/g, "")}`} style={btn("#2563eb", true)}>📞 電話</a> : <span style={{ ...btn("#9ca3af"), opacity: 0.6 }}>📞 電話なし</span>}
+        <a href={nav} target="_blank" rel="noopener" style={btn("#2563eb")}>🚗 ナビ</a>
+      </div>
+      <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, marginTop: 14, marginBottom: 6 }}>記録する</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {["訪問", "電話"].map(k => (
+          <button key={k} onClick={() => setKind(kind === k ? null : k)} style={btn("#ea580c", kind === k)}>{k === "訪問" ? "🚪 訪問した" : "📞 電話した"}</button>
+        ))}
+      </div>
+      {kind && (
+        <div style={{ marginTop: 8 }}>
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="ひとこと（なくてもOK）"
+            style={{ width: "100%", boxSizing: "border-box", borderRadius: 8, border: `1px solid ${C.border || "#ccc"}`, padding: 8, fontFamily: "inherit", fontSize: 13, background: C.inset, color: C.text }} />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+            {VMAP_RESULTS[kind].map(r => (
+              <button key={r} disabled={busy} onClick={() => record(kind, r)} style={{ ...btn("#ea580c"), padding: "8px 10px", fontSize: 12 }}>{r}</button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, marginTop: 14, marginBottom: 4 }}>これまでの記録</div>
+      {logs === null ? <div style={{ fontSize: 12, color: C.muted }}>読み込み中…</div>
+        : !logs.length ? <div style={{ fontSize: 12, color: C.muted }}>まだありません</div>
+        : logs.map((l, i) => (
+          <div key={i} style={{ fontSize: 12, color: C.text, padding: "4px 0", borderBottom: `1px solid ${C.border || "#eee"}` }}>
+            <b>{l.kind}</b> {new Date(l.at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} {l.result || ""}{l.note ? <div style={{ color: C.muted }}>{l.note}</div> : null}
+          </div>
+        ))}
+      <a href="https://toshi5128.github.io/ai-news/vision-map/" target="_blank" rel="noopener" style={{ display: "block", marginTop: 12, fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>トーク・メモ・状態の変更は VISION営業地図で ↗</a>
+    </div>
+  );
+}
+
 function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPage, kanriMode, kanriMarkers, onKanriPin }) {
   // 🆕 v9.734: kanriMode＝管理タブの中で地上げの地図をそのまま使う（下田さん専用）。
   //   違いは3つだけ：家を押すと管理の詳細が開く／探索ルートは記録しない／ピンは立てない（地上げのデータを増やさない）
@@ -27661,6 +27757,42 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   useEffect(() => {
     try { localStorage.setItem("hikari_show_chosei", showChosei ? "1" : "0"); } catch (e) {}
   }, [showChosei]);
+  // 🆕 v9.738: 🏪⚖ 営業先（VISION）を重ねる。下田さんだけ・管理タブでは出さない。最初はON。
+  const vmapAllowed = !kanriMode && canHoldPersonal(currentUser);
+  const [showVmap, setShowVmap] = useState(() => {
+    try { return localStorage.getItem("hikari_show_vmap") !== "0"; } catch (e) { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem("hikari_show_vmap", showVmap ? "1" : "0"); } catch (e) {} }, [showVmap]);
+  const [vmapPlaces, setVmapPlaces] = useState([]);
+  const [vmapSel, setVmapSel] = useState(null);
+  const [vmapReload, setVmapReload] = useState(0);
+  useEffect(() => {
+    if (!vmapAllowed || !showVmap || !_vmapKey()) return;
+    let dead = false;
+    vmapApi("vmap_places?select=*&order=updated_at.desc&limit=2000")
+      .then(rows => { if (!dead) setVmapPlaces(Array.isArray(rows) ? rows : []); })
+      .catch(e => { if (!dead) { setVmapPlaces([]); if (/401|403|permission|denied/i.test(e.message)) { try { localStorage.removeItem("vmap_key"); } catch (x) {} alert("⚠️ 営業先の合言葉が違うようです。もう一度入れてください"); setShowVmap(false); } } });
+    return () => { dead = true; };
+  }, [vmapAllowed, showVmap, vmapReload]);
+  const toggleVmap = () => {
+    if (showVmap) { setShowVmap(false); setVmapSel(null); return; }
+    if (!_vmapKey()) {
+      const k = String(prompt("VISION営業地図の合言葉を入れてください（この端末にだけ覚えます）") || "").normalize("NFKC").replace(/\s+/g, "");
+      if (!k) return;
+      try { localStorage.setItem("vmap_key", k); } catch (e) {}
+    }
+    setShowVmap(true); setVmapReload(Date.now());
+  };
+  const vmapMarkers = useMemo(() => {
+    if (!vmapAllowed || !showVmap) return null;
+    return vmapPlaces.filter(p => p && p.lat && p.lon && p.status !== "見送り" && p.status !== "成約").map(p => {
+      const col = VMAP_ST[p.status] || "#999";
+      const em = p.category === "士業ルート" ? "⚖" : "🏪";
+      return { lat: +p.lat, lng: +p.lon, size: 26, tip: p.name,
+        html: `<div style="width:26px;height:26px;border-radius:7px;background:${col};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1">${em}</div>`,
+        onTap: () => setVmapSel(p) };
+    });
+  }, [vmapAllowed, showVmap, vmapPlaces]);
   // 🆕 v9.534: 用途地域の色塗り。この端末だけの表示設定。
   const [showYouto, setShowYouto] = useState(() => {
     try { return localStorage.getItem("hikari_show_youto") === "1"; } catch (e) { return false; }
@@ -33283,6 +33415,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           set: () => { const nv = !showChosei; setShowChosei(nv); if (nv && mapPinTarget !== "address") setMapPinTarget("address"); } },
                         { k: "danchi", on: showDanchiNames, c: "#4338ca", l: "🏘 名前のある団地",
                           set: () => { const nv = !showDanchiNames; setShowDanchiNames(nv); if (nv && mapPinTarget !== "address") setMapPinTarget("address"); } },
+                        ...(vmapAllowed ? [{ k: "vmap", on: showVmap, c: "#7c3aed", l: "🏪⚖ 営業先（VISION）", sub: showVmap ? `${(vmapMarkers || []).length}件` : "", set: toggleVmap }] : []),
                       ];
                       const chip = (key, on, c, onClick, label) => (
                         <button key={key} onClick={onClick} style={{
@@ -33826,7 +33959,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       svScans={null}
                       svTracks={showSvTrack ? svTracksData : null}
                       svYearRects={svYearRects}
-                      extraMarkers={kanriMode ? kanriMarkers : undefined}
+                      extraMarkers={kanriMode ? kanriMarkers : (vmapMarkers && vmapMarkers.length ? vmapMarkers : undefined)}
                       svCands={pendingPin || selected ? null : svCands}
                       onSvCandTap={placementMode ? null : (id => setSvSelId(id))}
                       trackColorMode={trackColorMode}
@@ -33867,6 +34000,10 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                       editPin={pinEdit ? { lat: pinEdit.lat, lng: pinEdit.lng } : null}
                       onEditPinMove={(lat, lng) => setPinEdit(p => p ? { ...p, lat, lng } : p)}
                     />
+                    {vmapAllowed && vmapSel && !selected && !pendingPin && (
+                      <VmapSheet place={vmapSel} onClose={() => setVmapSel(null)}
+                        onUpdated={row => { setVmapPlaces(ps => ps.map(x => x.id === row.id ? { ...x, ...row } : x)); setVmapSel(s => s ? { ...s, ...row } : s); }} />
+                    )}
                     {/* 🆕 v9.54: ピン位置の現地修正パネル */}
                     {pinEdit && (
                       <div style={{
