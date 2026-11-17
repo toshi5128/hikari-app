@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.741";
+const APP_VERSION = "2026-11-17-v9.742";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8985,6 +8985,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.742", date: "2026-11-17", who: ["下田"], title: "地図の絞り込みで、訪問先の種類を選べるように",
+    body: "地図の左下の「絞り込み」のいちばん上に「📍 訪問先」が増えました。🏠 地上げの家・🏪 HP（店）・⚖ 士業の先生を押して、出す／隠すを切り替えられます。たとえば「⚖ 士業の先生」だけにすると、士業の事務所だけが地図に出ます。「全部」で元に戻ります。",
+    where: "地上げ → 地図 → 左下の「絞り込み」→「📍 訪問先」" },
   { v: "9.739", date: "2026-11-17", who: ["下田"], title: "地上げの地図に営業先（VISION）を重ねられるように",
     body: "VISION営業地図に入れたホームページのない店（🏪）と士業の事務所（⚖）が、地上げの地図に四角い印で出ます。押すと電話・ナビ・「訪問した／電話した」の記録ができ、VISION営業地図にもそのまま残ります。初めての時だけ合言葉を聞きます。成約・見送りの所は出しません。ひかりのデータには入らず、下田さんの画面にしか出ません。",
     where: "地上げ → 地図 → 表示の切り替え『🏪⚖ 営業先（VISION）』" },
@@ -27779,6 +27782,14 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   // 🆕 v9.740: 営業先の絞り込み（all=全部／sys=🏪HPなしの店／shigyo=⚖士業）。この端末だけの表示設定
   const [vmapCat, setVmapCat] = useState(() => { try { return localStorage.getItem("hikari_vmap_cat") || "all"; } catch (e) { return "all"; } });
   useEffect(() => { try { localStorage.setItem("hikari_vmap_cat", vmapCat); } catch (e) {} }, [vmapCat]);
+  // 🆕 v9.742: 訪問先の種類で絞り込み（jiage=🏠地上げの家／sys=🏪HPなしの店／shigyo=⚖士業）。複数選べる・この端末だけ
+  const VISIT_KINDS_ALL = ["jiage", "sys", "shigyo"];
+  const [visitKinds, setVisitKinds] = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem("hikari_visit_kinds") || "null"); if (Array.isArray(v) && v.length) return v.filter(k => VISIT_KINDS_ALL.includes(k)); } catch (e) {}
+    return VISIT_KINDS_ALL;
+  });
+  useEffect(() => { try { localStorage.setItem("hikari_visit_kinds", JSON.stringify(visitKinds)); } catch (e) {} }, [visitKinds]);
+  const showJiagePins = !vmapAllowed || visitKinds.includes("jiage");
   useEffect(() => {
     if (!vmapAllowed || !showVmap || !_vmapKey()) return;
     let dead = false;
@@ -27798,14 +27809,14 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   };
   const vmapMarkers = useMemo(() => {
     if (!vmapAllowed || !showVmap) return null;
-    return vmapPlaces.filter(p => p && p.lat && p.lon && p.status !== "見送り" && p.status !== "成約" && (vmapCat === "all" || (vmapCat === "shigyo") === (p.category === "士業ルート"))).map(p => {
+    return vmapPlaces.filter(p => p && p.lat && p.lon && p.status !== "見送り" && p.status !== "成約" && visitKinds.includes(p.category === "士業ルート" ? "shigyo" : "sys")).map(p => {
       const col = VMAP_ST[p.status] || "#999";
       const em = p.category === "士業ルート" ? "⚖" : "🏪";
       return { lat: +p.lat, lng: +p.lon, size: 26, tip: p.name,
         html: `<div style="width:26px;height:26px;border-radius:7px;background:${col};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1">${em}</div>`,
         onTap: () => setVmapSel(p) };
     });
-  }, [vmapAllowed, showVmap, vmapPlaces, vmapCat]);
+  }, [vmapAllowed, showVmap, vmapPlaces, visitKinds]);
   // 🆕 v9.534: 用途地域の色塗り。この端末だけの表示設定。
   const [showYouto, setShowYouto] = useState(() => {
     try { return localStorage.getItem("hikari_show_youto") === "1"; } catch (e) { return false; }
@@ -32871,6 +32882,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
               const lat = mapPinTarget === "ownerAddr" ? i.ownerLat : i.lat;
               const lng = mapPinTarget === "ownerAddr" ? i.ownerLng : i.lng;
               if (typeof lat !== "number" || typeof lng !== "number") return false;
+              if (!showJiagePins) return false; // 🆕 v9.742: 訪問先の絞り込みで地上げの家を外した時
               // 🆕 v9.736: 管理の地図では、行っても意味のない家は出さない（下田さん 2026-11-16）
               //   見込無し・対象外・訪問禁止・売却済み／本人居住（所有者が住んでいる）／法人名義
               if (kanriMode) {
@@ -33485,8 +33497,8 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                             <span key="nt2" style={{ fontSize: 9, color: C.muted }}>埼玉県全域の戸建の団地（集合住宅の団地は出しません）。点線＝まだ行っていない。寄せると名前が出ます</span>,
                           ])}
                           {vmapAllowed && showVmap && optRow("#7c3aed", "営業先", [
-                            ["all", "全部"], ["sys", "🏪 HPなしの店"], ["shigyo", "⚖ 士業"],
-                          ].map(([k, l]) => chip("vc-" + k, vmapCat === k, "#7c3aed", () => setVmapCat(k), l)))}
+                            ["sys", "🏪 HPなしの店"], ["shigyo", "⚖ 士業"],
+                          ].map(([k, l]) => chip("vc-" + k, visitKinds.includes(k), "#7c3aed", () => setVisitKinds(visitKinds.includes(k) ? visitKinds.filter(x => x !== k) : [...visitKinds, k]), l)))}
                           {showChosei && optRow("#dc2626", "団地", [
                             sw("#991b1b", "成果あり"), sw("#dc2626", "見込みあり"), sw("#f97316", "ピンあり"), sw("#ef4444", "🚩 未踏（点線）"),
                             <span key="nt" style={{ fontSize: 9, color: C.muted }}>1976〜97年に造成された調整区域の分譲地＋東武台。農村集落は出しません。🏠物件住所の表示の時に出ます</span>,
@@ -33906,7 +33918,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                     <div style={{ position: "relative" }}>
                     <LeafletMap
                       items={itemsWithCoord}
-                      ghostPins={kanriMode ? null : donePins}
+                      ghostPins={kanriMode || !showJiagePins ? null : donePins}
                       areaCircles={tansakuCircles}
                       koho={kohoResult ? (() => {
                         const pinnedKey = kohoPin && kohoPin.date === kohoToday && kohoResult.areas.some(a => a.k === kohoPin.k) ? kohoPin.k : "";
@@ -34633,7 +34645,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                         : C.muted);
                       const pinStateKeys = ["pending_lot","lookup_pending","excluded","lookup_failed","dm_ready"];
                       const activePinFilter = quickFilter && pinStateKeys.includes(quickFilter) ? 1 : 0;
-                      const totalSelected = filterStatuses.length + activePinFilter + resultFilters.length + (batchFilter ? 1 : 0) + (homeType ? 1 : 0) + (ageType ? 1 : 0); // 🆕 v9.541: 住まい / 🆕 v9.105: 訪問結果（複数）も件数に含める / 🆕 v9.338: 取込日
+                      const totalSelected = filterStatuses.length + activePinFilter + resultFilters.length + (batchFilter ? 1 : 0) + (homeType ? 1 : 0) + (ageType ? 1 : 0) + (vmapAllowed && visitKinds.length < 3 ? 1 : 0); // 🆕 v9.742: 訪問先 / 🆕 v9.541: 住まい / 🆕 v9.105: 訪問結果（複数）も件数に含める / 🆕 v9.338: 取込日
                       return (
                         <>
                           {/* FAB - ズーム +/- の上に配置 ( 地図左下、 ズームコントロールは bottomleft ) */}
@@ -34803,6 +34815,46 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                             fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: isActive ? 800 : 600,
                                           }}>
                                             {isActive ? "✓ " : ""}{md(b)} 取込 <span style={{ opacity: 0.8, fontSize: 9, marginLeft: 3 }}>{counts[b]}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </>
+                                );
+                              })()}
+                              {/* 🆕 v9.742: 訪問先の種類（下田さんだけ）。地上げの家／HPなしの店／士業を選んで出す */}
+                              {vmapAllowed && (() => {
+                                const nS = vmapPlaces.filter(p => p && p.category === "士業ルート").length, nH = vmapPlaces.length - nS;
+                                const opts = [
+                                  { k: "jiage", l: "🏠 地上げの家", c: "#0ea5e9" },
+                                  { k: "sys", l: "🏪 HP（店）", c: "#7c3aed", n: showVmap ? nH : null },
+                                  { k: "shigyo", l: "⚖ 士業の先生", c: "#7c3aed", n: showVmap ? nS : null },
+                                ];
+                                const toggle = (k) => {
+                                  let next = visitKinds.includes(k) ? visitKinds.filter(x => x !== k) : [...visitKinds, k];
+                                  if (!next.length) next = [k];
+                                  setVisitKinds(next);
+                                  if (k !== "jiage" && next.includes(k) && !showVmap) toggleVmap();
+                                };
+                                return (
+                                  <>
+                                    <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}>📍 訪問先（押して出す／隠す）</div>
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
+                                      <button key="all" onClick={() => { setVisitKinds(VISIT_KINDS_ALL); if (!showVmap) toggleVmap(); }} style={{
+                                        padding: "4px 9px", borderRadius: 14, cursor: "pointer", fontSize: 11,
+                                        background: visitKinds.length === 3 ? "#0ea5e9" : C.inset, color: visitKinds.length === 3 ? "#fff" : C.muted,
+                                        border: `1.5px solid ${visitKinds.length === 3 ? "#0ea5e9" : C.borderDim}`, fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: 700,
+                                      }}>全部</button>
+                                      {opts.map(o => {
+                                        const isActive = visitKinds.includes(o.k) && (o.k === "jiage" || showVmap);
+                                        return (
+                                          <button key={o.k} onClick={() => toggle(o.k)} style={{
+                                            padding: "4px 9px", borderRadius: 14, cursor: "pointer", fontSize: 11,
+                                            background: isActive ? o.c : C.inset, color: isActive ? "#fff" : o.c,
+                                            border: `1.5px solid ${isActive ? o.c : o.c + "55"}`,
+                                            fontFamily: "inherit", whiteSpace: "nowrap", fontWeight: isActive ? 800 : 600,
+                                          }}>
+                                            {isActive ? "✓ " : ""}{o.l}{o.n != null && <span style={{ opacity: 0.8, fontSize: 9, marginLeft: 3 }}>{o.n}</span>}
                                           </button>
                                         );
                                       })}
@@ -43428,7 +43480,7 @@ function KanriPage({ jiage, appData, appSetData, appSetDataRaw, appSetPage }) {
       <KanriBack onBack={() => setView({ k: "home" })} title="🗺 管理の地図" />
       <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, lineHeight: 1.6 }}>地上げの地図と同じ（航空写真・絞り込みもそのまま）。家を押すと管理の詳細が開きます。💼＝営業先（所有者宅）・🏠＝管理物件。探索ルートの記録とピン立てはしません。</div>
       <JiagePage data={appData} setData={appSetData} setDataRaw={appSetDataRaw} setPage={appSetPage}
-        kanriMode kanriMarkers={markers} onKanriPin={(it) => openLead(String(it.id != null ? it.id : it.rawId), view)} />
+        kanriMode kanriMarkers={markers} onKanriPin={(it) => openLead(String(it.rawId != null ? it.rawId : String(it.id).replace(/^j_/, "")), view)} />
     </div>;
   }
   if (view.k === "lead") {
