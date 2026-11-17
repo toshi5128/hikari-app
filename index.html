@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.746";
+const APP_VERSION = "2026-11-17-v9.747";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -8988,6 +8988,9 @@ const PAGES = [
 //   who を省略＝全員に出す／配列＝その人にだけ出す（例: 保有・収支は ["下田"]）。
 //   「見たかどうか」は端末ごとの localStorage だけに残す。みんなの入力データ(data)には一切触らない。
 const WHATS_NEW = [
+  { v: "9.747", date: "2026-11-17", who: ["下田"], title: "営業先（HPの店・士業）のステータスを地上げのように細かく",
+    body: "営業先の印を開くと「ステータスを変える」が出ます。未連絡・不在・資料渡し済・訪問済・見込み候補・見込みあり・打合せ・成約・見込無し・見送り・対象外から選べます。「訪問した」の結果ボタンにも「考えておく（→見込み候補）」「閉業・HPあり（→対象外）」が増え、押すとステータスが自動で変わります。見込無し・見送り・対象外・成約は地図から消えます。",
+    where: "地上げ → 地図 → 営業先の印を押す →「ステータスを変える」" },
   { v: "9.743", date: "2026-11-17", who: ["下田"], title: "いつもの地上げのピンから、管理の訪問を記録できるように",
     body: "地上げのピンを開くと、「訪問結果を記録する」の下に「💼 管理ステータス」の欄が出ます。管理の話で行った時はここで不在・興味あり・検討中などを記録します（地上げの記録はいつもどおり上のボタン）。管理で記録した家は、下田さん以外の人の地図・一覧からは消えます。",
     where: "地上げ → ピンを開く →「💼 管理ステータス」" },
@@ -27518,8 +27521,18 @@ function JiageFamilyTree({ members, ownerName, currentUser, today, onChange }) {
 //   データはひかりのDBに入れない＝ai-newsのSupabase vmap_* を合言葉ヘッダ(x-vmap-key)で読み書きするだけ。
 //   合言葉はこの端末のlocalStorage(vmap_key)にだけ置く。ソースには書かない。
 const VMAP_SB = "https://aevqdsozxiklyjfavvhf.supabase.co/rest/v1/", VMAP_PK = "sb_publishable_3J-KuCCmuO_d7WLzQrsrTg_U3QiaF_I";
-const VMAP_ST = {"未連絡":"#9aa5a0","メール済":"#2f6fd6","電話済":"#7b4fc9","訪問済":"#e08a1e","興味あり":"#18a058","打合せ":"#0b6b3a","成約":"#c9a400","見送り":"#c0392b"};
-const VMAP_RESULTS = { "訪問": ["不在", "受付に資料を渡した", "会えた・話せた", "興味あり", "断られた"], "電話": ["出なかった", "話せた", "興味あり", "折り返し待ち", "断られた"] };
+// 🆕 v9.747: 営業先のステータスを地上げに合わせて細かく（VISION営業地図と同じ中身）
+const VMAP_ST = {"未連絡":"#9aa5a0","メール済":"#2f6fd6","電話済":"#7b4fc9","不在":"#64748b","資料渡し済":"#e08a1e","訪問済":"#d97706","見込み候補":"#eab308","見込みあり":"#18a058","打合せ":"#0b6b3a","成約":"#c9a400","見込無し":"#6b7280","見送り":"#c0392b","対象外":"#334155","興味あり":"#18a058"};
+const VMAP_STATUSES = Object.keys(VMAP_ST).filter(k => k !== "興味あり"); // 興味あり＝昔の名前（見込みありと同じ）
+const VMAP_HIDE_ST = ["成約", "見込無し", "見送り", "対象外"]; // 地図に出さない
+const VMAP_RESULTS = { "訪問": ["不在", "受付に資料を渡した", "会えた・話せた", "考えておく", "興味あり", "断られた", "閉業・HPあり"], "電話": ["出なかった", "話せた", "折り返し待ち", "考えておく", "興味あり", "断られた"] };
+function vmapStFromResult(k, r, cur) {
+  const m = { "不在": "不在", "受付に資料を渡した": "資料渡し済", "会えた・話せた": "訪問済", "考えておく": "見込み候補", "閉業・HPあり": "対象外", "成約": "成約", "日程が決まった": "打合せ", "打合せした": "打合せ", "見積りを出す": "打合せ" };
+  let st = m[r] || (/興味あり/.test(r) ? "見込みあり" : /断/.test(r) ? "見込無し" : (VMAP_NEXT_ST[k] || cur));
+  if (["成約", "見込無し", "見送り", "対象外"].includes(st)) return st;
+  const rank = { "未連絡": 0, "メール済": 1, "電話済": 1, "不在": 1, "資料渡し済": 2, "訪問済": 2, "見込み候補": 3, "見込みあり": 4, "興味あり": 4, "打合せ": 5, "成約": 6 };
+  return (rank[cur] != null && (rank[st] ?? 0) < rank[cur]) ? cur : st; // 良い状態を下げない
+}
 const VMAP_NEXT_ST = { "訪問": "訪問済", "電話": "電話済" };
 function _vmapKey() { try { return localStorage.getItem("vmap_key") || ""; } catch (e) { return ""; } }
 (function () { try { const m = location.hash.match(/vk=([A-Za-z0-9]+)/); if (m) { localStorage.setItem("vmap_key", m[1]); history.replaceState(null, "", location.pathname + location.search); } } catch (e) {} })();
@@ -27544,14 +27557,21 @@ function VmapSheet({ place, onClose, onUpdated }) {
     if (busy) return; setBusy(true);
     try {
       await vmapApi("vmap_logs", { method: "POST", body: JSON.stringify({ place_id: p.id, kind: k, result: r, note }) });
-      let st = /興味あり/.test(r) ? "興味あり" : /断/.test(r) ? "見送り" : (VMAP_NEXT_ST[k] || p.status);
-      if (["興味あり", "打合せ", "成約"].includes(p.status) && st !== "見送り") st = p.status;  // 良い状態を下げない
+      const st = vmapStFromResult(k, r, p.status);
       const rows = await vmapApi(`vmap_places?id=eq.${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ status: st, updated_at: new Date().toISOString() }) });
       onUpdated(rows && rows[0] ? rows[0] : { ...p, status: st });
       setKind(null); setNote("");
       const l = await vmapApi(`vmap_logs?place_id=eq.${encodeURIComponent(p.id)}&order=at.desc&limit=5`).catch(() => null);
       if (l) setLogs(l);
     } catch (e) { alert("⚠️ 記録できませんでした：" + e.message); }
+    setBusy(false);
+  };
+  const setSt = async (st) => {
+    if (busy || st === p.status) return; setBusy(true);
+    try {
+      const rows = await vmapApi(`vmap_places?id=eq.${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ status: st, updated_at: new Date().toISOString() }) });
+      onUpdated(rows && rows[0] ? rows[0] : { ...p, status: st });
+    } catch (e) { alert("⚠️ 変えられませんでした：" + e.message); }
     setBusy(false);
   };
   const nav = p.lat ? `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.address || p.name)}`;
@@ -27594,6 +27614,13 @@ function VmapSheet({ place, onClose, onUpdated }) {
           </div>
         </div>
       )}
+      <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, marginTop: 14, marginBottom: 6 }}>ステータスを変える</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+        {VMAP_STATUSES.map(st => { const on = st === p.status || (st === "見込みあり" && p.status === "興味あり"); return (
+          <button key={st} disabled={busy} onClick={() => setSt(st)} style={{ padding: "6px 9px", borderRadius: 14, fontSize: 12, fontWeight: 800, fontFamily: "inherit", cursor: "pointer",
+            border: `2px solid ${VMAP_ST[st]}`, background: on ? VMAP_ST[st] : "transparent", color: on ? "#fff" : VMAP_ST[st] }}>{on ? "✓ " : ""}{st}</button>); })}
+      </div>
+      <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>見込無し・見送り・対象外・成約にすると地図から消えます</div>
       <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, marginTop: 14, marginBottom: 4 }}>これまでの記録</div>
       {logs === null ? <div style={{ fontSize: 12, color: C.muted }}>読み込み中…</div>
         : !logs.length ? <div style={{ fontSize: 12, color: C.muted }}>まだありません</div>
@@ -27602,7 +27629,7 @@ function VmapSheet({ place, onClose, onUpdated }) {
             <b>{l.kind}</b> {new Date(l.at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} {l.result || ""}{l.note ? <div style={{ color: C.muted }}>{l.note}</div> : null}
           </div>
         ))}
-      <a href="https://toshi5128.github.io/ai-news/vision-map/" target="_blank" rel="noopener" style={{ display: "block", marginTop: 12, fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>トーク・メモ・状態の変更は VISION営業地図で ↗</a>
+      <a href="https://toshi5128.github.io/ai-news/vision-map/" target="_blank" rel="noopener" style={{ display: "block", marginTop: 12, fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>トーク・メモは VISION営業地図で ↗</a>
     </div>
   );
 }
@@ -27819,7 +27846,7 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   };
   const vmapMarkers = useMemo(() => {
     if (!vmapAllowed || !showVmap) return null;
-    return vmapPlaces.filter(p => p && p.lat && p.lon && p.status !== "見送り" && p.status !== "成約" && visitKinds.includes(p.category === "士業ルート" ? "shigyo" : "sys")).map(p => {
+    return vmapPlaces.filter(p => p && p.lat && p.lon && !VMAP_HIDE_ST.includes(p.status) && visitKinds.includes(p.category === "士業ルート" ? "shigyo" : "sys")).map(p => {
       const col = VMAP_ST[p.status] || "#999";
       const em = p.category === "士業ルート" ? "⚖" : "🏪";
       return { lat: +p.lat, lng: +p.lon, size: 26, tip: p.name,
