@@ -239,7 +239,7 @@ if ('serviceWorker' in navigator) {
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- 🆕 v8.92: Babel-standalone はキャッシュミス時のみ動的読み込み（末尾の loader 参照） -->
 <script type="text/plain" id="hikari-jsx-src">
-const APP_VERSION = "2026-11-17-v9.744";
+const APP_VERSION = "2026-11-17-v9.745";
 // 🆕 バージョン文字列を比較。remote が local より「新しい」ときだけ true。
 //   バージョン形式: "YYYY-MM-DD-vM.m[.p]-<note>"
 //   🆕 v8.102: 文字列比較だと "v8.98" > "v8.101" になるバグを修正（'9' > '1' のため）
@@ -27799,7 +27799,11 @@ function JiagePage({ data, setData, setDataRaw, pendingNav, onConsumeNav, setPag
   useEffect(() => {
     if (!vmapAllowed || !showVmap || !_vmapKey()) return;
     let dead = false;
-    vmapApi("vmap_places?select=*&order=updated_at.desc&limit=2000")
+    // 🆕 v9.745: 1回で1,000件までしか返らないので、全件（約3,900件）を1,000件ずつ読む
+    (async () => { const all = []; for (let off = 0; off < 20000; off += 1000) {
+        const rows = await vmapApi(`vmap_places?select=*&order=id&limit=1000&offset=${off}`);
+        if (!Array.isArray(rows)) break; all.push(...rows); if (rows.length < 1000) break; }
+      return all; })()
       .then(rows => { if (!dead) setVmapPlaces(Array.isArray(rows) ? rows : []); })
       .catch(e => { if (!dead) { setVmapPlaces([]); if (/401|403|permission|denied/i.test(e.message)) { try { localStorage.removeItem("vmap_key"); } catch (x) {} alert("⚠️ 営業先の合言葉が違うようです。もう一度入れてください"); setShowVmap(false); } } });
     return () => { dead = true; };
@@ -33504,7 +33508,7 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                           ])}
                           {vmapAllowed && showVmap && optRow("#7c3aed", "営業先", [
                             ["sys", "🏪 HPなしの店"], ["shigyo", "⚖ 士業"],
-                          ].map(([k, l]) => chip("vc-" + k, visitKinds.includes(k), "#7c3aed", () => setVisitKinds(visitKinds.includes(k) ? visitKinds.filter(x => x !== k) : [...visitKinds, k]), l)))}
+                          ].map(([k, l]) => chip("vc-" + k, visitKinds.includes(k), "#7c3aed", () => setVisitKinds(visitKinds.length === 3 ? [k] : visitKinds.includes(k) ? (visitKinds.filter(x => x !== k).length ? visitKinds.filter(x => x !== k) : [k]) : [...visitKinds, k]), l)))}
                           {showChosei && optRow("#dc2626", "団地", [
                             sw("#991b1b", "成果あり"), sw("#dc2626", "見込みあり"), sw("#f97316", "ピンあり"), sw("#ef4444", "🚩 未踏（点線）"),
                             <span key="nt" style={{ fontSize: 9, color: C.muted }}>1976〜97年に造成された調整区域の分譲地＋東武台。農村集落は出しません。🏠物件住所の表示の時に出ます</span>,
@@ -34837,14 +34841,15 @@ TEL: 048-XXX-XXXX / 宅地建物取引業 埼玉県知事 (1) 第XXXXX号<br>
                                   { k: "shigyo", l: "⚖ 士業の先生", c: "#7c3aed", n: showVmap ? nS : null },
                                 ];
                                 const toggle = (k) => {
-                                  let next = visitKinds.includes(k) ? visitKinds.filter(x => x !== k) : [...visitKinds, k];
+                                  // 🆕 v9.745: 全部出ている時に押したら「それだけ」にする（押して消えると分かりにくい）
+                                  let next = visitKinds.length === 3 ? [k] : visitKinds.includes(k) ? visitKinds.filter(x => x !== k) : [...visitKinds, k];
                                   if (!next.length) next = [k];
                                   setVisitKinds(next);
                                   if (k !== "jiage" && next.includes(k) && !showVmap) toggleVmap();
                                 };
                                 return (
                                   <>
-                                    <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}>📍 訪問先（押して出す／隠す）</div>
+                                    <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, marginBottom: 6 }}>📍 訪問先（押すとそれだけ出す・もう1つ押すと足す）</div>
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
                                       <button key="all" onClick={() => { setVisitKinds(VISIT_KINDS_ALL); if (!showVmap) toggleVmap(); }} style={{
                                         padding: "4px 9px", borderRadius: 14, cursor: "pointer", fontSize: 11,
